@@ -2,7 +2,7 @@
 
 ## Current status
 
-The repository contains a local TypeScript/Node 24 CLI and SQLite Phase 1 slice for two linked checklists. It had no Git repository or remote as inspected on 2026-09-25. The bounded historical thesis repair cycle `successor-cutoff-2026-09-25` passed its first independent Astra-low review with no correction stage. The earlier `backend-phase1-2026-09-24` cycle ended UNRESOLVED; its future-successor finding was repaired and tested in this new authorized cycle. This acceptance covers the local historical thesis contract, not complete live provider coverage or calibrated trading decisions.
+The repository contains a local TypeScript/Node 24 CLI and SQLite Phase 1 slice for two linked checklists. Before publication on 2026-09-25 it had no Git repository or remote. It is now public at [LycurgusxLycurgus/MemeHunt](https://github.com/LycurgusxLycurgus/MemeHunt), with `main` at `e55335358ecc133425f4e5923148f4fc89a2f5ed`. The bounded historical thesis repair cycle `successor-cutoff-2026-09-25` passed its first independent Astra-low review with no correction stage. The earlier `backend-phase1-2026-09-24` cycle ended UNRESOLVED; its future-successor finding was repaired and tested in this new authorized cycle. This acceptance covers the local historical thesis contract, not complete live provider coverage or calibrated trading decisions.
 
 ## Maintained tree and data flow
 
@@ -32,7 +32,7 @@ The public DEX Screener token-pairs endpoint is a read-only price/pair diagnosti
 
 ## Human ownership and release
 
-CONTRIBUTING.md is the operational two-person contract. Person A owns contracts, policy, ledger, Service, CLI, migrations, manifests and integration; Person B owns providers, catalogs, fixtures, tests, certificates and labeled semantic evaluation. The historical thesis-lineage defect was A's Service repair with B's separate regression file. Cross-boundary defects get one root-cause owner. An incorrect positive verdict, oversell or lost evidence blocks release of that capability. GitHub publication is tracked in the repository history; see the open visibility issue and revisit switching from public to private when the user considers the project working. Required-review protection is not enabled and no second collaborator is assigned.
+CONTRIBUTING.md is the operational two-person contract. Person A owns contracts, policy, ledger, Service, CLI, migrations, manifests and integration; Person B owns providers, catalogs, fixtures, tests, certificates and labeled semantic evaluation. The historical thesis-lineage defect was A's Service repair with B's separate regression file. Cross-boundary defects get one root-cause owner. An incorrect positive verdict, oversell or lost evidence blocks release of that capability. The initial root commit went directly to `main`; no PR was created. The 37-file public tree includes `plans/backend-v1/` and excludes raw source transcripts, the standalone migration prompt, `AGENTS.md`, `bridgecode/`, and the temporary task board. `.gitignore` preserves those exclusions. The two-person branch/PR process is documented without GitHub required-review protection or an assigned collaborator. The repository remains PUBLIC by user choice. [Open issue #1](https://github.com/LycurgusxLycurgus/MemeHunt/issues/1) asks the user to revisit visibility and switch to private when they consider the project working; passing the current CLI checks alone does not trigger a visibility change.
 
 ## Validation and recovery
 
