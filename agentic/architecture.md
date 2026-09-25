@@ -1,0 +1,41 @@
+# Backend architecture and recovery map
+
+## Current status
+
+The repository contains a local TypeScript/Node 24 CLI and SQLite Phase 1 slice for two linked checklists. It had no Git repository or remote as inspected on 2026-09-25. The bounded historical thesis repair cycle `successor-cutoff-2026-09-25` passed its first independent Astra-low review with no correction stage. The earlier `backend-phase1-2026-09-24` cycle ended UNRESOLVED; its future-successor finding was repaired and tested in this new authorized cycle. This acceptance covers the local historical thesis contract, not complete live provider coverage or calibrated trading decisions.
+
+## Maintained tree and data flow
+
+| Path | Implemented responsibility |
+|---|---|
+| package.json, package-lock.json, tsconfig.json | Pinned local Node/TypeScript build, typecheck and test entry points. |
+| src/domain/contracts.ts | Zod input schemas and domain types for tokens, evidence, features, profiles, theses, positions and snapshots. Position records include entryAt and recordedAt. |
+| src/domain/catalog.ts | Stable 33 entry and 15 management row catalogs plus feature metadata. A catalog row is not proof that its collector or detector exists. |
+| src/domain/policy.ts | Pure predicates, entry/management checks, stage resolution and precedence. Required missing thesis checks block favorable management; known invalidation has priority. OWN-02 checks both O19 and O20 numeric fractions. |
+| src/domain/ledger.ts | Pure bigint quantity/decimal cost reduction, append-only correction overlay, cutoff filtering, parsed-instant ordering and proposed original-quantity legs. |
+| src/app/service.ts | SQLite persistence, raw artifact hashing, case/episode lineage, cutoff-specific episode selection through validated immutable ancestry, strict successor time ordering, snapshots, replay/diff, position/event recording and backup. |
+| src/cli.ts | JSON stdout CLI for address/bundle analysis, reassessment, cases, thesis successors, positions, journal, replay/diff, backup, profile options and diagnostics. |
+| src/providers/dexscreener.ts, http.ts, gemini.ts | Bounded public market diagnostic and configured but disabled hosted semantic adapter. Neither certifies a venue or authenticates a complete checklist. |
+| tests/, examples/ | Deterministic sanitized fixtures and production-facing regression tests. tests/successor-cutoff.test.ts protects historical selection, disk reopen/replay, multiple successors, time boundaries, legacy invalid ancestry and closed-case rejection. Fixture profiles are illustrative and uncalibrated. |
+| README.md, CONTRIBUTING.md | Operator commands, capability limits, free-provider research and two-human ownership/merge contract. |
+| plans/backend-v1/ | Canonical proposed policy/feature/implementation source, revision 0.2. Plans 02, 05, 07 and 09 govern the two-checklist behavior; proposed later packets are not implemented merely by being documented. |
+| pre-plan.txt, sources/ | Local-only planning source material; `pre-plan.txt` is not present in this checkout, and the raw transcript bundle is excluded from the public GitHub repository. |
+| Local-only `AGENTS.md`, `bridgecode/` | Workspace-specific Bridgecode instructions and specialists; intentionally excluded from the public GitHub repository and not runtime code. |
+
+Flow: CLI validates a chain-qualified bundle through Service. Evidence artifacts are stored under computed SHA-256 names, and user imports keep USER_IMPORT provenance. Policy consumes typed feature quality, units and cutoff rather than imported PASS/FAIL assertions. An entry PASS saves an immutable snapshot and activates a frozen thesis episode. A tracked case is reassessed against management rows; Service walks immutable episode ancestry from the mutable head and selects the newest episode whose parsed createdAt is at or before the cutoff. Before the first episode it raises NO_THESIS_AT_CUTOFF. Successors must be strictly later by instant than their predecessor, and invalid legacy ancestry fails closed as INVALID_EPISODE_TIMELINE. Manual position/events inform pure ledger/proposal logic, while saved snapshots replay from frozen semantic inputs. A proposal does not sell anything.
+
+## Scope and constraints
+
+Phase 1 is manual local due diligence: entry/thesis assessment, saved-thesis management, optional manual position/sale/journal, and loss-prevention or exit review proposals. No frontend, signing, custody, trade execution, auto discovery, background monitor or calibrated profit claim is present. Phase 2 discovery and Phase 3 trading require separate work. Initial chain names are Solana, BSC, Base and Robinhood; venue certification is separate, and none is certified. Missing risk, age, size, horizon and exit settings remain user-owned UNKNOWNs. Circulating cap is not FDV and pool age is not token creation age. A known invalidation must remain visible despite unrelated missing evidence. Later buys do not expand original-quantity exit legs. Do not use fixture values for live analysis.
+
+The public DEX Screener token-pairs endpoint is a read-only price/pair diagnostic. TinyFish Search/Fetch is the first published zero-spend web candidate; Parallel has metered calls and recurring credits; GoPlus is supplemental. These are documentation/research findings, not authenticated entitlement or quality proof. Gemini 3.5 Flash-Lite is configured for the user-requested extraction settings, but hosted extraction is disabled pending account entitlement and labeled validation. Full chain controls, live venue simulation/certification, chart/macro detectors, semantic quality and outcome calibration remain unimplemented or unproven. The local-only transcript bundle's SHA-256 is `99B29C18FB62F873DA6964346EB133CF24503FCFFB3F64F8D600C968BC296869`; the bundle is intentionally omitted from the public repository.
+
+## Human ownership and release
+
+CONTRIBUTING.md is the operational two-person contract. Person A owns contracts, policy, ledger, Service, CLI, migrations, manifests and integration; Person B owns providers, catalogs, fixtures, tests, certificates and labeled semantic evaluation. The historical thesis-lineage defect was A's Service repair with B's separate regression file. Cross-boundary defects get one root-cause owner. An incorrect positive verdict, oversell or lost evidence blocks release of that capability. GitHub publication is tracked in the repository history; see the open visibility issue and revisit switching from public to private when the user considers the project working. Required-review protection is not enabled and no second collaborator is assigned.
+
+## Validation and recovery
+
+Commands: npm ci; npm run typecheck; npm test; node dist/src/cli.js capabilities; node dist/src/cli.js profile options. Use README.md for bundle, replay and backup commands. On 2026-09-25, `npm run typecheck` passed and `npm test` passed 37/37, including six new production Service historical thesis tests. The Jan 1 verdict is stable before and after a Jan 2 successor, including ID/hash and disk reopen/replay; multiple successors, exact/offset timestamps, rejected non-increasing successors, one legacy invalid timeline and closed-case behavior are covered. The first independent Astra-low reviewer returned PASS. Earlier persisted CLI smoke showed quantity 400 before a later-recorded backdated sale, the same earlier snapshot/replay after that record, and quantity 300 at a later cutoff. Earlier fixture CLI checks exercised 33-row RESEARCH_ELIGIBLE entry, 15-row INVALIDATED/EXIT_REVIEW management, show/replay/diff, backup and replay from backup. A single public Solana JUP diagnostic returned 30 observed pairs, with no venue certification.
+
+Episode createdAt is the declared creation and start of applicability; the store has no separate observed insertion timestamp. A closed case cannot be newly reassessed at an older cutoff because closure has no timestamp, though saved snapshots remain replayable. This is documented in README.md. The author's workspace uses Bridgecode specialists for consequential changes, but `AGENTS.md` and `bridgecode/` are local-only and intentionally omitted from the public repository. Public clones should follow their host's applicable agent instructions.

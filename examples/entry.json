@@ -1,0 +1,1130 @@
+{
+  "token": {
+    "chain": "solana",
+    "address": "FIXTURE_TOKEN"
+  },
+  "cutoff": "2026-01-01T00:00:00.000Z",
+  "analysisKind": "FIXTURE",
+  "evidence": [
+    {
+      "id": "fixture-evidence-001",
+      "sourceId": "fixture-source",
+      "sourceType": "FIXTURE",
+      "retrievedAt": "2026-01-01T00:00:00.000Z",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "contentHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "adapterVersion": "fixture-v1",
+      "accessMode": "LOCAL_DERIVED",
+      "scope": {
+        "provenance": "FIXTURE",
+        "fixtureVersion": 1,
+        "calibratedForLiveUse": false
+      }
+    }
+  ],
+  "observations": [],
+  "features": [
+    {
+      "id": "O01",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C01",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C02",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O08",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O03",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O04",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O06",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O05",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O07",
+      "value": "10",
+      "unit": "bps",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O09",
+      "value": "0.1",
+      "unit": "fraction",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O10",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O11",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O13",
+      "value": "10",
+      "unit": "bps",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O14",
+      "value": "10",
+      "unit": "bps",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O15",
+      "value": "100",
+      "unit": "bps",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O16",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O12",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O17",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O18",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O19",
+      "value": "0.1",
+      "unit": "fraction",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O20",
+      "value": "0.1",
+      "unit": "fraction",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O02",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O28",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A01",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A02",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A03",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A04",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A05",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A09",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A10",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A11",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A14",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A15",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A16",
+      "value": "10",
+      "unit": "count",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A17",
+      "value": "3",
+      "unit": "count",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A18",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S10",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S01",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S02",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S03",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S04",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S05",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S06",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C03",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C04",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C05",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C06",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O21",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O22",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O23",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O24",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O25",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O26",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O27",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O29",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "O30",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A06",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A07",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A08",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A12",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A13",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A19",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A20",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A21",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A22",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A23",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A24",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A25",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A26",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A27",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A28",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A29",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "A30",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S07",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S08",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S09",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S11",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S12",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S13",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S14",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S15",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S16",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S17",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S18",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S19",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "S20",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C07",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C08",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C09",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C10",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C11",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C12",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C13",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C14",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C15",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    },
+    {
+      "id": "C16",
+      "value": true,
+      "unit": "bool",
+      "quality": "KNOWN",
+      "availableAt": "2026-01-01T00:00:00.000Z",
+      "evidenceIds": [
+        "fixture-evidence-001"
+      ],
+      "applicability": "APPLICABLE"
+    }
+  ],
+  "profile": {
+    "id": "fixture-illustrative-uncalibrated",
+    "sizeUsd": "10",
+    "horizonSeconds": 3600,
+    "risk": {
+      "maxTransferFeeBps": "100",
+      "maxDirectControlShare": "0.2",
+      "maxEntryImpactBps": "100",
+      "maxExitImpactBps": "100",
+      "maxRoundTripLossBps": "500",
+      "maxRemovableLiquidityShare": "0.5"
+    },
+    "stage": {
+      "ageBands": [
+        {
+          "name": "fixture-only",
+          "minSeconds": 0,
+          "maxSeconds": null
+        }
+      ]
+    }
+  },
+  "thesis": {
+    "support": [
+      {
+        "op": "eq",
+        "feature": "O01",
+        "value": true,
+        "unit": "bool"
+      }
+    ],
+    "invalidation": [
+      {
+        "op": "eq",
+        "feature": "O03",
+        "value": true,
+        "unit": "bool"
+      }
+    ],
+    "catalyst": null,
+    "expiryAt": null,
+    "onchainTraction": null,
+    "externalTraction": null,
+    "warning": null,
+    "legs": []
+  }
+}

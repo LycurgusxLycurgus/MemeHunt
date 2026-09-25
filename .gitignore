@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.data/
+.npm-cache/
+*.sqlite
+*.sqlite-*
+
+# Local source and agent working files intentionally kept out of GitHub.
+/sources/
+/gemini_35_flash_lite_migration_monoprompt_v1_1.txt
+/agentic/analysis.md
+/AGENTS.md
+/bridgecode/
