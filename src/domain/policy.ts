@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js';
 import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
 import { entryDefinitions, managementDefinitions, featureMetadata } from './catalog.js';
 import { proposeLeg, reduceLedger } from './ledger.js';
+import { traceManagementRows } from './management-trace.js';
 
 export type Truth = 'TRUE' | 'FALSE' | 'UNKNOWN';
 export type StageInputs = { circulatingMarketCapUsd: string | null; tokenCreatedAt: string | null };
@@ -134,7 +135,8 @@ export function evaluateManagement(episode: ThesisEpisode, features: FeatureResu
     'MG-14': t.expiryAt ? (Date.parse(cutoff) >= Date.parse(t.expiryAt) ? 'FAIL' : 'PASS') : 'NOT_APPLICABLE',
     'MG-15': candidate && exit === 'PASS' ? 'PASS' : 'UNKNOWN',
   };
-  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: rules[d.checkId] ?? 'UNKNOWN', reasonCode: rules[d.checkId] === 'UNKNOWN' ? 'INSUFFICIENT_EVIDENCE' : rules[d.checkId] === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED', featureRefs: [], evidenceRefs: [] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
+  const trace = traceManagementRows({ episode, features, profile, cutoff, stageInputs, stage, entryChecks, position: knownPosition, ledger, candidate, statuses: rules });
+  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: rules[d.checkId] ?? 'UNKNOWN', ...trace[d.checkId] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const thesisUnknown = checks.some(c => c.requiredFor === 'THESIS' && c.status === 'UNKNOWN');
   const thesisState: ManagementResult['thesisState'] = safety === 'FAIL' || exit === 'FAIL' || invalidationStatus === 'TRUE' || rules['MG-14'] === 'FAIL' ? 'INVALIDATED' : thesisUnknown ? 'UNVERIFIABLE' : supportStatus === 'FALSE' || rules['MG-08'] === 'FAIL' ? 'WEAKENING' : 'VALIDATED';
   const proposal: ManagementResult['proposal'] = thesisState === 'INVALIDATED' ? 'EXIT_REVIEW' : thesisState === 'UNVERIFIABLE' ? 'REASSESS_REQUIRED' : thesisState === 'WEAKENING' ? 'REDUCE_REVIEW' : rules['MG-09'] === 'PASS' && rules['MG-10'] === 'PASS' && triggerStatus === 'PASS' && rules['MG-13'] === 'PASS' && rules['MG-15'] === 'PASS' ? 'DCA_OUT_PROPOSED' : triggerStatus === 'FAIL' && rules['MG-09'] !== 'UNKNOWN' && rules['MG-10'] !== 'UNKNOWN' ? 'MAINTAIN_THESIS' : 'REASSESS_REQUIRED';

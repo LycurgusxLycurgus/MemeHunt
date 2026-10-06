@@ -5,6 +5,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { bundleSchema, positionEventSchema, positionRecordSchema, thesisSchema, type Bundle, type EntrySnapshot, type ManagementSnapshot, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
+import { MANAGEMENT_POLICY_VERSION, managementResultForVersion } from '../domain/management-trace.js';
 
 function stable(v: unknown): string {
   if (v === null || typeof v === 'string' || typeof v === 'boolean') return JSON.stringify(v);
@@ -130,7 +131,7 @@ export class Service {
     const position = savedPosition && Date.parse(savedPosition.entryAt) <= Date.parse(b.cutoff) && Date.parse(savedPosition.recordedAt) <= Date.parse(b.cutoff) ? savedPosition : null;
     const events = position && pRow ? this.db.prepare('SELECT payload FROM position_events WHERE position_id=?').all(String(pRow.id)).map(x => readJson<PositionEvent>(x.payload)).filter(e => Date.parse(e.recordedAt) <= Date.parse(b.cutoff)) : [];
     const result = evaluateManagement(episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b));
-    const semantic = { schemaVersion: 1, policyVersion: 'thesis-management-v0', episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result };
+    const semantic = { schemaVersion: 1, policyVersion: MANAGEMENT_POLICY_VERSION, episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'MANAGEMENT');
     if (existing) return readJson<ManagementSnapshot>(existing.payload);
@@ -186,7 +187,7 @@ export class Service {
     const semantic = readJson<Record<string, any>>(row.semantic);
     if (decisionHash(semantic) !== row.hash) throw new Error('SNAPSHOT_HASH_MISMATCH');
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features } as Bundle;
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(policyFeatures(replayBundle),semantic.profile,semantic.cutoff) : evaluateManagement(semantic.episode,policyFeatures(replayBundle),semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs);
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(policyFeatures(replayBundle),semantic.profile,semantic.cutoff) : managementResultForVersion(semantic.policyVersion,evaluateManagement(semantic.episode,policyFeatures(replayBundle),semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs));
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

@@ -1,0 +1,2908 @@
+{
+ "description": "Golden thesis-management-v0 outputs captured from the published base build before packet 1. Synthetic fixture data; not live evidence. Do not regenerate from newer code.",
+ "capturedFromCommit": "27273cff16b334c6ba54187bd0170efad611f446",
+ "capturedAt": "2026-10-06",
+ "policyVersion": "thesis-management-v0",
+ "scenarios": [
+  {
+   "name": "invalidated-examples",
+   "inputsHash": "a3dc2432debd275cbae3a92457dda072870ea576539046b4abb5be74b35be9a9",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "INVALIDATED",
+    "proposal": "EXIT_REVIEW"
+   }
+  },
+  {
+   "name": "invalidated-despite-missing-support",
+   "inputsHash": "8e5773f6aaa48944b793412ed0db0594aa7b2c4041f8b342b6e7c18051a094b6",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "INVALIDATED",
+    "proposal": "EXIT_REVIEW"
+   }
+  },
+  {
+   "name": "validated-no-plan",
+   "inputsHash": "bf1403efd66020b9f43d4fba92d9fb314e06a6cc08317818a2658d5781ed5ab9",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "weakening",
+   "inputsHash": "c801f3ae0f290dacf93fbe577481c162dfb8aa8439860fc24b598c49b97f4fb9",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "WEAKENING",
+    "proposal": "REDUCE_REVIEW"
+   }
+  },
+  {
+   "name": "dca-proposed",
+   "inputsHash": "0ff6a3b85ad04ab718eab805078eddbb50f8807987a64e914ef83a101a46f6a0",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "DCA_OUT_PROPOSED",
+    "proposedQuantityAtomic": "400",
+    "proposedLegId": "leg-1"
+   }
+  },
+  {
+   "name": "maintain",
+   "inputsHash": "03b557a97ea8cb1833b456d64f4d8ab24d152738c5092e19089090232dea5e5e",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "MAINTAIN_THESIS"
+   }
+  },
+  {
+   "name": "unverifiable-missing-catalyst",
+   "inputsHash": "95161d0410cefc3e839d61fedf60cb3b7909b8a62633dcfaee6be0ab604dd644",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "UNVERIFIABLE",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "safety-fail",
+   "inputsHash": "83d9c084acc6250ca7f34a3b6801618df933c32bfb567821068f08e4cb5dffff",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "INVALIDATED",
+    "proposal": "EXIT_REVIEW"
+   }
+  },
+  {
+   "name": "exit-fail",
+   "inputsHash": "f2ba78226b2666281e1a57d49337fb9be4745c387b0f6ceb2969f910295fde00",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "INVALIDATED",
+    "proposal": "EXIT_REVIEW"
+   }
+  },
+  {
+   "name": "risk-limits-missing",
+   "inputsHash": "22b4b69aed7c52c2664d4a36e38f56033dc2c560df84735f03132a0c443ef963",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "UNVERIFIABLE",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "expired-with-catalyst-and-warning",
+   "inputsHash": "b51a8df061d4e47f9ea3b1f55deb169da9e2fb19a542c5aa7dace16de337e191",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "FAIL",
+      "reasonCode": "RULE_FAILED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "INVALIDATED",
+    "proposal": "EXIT_REVIEW"
+   }
+  },
+  {
+   "name": "future-available-support",
+   "inputsHash": "fa185386da55279757baa6846b5abc03f38ab0d7173bcc51e2cec29a81d8988b",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "UNVERIFIABLE",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "unreconciled-sale",
+   "inputsHash": "3263bb03733939fbb79042ca05ddb47396924b2e339a743784d5ebde14ee906c",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "attributed-partial-sale",
+   "inputsHash": "20260a710afcf4c1bdc4bbdd01b6b30c55d62355df70418a9f443e99ea0c963a",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "DCA_OUT_PROPOSED",
+    "proposedQuantityAtomic": "200",
+    "proposedLegId": "leg-1"
+   }
+  },
+  {
+   "name": "unknown-cost",
+   "inputsHash": "9ddd3cd0e19d0040dcd4865535de2c9b0ba0b1666e3fddb62f5f7b09144e8010",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "later-leg-unknown",
+   "inputsHash": "2d7fc208dfdb4a1809272e3f8b19062f865894a519b3a618fdcf005e1aa5f685",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "VALIDATED",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "nested-invalidation-unknown",
+   "inputsHash": "764aa86fc208289d2105cb53eaee27a0bb16164278e4041c59474ce5c9f1d0c4",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "UNVERIFIABLE",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  },
+  {
+   "name": "nothing-known",
+   "inputsHash": "850f29e3e49d406f7ccfd1b93e0c0ef262ea2c46a856b7223214f8529a109bc0",
+   "result": {
+    "checks": [
+     {
+      "checkId": "MG-01",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "PASS",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-02",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-03",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "SAFETY",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-04",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_EVIDENCE",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-05",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "CONTEXT",
+      "requiredFor": "CONTEXT",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-06",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-07",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-08",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "VALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-09",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-10",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "TRACTION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-11",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "WARNING",
+      "requiredFor": "WARNING",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-12",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REALIZATION",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-13",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-14",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "INVALIDATION",
+      "requiredFor": "THESIS",
+      "status": "NOT_APPLICABLE",
+      "reasonCode": "RULE_SATISFIED",
+      "featureRefs": [],
+      "evidenceRefs": []
+     },
+     {
+      "checkId": "MG-15",
+      "checklistKind": "MANAGEMENT",
+      "managementRole": "REQUIRED_FOR_QUANTIFIED_PROPOSAL",
+      "requiredFor": "QUANTIFIED_PROPOSAL",
+      "status": "UNKNOWN",
+      "reasonCode": "INSUFFICIENT_EVIDENCE",
+      "featureRefs": [],
+      "evidenceRefs": []
+     }
+    ],
+    "thesisState": "UNVERIFIABLE",
+    "proposal": "REASSESS_REQUIRED"
+   }
+  }
+ ],
+ "snapshots": [
+  {
+   "id": "4a38ff81-c454-434c-b676-2d3a06592291",
+   "kind": "MANAGEMENT",
+   "payload": "{\"id\":\"4a38ff81-c454-434c-b676-2d3a06592291\",\"checklistKind\":\"MANAGEMENT\",\"caseId\":\"b5f05b09-3fd3-40d0-bf18-2fb3bb439538\",\"episodeId\":\"8d739ca6-a040-4763-9044-773a47aa75e1\",\"baselineSnapshotId\":\"c64bd074-a17e-44c7-8bd9-8201fc334282\",\"cutoff\":\"2026-01-01T00:00:00.000Z\",\"features\":[{\"id\":\"O01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O07\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O09\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O13\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O14\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O15\",\"value\":\"100\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O19\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O20\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O02\",\"value\":\"100000\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A16\",\"value\":\"10\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A17\",\"value\":\"3\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"}],\"evidence\":[{\"id\":\"fixture-evidence-001\",\"sourceId\":\"fixture-source\",\"sourceType\":\"FIXTURE\",\"retrievedAt\":\"2026-01-01T00:00:00.000Z\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"contentHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"adapterVersion\":\"fixture-v1\",\"accessMode\":\"LOCAL_DERIVED\",\"scope\":{\"provenance\":\"FIXTURE\",\"fixtureVersion\":1,\"calibratedForLiveUse\":false}}],\"result\":{\"checks\":[{\"checkId\":\"MG-01\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-02\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-03\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-04\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-05\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"CONTEXT\",\"requiredFor\":\"CONTEXT\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-06\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-07\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"FAIL\",\"reasonCode\":\"RULE_FAILED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-08\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-09\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-10\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-11\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"WARNING\",\"requiredFor\":\"WARNING\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-12\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REALIZATION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-13\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-14\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-15\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]}],\"thesisState\":\"INVALIDATED\",\"proposal\":\"EXIT_REVIEW\"},\"hash\":\"1780610feb7dddb4eee21048f9463ff7707bf0606cb9270bc126e00d36eaebc8\"}",
+   "hash": "1780610feb7dddb4eee21048f9463ff7707bf0606cb9270bc126e00d36eaebc8",
+   "semantic": "{\"schemaVersion\":1,\"policyVersion\":\"thesis-management-v0\",\"episode\":{\"id\":\"8d739ca6-a040-4763-9044-773a47aa75e1\",\"caseId\":\"b5f05b09-3fd3-40d0-bf18-2fb3bb439538\",\"baselineSnapshotId\":\"c64bd074-a17e-44c7-8bd9-8201fc334282\",\"thesis\":{\"support\":[{\"op\":\"eq\",\"feature\":\"O01\",\"value\":true,\"unit\":\"bool\"}],\"invalidation\":[{\"op\":\"eq\",\"feature\":\"O03\",\"value\":true,\"unit\":\"bool\"}],\"catalyst\":null,\"expiryAt\":null,\"onchainTraction\":null,\"externalTraction\":null,\"warning\":null,\"legs\":[]},\"createdAt\":\"2026-01-01T00:00:00.000Z\"},\"cutoff\":\"2026-01-01T00:00:00.000Z\",\"analysisKind\":\"FIXTURE\",\"features\":[{\"id\":\"O01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O07\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O09\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O13\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O14\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O15\",\"value\":\"100\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O19\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O20\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O02\",\"value\":\"100000\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A16\",\"value\":\"10\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A17\",\"value\":\"3\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"}],\"evidence\":[{\"id\":\"fixture-evidence-001\",\"sourceId\":\"fixture-source\",\"sourceType\":\"FIXTURE\",\"retrievedAt\":\"2026-01-01T00:00:00.000Z\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"contentHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"adapterVersion\":\"fixture-v1\",\"accessMode\":\"LOCAL_DERIVED\",\"scope\":{\"provenance\":\"FIXTURE\",\"fixtureVersion\":1,\"calibratedForLiveUse\":false}}],\"profile\":{\"id\":\"fixture-illustrative-uncalibrated\",\"sizeUsd\":\"10\",\"horizonSeconds\":3600,\"risk\":{\"maxTransferFeeBps\":\"100\",\"maxDirectControlShare\":\"0.2\",\"maxEntryImpactBps\":\"100\",\"maxExitImpactBps\":\"100\",\"maxRoundTripLossBps\":\"500\",\"maxRemovableLiquidityShare\":\"0.5\"},\"stage\":{\"ageBands\":[{\"name\":\"fixture-only\",\"minSeconds\":0,\"maxSeconds\":null}]}},\"position\":null,\"events\":[],\"stageInputs\":{\"circulatingMarketCapUsd\":\"90000\",\"tokenCreatedAt\":\"2025-12-31T23:00:00.000Z\"},\"result\":{\"checks\":[{\"checkId\":\"MG-01\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-02\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-03\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-04\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-05\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"CONTEXT\",\"requiredFor\":\"CONTEXT\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-06\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-07\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"FAIL\",\"reasonCode\":\"RULE_FAILED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-08\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-09\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-10\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-11\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"WARNING\",\"requiredFor\":\"WARNING\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-12\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REALIZATION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-13\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-14\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-15\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"UNKNOWN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"featureRefs\":[],\"evidenceRefs\":[]}],\"thesisState\":\"INVALIDATED\",\"proposal\":\"EXIT_REVIEW\"}}"
+  },
+  {
+   "id": "5b87306a-6b9d-4033-a8ff-54a408850e24",
+   "kind": "MANAGEMENT",
+   "payload": "{\"id\":\"5b87306a-6b9d-4033-a8ff-54a408850e24\",\"checklistKind\":\"MANAGEMENT\",\"caseId\":\"61b58376-a0c1-4f07-9786-169301c07b86\",\"episodeId\":\"b1126601-d243-416d-ba48-c6110bf83ff6\",\"baselineSnapshotId\":\"1c566f04-8a5a-4b5e-b648-7cb8a2d47281\",\"cutoff\":\"2026-01-01T00:00:00.000Z\",\"features\":[{\"id\":\"O01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O07\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O09\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O13\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O14\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O15\",\"value\":\"100\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O19\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O20\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A16\",\"value\":\"10\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A17\",\"value\":\"3\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"}],\"evidence\":[{\"id\":\"fixture-evidence-001\",\"sourceId\":\"fixture-source\",\"sourceType\":\"FIXTURE\",\"retrievedAt\":\"2026-01-01T00:00:00.000Z\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"contentHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"adapterVersion\":\"fixture-v1\",\"accessMode\":\"LOCAL_DERIVED\",\"scope\":{\"provenance\":\"FIXTURE\",\"fixtureVersion\":1,\"calibratedForLiveUse\":false}}],\"result\":{\"checks\":[{\"checkId\":\"MG-01\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-02\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-03\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-04\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-05\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"CONTEXT\",\"requiredFor\":\"CONTEXT\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-06\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-07\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-08\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-09\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-10\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-11\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"WARNING\",\"requiredFor\":\"WARNING\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-12\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REALIZATION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-13\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-14\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-15\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]}],\"thesisState\":\"VALIDATED\",\"proposal\":\"DCA_OUT_PROPOSED\",\"proposedQuantityAtomic\":\"400\",\"proposedLegId\":\"leg-1\"},\"hash\":\"d282426e00ef110025c84871a69bee7e4b88823dcae79c603f81108c97d6fe29\"}",
+   "hash": "d282426e00ef110025c84871a69bee7e4b88823dcae79c603f81108c97d6fe29",
+   "semantic": "{\"schemaVersion\":1,\"policyVersion\":\"thesis-management-v0\",\"episode\":{\"id\":\"b1126601-d243-416d-ba48-c6110bf83ff6\",\"caseId\":\"61b58376-a0c1-4f07-9786-169301c07b86\",\"baselineSnapshotId\":\"1c566f04-8a5a-4b5e-b648-7cb8a2d47281\",\"thesis\":{\"support\":[{\"op\":\"eq\",\"feature\":\"O01\",\"value\":true,\"unit\":\"bool\"}],\"invalidation\":[{\"op\":\"eq\",\"feature\":\"O03\",\"value\":false,\"unit\":\"bool\"}],\"catalyst\":null,\"expiryAt\":null,\"onchainTraction\":{\"op\":\"eq\",\"feature\":\"O02\",\"value\":true,\"unit\":\"bool\"},\"externalTraction\":{\"op\":\"eq\",\"feature\":\"A01\",\"value\":true,\"unit\":\"bool\"},\"warning\":null,\"legs\":[{\"id\":\"leg-1\",\"quantityBps\":4000,\"allRemaining\":false,\"trigger\":{\"op\":\"eq\",\"feature\":\"O02\",\"value\":true,\"unit\":\"bool\"}}]},\"createdAt\":\"2026-01-01T00:00:00.000Z\"},\"cutoff\":\"2026-01-01T00:00:00.000Z\",\"analysisKind\":\"FIXTURE\",\"features\":[{\"id\":\"O01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O07\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O09\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O13\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O14\",\"value\":\"10\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O15\",\"value\":\"100\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O19\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O20\",\"value\":\"0.1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A16\",\"value\":\"10\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A17\",\"value\":\"3\",\"unit\":\"count\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S01\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S02\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C03\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C04\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C05\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"O30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A06\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A21\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A22\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A23\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A24\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A25\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A26\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A27\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A28\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A29\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"A30\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S17\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S18\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S19\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"S20\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C07\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C09\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C13\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C14\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C15\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"},{\"id\":\"C16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"evidenceIds\":[\"fixture-evidence-001\"],\"applicability\":\"APPLICABLE\"}],\"evidence\":[{\"id\":\"fixture-evidence-001\",\"sourceId\":\"fixture-source\",\"sourceType\":\"FIXTURE\",\"retrievedAt\":\"2026-01-01T00:00:00.000Z\",\"availableAt\":\"2026-01-01T00:00:00.000Z\",\"contentHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"adapterVersion\":\"fixture-v1\",\"accessMode\":\"LOCAL_DERIVED\",\"scope\":{\"provenance\":\"FIXTURE\",\"fixtureVersion\":1,\"calibratedForLiveUse\":false}}],\"profile\":{\"id\":\"fixture-illustrative-uncalibrated\",\"sizeUsd\":\"10\",\"horizonSeconds\":3600,\"risk\":{\"maxTransferFeeBps\":\"100\",\"maxDirectControlShare\":\"0.2\",\"maxEntryImpactBps\":\"100\",\"maxExitImpactBps\":\"100\",\"maxRoundTripLossBps\":\"500\",\"maxRemovableLiquidityShare\":\"0.5\"},\"stage\":{\"ageBands\":[{\"name\":\"fixture-only\",\"minSeconds\":0,\"maxSeconds\":null}]}},\"position\":{\"id\":\"fixture-position-001\",\"caseId\":\"61b58376-a0c1-4f07-9786-169301c07b86\",\"mode\":\"HYPOTHETICAL\",\"initialQuantityAtomic\":\"1000\",\"initialCost\":\"100\",\"quoteCurrency\":\"FIXTURE_QUOTE\",\"decimals\":0,\"entryAt\":\"2026-01-01T00:00:00.000Z\",\"recordedAt\":\"2026-01-01T00:00:00.000Z\"},\"events\":[],\"stageInputs\":{\"circulatingMarketCapUsd\":\"90000\",\"tokenCreatedAt\":\"2025-12-31T23:00:00.000Z\"},\"result\":{\"checks\":[{\"checkId\":\"MG-01\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-02\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-03\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"SAFETY\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-04\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_EVIDENCE\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-05\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"CONTEXT\",\"requiredFor\":\"CONTEXT\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-06\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-07\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-08\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"VALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-09\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-10\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"TRACTION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-11\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"WARNING\",\"requiredFor\":\"WARNING\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-12\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REALIZATION\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-13\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-14\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"INVALIDATION\",\"requiredFor\":\"THESIS\",\"status\":\"NOT_APPLICABLE\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]},{\"checkId\":\"MG-15\",\"checklistKind\":\"MANAGEMENT\",\"managementRole\":\"REQUIRED_FOR_QUANTIFIED_PROPOSAL\",\"requiredFor\":\"QUANTIFIED_PROPOSAL\",\"status\":\"PASS\",\"reasonCode\":\"RULE_SATISFIED\",\"featureRefs\":[],\"evidenceRefs\":[]}],\"thesisState\":\"VALIDATED\",\"proposal\":\"DCA_OUT_PROPOSED\",\"proposedQuantityAtomic\":\"400\",\"proposedLegId\":\"leg-1\"}}"
+  }
+ ]
+}
