@@ -67,19 +67,34 @@ export function reduceLedger(position: PositionRecord, events: PositionEvent[], 
   return { initialQuantityAtomic: initial.toString(), remainingQuantityAtomic: remaining.toString(), knownCost: cost?.toString() ?? null, netCashFlow: cash?.toString() ?? null, soldByLeg, unreconciledSale, revision: JSON.stringify(effective.map(e => [e.id,e.recordedAt,e.effectiveAt])) };
 }
 
-export function proposeLeg(episode: ThesisEpisode, state: LedgerState, features: FeatureResult[], cutoff: string): { legId: string; quantityAtomic: string } | null {
-  if (state.unreconciledSale) return null;
-  const q0 = BigInt(state.initialQuantityAtomic), remaining = BigInt(state.remainingQuantityAtomic);
+/** Where the sell plan stands: the first leg not yet fully sold, in plan order, and whether its trigger is due. Later legs never jump the queue. */
+export type LegSelection =
+  | { kind: 'NO_PLAN' } | { kind: 'UNRECONCILED' } | { kind: 'EXHAUSTED' }
+  | { kind: 'NOT_DUE' | 'UNKNOWN'; legId: string }
+  | { kind: 'DUE'; legId: string; quantityAtomic: string | null };
+
+/**
+ * Walks legs in order, skipping legs whose original-quantity share is fully sold (an all-remaining leg once inventory is zero).
+ * Without a ledger nothing is sold yet; an unattributed sale makes the next leg unknowable. A due leg's quantity is null when
+ * there is no ledger or its unfilled share exceeds remaining inventory.
+ */
+export function nextLeg(episode: ThesisEpisode, state: LedgerState | null, features: FeatureResult[], cutoff: string): LegSelection {
+  if (!episode.thesis.legs.length) return { kind: 'NO_PLAN' };
+  if (state?.unreconciledSale) return { kind: 'UNRECONCILED' };
+  const q0 = state ? BigInt(state.initialQuantityAtomic) : 0n, remaining = state ? BigInt(state.remainingQuantityAtomic) : 0n;
   for (const leg of episode.thesis.legs) {
-    const alreadySold = BigInt(state.soldByLeg[leg.id] ?? '0');
-    const target = leg.allRemaining ? remaining : q0 * BigInt(leg.quantityBps ?? 0) / 10000n;
-    if (!leg.allRemaining && alreadySold >= target) continue;
+    const unfilled = !state ? null : leg.allRemaining ? remaining : q0 * BigInt(leg.quantityBps ?? 0) / 10000n - BigInt(state.soldByLeg[leg.id] ?? '0');
+    if (unfilled !== null && unfilled <= 0n) continue;
     const due = evaluatePredicate(leg.trigger, features, cutoff);
-    if (due !== 'TRUE') return null;
-    const unfilled = leg.allRemaining ? remaining : target - alreadySold;
-    if (unfilled <= 0n) continue;
-    if (unfilled > remaining) return null;
-    return { legId: leg.id, quantityAtomic: unfilled.toString() };
+    if (due !== 'TRUE') return { kind: due === 'FALSE' ? 'NOT_DUE' : 'UNKNOWN', legId: leg.id };
+    return { kind: 'DUE', legId: leg.id, quantityAtomic: unfilled !== null && unfilled <= remaining ? unfilled.toString() : null };
   }
-  return null;
+  return { kind: 'EXHAUSTED' };
+}
+
+export const legCandidate = (s: LegSelection): { legId: string; quantityAtomic: string } | null =>
+  s.kind === 'DUE' && s.quantityAtomic !== null ? { legId: s.legId, quantityAtomic: s.quantityAtomic } : null;
+
+export function proposeLeg(episode: ThesisEpisode, state: LedgerState, features: FeatureResult[], cutoff: string): { legId: string; quantityAtomic: string } | null {
+  return legCandidate(nextLeg(episode, state, features, cutoff));
 }
