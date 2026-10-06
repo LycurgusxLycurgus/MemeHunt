@@ -76,7 +76,7 @@ A probe showed the projection is load-bearing: compared raw, both v0 rows mismat
 
 ## Collaborator decisions for packet 2 (next)
 
-These were decided by the Checklist 2 owner on 2026-10-06 and are not implemented yet.
+These were decided by the Checklist 2 owner on 2026-10-06. Packet 2 implements them; see `handoffs/checklist-2-packet-2.md`, which also replaces `managementResultForVersion` with `evaluateManagementAs`.
 
 - **Ordered sell steps.** MG-12 will follow the same order as `proposeLeg`: skip fully sold (attributed) steps, and let the first unfinished step decide. It is due (PASS), not due (FAIL) or UNKNOWN by that step's trigger. Later steps never jump the queue, and no per-step independence flag will be added.
 - **Exhausted plan.** When every sell step is used up but inventory remains, the result is `REASSESS_REQUIRED` with a "plan finished" reason, prompting a successor plan. An exhausted plan never yields MAINTAIN_THESIS.
