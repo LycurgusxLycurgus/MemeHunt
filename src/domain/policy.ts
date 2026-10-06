@@ -5,32 +5,42 @@ import { proposeLeg, reduceLedger } from './ledger.js';
 
 export type Truth = 'TRUE' | 'FALSE' | 'UNKNOWN';
 export type StageInputs = { circulatingMarketCapUsd: string | null; tokenCreatedAt: string | null };
-const usable = (f: FeatureResult | undefined, cutoff: string) => !!f && f.quality === 'KNOWN' && f.applicability === 'APPLICABLE' && Date.parse(f.availableAt) <= Date.parse(cutoff) && f.value !== null;
+/** Truth plus the decisive features: the children that forced the value, or every child when all of them did. */
+export type PredicateExplanation = { truth: Truth; featureRefs: string[] };
+export const usable = (f: FeatureResult | undefined, cutoff: string) => !!f && f.quality === 'KNOWN' && f.applicability === 'APPLICABLE' && Date.parse(f.availableAt) <= Date.parse(cutoff) && f.value !== null;
 const lookup = (fs: FeatureResult[], id: string, cutoff: string) => { const f = fs.find(x => x.id === id); return usable(f, cutoff) ? f! : undefined; };
 const decimal = (v: string | boolean) => { if (typeof v !== 'string') throw new Error('PREDICATE_TYPE'); const d = new Decimal(v); if (!d.isFinite()) throw new Error('PREDICATE_NUMBER'); return d; };
-export function evaluatePredicate(ast: Predicate, features: FeatureResult[], cutoff: string): Truth {
+export function combineExplanations(op: 'all' | 'any', xs: PredicateExplanation[]): PredicateExplanation {
+  const has = (t: Truth) => xs.some(x => x.truth === t);
+  const truth: Truth = op === 'all' ? (has('FALSE') ? 'FALSE' : has('UNKNOWN') ? 'UNKNOWN' : 'TRUE') : (has('TRUE') ? 'TRUE' : has('UNKNOWN') ? 'UNKNOWN' : 'FALSE');
+  const forced = truth === 'UNKNOWN' || (op === 'all' && truth === 'FALSE') || (op === 'any' && truth === 'TRUE');
+  return { truth, featureRefs: [...new Set((forced ? xs.filter(x => x.truth === truth) : xs).flatMap(x => x.featureRefs))] };
+}
+export function explainPredicate(ast: Predicate, features: FeatureResult[], cutoff: string): PredicateExplanation {
   let nodes = 0;
-  function visit(p: Predicate, depth: number): Truth {
+  function visit(p: Predicate, depth: number): PredicateExplanation {
     if (++nodes > 64 || depth > 8) throw new Error('PREDICATE_LIMIT');
     if (p.op === 'all' || p.op === 'any') {
       if (!p.children.length) throw new Error('PREDICATE_EMPTY');
-      const xs = p.children.map(x => visit(x, depth + 1));
-      if (p.op === 'all') return xs.includes('FALSE') ? 'FALSE' : xs.includes('UNKNOWN') ? 'UNKNOWN' : 'TRUE';
-      return xs.includes('TRUE') ? 'TRUE' : xs.includes('UNKNOWN') ? 'UNKNOWN' : 'FALSE';
+      return combineExplanations(p.op, p.children.map(x => visit(x, depth + 1)));
     }
     if (!('feature' in p)) throw new Error('PREDICATE_SHAPE');
     if (!featureMetadata.some(x => x.id === p.feature)) throw new Error(`UNKNOWN_FEATURE:${p.feature}`);
     if (p.op !== 'eq') decimal(p.value);
     if (typeof p.value === 'boolean' && p.unit !== 'bool') throw new Error('PREDICATE_UNIT');
+    const leaf = (truth: Truth): PredicateExplanation => ({ truth, featureRefs: [p.feature] });
     const f = lookup(features, p.feature, cutoff);
-    if (!f) return 'UNKNOWN';
+    if (!f) return leaf('UNKNOWN');
     if (f.unit !== p.unit) throw new Error(`UNIT_MISMATCH:${p.feature}`);
-    if (p.op === 'eq') return typeof f.value === 'string' && typeof p.value === 'string' && /^(0|[1-9]\d*)(\.\d+)?$/.test(f.value) && /^(0|[1-9]\d*)(\.\d+)?$/.test(p.value) ? (new Decimal(f.value).eq(p.value) ? 'TRUE' : 'FALSE') : f.value === p.value ? 'TRUE' : 'FALSE';
+    if (p.op === 'eq') return leaf(typeof f.value === 'string' && typeof p.value === 'string' && /^(0|[1-9]\d*)(\.\d+)?$/.test(f.value) && /^(0|[1-9]\d*)(\.\d+)?$/.test(p.value) ? (new Decimal(f.value).eq(p.value) ? 'TRUE' : 'FALSE') : f.value === p.value ? 'TRUE' : 'FALSE');
     const actual = decimal(f.value!), expected = decimal(p.value);
     const result = p.op === 'lt' ? actual.lt(expected) : p.op === 'lte' ? actual.lte(expected) : p.op === 'gt' ? actual.gt(expected) : actual.gte(expected);
-    return result ? 'TRUE' : 'FALSE';
+    return leaf(result ? 'TRUE' : 'FALSE');
   }
   return visit(ast, 0);
+}
+export function evaluatePredicate(ast: Predicate, features: FeatureResult[], cutoff: string): Truth {
+  return explainPredicate(ast, features, cutoff).truth;
 }
 
 function boolRule(features: FeatureResult[], ids: string[], cutoff: string): 'PASS' | 'FAIL' | 'UNKNOWN' {
@@ -45,7 +55,7 @@ function numericLimit(features: FeatureResult[], id: string, limit: string | und
   return new Decimal(f.value).lte(new Decimal(limit)) ? 'PASS' : 'FAIL';
 }
 const combineNumeric = (statuses: Array<'PASS'|'FAIL'|'UNKNOWN'>): 'PASS'|'FAIL'|'UNKNOWN' => statuses.includes('FAIL') ? 'FAIL' : statuses.includes('UNKNOWN') ? 'UNKNOWN' : 'PASS';
-const predicateRefs = (p: Predicate): string[] => {
+export const predicateRefs = (p: Predicate): string[] => {
   if (p.op === 'all' || p.op === 'any') return p.children.flatMap(predicateRefs);
   if (!('feature' in p)) throw new Error('PREDICATE_SHAPE');
   return [p.feature];
