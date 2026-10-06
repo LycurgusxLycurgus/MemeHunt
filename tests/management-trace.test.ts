@@ -6,55 +6,20 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { decisionHash, Service } from '../src/app/service.js';
 import { featureMetadata } from '../src/domain/catalog.js';
-import type { FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from '../src/domain/contracts.js';
-import { MANAGEMENT_POLICY_VERSION, toLegacyManagementResult } from '../src/domain/management-trace.js';
-import { evaluateManagement, evaluatePredicate, explainPredicate, usable, type StageInputs } from '../src/domain/policy.js';
+import type { ManagementCheckResult, ManagementResult, Predicate } from '../src/domain/contracts.js';
+import { MANAGEMENT_POLICY_VERSION } from '../src/domain/management-trace.js';
+import { evaluateManagement, evaluatePredicate, explainPredicate, usable } from '../src/domain/policy.js';
 import {
   completeFixtureEntryFeatures as full, FIXTURE_CUTOFF as C, fixtureBundle, fixtureEpisode as ep, fixtureFeature as ff,
-  fixturePosition as pos, fixturePositionEvent as evt, fixtureStageObservations, illustrativeFixtureThesis, illustrativeUncalibratedProfile as prof,
+  fixtureStageObservations, illustrativeFixtureThesis, illustrativeUncalibratedProfile as prof,
 } from '../examples/fixtures.js';
+import { p, runAs, scenarios, stage, type Inputs } from './management-scenarios.js';
 
-const p = (feature: string, value: string | boolean, unit: string, op: 'eq' | 'gt' | 'lt' = 'eq'): Predicate => ({ op, feature, value, unit });
-const LATER = '2026-01-01T01:00:00.000Z';
-const stage: StageInputs = { circulatingMarketCapUsd: '90000', tokenCreatedAt: '2025-12-31T23:00:00.000Z' };
-const noStage: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null };
-const leg = (id: string, trigger: Predicate, quantityBps: number | null = 4000, allRemaining = false) => ({ id, quantityBps, allRemaining, trigger });
-const traction = (e: ThesisEpisode) => { e.thesis.onchainTraction = p('O02', true, 'bool'); e.thesis.externalTraction = p('A01', true, 'bool'); return e; };
-const dueLegEpisode = () => traction(ep(p('O01', true, 'bool'), p('O03', false, 'bool'), [leg('leg-1', p('O02', true, 'bool'))]));
-const unattributed = (): PositionEvent => { const { legId: _leg, ...rest } = evt(); return rest; };
-
-type Inputs = { episode: ThesisEpisode; features: FeatureResult[]; position: PositionRecord | null; events: PositionEvent[]; profile: Profile; cutoff: string; stageInputs: StageInputs };
-const inputs = (episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, stageInputs: StageInputs, cutoff = C): Inputs =>
-  ({ episode, features, position, events, profile, cutoff, stageInputs });
-const run = (i: Inputs) => evaluateManagement(i.episode, i.features, i.position, i.events, i.profile, i.cutoff, i.stageInputs);
+/** Packet 1 expectations are those of thesis-management-v5; the sell-order changes of v6 are covered in management-sell-order.test.ts. */
+const run = (i: Inputs) => runAs('thesis-management-v5', i);
 const row = (r: ManagementResult, id: string) => r.checks.find(c => c.checkId === id)!;
 const trace = (c: ManagementCheckResult) => ({ status: c.status, reasonCode: c.reasonCode, featureRefs: c.featureRefs, evidenceRefs: c.evidenceRefs, basisRefs: c.basisRefs });
 
-/** Rebuilds exactly the inputs captured in tests/fixtures/management-v0-golden.json (checked by inputsHash). */
-const scenarios: Record<string, () => Inputs> = {
-  'invalidated-examples': () => inputs(ep(p('O01', true, 'bool'), p('O03', true, 'bool')), full(), null, [], prof, stage),
-  'invalidated-despite-missing-support': () => inputs(ep(p('A01', true, 'bool'), p('O03', true, 'bool')), ['O03', 'O04', 'O05', 'O08', 'O10', 'O11'].map(id => ff(id, true)), null, [], prof, noStage),
-  'validated-no-plan': () => inputs(ep(p('A01', true, 'bool'), p('O01', true, 'bool')), full({ O01: false }), null, [], prof, stage),
-  'weakening': () => inputs(ep(p('A01', true, 'bool'), p('O02', false, 'bool')), full({ A01: false }), null, [], prof, stage),
-  'dca-proposed': () => inputs(dueLegEpisode(), full(), pos(), [], prof, stage),
-  'maintain': () => inputs(traction(ep(p('O01', true, 'bool'), p('O03', false, 'bool'), [leg('leg-1', p('O02', false, 'bool'))])), full(), pos(), [], prof, stage),
-  'unverifiable-missing-catalyst': () => { const e = dueLegEpisode(); e.thesis.catalyst = p('A30', true, 'bool'); return inputs(e, full().filter(f => f.id !== 'A30'), pos(), [], prof, stage); },
-  'safety-fail': () => inputs(ep(p('O01', true, 'bool'), p('O02', false, 'bool')), full({ O03: false }), null, [], prof, stage),
-  'exit-fail': () => inputs(ep(p('O01', true, 'bool'), p('O02', false, 'bool')), full({ O14: '500' }), null, [], prof, stage),
-  'risk-limits-missing': () => inputs(ep(p('O01', true, 'bool'), p('O02', false, 'bool')), full(), null, [], { ...prof, risk: {} }, stage),
-  'expired-with-catalyst-and-warning': () => {
-    const e = ep(p('O01', true, 'bool'), p('O02', false, 'bool'));
-    e.thesis.catalyst = p('A01', true, 'bool'); e.thesis.warning = p('A03', true, 'bool'); e.thesis.expiryAt = '2025-12-31T00:00:00.000Z';
-    return inputs(e, full(), null, [], prof, stage);
-  },
-  'future-available-support': () => inputs(ep(p('O01', true, 'bool'), p('O02', false, 'bool')), full().map(f => f.id === 'O01' ? { ...f, availableAt: '2026-01-01T00:00:01.000Z' } : f), null, [], prof, stage),
-  'unreconciled-sale': () => inputs(dueLegEpisode(), full(), pos(), [unattributed()], prof, stage, LATER),
-  'attributed-partial-sale': () => inputs(dueLegEpisode(), full(), pos(), [evt()], prof, stage, LATER),
-  'unknown-cost': () => inputs(dueLegEpisode(), full(), pos({ initialCost: null }), [], prof, stage),
-  'later-leg-unknown': () => inputs(traction(ep(p('O01', true, 'bool'), p('O03', false, 'bool'), [leg('leg-1', p('O02', true, 'bool')), leg('leg-2', p('A30', true, 'bool'), null, true)])), full().filter(f => f.id !== 'A30'), pos(), [], prof, stage),
-  'nested-invalidation-unknown': () => inputs(ep(p('O01', true, 'bool'), { op: 'any', children: [p('O02', false, 'bool'), { op: 'all', children: [p('A01', true, 'bool'), p('A30', true, 'bool')] }] }), full().filter(f => f.id !== 'A30'), null, [], prof, stage),
-  'nothing-known': () => inputs(ep(p('O01', true, 'bool'), p('O03', true, 'bool')), [], null, [], { id: 'unconfigured-live', risk: {}, stage: { ageBands: [] } }, noStage),
-};
 type GoldenRow = { id: string; kind: string; payload: string; hash: string; semantic: string };
 const golden = JSON.parse(readFileSync('tests/fixtures/management-v0-golden.json', 'utf8')) as {
   capturedFromCommit: string; policyVersion: string; scenarios: Array<{ name: string; inputsHash: string; result: ManagementResult }>; snapshots: GoldenRow[];
@@ -157,13 +122,13 @@ test('sell-plan rows name the due leg, the ledger revision, and what blocks a si
 
 test('every v0 golden scenario keeps its exact statuses, verdict and quantity, and every reference is real', () => {
   assert.equal(golden.policyVersion, 'thesis-management-v0');
-  assert.deepEqual(golden.scenarios.map(s => s.name).sort(), Object.keys(scenarios).sort());
+  assert.equal(golden.scenarios.length, 18);
   const known = new Set(featureMetadata.map(f => f.id));
   for (const g of golden.scenarios) {
     const i = scenarios[g.name]!();
     assert.equal(decisionHash(i), g.inputsHash, `${g.name}: rebuilt inputs differ from the captured inputs`);
+    assert.deepEqual(runAs('thesis-management-v0', i), g.result, g.name);
     const r = run(i);
-    assert.deepEqual(toLegacyManagementResult(r), g.result, g.name);
     for (const c of r.checks) {
       assert.ok(c.featureRefs.every(id => known.has(id)), `${g.name} ${c.checkId}: unknown feature ref`);
       const cited = new Set(c.featureRefs.flatMap(id => { const f = i.features.find(x => x.id === id); return f && usable(f, i.cutoff) ? f.evidenceIds : []; }));
@@ -193,7 +158,7 @@ test('saved v0 management snapshots still replay unchanged', () => {
   } finally { rmSync(temp.directory, { recursive: true, force: true }); }
 });
 
-test('new management snapshots record the traceable label and replay; unknown labels fail closed', () => {
+test('new management snapshots record the current label and replay; unknown labels fail closed', () => {
   const temp = temporaryDatabase();
   try {
     const service = new Service(temp.file);

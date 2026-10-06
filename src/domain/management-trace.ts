@@ -1,29 +1,43 @@
 import { createHash } from 'node:crypto';
-import type { EntryCheckResult, FeatureResult, ManagementBasisRef, ManagementCheckResult, ManagementResult, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
-import type { LedgerState } from './ledger.js';
-import { combineExplanations, explainPredicate, predicateRefs, usable, type PredicateExplanation, type StageInputs } from './policy.js';
+import type { EntryCheckResult, FeatureResult, ManagementBasisRef, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
+import type { LedgerState, LegSelection } from './ledger.js';
+import { combineExplanations, evaluateManagement, explainPredicate, predicateRefs, usable, type PredicateExplanation, type StageInputs } from './policy.js';
 
-/** Label recorded on new management snapshots: rows carry decisive refs, typed basis and specific reason codes. Pending owner confirmation. */
-export const MANAGEMENT_POLICY_VERSION = 'thesis-management-v5';
-/** Labels whose saved results predate traceability; they replay as the current result with explanations stripped. */
+/**
+ * Status-affecting management rules, fixed per recorded label so saved results replay with the rules that produced them.
+ * ALL_TRIGGERS: MG-12 is due if any leg is due and unknown if any leg is unknown. ORDERED: the first leg not yet fully sold decides.
+ */
+export type ManagementRules = { legSelection: 'ALL_TRIGGERS' | 'ORDERED'; exitReviewQuantity: boolean };
+/** Label recorded on new management snapshots. Pending owner confirmation, like v5. */
+export const MANAGEMENT_POLICY_VERSION = 'thesis-management-v6';
+export const MANAGEMENT_RULES: Readonly<Record<string, ManagementRules>> = {
+  // v5: traceable rows (Checklist 2 packet 1).
+  'thesis-management-v5': { legSelection: 'ALL_TRIGGERS', exitReviewQuantity: false },
+  // v6: MG-12 follows the sale proposal's leg order; EXIT_REVIEW states remaining quantity and position mode (packet 2).
+  'thesis-management-v6': { legSelection: 'ORDERED', exitReviewQuantity: true },
+};
+/** Labels whose saved results predate traceability; they replay with the v5 rules, then with explanations stripped. */
 export const LEGACY_MANAGEMENT_POLICY_VERSIONS: readonly string[] = ['thesis-management-v0'];
 
 /**
  * PASS → RULE_SATISFIED · NOT_APPLICABLE → NOT_CONFIGURED · FAIL → the row-specific code ·
- * UNKNOWN → the first missing prerequisite (evidence, setting, plan, stage input, position, cost, reconciliation, leg, exit proof).
+ * UNKNOWN → the first missing prerequisite (evidence, setting, plan, stage input, position, cost, reconciliation, leg, exit proof),
+ * or PLAN_EXHAUSTED when every leg is sold and a successor plan is needed.
  */
 export type ManagementReasonCode =
   | 'RULE_SATISFIED' | 'NOT_CONFIGURED'
   | 'SAFETY_RULE_FAILED' | 'EXIT_RULE_FAILED' | 'SUPPORT_CONTRADICTED' | 'INVALIDATION_TRIGGERED' | 'CATALYST_CONTRADICTED'
   | 'TRACTION_NOT_MET' | 'WARNING_TRIGGERED' | 'TRIGGER_NOT_DUE' | 'HORIZON_EXPIRED'
   | 'INSUFFICIENT_EVIDENCE' | 'POLICY_PARAMETER_MISSING' | 'PLAN_UNSPECIFIED' | 'BASELINE_MISSING' | 'STAGE_INPUT_MISSING'
-  | 'POSITION_MISSING' | 'COST_UNKNOWN' | 'UNRECONCILED_SALE' | 'NO_ELIGIBLE_LEG' | 'EXIT_NOT_CONFIRMED';
+  | 'POSITION_MISSING' | 'COST_UNKNOWN' | 'UNRECONCILED_SALE' | 'NO_ELIGIBLE_LEG' | 'EXIT_NOT_CONFIRMED' | 'PLAN_EXHAUSTED';
 type Status = ManagementCheckResult['status'];
 export type RowTrace = { reasonCode: ManagementReasonCode; featureRefs: string[]; evidenceRefs: string[]; basisRefs: ManagementBasisRef[] };
 export type TraceInputs = {
   episode: ThesisEpisode; features: FeatureResult[]; profile: Profile; cutoff: string; stageInputs: StageInputs;
   stage: { capBand: string; ageBand: string | null }; entryChecks: EntryCheckResult[];
   position: PositionRecord | null; ledger: LedgerState | null; candidate: { legId: string; quantityAtomic: string } | null;
+  /** The ordered leg selection when MG-12 was decided by it (ORDERED rules); null under ALL_TRIGGERS. */
+  legSelection: LegSelection | null;
   statuses: Record<string, Status>;
 };
 
@@ -91,11 +105,21 @@ export function traceManagementRows(x: TraceInputs): Record<string, RowTrace> {
 
   function triggerRow(): RowTrace {
     if (!t.legs.length) return row('PLAN_UNSPECIFIED', [], legsField);
+    if (x.legSelection) return orderedTriggerRow(x.legSelection);
     const legs = t.legs.map(l => ({ id: l.id, e: explain(l.trigger) }));
     const status = s['MG-12'];
     const decisive = status === 'UNKNOWN' ? legs.filter(l => l.e.truth === 'UNKNOWN') : status === 'PASS' ? legs.filter(l => l.e.truth === 'TRUE') : legs;
     const code: ManagementReasonCode = status === 'PASS' ? 'RULE_SATISFIED' : status === 'FAIL' ? 'TRIGGER_NOT_DUE' : 'INSUFFICIENT_EVIDENCE';
     return row(code, [...new Set(decisive.flatMap(l => l.e.featureRefs))], decisive.map(l => basis('EXIT_LEG', l.id)));
+  }
+
+  function orderedTriggerRow(next: LegSelection): RowTrace {
+    if (next.kind === 'UNRECONCILED') return row('UNRECONCILED_SALE', [], [...positionRef, ...ledgerRevision]);
+    if (next.kind === 'EXHAUSTED') return row('PLAN_EXHAUSTED', [], [...t.legs.map(l => basis('EXIT_LEG', l.id)), ...ledgerRevision]);
+    if (next.kind === 'NO_PLAN') return row('PLAN_UNSPECIFIED', [], legsField);
+    const trigger = explain(t.legs.find(l => l.id === next.legId)!.trigger);
+    const code: ManagementReasonCode = next.kind === 'DUE' ? 'RULE_SATISFIED' : next.kind === 'NOT_DUE' ? 'TRIGGER_NOT_DUE' : 'INSUFFICIENT_EVIDENCE';
+    return row(code, trigger.featureRefs, [basis('EXIT_LEG', next.legId), ...ledgerRevision]);
   }
 
   function quantityRow(): RowTrace {
@@ -145,9 +169,13 @@ export function toLegacyManagementResult(result: ManagementResult): ManagementRe
   };
 }
 
-/** Shapes a freshly computed result the way the snapshot's recorded policy version produced it; unknown versions fail closed. */
-export function managementResultForVersion(policyVersion: unknown, result: ManagementResult): ManagementResult {
-  if (policyVersion === MANAGEMENT_POLICY_VERSION) return result;
-  if (typeof policyVersion === 'string' && LEGACY_MANAGEMENT_POLICY_VERSIONS.includes(policyVersion)) return toLegacyManagementResult(result);
-  throw new Error('UNSUPPORTED_POLICY_VERSION');
+type ManagementInputs = [episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs?: StageInputs];
+
+/** Evaluates management with the rules and result shape of a recorded label; unknown labels fail closed. */
+export function evaluateManagementAs(policyVersion: unknown, ...[episode, features, position, events, profile, cutoff, stageInputs]: ManagementInputs): ManagementResult {
+  const legacy = typeof policyVersion === 'string' && LEGACY_MANAGEMENT_POLICY_VERSIONS.includes(policyVersion);
+  const rules = legacy ? MANAGEMENT_RULES['thesis-management-v5'] : typeof policyVersion === 'string' && Object.hasOwn(MANAGEMENT_RULES, policyVersion) ? MANAGEMENT_RULES[policyVersion] : undefined;
+  if (!rules) throw new Error('UNSUPPORTED_POLICY_VERSION');
+  const result = evaluateManagement(episode, features, position, events, profile, cutoff, stageInputs, rules);
+  return legacy ? toLegacyManagementResult(result) : result;
 }

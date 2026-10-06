@@ -1,8 +1,8 @@
 import { Decimal } from 'decimal.js';
 import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
 import { entryDefinitions, managementDefinitions, featureMetadata } from './catalog.js';
-import { proposeLeg, reduceLedger } from './ledger.js';
-import { traceManagementRows } from './management-trace.js';
+import { legCandidate, nextLeg, reduceLedger } from './ledger.js';
+import { MANAGEMENT_POLICY_VERSION, MANAGEMENT_RULES, traceManagementRows, type ManagementRules } from './management-trace.js';
 
 export type Truth = 'TRUE' | 'FALSE' | 'UNKNOWN';
 export type StageInputs = { circulatingMarketCapUsd: string | null; tokenCreatedAt: string | null };
@@ -105,7 +105,7 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
 }
 
 const truthStatus = (truth: Truth, falseMeansFail = true): ManagementCheckResult['status'] => truth === 'UNKNOWN' ? 'UNKNOWN' : truth === 'TRUE' ? (falseMeansFail ? 'PASS' : 'FAIL') : (falseMeansFail ? 'FAIL' : 'PASS');
-export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }): ManagementResult {
+export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }, rules: ManagementRules = MANAGEMENT_RULES[MANAGEMENT_POLICY_VERSION]!): ManagementResult {
   const t = episode.thesis;
   const support = t.support.map(p => evaluatePredicate(p, features, cutoff));
   const invalidation = t.invalidation.map(p => evaluatePredicate(p, features, cutoff));
@@ -118,11 +118,13 @@ export function evaluateManagement(episode: ThesisEpisode, features: FeatureResu
   const stage = resolveStage(stageInputs.circulatingMarketCapUsd,stageInputs.tokenCreatedAt,cutoff,profile);
   const knownPosition = position && Date.parse(position.entryAt) <= Date.parse(cutoff) && Date.parse(position.recordedAt) <= Date.parse(cutoff) ? position : null;
   const ledger = knownPosition ? reduceLedger(knownPosition, events, cutoff) : null;
-  const candidate = ledger ? proposeLeg(episode, ledger, features, cutoff) : null;
+  const next = nextLeg(episode, ledger, features, cutoff);
+  const candidate = legCandidate(next);
   const legTruths = t.legs.map(l => evaluatePredicate(l.trigger, features, cutoff));
-  const due = legTruths.includes('TRUE');
-  const triggerStatus: ManagementCheckResult['status'] = !t.legs.length || legTruths.includes('UNKNOWN') ? 'UNKNOWN' : due ? 'PASS' : 'FAIL';
-  const rules: Record<string, ManagementCheckResult['status']> = {
+  const triggerStatus: ManagementCheckResult['status'] = rules.legSelection === 'ORDERED'
+    ? (next.kind === 'DUE' ? 'PASS' : next.kind === 'NOT_DUE' ? 'FAIL' : 'UNKNOWN')
+    : !t.legs.length || legTruths.includes('UNKNOWN') ? 'UNKNOWN' : legTruths.includes('TRUE') ? 'PASS' : 'FAIL';
+  const statuses: Record<string, ManagementCheckResult['status']> = {
     'MG-01': episode.baselineSnapshotId ? 'PASS' : 'UNKNOWN', 'MG-02': safety, 'MG-03': exit,
     'MG-04': [...new Set([...t.support,...t.invalidation,...(t.catalyst ? [t.catalyst] : [])].flatMap(predicateRefs))].some(id => !lookup(features,id,cutoff)) ? 'UNKNOWN' : 'PASS',
     'MG-05': stage.capBand !== 'UNKNOWN' && stage.ageBand ? 'PASS' : 'UNKNOWN',
@@ -135,10 +137,14 @@ export function evaluateManagement(episode: ThesisEpisode, features: FeatureResu
     'MG-14': t.expiryAt ? (Date.parse(cutoff) >= Date.parse(t.expiryAt) ? 'FAIL' : 'PASS') : 'NOT_APPLICABLE',
     'MG-15': candidate && exit === 'PASS' ? 'PASS' : 'UNKNOWN',
   };
-  const trace = traceManagementRows({ episode, features, profile, cutoff, stageInputs, stage, entryChecks, position: knownPosition, ledger, candidate, statuses: rules });
-  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: rules[d.checkId] ?? 'UNKNOWN', ...trace[d.checkId] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
+  const trace = traceManagementRows({ episode, features, profile, cutoff, stageInputs, stage, entryChecks, position: knownPosition, ledger, candidate, legSelection: rules.legSelection === 'ORDERED' ? next : null, statuses });
+  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: statuses[d.checkId] ?? 'UNKNOWN', ...trace[d.checkId] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const thesisUnknown = checks.some(c => c.requiredFor === 'THESIS' && c.status === 'UNKNOWN');
-  const thesisState: ManagementResult['thesisState'] = safety === 'FAIL' || exit === 'FAIL' || invalidationStatus === 'TRUE' || rules['MG-14'] === 'FAIL' ? 'INVALIDATED' : thesisUnknown ? 'UNVERIFIABLE' : supportStatus === 'FALSE' || rules['MG-08'] === 'FAIL' ? 'WEAKENING' : 'VALIDATED';
-  const proposal: ManagementResult['proposal'] = thesisState === 'INVALIDATED' ? 'EXIT_REVIEW' : thesisState === 'UNVERIFIABLE' ? 'REASSESS_REQUIRED' : thesisState === 'WEAKENING' ? 'REDUCE_REVIEW' : rules['MG-09'] === 'PASS' && rules['MG-10'] === 'PASS' && triggerStatus === 'PASS' && rules['MG-13'] === 'PASS' && rules['MG-15'] === 'PASS' ? 'DCA_OUT_PROPOSED' : triggerStatus === 'FAIL' && rules['MG-09'] !== 'UNKNOWN' && rules['MG-10'] !== 'UNKNOWN' ? 'MAINTAIN_THESIS' : 'REASSESS_REQUIRED';
-  return { checks, thesisState, proposal, ...(proposal === 'DCA_OUT_PROPOSED' && candidate ? { proposedQuantityAtomic: candidate.quantityAtomic, proposedLegId: candidate.legId } : {}) };
+  const thesisState: ManagementResult['thesisState'] = safety === 'FAIL' || exit === 'FAIL' || invalidationStatus === 'TRUE' || statuses['MG-14'] === 'FAIL' ? 'INVALIDATED' : thesisUnknown ? 'UNVERIFIABLE' : supportStatus === 'FALSE' || statuses['MG-08'] === 'FAIL' ? 'WEAKENING' : 'VALIDATED';
+  const proposal: ManagementResult['proposal'] = thesisState === 'INVALIDATED' ? 'EXIT_REVIEW' : thesisState === 'UNVERIFIABLE' ? 'REASSESS_REQUIRED' : thesisState === 'WEAKENING' ? 'REDUCE_REVIEW' : statuses['MG-09'] === 'PASS' && statuses['MG-10'] === 'PASS' && triggerStatus === 'PASS' && statuses['MG-13'] === 'PASS' && statuses['MG-15'] === 'PASS' ? 'DCA_OUT_PROPOSED' : triggerStatus === 'FAIL' && statuses['MG-09'] !== 'UNKNOWN' && statuses['MG-10'] !== 'UNKNOWN' ? 'MAINTAIN_THESIS' : 'REASSESS_REQUIRED';
+  return {
+    checks, thesisState, proposal,
+    ...(proposal === 'DCA_OUT_PROPOSED' && candidate ? { proposedQuantityAtomic: candidate.quantityAtomic, proposedLegId: candidate.legId } : {}),
+    ...(proposal === 'EXIT_REVIEW' && rules.exitReviewQuantity && knownPosition && ledger ? { remainingQuantityAtomic: ledger.remainingQuantityAtomic, positionMode: knownPosition.mode } : {}),
+  };
 }
