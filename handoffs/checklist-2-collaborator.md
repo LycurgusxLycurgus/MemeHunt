@@ -118,6 +118,31 @@ It copies an explicit source allowlist to a fresh temporary directory, runs both
 
 **Entry: UNKNOWN = 18; INCOMPLETE — ZERO-UNKNOWN GATE NOT MET. Management: REAL_CA management = NOT_RUN; INCOMPLETE.** The supplied reference resolves the previous absence of local Checklist 1 code; it does not resolve the missing hosted credentials, known entry rejection or remaining management integration requirements.
 
+#### Free public acquisition attempt (2026-10-08)
+
+The user authorized trying free collection without additional credentials or operator inputs. `src/providers/public-research.ts` now acquires a bounded set of DEX-linked public pages, plus an explicitly linked same-origin documentation page. It retains exact response bodies, content hashes, retrieval times and discovery edges. It does not create a reviewed import, supply policy booleans, certify account identity, interpret source claims as on-chain truth or change any saved evaluation. Credentials and hosted providers are not required. Requests are HTTPS-only, capped at four unique page leads, 500,000 bytes per response and two redirects; nonpublic destination addresses, oversize responses and outages remain explicit failures. Discovery is limited to exact base-token/chain matches, so a quote-side pair cannot import the other token's website.
+
+At `2026-10-08T21:03:47.114Z`, the collector ran on the supplied mint. The DEX endpoint and three pages returned HTTP 200:
+
+| Source | Exact mint text in retained response | Qualification |
+|---|---|---|
+| `https://parasiteonsol.fun/` | No | UNREVIEWED discovery lead |
+| `https://x.com/parasitedotfun` | Yes | UNREVIEWED binding lead; not authenticated identity or a complete post sample |
+| `https://parasiteonsol.fun/docs` | No | UNREVIEWED documentation lead |
+
+No source cap was reached. This describes the bounded fetched leads only; it does not establish complete social/search coverage. The website and docs discuss the project's protocol, but neither retained response included this mint. The X response's literal address match is saved without promoting it to semantic or independent identity qualification. No wallet connection, signing, trade or paid service was used. Raw pages and local receipts remain outside the repository.
+
+Validation: typecheck exit 0; **80/80 tests**, fail 0. The four new tests cover hash-preserved receipts without false qualification, rejected quote-side/wrong-chain discovery, private-host redirects/oversize responses and explicit source caps. Existing management, execution, ledger and replay tests remain unchanged and pass. The read-only Checklist 1 reference is unchanged.
+
+```sh
+npm run build
+node scripts/free-public-research.mjs --ca <user-supplied-Solana-mint>
+```
+
+The standalone command saves an isolated local `public-research.json`. The reference runner also supports `--free-sources` after its fresh entry run. `--inspect` remains offline and does not collect new sources. The new acquisition output deliberately has `qualifiedFeatures: []` and `completeSocialSample: false`; it is not a fabricated `human-adjudication-v1` packet or an automatic substitute for the owner's independent reviews.
+
+**Additional checklist rows resolved by this attempt: 0.** The most recent saved entry result remains 13 PASS, 2 FAIL and 18 UNKNOWN; it was not silently re-evaluated with unqualified pages. This narrows the earlier suggestion that free collection could close these rows: it can acquire more raw evidence, but the supplied reference's remaining required narrative/social/data rows require qualified review, and its advisory rows also lack named detectors. Paid acquisition is not inherently necessary, but acquisition alone is insufficient. The two known entry failures were not weakened and no management baseline was fabricated. **ZERO-UNKNOWN GATE NOT MET.**
+
 ### What changed
 
 **v6 golden (§A).** Before any source edit, the `9d8c218` build was run on all 28 management scenarios and 4 persisted v6 rows. Their hashes and summaries are stored in `tests/fixtures/management-v6-golden.json`. A test re-evaluates every scenario and replays every row against that file. It was not regenerated afterwards, and the v0/v5 goldens were not touched.

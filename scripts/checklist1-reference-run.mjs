@@ -142,6 +142,12 @@ async function main() {
     const live = command('live-entry', process.execPath, liveArgs, run);
     writeFileSync(join(run, 'live-entry.json'), live.stdout);
     await inspect(run);
+    if (args.includes('--free-sources')) {
+      const { collectPublicResearch } = await import(pathToFileURL(join(repo, 'dist/src/providers/public-research.js')));
+      const candidates = await collectPublicResearch({ chain: 'solana', address: ca });
+      writeFileSync(join(run, 'public-research.json'), JSON.stringify(candidates, null, 2) + '\n', { mode: 0o600 });
+      console.log(JSON.stringify({ publicSources: candidates.sources, qualification: 'UNREVIEWED', qualifiedFeatures: candidates.qualifiedFeatures }));
+    }
   } finally {
     if (!same(before, fingerprint(reference))) throw new Error('REFERENCE_CHANGED_DURING_RUN');
     console.log('Reference contents unchanged. Receipts and database retained in RUN for inspection.');
