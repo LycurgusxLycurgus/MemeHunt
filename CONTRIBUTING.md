@@ -26,6 +26,47 @@ The owner's current branch is `codex/entry-workflow-production`, with substantia
 
 Four chain identifiers do not imply complete live coverage. Solana, BSC, Base and Robinhood remain the intended first coverage set; unsupported chains and venues report partial support. Current local EVM acquisition is explicitly unimplemented. Free data first and configurable limits remain the direction. Acquisition failure is not a token-level negative finding.
 
+## Current Checklist 2 checkpoint and round-two gates (2026-10-06)
+
+The collaborator branch `codex/checklist-2` was reviewed at **9d8c218781c3dfd3b781805772179ccc79d6afd9**, descended from the base above. Packet 1 implements management row traceability (v5); packet 2 implements ordered unsold-leg selection and exit-review quantity/mode (v6). Isolated Node24.15.0 typecheck and all55 tests passed; CLI replay was identical and18 original v0 golden scenarios matched a separately built base. These are offline results, not combined live acceptance.
+
+The full scope is approximately **about55% complete under the 12/22 requirements rubric** in the [round-two handoff](handoffs/checklist-2-collaborator.md). That estimate is neither effort remaining nor permission to release. The two delivered packets are implemented; candidate-quantity proof is only proposed, successor/quote-binding accounting and output context have gaps, and owner-live integration remains unverified.
+
+The existing handoff file is the canonical owner-to-collaborator instruction for round two. Do not create another competing snippet/packet summary. The branch's `handoffs/checklist-2-handoff.md` and packet documents describe prior delivery; reconcile their instructions with the new handoff before continuing. In particular, adding owner v1-v4 labels to a legacy list is not sufficient replay compatibility, and hashing the existing metadata-only ledger revision is not sufficient execution-proof binding.
+
+The collaborator owns the next deterministic management work: versioned execution-basis fingerprint; explicit carried/replaced successor-plan reconciliation; strict quantity-bound MG-15 proof consumption; truthful manual/hypothetical output; stage/longitudinal management logic and tests. Checklist 1 owns supported proof collection, receipt qualification and real cap/creation/volume/attention observations. The owner coordinates shared schemas, Service/CLI and historical dispatch. Agree the precise shared contract, then continue independent code; do not wait for an unpublished live adapter to build truthful UNKNOWN paths and deterministic fixtures.
+
+Keep already-used management v5/v6 semantics and reserve v1-v4 for the owner's historical versions. Use a distinct new version for changed behavior; preserve old result shape, qualification inputs, predicate/ledger behavior and hashes. The owner keeps its current v0-v4 replay route until equivalence is proven. A new version number alone is not compatibility protection.
+
+Release/integration gates now include:
+
+- MG-15 cannot PASS on entry-sized EXE features alone. Bind actual candidate quantity, units, token/case/position/episode, reconciled execution basis, supported evidence, costs and quote expiry. MG-03 separately needs proof for its relevant remaining/scenario quantity.
+- The execution-basis fingerprint covers decision-relevant initial position and effective correction/event payloads. Existing ledger revision can remain unchanged despite changed inventory/cost; keep it only for legacy compatibility, not new quote certification.
+- Successor plans explicitly reconcile original quantity, remaining inventory and carried fills. Fresh leg IDs alone are not a rebase; reused IDs alone are not consent to inherit consumption. Ambiguity blocks quantified proposals without hiding known invalidation.
+- Every position-derived quantity/financial estimate names MANUAL_REPORTED or HYPOTHETICAL, with basis and units. This applies to DCA as well as EXIT_REVIEW.
+- Imported claimed proofs cannot authenticate live execution. Missing/stale/conflicting/unsupported evidence remains explicit. Positive candidate proof cannot override known safety failure.
+- The combined tree must retain owner schema-v2 qualified features/details/social inputs, live methods and historical v0-v4 replay, alongside collaborator v5/v6/new-policy results. Run combined tests after deliberate shared-file reconciliation.
+
+This review neither merged nor published either workstream. Do not erase the owner's active social work or overwrite newer shared files with old-base copies.
+
+### Mandatory real-CA acceptance and pillar reporting
+
+Production-quality delivery requires **ZERO UNKNOWN rows**, not zero unexplained unknowns, before Checklist 2 can be declared complete on the agreed real-CA acceptance cases. Report all15 MG rows from a coherent fresh snapshot, grouped into: on-chain integrity/sellability/traction (02/03/09); attention/thesis durability (06/08/11); social/external confirmation (10); baseline/coherence/stage/invalidation/horizon (01/04/05/07/14); position/ordered realization/proposal feasibility (12/13/15). Cross-pillar evidence dependencies remain explicit.
+
+Every applicable row must resolve PASS or FAIL; genuine policy/thesis-defined NOT_APPLICABLE is separate. Missing evidence/collectors/quote/position basis may not be relabeled N/A or forced known. All rows, including context, count toward the zero-UNKNOWN gate. A known negative result is valid evidence; completion is not a demand for a favorable token verdict.
+
+The collaborator's NEXT delivery must include actual chain+CA, baseline/current snapshot identifiers/times/hashes, profile/policy versions, position mode, source evidence, per-pillar counts, the full15-row results, actual fresh-run/reopen/replay evidence, and explicit gate status. Record implementation, offline testing and live-known status separately. Do not call a real-address fixture a live test, cherry-pick rows from different snapshots, weaken predicates, or silently change acceptance cases to reach zero. Fixed acceptance cases start from the owner's existing Checklist 1 real CAs; get missing identifiers from the owner if unavailable.
+
+If any row remains UNKNOWN, report **INCOMPLETE — ZERO-UNKNOWN GATE NOT MET** with exact cause, next action and responsible workstream. If integration prevents a real run, report NOT_RUN/INCOMPLETE, not invented row counts or "finished." Checklist 1 owns source/proof production; Checklist 2 owns deterministic consumers, complete reporting and coordinated acceptance. No trade, fabricated baseline, new paid service or endless retry is authorized. The full case selection, truthfulness and delivery contract is in `handoffs/checklist-2-collaborator.md`.
+
+### Holding, urgent exit and timed DCA-out responsibility
+
+Checklist 2 must validate/invalidate the saved Checklist 1 thesis and give the management decision: continue holding, make a specified partial reduction, or recommend exiting NOW on invalidation. If holding any remainder, expose how DCA-out is planned and for how long, including ordered quantities/basis, triggers, timing/deadlines, duration/start/end, next reassessment and immediate-invalidation override. The user's 3-hour/day/week/month examples require duration support, not invented universal strategy thresholds. The current branch's expiry/ordered-leg foundation is not this complete temporal plan.
+
+Checklist 2 owns deterministic plan selection/arithmetic/clock behavior and outcome tests; Checklist 1 supplies qualified stage, narrative/attention/social and on-chain inputs. Any recommendation to alter the frozen thesis horizon requires a visible versioned successor/reconciled plan. Missing required inputs still fail the zero-UNKNOWN acceptance gate. Conditional future actions are not claimed future fills or guaranteed returns. Phase 1 remains manual recommendations and position reports; no automatic trading or monitoring is implied.
+
+The next collaborator result must include the actual HOLD/reduction/EXIT_NOW decision, DCA-out schedule and justified horizon per real CA, alongside all pillar/row evidence and a source-to-implementation/test traceability table covering accepted Phase 1 requirements in plans06/07/09. No claim of full original-transcript implementation without verified coverage; keep explicit future/research exclusions distinct from unfinished Phase 1 work. The revised handoff contains the full schedule schema and temporal acceptance cases. The initial60% estimate becomes about55% because this explicitly required but missing temporal-plan area adds0/2 to the rubric; this is added scope accounting, not a regression.
+
 ## Ownership by behavior
 
 **Checklist 1 owner (project owner)** owns entry rules/verdicts; on-chain, attention and social acquisition/qualification; existing `src/providers/`; `src/app/live.ts`; entry projection/configuration/reporting; and entry/provider/semantic tests. This includes finishing the active social cycle. The owner temporarily coordinates shared-file integration while the newer tree remains unpublished.
@@ -68,15 +109,15 @@ Preserve these invariants:
 
 Current local `evaluateManagement` has trailing qualification-mode and social arguments absent from the published base. Current Service dispatches management v0 through v4 with qualified features. Do not allocate those names independently or drop those arguments during merge. Agree a distinct new management policy identifier and retain the complete historical dependency behavior, including ledger/predicate semantics where needed.
 
-## Start from the older commit in a separate clone
+## Continue the reviewed Checklist 2 branch in a separate clone
 
-Use an independent clone, dependencies and data directory. Do not switch, reset or clean the owner's dirty checkout. These commands are for the collaborator's new clone:
+Use an independent clone, dependencies and data directory. Do not switch, reset or clean the owner's dirty checkout. The collaborator with an existing branch continues from their work after checking status; do not reset it to the old base. These commands are only for a new isolated clone reproducing the reviewed checkpoint:
 
 ```powershell
-git clone https://github.com/LycurgusxLycurgus/MemeHunt.git MemeHunt-checklist2
+git clone --branch codex/checklist-2 https://github.com/LycurgusxLycurgus/MemeHunt.git MemeHunt-checklist2
 Set-Location MemeHunt-checklist2
 git fetch origin
-git switch -c codex/checklist-2 27273cff16b334c6ba54187bd0170efad611f446
+git switch -c codex/checklist-2-round-2 9d8c218781c3dfd3b781805772179ccc79d6afd9
 git rev-parse HEAD
 npm ci
 npm run typecheck
