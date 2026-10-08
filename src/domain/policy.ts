@@ -1,5 +1,5 @@
 import { Decimal } from 'decimal.js';
-import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
+import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
 import { entryDefinitions, managementDefinitions, featureMetadata } from './catalog.js';
 import { proposeLeg, reduceLedger } from './ledger.js';
 
@@ -63,7 +63,8 @@ export function resolveStage(cap: string | null, tokenCreatedAt: string | null, 
   return { capBand, ageBand };
 }
 
-export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string): EntryResult {
+export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false): EntryResult {
+  const socialUsable=(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&social&&Date.parse(social.availableAt)<=Date.parse(cutoff)&&Date.parse(social.end)<=Date.parse(cutoff)&&Date.parse(social.start)<Date.parse(social.end)&&Date.parse(cutoff)-Date.parse(social.availableAt)<=900000;
   const checks: EntryCheckResult[] = entryDefinitions.map(d => {
     let status: EntryCheckResult['status'] = boolRule(features, d.featureIds, cutoff);
     if (d.checkId === 'CTX-01') status = !profile.sizeUsd || !profile.horizonSeconds || ['maxTransferFeeBps','maxDirectControlShare','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps','maxRemovableLiquidityShare'].some(k => profile.risk[k] === undefined) ? 'UNKNOWN' : status;
@@ -77,10 +78,21 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
     }
     if (d.checkId === 'ATT-01') {
       const posts = lookup(features, 'A16', cutoff), authors = lookup(features, 'A17', cutoff);
-      status = posts && authors && typeof posts.value === 'string' && typeof authors.value === 'string' && new Decimal(posts.value).gte(10) && new Decimal(authors.value).gte(3) ? 'PASS' : 'UNKNOWN';
+      const measured=posts&&authors&&typeof posts.value==='string'&&typeof authors.value==='string'&&(attentionPolicy==='LEGACY'||lookup(features,'A15',cutoff)?.value===true);
+      status = measured ? new Decimal(posts.value as string).gte(10)&&new Decimal(authors.value as string).gte(3)?'PASS':attentionPolicy!=='LEGACY'?'FAIL':'UNKNOWN' : 'UNKNOWN';
+    }
+    if (d.checkId === 'CAN-02' && (attentionPolicy==='QUALIFIED_V2'||attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')) status = boolRule(features,['A14'],cutoff);
+    if((attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL'){
+      if(d.checkId==='SOC-01')status=socialUsable?boolRule(features,['S01'],cutoff):'UNKNOWN';
+      if(d.checkId==='SOC-02')status=socialUsable?combineNumeric([boolRule(features,['S02','S04','S05','S06'],cutoff),social.lineageComplete?'PASS':'UNKNOWN']):'UNKNOWN';
+      if(d.checkId==='SOC-03')status=!socialUsable||!social.postCorpusObserved||!social.sampleComplete?'UNKNOWN':social.accountUpperBound!==null&&social.accountUpperBound<3?'FAIL':!social.lineageComplete||social.accountUpperBound===null||social.independentGroupCount===null||social.independentCommunityCount===null?'UNKNOWN':social.accountUpperBound>=3&&social.independentGroupCount>=2&&social.independentCommunityCount>=2?'PASS':'FAIL';
+    }
+    if(attentionPolicy==='QUALIFIED_V4'&&['SOC-01','SOC-02'].includes(d.checkId)){
+      const judgment=d.checkId==='SOC-01'?social?.identityReview:social?.integrityReview;
+      status=!socialUsable||!judgment||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';
     }
     if (d.checkId === 'ATT-02') { const a = boolRule(features,['A18'],cutoff), s = boolRule(features,['S10'],cutoff); status = a === 'PASS' || s === 'PASS' ? 'PASS' : a === 'FAIL' && s === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
-    if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL') status = 'UNKNOWN';
+    if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL' && !(shared&&d.checkId.startsWith('DAT-')||attentionPolicy!=='LEGACY'&&d.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL')) status = 'UNKNOWN';
     if (d.role === 'ADVISORY' && d.featureIds.length === 0) status = 'UNKNOWN';
     const evidenceRefs = [...new Set(d.featureIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
     const reasonCode = d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
@@ -89,18 +101,18 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
   const required = checks.filter(c => c.required && c.status !== 'NOT_APPLICABLE');
   const has = (role: EntryCheckResult['role'], status: EntryCheckResult['status']) => checks.some(c => c.required && c.role === role && c.status === status);
   const unsupported = checks.some(c => c.required && c.reasonCode === 'UNSUPPORTED_CAPABILITY');
-  const classification: EntryResult['classification'] = has('HARD_GATE','FAIL') ? 'REJECTED' : unsupported ? 'UNSUPPORTED' : required.some(c => c.status === 'UNKNOWN') ? 'INSUFFICIENT_DATA' : has('OPPORTUNITY','FAIL') ? 'WATCH' : 'RESEARCH_ELIGIBLE';
+  const classification: EntryResult['classification'] = has('HARD_GATE','FAIL') ? 'REJECTED' : unsupported ? 'UNSUPPORTED' : required.some(c => c.status === 'UNKNOWN') ? 'INSUFFICIENT_DATA' : has('OPPORTUNITY','FAIL')||shared&&checks.some(c=>c.required&&c.checkId.startsWith('DAT-')&&c.status==='FAIL')||attentionPolicy!=='LEGACY'&&checks.some(c=>c.required&&(c.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&c.pillar==='SOCIAL')&&c.status==='FAIL') ? 'WATCH' : 'RESEARCH_ELIGIBLE';
   return { checks, binary: classification === 'RESEARCH_ELIGIBLE' ? 'PASS' : 'FAIL', classification, coverage: { known: required.filter(c => c.status === 'PASS' || c.status === 'FAIL').length, total: required.length } };
 }
 
 const truthStatus = (truth: Truth, falseMeansFail = true): ManagementCheckResult['status'] => truth === 'UNKNOWN' ? 'UNKNOWN' : truth === 'TRUE' ? (falseMeansFail ? 'PASS' : 'FAIL') : (falseMeansFail ? 'FAIL' : 'PASS');
-export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }): ManagementResult {
+export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY',social?:SocialPolicyFacts): ManagementResult {
   const t = episode.thesis;
   const support = t.support.map(p => evaluatePredicate(p, features, cutoff));
   const invalidation = t.invalidation.map(p => evaluatePredicate(p, features, cutoff));
   const supportStatus: Truth = support.includes('FALSE') ? 'FALSE' : support.includes('UNKNOWN') ? 'UNKNOWN' : 'TRUE';
   const invalidationStatus: Truth = invalidation.includes('TRUE') ? 'TRUE' : invalidation.includes('UNKNOWN') ? 'UNKNOWN' : 'FALSE';
-  const entryChecks = evaluateEntry(features, profile, cutoff).checks;
+  const entryChecks = evaluateEntry(features, profile, cutoff,attentionPolicy,social).checks;
   const combine = (ids: string[]): 'PASS'|'FAIL'|'UNKNOWN' => { const rows = entryChecks.filter(c => ids.includes(c.checkId)); return rows.some(r => r.status === 'FAIL') ? 'FAIL' : rows.some(r => r.status !== 'PASS') ? 'UNKNOWN' : 'PASS'; };
   const safety = combine(['SEC-01','SEC-02','SEC-03','SEC-04','SEC-05','LIQ-01']);
   const exit = combine(['EXE-01','EXE-02']);

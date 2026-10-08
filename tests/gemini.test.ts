@@ -5,11 +5,14 @@ import { buildGeminiSemanticRequest, geminiSettings } from '../src/providers/gem
 test('Gemini semantic request uses the configured model generation and safety settings', () => {
   const request = buildGeminiSemanticRequest('Synthetic redacted fixture packet.');
   assert.equal(geminiSettings.model, 'gemini-3.5-flash-lite');
-  assert.deepEqual(request.generationConfig, {
-    maxOutputTokens: 65536,
-    thinkingConfig: { thinkingLevel: 'high' },
-    responseMimeType: 'application/json',
-  });
+  assert.equal(request.generationConfig.maxOutputTokens, 65536);
+  assert.deepEqual(request.generationConfig.thinkingConfig, { thinkingLevel: 'high' });
+  assert.equal(request.generationConfig.responseMimeType, 'application/json');
+  const responseSchema = request.generationConfig.responseJsonSchema;
+  assert.equal(responseSchema.type, 'object');
+  assert.deepEqual(responseSchema.required, ['claims']);
+  assert.equal(responseSchema.properties.claims.maxItems, 20);
+  assert.equal(responseSchema.properties.claims.items.additionalProperties, false);
   assert.deepEqual(request.safetySettings, [
     { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
     { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
