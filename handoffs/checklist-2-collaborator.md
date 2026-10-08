@@ -76,6 +76,48 @@ On 2026-10-08 at 15:41:41 UTC, the CLI at commit `92fe0f9` ran on one real pump.
 
 Gate line for this case: `REAL_CA management = NOT_RUN; INCOMPLETE`. The run shows the CLI accepts a real pump.fun address; it does not count toward the zero-UNKNOWN gate.
 
+#### Supplied Checklist 1 reference: fresh live test (2026-10-08)
+
+The user subsequently supplied the unpublished Checklist 1 working snapshot in `memehunt-incomplete` and authorized using it as a read-only reference. It was tested in a separate temporary copy; none of its 81 files changed, and its source was not added to the collaborator branch. This changes what can be tested locally, but is not a published integration checkpoint or a completed combined Service merge. The SHA-256 of the sorted `sha256  relative-path\n` manifest for its `src`, `tests`, `examples`, `package.json`, `package-lock.json` and `tsconfig.json` is `fe1ba9358ecdf6f8a795bc3737469fc0b93755396dc3f8c5f3ece3cbed33cb13`.
+
+At `2026-10-08T15:57:53.316Z`, that reference performed an actual `LIVE` Solana entry collection for the same user-supplied address, `3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump`. The run used public finalized RPC, DEX data and the reference's read-only PumpSwap inspection/simulation. No transaction was signed or broadcast. TinyFish and Gemini were not requested: neither checkout nor the process supplied their credentials.
+
+The documented starter profile was used provisionally: $25, six hours, transfer fee 1%, entry impact 2%, exit impact 3%, round-trip friction 10%, direct control 10%, removable liquidity 10%, and `ALL_AGES`. It is an uncalibrated diagnostic input, not an agreed final acceptance profile. It supplies neither an operator position nor an ordered realization plan.
+
+Results:
+
+- Checklist 1 reference: `npm run typecheck` exit 0; `npm test` **653/653**, fail 0.
+- Checklist 2 branch: `npm run typecheck` exit 0; `npm test` **76/76**, fail 0.
+- RPC and DEX collection: OBSERVED, with 5 retained market pairs. Entry: **13 PASS, 2 FAIL, 18 UNKNOWN** across all 33 rows; required coverage **14/27**. Classification **REJECTED**, binary FAIL. The earlier MANUAL_EMPTY result above remains the result of that earlier, different run.
+- The two known hard-gate failures were `SEC-03` and `OWN-02`. Under the reference's shared-program immutability rule, the Token-2022 program has an observed upgrade authority. Under the provisional concentration limit, the measured largest-owner/control share was `0.25980756516871645566` (about 25.98%) versus 10%. The collector records no verified system-owner exclusions; these findings do not establish fraud or a token-specific rug authority.
+- Reopened database replay was identical. Checklist 1's and Checklist 2's reused `SEC-01..05`, `LIQ-01`, `EXE-01` and `EXE-02` statuses agreed on the frozen live feature inputs. This checks those eight consumer decisions, not combined historical dispatch or all 15 management rows.
+- The case remained `INITIAL_RESEARCH`, with no episode. Both Services refused an evidence-free reassessment with `NO_ACTIVE_THESIS`. No baseline was fabricated and no management row was evaluated. HOLD, DCA and EXIT lifecycle acceptance paths remain NOT_EXERCISED.
+
+All remaining entry UNKNOWN rows are retained:
+
+| Rows | Missing input or implementation | Next action / owner |
+|---|---|---|
+| NAR-01, NAR-02, NAR-03 | Qualified narrative/origin evidence; hosted sources were not requested | Configure TinyFish/Gemini and run the bounded full collector / Checklist 1 |
+| CAN-01, CAN-02 | Qualified representation/origin/comparison evidence | Same full collection and independent review / Checklist 1 |
+| ATT-01, ATT-02 | Qualified post/account/attention sample | Same full collection and independent review / Checklist 1 |
+| SOC-01, SOC-02, SOC-03 | Qualified social identity/integrity/community sample | Same full collection and independent review / Checklist 1 |
+| DAT-01, DAT-02, DAT-03 | Fresh complete baseline, semantic qualification and conflict inspection depend on the absent source scopes | Complete those scopes; unavailable/rejected review remains UNKNOWN / Checklist 1 |
+| ADV-01, ADV-02, ADV-03, ADV-04, ADV-05 | Additional on-chain/chart/attention/social/shared features are missing; the reference does not implement every advisory feature | Named collector/qualification work where supported / Checklist 1; advisory omissions remain visible |
+
+The 18 UNKNOWN count includes five advisory rows; 13 required rows remain UNKNOWN. Full-mode invocation without credentials fails with `FULL_PASS_KEYS_MISSING` before collection. More partial runs cannot fill attention/social evidence. A complete full pass may still yield UNKNOWN or FAIL and must preserve those outcomes.
+
+Checklist 2 still needs a legitimate saved entry PASS before real management can begin. The reference's stage inputs remain null for circulating cap and token creation time; pool age and FDV were not substituted. Its entry-sized PumpSwap receipts were not reclassified as exact remaining-holding or candidate-leg proofs. A certified quantity-specific producer, approved profile/position/thesis inputs, stage provenance and deliberate shared Service/replay integration remain required.
+
+`scripts/checklist1-reference-run.mjs` makes this diagnostic repeatable without modifying or publishing the supplied checkpoint:
+
+```sh
+node scripts/checklist1-reference-run.mjs --reference memehunt-incomplete --ca <user-supplied-Solana-mint>
+```
+
+It copies an explicit source allowlist to a fresh temporary directory, runs both repositories' checks, collects with an isolated database, verifies reopen/replay and the eight reused consumer statuses, and saves a per-row report plus receipts locally. The default is an explicit partial run; `--profile <file>` supplies reviewed settings. `--full` explicitly requests the bounded hosted collector and requires both provider keys in the process environment. `--inspect <run-directory>` rechecks saved output without provider calls. Raw responses, local database IDs, credentials and private endpoint values stay outside this public handoff. The runner is diagnostic tooling, not a live v7 integration or an acceptance certificate.
+
+**Entry: UNKNOWN = 18; INCOMPLETE — ZERO-UNKNOWN GATE NOT MET. Management: REAL_CA management = NOT_RUN; INCOMPLETE.** The supplied reference resolves the previous absence of local Checklist 1 code; it does not resolve the missing hosted credentials, known entry rejection or remaining management integration requirements.
+
 ### What changed
 
 **v6 golden (§A).** Before any source edit, the `9d8c218` build was run on all 28 management scenarios and 4 persisted v6 rows. Their hashes and summaries are stored in `tests/fixtures/management-v6-golden.json`. A test re-evaluates every scenario and replays every row against that file. It was not regenerated afterwards, and the v0/v5 goldens were not touched.
