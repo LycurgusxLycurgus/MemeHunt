@@ -41,12 +41,15 @@ async function main() {
     if (cmd === 'diff') return output(svc.diff(args[1],args[2]));
     if (cmd === 'case' && args[1] === 'show') return output(svc.showCase(args[2]));
     if (cmd === 'case' && args[1] === 'close') { svc.closeCase(args[2]); return output({ closed: args[2] }); }
-    if (cmd === 'thesis' && args[1] === 'successor') return output(svc.successor(args[2],fileJson(flag('file')) as any,new Date().toISOString()));
+    if (cmd === 'thesis' && args[1] === 'successor') {
+      const basis = ({ continue: 'CONTINUE', 'fresh-start': 'FRESH_START' } as const)[flag('basis') as 'continue' | 'fresh-start'];
+      return output(svc.successor(args[2],fileJson(flag('file')) as any,new Date().toISOString(),basis));
+    }
     if (cmd === 'position' && args[1] === 'record') return output(svc.recordPosition(fileJson(flag('file')) as PositionRecord));
     if (cmd === 'position' && args[1] === 'event') return output(svc.appendPositionEvent(args[2],fileJson(flag('file')) as PositionEvent));
     if (cmd === 'journal') { svc.journal(args[1],String(flag('text') ?? '')); return output({ saved: true }); }
     if (cmd === 'backup') return output(await svc.backup(args[1]));
-    throw new Error('USAGE: analyze <address> --chain <chain> [--bundle file] | reassess <case-id> --bundle file | show/replay <snapshot-id> | diff <a> <b> | position record/event | capabilities | profile options | doctor | market probe <chain> <address>');
+    throw new Error('USAGE: analyze <address> --chain <chain> [--bundle file] | reassess <case-id> --bundle file | thesis successor <case-id> --file thesis.json --basis continue|fresh-start | show/replay <snapshot-id> | diff <a> <b> | position record/event | capabilities | profile options | doctor | market probe <chain> <address>');
   } finally { svc.close(); }
 }
 main().catch(fail);

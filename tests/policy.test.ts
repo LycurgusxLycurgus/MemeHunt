@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, resolveStage } from '../src/domain/policy.js';
+import { MANAGEMENT_RULES } from '../src/domain/management-trace.js';
 import {
   completeFixtureEntryFeatures, FIXTURE_CUTOFF, fixtureEpisode, fixtureFeature,
   fixturePosition, illustrativeUncalibratedProfile,
@@ -108,6 +109,7 @@ test('failed support without an invalidation condition recommends reduction revi
   assert.equal(result.proposal, 'REDUCE_REVIEW');
 });
 
+// Under v6 the entry-sized exit rows sufficed; v7 also needs exact exit proof (tests/management-execution.test.ts).
 test('a due realization with qualified traction and a position yields one sized leg proposal', () => {
   const leg = { id: 'leg-1', quantityBps: 4000, allRemaining: false, trigger: predicate('O02', true, 'bool') };
   const episode = fixtureEpisode(predicate('O01', true, 'bool'), predicate('O03', false, 'bool'), [leg]);
@@ -120,6 +122,8 @@ test('a due realization with qualified traction and a position yields one sized 
     [],
     illustrativeUncalibratedProfile,
     FIXTURE_CUTOFF,
+    undefined,
+    MANAGEMENT_RULES['thesis-management-v6'],
   );
   assert.equal(result.thesisState, 'VALIDATED');
   assert.equal(result.proposal, 'DCA_OUT_PROPOSED');

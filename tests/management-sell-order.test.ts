@@ -7,16 +7,17 @@ import test from 'node:test';
 import { decisionHash, Service } from '../src/app/service.js';
 import { featureMetadata } from '../src/domain/catalog.js';
 import type { ManagementCheckResult, ManagementResult } from '../src/domain/contracts.js';
-import { legCandidate, nextLeg, proposeLeg, reduceLedger } from '../src/domain/ledger.js';
+import { legCandidate, nextLeg, originBasis, proposeLeg, reduceLedger } from '../src/domain/ledger.js';
 import { MANAGEMENT_POLICY_VERSION } from '../src/domain/management-trace.js';
 import { usable } from '../src/domain/policy.js';
 import {
-  completeFixtureEntryFeatures as full, FIXTURE_CUTOFF as C, fixtureBundle, fixtureEpisode as ep, fixturePosition as pos,
-  fixturePositionEvent as evt, fixtureStageObservations, illustrativeFixtureThesis,
+  completeFixtureEntryFeatures as full, FIXTURE_CUTOFF as C, fixtureBundle, fixtureEpisode as ep, fixtureExitProof, fixtureExitQuoteEvidence, fixturePosition as pos,
+  fixturePositionEvent as evt, fixtureStageObservations, illustrativeFixtureThesis, illustrativeQuotedExitProfile,
 } from '../examples/fixtures.js';
 import { LATER, leg, p, runAs, scenarios, traction } from './management-scenarios.js';
 
-const current = (name: string) => runAs(MANAGEMENT_POLICY_VERSION, scenarios[name]!());
+/** Packet 2's ordered sell steps, under the label that introduced them; v7 adds exact exit proof (tests/management-execution.test.ts). */
+const current = (name: string) => runAs('thesis-management-v6', scenarios[name]!());
 const row = (r: ManagementResult, id: string) => r.checks.find(c => c.checkId === id)!;
 const trace = (c: ManagementCheckResult) => ({ status: c.status, reasonCode: c.reasonCode, featureRefs: c.featureRefs, basisRefs: c.basisRefs });
 const exitLeg = (ref: string) => ({ kind: 'EXIT_LEG', ref });
@@ -79,10 +80,10 @@ test('invalidation or an expired deadline sends any point of the plan to exit re
   assert.deepEqual([v5.proposal, 'remainingQuantityAtomic' in v5, 'positionMode' in v5], ['EXIT_REVIEW', false, false]);
 });
 
-test('under the current label MG-12, MG-15 and the proposal always name the same step, and every reference is real', () => {
+test('under v6 and the current label MG-12, MG-15 and the proposal always name the same step, and every reference is real', () => {
   const known = new Set(featureMetadata.map(f => f.id));
-  for (const [name, build] of Object.entries(scenarios)) {
-    const i = build(), r = runAs(MANAGEMENT_POLICY_VERSION, i);
+  for (const label of ['thesis-management-v6', MANAGEMENT_POLICY_VERSION]) for (const [scenario, build] of Object.entries(scenarios)) {
+    const name = `${label} ${scenario}`, i = build(), r = runAs(label, i);
     const mg12 = row(r, 'MG-12'), mg15 = row(r, 'MG-15');
     if (r.proposal === 'DCA_OUT_PROPOSED') {
       assert.equal(mg12.status, 'PASS', name);
@@ -93,7 +94,7 @@ test('under the current label MG-12, MG-15 and the proposal always name the same
     if (r.proposal === 'MAINTAIN_THESIS') assert.equal(mg12.reasonCode, 'TRIGGER_NOT_DUE', name);
     const knownPosition = !!i.position && Date.parse(i.position.entryAt) <= Date.parse(i.cutoff) && Date.parse(i.position.recordedAt) <= Date.parse(i.cutoff);
     assert.equal(r.remainingQuantityAtomic !== undefined, r.proposal === 'EXIT_REVIEW' && knownPosition, name);
-    assert.equal(r.positionMode !== undefined, r.remainingQuantityAtomic !== undefined, name);
+    assert.equal(r.positionMode !== undefined, r.remainingQuantityAtomic !== undefined || (label !== 'thesis-management-v6' && r.proposedQuantityAtomic !== undefined), name);
     for (const c of r.checks) {
       assert.ok(c.featureRefs.every(id => known.has(id)), `${name} ${c.checkId}: unknown feature ref`);
       const cited = new Set(c.featureRefs.flatMap(id => { const f = i.features.find(x => x.id === id); return f && usable(f, i.cutoff) ? f.evidenceIds : []; }));
@@ -108,17 +109,17 @@ test('nextLeg reports where the plan stands, and proposeLeg sizes only a due ste
   const twoSteps = traction(ep(p('O01', true, 'bool'), p('O03', false, 'bool'), [leg('leg-1', p('O02', true, 'bool')), leg('leg-2', p('A30', true, 'bool'), null, true)]));
   const features = full().filter(f => f.id !== 'A30');
   const fresh = reduceLedger(pos(), []);
-  assert.deepEqual(nextLeg(ep(p('O01', true, 'bool'), p('O03', false, 'bool')), fresh, features, C), { kind: 'NO_PLAN' });
+  assert.deepEqual(nextLeg(ep(p('O01', true, 'bool'), p('O03', false, 'bool')), originBasis(fresh), features, C), { kind: 'NO_PLAN' });
   assert.deepEqual(nextLeg(twoSteps, null, features, C), { kind: 'DUE', legId: 'leg-1', quantityAtomic: null });
-  assert.deepEqual(nextLeg(twoSteps, fresh, features, C), { kind: 'DUE', legId: 'leg-1', quantityAtomic: '400' });
+  assert.deepEqual(nextLeg(twoSteps, originBasis(fresh), features, C), { kind: 'DUE', legId: 'leg-1', quantityAtomic: '400' });
   const stepOneSold = reduceLedger(pos(), [evt({ quantityAtomic: '400' })]);
-  assert.deepEqual(nextLeg(twoSteps, stepOneSold, features, LATER), { kind: 'UNKNOWN', legId: 'leg-2' });
+  assert.deepEqual(nextLeg(twoSteps, originBasis(stepOneSold), features, LATER), { kind: 'UNKNOWN', legId: 'leg-2' });
   const allSold = reduceLedger(pos(), [evt({ quantityAtomic: '400' }), evt({ id: 'sale-2', idempotencyKey: 'sale-2', quantityAtomic: '600', legId: 'leg-2' })]);
-  assert.deepEqual(nextLeg(twoSteps, allSold, features, LATER), { kind: 'EXHAUSTED' });
+  assert.deepEqual(nextLeg(twoSteps, originBasis(allSold), features, LATER), { kind: 'EXHAUSTED' });
   const movedOut = reduceLedger(pos(), [evt({ kind: 'TRANSFER_ADJUSTMENT', direction: 'OUT', quantityAtomic: '700', quoteAmount: '0', legId: undefined })]);
-  assert.deepEqual(nextLeg(twoSteps, movedOut, features, LATER), { kind: 'DUE', legId: 'leg-1', quantityAtomic: null });
+  assert.deepEqual(nextLeg(twoSteps, originBasis(movedOut), features, LATER), { kind: 'DUE', legId: 'leg-1', quantityAtomic: null });
   for (const state of [fresh, stepOneSold, allSold, movedOut]) {
-    assert.deepEqual(proposeLeg(twoSteps, state, features, LATER), legCandidate(nextLeg(twoSteps, state, features, LATER)));
+    assert.deepEqual(proposeLeg(twoSteps, state, features, LATER), legCandidate(nextLeg(twoSteps, originBasis(state), features, LATER)));
   }
 });
 
@@ -160,7 +161,7 @@ test('saved v5 snapshots replay unchanged, and the same inputs under the current
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('a saved reassessment after step one is sold maintains under the current label and replays', () => {
+test('a saved reassessment after step one is sold maintains under the current label once the holding has exit proof, and replays', () => {
   const service = new Service(':memory:');
   try {
     const thesis = {
@@ -171,8 +172,13 @@ test('a saved reassessment after step one is sold maintains under the current la
     const position = pos({ caseId: entry.caseId });
     service.recordPosition(position);
     service.appendPositionEvent(position.id, evt({ quantityAtomic: '400' }));
-    const management = service.reassess(entry.caseId, { ...fixtureBundle(full(), undefined, fixtureStageObservations), cutoff: LATER });
-    assert.equal(management.result.proposal, 'MAINTAIN_THESIS');
+    const bundle = { ...fixtureBundle(full(), undefined, fixtureStageObservations), cutoff: LATER, profile: illustrativeQuotedExitProfile };
+    const unproven = service.reassess(entry.caseId, bundle);
+    assert.deepEqual([unproven.result.proposal, row(unproven.result, 'MG-03').reasonCode], ['REASSESS_REQUIRED', 'EXIT_PROOF_MISSING']);
+    const requests = unproven.result.exitQuotes!.map(q => q.request);
+    assert.deepEqual(requests.map(r => [r.purpose, r.quantityAtomic]), [['REMAINING_POSITION', '600'], ['NEXT_LEG', '300']]);
+    const management = service.reassess(entry.caseId, { ...bundle, evidence: [...bundle.evidence, fixtureExitQuoteEvidence], exitProofs: requests.map(r => fixtureExitProof(r)) });
+    assert.deepEqual([management.result.proposal, row(management.result, 'MG-15').status], ['MAINTAIN_THESIS', 'PASS']);
     assert.deepEqual(row(management.result, 'MG-12').basisRefs?.[0], exitLeg('leg-2'));
     assert.deepEqual(service.replay(management.id), management);
   } finally { service.close(); }

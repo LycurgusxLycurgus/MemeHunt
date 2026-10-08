@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { bundleSchema, positionEventSchema, positionRecordSchema, thesisSchema, type Bundle, type EntrySnapshot, type ManagementSnapshot, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
-import { evaluateEntry, evaluatePredicate, type StageInputs } from '../domain/policy.js';
+import { bundleSchema, positionEventSchema, positionRecordSchema, thesisSchema, type Bundle, type EntrySnapshot, type ManagementSnapshot, type PlanBasisDeclaration, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
+import { evaluateEntry, evaluatePredicate, type ExecutionInputs, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
 import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
 
@@ -54,8 +54,9 @@ export class Service {
   close() { this.db.close(); }
   private validateBundle(input: Bundle): Bundle {
     const parsed = bundleSchema.parse(input);
-    const b: Bundle = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE') };
-    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
+    const fixture = parsed.analysisKind === 'FIXTURE';
+    const b: Bundle = { ...parsed, token: normalizeToken(parsed.token, fixture), ...(parsed.exitProofs ? { exitProofs: parsed.exitProofs.map(p => ({ ...p, token: normalizeToken(p.token, fixture) })) } : {}) };
+    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length || b.exitProofs?.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
     if (b.evidence.length > 1000 || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
     const ids = new Set(b.evidence.map(e => e.id));
     if (ids.size !== b.evidence.length || new Set(b.features.map(f => f.id)).size !== b.features.length) throw new Error('DUPLICATE_BUNDLE_ID');
@@ -75,6 +76,12 @@ export class Service {
     for (const o of b.observations) {
       if (tokenKey(o.subject) !== tokenKey(b.token) || o.evidenceIds.some(id => !ids.has(id))) throw new Error('INVALID_OBSERVATION_REF');
       if (Date.parse(o.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_OBSERVATION');
+    }
+    const proofs = b.exitProofs ?? [];
+    if (new Set(proofs.map(p => p.id)).size !== proofs.length) throw new Error('DUPLICATE_BUNDLE_ID');
+    for (const p of proofs) {
+      if ([...p.evidenceIds, ...(p.outcome === 'FILLABLE' ? p.fees.flatMap(f => f.conversionEvidenceIds) : [])].some(id => !ids.has(id))) throw new Error('UNKNOWN_EVIDENCE_REF');
+      if (Date.parse(p.asOf) > Date.parse(b.cutoff) || Date.parse(p.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EXIT_PROOF');
     }
     if (b.thesis) {
       for (const p of [...b.thesis.support,...b.thesis.invalidation,...[b.thesis.catalyst,b.thesis.onchainTraction,b.thesis.externalTraction,b.thesis.warning].filter(x => x !== null),...b.thesis.legs.map(l => l.trigger)]) evaluatePredicate(p,[],b.cutoff);
@@ -98,7 +105,9 @@ export class Service {
     return row ? { id: String(row.id), status: String(row.status), episodeId: row.episode_id ? String(row.episode_id) : null } : null;
   }
   analyze(input: Bundle): EntrySnapshot {
-    const b = this.validateBundle(input); this.persistArtifacts(b); const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff);
+    const b = this.validateBundle(input);
+    if (b.exitProofs?.length) throw new Error('EXIT_PROOFS_REQUIRE_REASSESSMENT');
+    this.persistArtifacts(b); const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const semantic = { schemaVersion: 1, policyVersion: 'research-screen-v0', featureVersion: 1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result };
     const hash = decisionHash(semantic);
@@ -130,8 +139,9 @@ export class Service {
     const savedPosition = pRow ? readJson<PositionRecord>(pRow.payload) : null;
     const position = savedPosition && Date.parse(savedPosition.entryAt) <= Date.parse(b.cutoff) && Date.parse(savedPosition.recordedAt) <= Date.parse(b.cutoff) ? savedPosition : null;
     const events = position && pRow ? this.db.prepare('SELECT payload FROM position_events WHERE position_id=?').all(String(pRow.id)).map(x => readJson<PositionEvent>(x.payload)).filter(e => Date.parse(e.recordedAt) <= Date.parse(b.cutoff)) : [];
-    const result = evaluateManagementAs(MANAGEMENT_POLICY_VERSION, episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b));
-    const semantic = { schemaVersion: 1, policyVersion: MANAGEMENT_POLICY_VERSION, episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result };
+    const execution: ExecutionInputs = { token: b.token, evidence: b.evidence, exitProofs: b.exitProofs ?? [] };
+    const result = evaluateManagementAs(MANAGEMENT_POLICY_VERSION, episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b),execution);
+    const semantic = { schemaVersion: 1, policyVersion: MANAGEMENT_POLICY_VERSION, episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), token: b.token, exitProofs: execution.exitProofs, result };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'MANAGEMENT');
     if (existing) return readJson<ManagementSnapshot>(existing.payload);
@@ -161,7 +171,12 @@ export class Service {
     if (!selected) throw new Error('NO_THESIS_AT_CUTOFF');
     return selected;
   }
-  successor(caseId: string, thesisInput: Thesis, at: string): ThesisEpisode {
+  /**
+   * Saves a successor thesis. The caller must declare how its sell plan relates to earlier sales: CONTINUE keeps the predecessor's base and
+   * counts sales by leg ID; FRESH_START rebases shares to the inventory held at `at` and counts only later sales. Saved episodes are never rewritten.
+   */
+  successor(caseId: string, thesisInput: Thesis, at: string, basis: PlanBasisDeclaration['mode']): ThesisEpisode {
+    if (basis !== 'CONTINUE' && basis !== 'FRESH_START') throw new Error('SUCCESSOR_PLAN_BASIS_REQUIRED');
     const thesis = thesisSchema.parse(thesisInput);
     if (!Number.isFinite(Date.parse(at))) throw new Error('INVALID_SUCCESSOR_TIME');
     for (const p of [...thesis.support,...thesis.invalidation,...[thesis.catalyst,thesis.onchainTraction,thesis.externalTraction,thesis.warning].filter(x => x !== null),...thesis.legs.map(l => l.trigger)]) evaluatePredicate(p,[],at);
@@ -175,7 +190,8 @@ export class Service {
       const old = readJson<ThesisEpisode>(head.payload);
       this.episodeAt(caseId, headId, old.createdAt);
       if (Date.parse(at) <= Date.parse(old.createdAt)) throw new Error('SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR');
-      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id };
+      const planBasis: PlanBasisDeclaration = { mode: basis, anchorAt: basis === 'FRESH_START' ? at : old.planBasis?.anchorAt ?? null };
+      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id, planBasis };
       this.db.prepare('INSERT INTO episodes VALUES(?,?,?)').run(episode.id,caseId,JSON.stringify(episode));
       this.db.prepare('UPDATE cases SET episode_id=? WHERE id=?').run(episode.id,caseId);
       return episode;
@@ -187,7 +203,8 @@ export class Service {
     const semantic = readJson<Record<string, any>>(row.semantic);
     if (decisionHash(semantic) !== row.hash) throw new Error('SNAPSHOT_HASH_MISMATCH');
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features } as Bundle;
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(policyFeatures(replayBundle),semantic.profile,semantic.cutoff) : evaluateManagementAs(semantic.policyVersion,semantic.episode,policyFeatures(replayBundle),semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs);
+    const execution: ExecutionInputs = { token: semantic.token ?? null, evidence: semantic.evidence ?? [], exitProofs: semantic.exitProofs ?? [] };
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(policyFeatures(replayBundle),semantic.profile,semantic.cutoff) : evaluateManagementAs(semantic.policyVersion,semantic.episode,policyFeatures(replayBundle),semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,execution);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }
