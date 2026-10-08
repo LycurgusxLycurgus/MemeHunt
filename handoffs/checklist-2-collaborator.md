@@ -18,7 +18,7 @@ Checklist 2 as a whole is **not** complete. The timed HOLD/EXIT_NOW/DCA-out plan
 
 - Branch: `codex/checklist-2`, built on reviewed HEAD `9d8c218`. Result commit, holding the round-two code and tests: `92fe0f93a8185884ea08322d216d137370669e5f`. The documentation commit carrying this section sits directly above it.
 - Checklist 1 checkpoint: **NOT_INTEGRATED**. No owner checkpoint was available to merge.
-- **REAL_CA = NOT_RUN; INCOMPLETE.** No real contract address was tested, because this clone has neither the agreed case list nor a published Checklist 1 checkpoint. There are no per-case tables, since no case ran; inventing them would be exactly the fabricated count the gate forbids.
+- **REAL_CA = NOT_RUN; INCOMPLETE.** No real-CA acceptance case ran, because this clone has neither the agreed case list nor a published Checklist 1 checkpoint. There are no per-case tables, since no case ran; inventing them would be exactly the fabricated count the gate forbids. An exploratory, evidence-free CLI run on one real pump.fun address is recorded under "Did this round clear all the unknowns?"; it is not the gate.
 - Independent review: the foundations passed their first fresh Bridgecode review (**PASS**). The later early next-step quote (MG-15 while holding) had its own cycle. Its first review found the code correct but three overstatements in this section (now corrected), and the terminal review gave **PASS**.
 
 ### Did this round clear all the unknowns?
@@ -65,6 +65,16 @@ Reaching the gate takes four steps, in this order:
 2. Checklist 1 provides a certified exit-quote producer, or the owner agrees that Checklist 2 builds one.
 3. Both sides integrate, including stage inputs.
 4. We run the mandatory real-CA procedure and report each case's 15 rows and gate line.
+
+#### Exploratory real-address run (not the gate)
+
+On 2026-10-08 at 15:41:41 UTC, the CLI at commit `92fe0f9` ran on one real pump.fun token: Solana `3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump` (address supplied by the user). The run used a throwaway database and placed no trade.
+
+- Live market lookup (DEX Screener, uncertified diagnostic): OBSERVED, 5 pairs; first pair dexId `pumpswap`, liquidity approximately $30,762.59.
+- Entry check with no evidence (`MANUAL_EMPTY`): INSUFFICIENT_DATA, binary FAIL, 33 of 33 entry checks UNKNOWN, coverage 0/27. Replay was identical.
+- Management: not run. The case stays in initial research with no tracked thesis, and `reassess` was refused with `NO_ACTIVE_THESIS` (exit 2). A legitimate baseline needs the owner's Checklist 1 live evidence (see the table above).
+
+Gate line for this case: `REAL_CA management = NOT_RUN; INCOMPLETE`. The run shows the CLI accepts a real pump.fun address; it does not count toward the zero-UNKNOWN gate.
 
 ### What changed
 
