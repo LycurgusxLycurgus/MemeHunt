@@ -2,6 +2,7 @@ node_modules/
 dist/
 .data/
 .npm-cache/
+.env
 *.sqlite
 *.sqlite-*
 
