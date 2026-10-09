@@ -4,6 +4,9 @@ dist/
 .npm-cache/
 *.sqlite
 *.sqlite-*
+.env
+.env.*
+!.env.example
 
 # Local source and agent working files intentionally kept out of GitHub.
 /sources/

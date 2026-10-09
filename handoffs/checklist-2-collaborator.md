@@ -2,6 +2,33 @@
 
 Updated 2026-10-06. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
 
+## API-enabled diagnostic continuation (2026-10-09)
+
+The user supplied local Gemini and TinyFish credentials and confirmed the $25 / six-hour starter research profile with its existing risk limits. Credentials are retained only in the ignored local environment. TinyFish CLI fetching works in the existing session; restarting the MCP session was unnecessary for direct API collection. No trade was signed or broadcast.
+
+The unchanged supplied Checklist 1 checkpoint, with the same `fe1ba9358ecdf6f8a795bc3737469fc0b93755396dc3f8c5f3ece3cbed33cb13` source fingerprint, completed a fresh full LIVE entry collection at `2026-10-09T14:40:17.763Z`. Checklist 2 typecheck/tests passed (80/80); reference typecheck/tests passed (653/653). The resulting frozen snapshot replayed identically after reopening, and the eight reused safety/exit decisions matched Checklist 2.
+
+| Collection | PASS | FAIL | UNKNOWN | Required known |
+|---|---:|---:|---:|---:|
+| Previous partial collection | 13 | 2 | 18 | 14/27 |
+| Unchanged checkpoint, full API collection | 18 | 3 | 12 | 20/27 |
+| Isolated social-schema repair | 20 | 7 | 6 | 26/27 |
+| Fresh repeat with social and conflict-schema repairs | 15 | 7 | 11 | 21/27 |
+
+The unchanged checkpoint resolved `NAR-01..03`, `CAN-01..02` and `ATT-01`; the last resolved to FAIL rather than PASS. Its remaining required unknowns are `ATT-02`, `SOC-01..03` and `DAT-01..03`. Five advisory rows remain unknown. The entry remains REJECTED with `SEC-03`, `OWN-02` and `ATT-01` failed, so management admission remains `NO_ACTIVE_THESIS`, all 15 management rows remain NOT_RUN, and the combined zero-unknown gate remains INCOMPLETE.
+
+Two actual model-contract defects were investigated in isolated copies, without editing or publishing the supplied checkpoint. The first social review omitted nine required account decisions. An exact decision-ID object makes those omissions reject at the response boundary, rather than invalidating the entire downstream social assessment. The repaired live run at `2026-10-09T14:46:45.301Z` resolved the social rows and `ATT-02` to FAIL and resolved `DAT-01..02` to PASS. Its sole required unknown, `DAT-03`, remained unknown because the conflict review asserted two conflicts with only one cited side each. A second schema repair requires two explicit references for each CONFLICT and preserves local literal-citation checks. Existing fixtures were migrated to the new wire shape; omission regressions were added. These are experiments, not integrated production changes.
+
+The fresh repeat at `2026-10-09T14:53:13.085Z` did not reproduce the best count. `NAR-02` lacked qualified origin evidence following a fetch error; `CAN-01..02` had unresolved comparison leads/binding/representation, which kept `DAT-01..03` unknown. Thus source acquisition and model qualification remain variable; no result has achieved zero unknowns, and the best experimental count must not be presented as the current production result. Additional advisory collectors, qualified stable source scopes, an accepted entry baseline, management context and the exact exit-quote producer remain prerequisites.
+
+The final isolated repair suite passed **655/655**, with zero failures, including explicit missing-decision and one-sided-conflict rejection tests. Both experimental snapshots replayed identically after reopening. The private repair patch is retained locally under the ignored `.data/checklist1-schema-experiment/repair.patch`; it includes unpublished checkpoint changes and must not be added to public Git. Raw receipts, databases and test logs remain in the local temporary diagnostic directories. The supplied checkpoint's original fingerprints were verified unchanged.
+
+The public diagnostic runner now awaits the exported reference CLI promise with a keep-alive handle, applies a bounded process timeout, and validates nonempty JSON before reporting collection success. The original reference entrypoint exited zero with no JSON on the first full attempt; that attempt is excluded from all result counts. Run a new unchanged-checkpoint diagnostic securely with:
+
+```sh
+node --env-file=.env scripts/checklist1-reference-run.mjs --ca <user-supplied-Solana-mint> --full
+```
+
 ## Round-two results from the collaborator (2026-10-07)
 
 The Checklist 2 collaborator wrote this section. The owner's round-two review follows it unchanged, and every reference here (R1–R6, §A–D) points into that review.

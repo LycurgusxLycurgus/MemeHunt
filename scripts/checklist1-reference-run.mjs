@@ -123,10 +123,11 @@ async function main() {
     if (existsSync(join(reference, name))) cpSync(join(reference, name), join(copy, name), { recursive: true });
   }
   writeFileSync(join(run, 'reference-fingerprint.json'), JSON.stringify(before, null, 2) + '\n');
-  const command = (label, executable, argv, cwd) => {
-    const result = spawnSync(executable, argv, { cwd, encoding: 'utf8', maxBuffer: 24_000_000, env: process.env });
+  const command = (label, executable, argv, cwd, options = {}) => {
+    const result = spawnSync(executable, argv, { cwd, encoding: 'utf8', maxBuffer: 24_000_000, env: process.env, timeout: options.timeout });
     writeFileSync(join(run, `${label}.log`), (result.stdout ?? '') + (result.stderr ?? ''));
     if (result.status !== 0) throw new Error(`${label.toUpperCase()}_FAILED: see ${join(run, label + '.log')}`);
+    options.validate?.(result);
     console.log(`${label}: PASS`);
     return result;
   };
@@ -136,10 +137,22 @@ async function main() {
     command('reference-install', 'npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], copy);
     command('reference-typecheck', 'npm', ['run', 'typecheck'], copy);
     command('reference-tests', 'npm', ['test'], copy);
-    const liveArgs = [join(copy, 'dist/src/cli.js'), 'analyze', ca, '--chain', 'solana', full ? '--full' : '--partial', '--json', '--entry', '--db', join(run, 'live.sqlite')];
+    // The reference CLI starts runCli without awaiting it. Keep Node alive until
+    // the exported promise settles, including between provider requests.
+    const liveDriver = `const keepAlive = setInterval(() => {}, 1000);
+      try { const { runCli } = await import(process.argv[1]);
+        process.exitCode = await runCli(process.argv.slice(2));
+      } finally { clearInterval(keepAlive); }`;
+    const liveArgs = ['--input-type=module', '-e', liveDriver, pathToFileURL(join(copy, 'dist/src/cli.js')).href, 'analyze', ca, '--chain', 'solana', full ? '--full' : '--partial', '--json', '--entry', '--db', join(run, 'live.sqlite')];
     if (profile) liveArgs.push('--profile', resolve(profile));
     else console.log('Using the documented starter profile provisionally; this is not an accepted final profile.');
-    const live = command('live-entry', process.execPath, liveArgs, run);
+    const live = command('live-entry', process.execPath, liveArgs, run, {
+      timeout: full ? 660_000 : 180_000,
+      validate: result => {
+        if (!result.stdout.trim()) throw new Error('LIVE_ENTRY_EMPTY_OUTPUT');
+        JSON.parse(result.stdout);
+      },
+    });
     writeFileSync(join(run, 'live-entry.json'), live.stdout);
     await inspect(run);
     if (args.includes('--free-sources')) {
