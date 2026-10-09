@@ -2,6 +2,46 @@
 
 Updated 2026-10-09. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
 
+## Continued unknown investigation (2026-10-09)
+
+The latest actual full LIVE collection resolved **all 27 required entry checks**, with zero required UNKNOWNs. Its 33 rows contain **22 PASS, 6 FAIL and 5 advisory UNKNOWN**. This supersedes the older merged-run count below; it does not close the advisory or management acceptance gates.
+
+Snapshot `a659d690-8178-49bc-92db-4d53b1a33e6a`, cutoff `2026-10-09T16:23:39.460Z`, hash `dbd5c9bfb3dd6a65547717f95a94be9726f659714269334d8703be33197ff022`, used the supplied mint and unchanged approved $25/six-hour profile. Its database was reopened, its complete retained LIVE bundle validated under the final code, and its saved result replayed identically. Shared semantic qualification and cross-claim audit qualification are both true. RPC and DEX were observed (five pairs); web acquisition reports `TRUNCATED / ATT_FETCH_URL_ERROR` with 25 initial pages plus retained bounded recovery. Known decisions describe the inspected, qualified scopes, not universal completeness of the internet.
+
+The token remains **REJECTED**: `ATT-01`, `ATT-02`, `OWN-02`, `SEC-03`, `SOC-02` and `SOC-03` fail. The case remains INITIAL_RESEARCH; a direct reassessment of the retained LIVE bundle returns `NO_ACTIVE_THESIS`. All **15 management rows remain NOT_RUN**. A failed entry is a resolved result, not an admissible management baseline. The combined Checklist 2 zero-unknown real-token acceptance gate remains INCOMPLETE. No transaction was signed or broadcast.
+
+Parallel attention, social and shared investigations, an advisory dependency audit and an independent repair review identified collection/protocol defects. The changes preserve thresholds, frozen policy labels and source scope:
+
+- Attention competitors must select retained spans containing literal valid contract addresses; a contract in a URL alone is not a quotation. A single A05 consistency repair may correct only the malformed explanation/value judgment while keeping every other claim, citation, post and competitor unchanged. Original raw output is retained; unchanged evidence receives full independent review.
+- Social identity scope distinguishes official project-account claims from commentators and exchange listings. Code-derived current-window facts are supplied explicitly. A single integrity-only repair requires complete retained-source inspection, positively historical-only posts and acceptance of every other decision. A fresh independent review receives the candidate and original evidence without the rejected prior proposal. `social-screening-repair-v2` selection is reconstructed from raw responses; historical v1 identity receipts remain compatible. Rejected repairs remain UNKNOWN.
+- Shared live requests use `shared-audit-wire-v3`: short integer citation indices map deterministically to every unchanged retained source/span. This removes the oversized repeated-enum schema that caused actual Gemini HTTP 400 errors, without dropping sources or weakening local citation validation. Fractions, out-of-range indices, mixed selectors and downgrade attempts are rejected. Historical PAIR decoding remains unchanged. Exact semantic cutoff, social window and code-derived social facts are retained and validated against all shared prompts and the derivation packet. A malformed one-sided CONFLICT gets at most one same-scope response-contract retry; rejected dispositions get at most one bounded reassessment, followed by full independent review. Neither path forces CLEAR or acceptance.
+
+Implementation commit: `d22a007` on `codex/checklist-2`. Validation: `npm run typecheck` passed, followed by **766/766 tests**, zero failures. Independent read-only review passed after closing receipt/prompt marker stripping on unrepaired INDEX audits. Persisted replay tests cover valid v2/v3, temporal-scope/facts tampering, selected raw-response tampering, fractional/out-of-range indices and format downgrades. Existing golden results were not regenerated. A separate real probe on the exact previously failing scope (nine claims, 33 sources, 206 spans) returned HTTP 200 for proposal/review, independently accepted every claim and inspected every source; its old cutoff was preserved and it was not counted as the fresh gate.
+
+Each full attempt is retained separately; counts are never combined across snapshots:
+
+| Actual continuation attempt | Cutoff (2026-10-09 UTC) | PASS | FAIL | UNKNOWN | Required known | Material finding |
+|---|---|---:|---:|---:|---:|---|
+| 1 | 15:42:55.091 | 15 | 6 | 12 | 20/27 | URL-only competitor citation and mis-scoped official-account assertions |
+| 2 | 15:51:23.507 | 20 | 7 | 6 | 26/27 | Oversized shared schema rejected with HTTP 400 |
+| 3 | 16:01:56.373 | 14 | 3 | 16 | 16/27 | Inconsistent A05 response and rejected social integrity repair |
+| 4 | 16:11:10.356 | 20 | 7 | 6 | 26/27 | Flat repeated citation enums still exceed hosted schema capacity |
+| 5, latest | 16:23:39.460 | 22 | 6 | 5 | 27/27 | All required checks known; five advisory evidence gaps remain |
+
+Attempts 3–5 were reopened, retained-bundle validated and replayed identically under the final code; attempts 1–2 also replayed identically. Raw receipts, databases and verification remain private local artifacts. The unpublished reference source fingerprint remains `fe1ba9358ecdf6f8a795bc3737469fc0b93755396dc3f8c5f3ece3cbed33cb13`; other-session untracked folders are excluded from the commits.
+
+The five advisory unknowns are not five missing settings. Their implementation and evidence dependencies are:
+
+| Advisory row | Existing live coverage | Remaining evidence/implementation |
+|---|---|---|
+| ADV-01, O21–O25 | No live collectors for this group | Evidenced control edges, bounded wallet/trade history, repeated inventory measurements; distinguish inferred control from ownership. |
+| ADV-02, O26–O30 | O28 descriptive DEX rolling windows | Decoded trade paths, related-party attribution, comparable liquidity depth and verified automation identities. |
+| ADV-03, A06–A08, A12–A13, A19–A30 | Required attention qualification only | Comparable multi-window attention, participation, liquidity and artifact histories; preregistered decay/saturation/efficiency methods. |
+| ADV-04, S07–S09, S11–S20 | Required social qualification only | Reviewed call events, participant histories, public wallet binding, preregistered follower simulation and recurring campaigns. |
+| ADV-05, C07–C16 | C10 structured thesis assessment | Completed OHLCV bars, comparable chain/bridge/macro/launchpad series and repeated lifecycle observations. |
+
+The current advisory evaluator uses boolean predicates over descriptive features. Adding numeric or structured metrics alone cannot give these rows a meaningful PASS. A future advisory interpretation needs its own versioned contract and old-result replay, not filler booleans or relabeling missing collectors as FAIL. Some registry definitions expressly preserve UNKNOWN without identifiable decay, positive denominators, tracker-population evidence, or repeated campaign/lifecycle history. Thus literal zero across all 33 entry rows cannot be guaranteed by repeated calls on a single token. Required-check resolution and advisory completeness must be reported separately.
+
 ## Published main integration and fresh live run (2026-10-09)
 
 This section supersedes the earlier statements that Checklist 1 is unpublished or unavailable to integrate. Published main `9a43bdd` (PR #2; production publication `35abce9`) is merged into `codex/checklist-2`. The unpublished reference and other session's untracked files remain outside this integration.
