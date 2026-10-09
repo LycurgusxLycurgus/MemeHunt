@@ -195,7 +195,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const semanticFeatures=[...new Map([...features,...attention.flatMap(a=>a.projection?[a.projection]:[]),...(interimSocial?.assessments??[]).flatMap(a=>a.projection?[a.projection]:[])].map(f=>[f.id,f])).values()];
     const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
     if(semanticScope.every(w=>w.status!=='UNKNOWN')&&auditClaims.length>0&&semanticReceiptIds.length===2){
-      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true);
+      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true,
+        {cutoff:now(),...(interimSocial?{socialWindow:{start:interimSocial.facts.start,end:interimSocial.facts.end},socialFacts:interimSocial.facts}:{})});
       sharedAudit=audit.audit;
       addEvidence('shared-audit-status',JSON.stringify({method:'shared-conflict-review-v1',received:!!audit.audit,code:audit.code??null}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:audit.code??'SHARED_AUDIT_RECEIVED'});
       for(const [id,raw] of Object.entries(audit.rawArtifacts))addEvidence(id,raw,id.includes('prompt')||id.includes('response')?'gemini':'shared-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'shared-conflict-review-v1'});

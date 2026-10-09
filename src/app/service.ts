@@ -14,7 +14,7 @@ import { decodeComparisonLeadArray } from '../providers/attention-model.js';
 import { normalizeAttentionSearchUrl } from '../providers/attention.js';
 import { validateSocialRepair,validateSocialWire } from '../providers/social-model.js';
 import { parseSourceResponse } from '../providers/source-model.js';
-import { decodeSharedAudit,validSharedReassessment } from '../providers/shared-model.js';
+import { decodeSharedAudit,validSharedReassessment,sharedTemporalScopeSchema } from '../providers/shared-model.js';
 import { deriveShared,expireSharedWitnesses,sharedClaims,type SharedInputs } from '../domain/shared.js';
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
 import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
@@ -313,14 +313,35 @@ export class Service {
             const e=b.evidence.find(e=>e.id==='shared-qualified-receipt'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');if(!e)throw new Error('SHARED_PROOF_REQUIRED');
             const receipt=JSON.parse(b.rawArtifacts[e.id]);
             if(tokenKey(receipt.token)!==tokenKey(b.token)||decisionHash(receipt.claims)!==decisionHash(packet.claims)||decisionHash(receipt.sources)!==decisionHash(packet.sources)||decisionHash(receipt.audit)!==decisionHash(packet.audit)||!['shared-proposal-response','shared-review-response'].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
+            const sharedPrompts=b.evidence.filter(e=>e.id.startsWith('shared-')&&e.sourceType==='MODEL_INPUT').map(e=>JSON.parse(b.rawArtifacts[e.id]));
+            const promptScopes=sharedPrompts.map(prompt=>prompt.temporalScope);
+            if(sharedPrompts.some(prompt=>prompt.citationWire==='INDEX')&&receipt.wireMethod!=='shared-audit-wire-v3'||receipt.wireMethod==='shared-audit-wire-v3'&&(sharedPrompts.length===0||sharedPrompts.some(prompt=>prompt.citationWire!=='INDEX')))throw new Error('SHARED_PROOF_INVALID');
+            if(receipt.wireMethod===undefined){
+              let rawProposal:unknown;
+              try{rawProposal=parseSourceResponse(b.rawArtifacts['shared-proposal-response'],'SHARED_MODEL');}catch{/* Preserve historical unmarked receipt validation. */}
+              const hasIndex=(value:unknown):boolean=>!!value&&typeof value==='object'&&(Object.hasOwn(value,'spanIndex')||Object.values(value).some(hasIndex));
+              if(hasIndex(rawProposal))throw new Error('SHARED_PROOF_INVALID');
+            }
+            if(receipt.temporalScope===undefined){
+              if(promptScopes.some(scope=>scope!==undefined))throw new Error('SHARED_PROOF_INVALID');
+            }else{
+              const parsed=sharedTemporalScopeSchema.safeParse(receipt.temporalScope);
+              if(!parsed.success)throw new Error('SHARED_PROOF_INVALID');
+              const scope=parsed.data;
+              if(scope.socialFacts&&decisionHash(scope.socialFacts)!==decisionHash(packet.social??null))throw new Error('SHARED_PROOF_INVALID');
+              // Semantic review precedes the final mechanical capture; its own
+              // cutoff must cover its sources and retain the exact social window.
+              if(Date.parse(scope.cutoff)>Date.parse(b.cutoff)||packet.sources.some(source=>Date.parse(source.availableAt)>Date.parse(scope.cutoff))||decisionHash(scope.socialWindow??null)!==decisionHash(packet.social?{start:packet.social.start,end:packet.social.end}:null)||promptScopes.length===0||promptScopes.some(value=>value===undefined||decisionHash(value)!==decisionHash(scope)))throw new Error('SHARED_PROOF_INVALID');
+            }
             if(receipt.wireMethod===undefined&&b.evidence.some(e=>e.id.startsWith('shared-repair-')))throw new Error('SHARED_PROOF_INVALID');
             if(receipt.wireMethod!==undefined){
-              if(receipt.wireMethod!=='shared-audit-wire-v2')throw new Error('SHARED_PROOF_INVALID');
+              if(!['shared-audit-wire-v2','shared-audit-wire-v3'].includes(receipt.wireMethod))throw new Error('SHARED_PROOF_INVALID');
+              const citationWire=receipt.wireMethod==='shared-audit-wire-v3'?'INDEX':'PAIR';
               const repair=receipt.proposalResponseId==='shared-repair-proposal-response';
               if(receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response')||![receipt.proposalResponseId,receipt.reviewResponseId].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
               try{
-                const initial=decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts['shared-proposal-response'],b.rawArtifacts['shared-review-response']);
-                const selected=repair?decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts[receipt.proposalResponseId],b.rawArtifacts[receipt.reviewResponseId]):initial;
+                const initial=decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts['shared-proposal-response'],b.rawArtifacts['shared-review-response'],citationWire);
+                const selected=repair?decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts[receipt.proposalResponseId],b.rawArtifacts[receipt.reviewResponseId],citationWire):initial;
                 if(decisionHash(selected)!==decisionHash(receipt.audit)||repair&&!validSharedReassessment(initial,selected))throw new Error('SHARED_PROOF_INVALID');
               }catch{throw new Error('SHARED_PROOF_INVALID');}
             }
