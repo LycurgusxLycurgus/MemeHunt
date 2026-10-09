@@ -1,51 +1,37 @@
+// Frozen published Checklist 1 management dependencies for v0-v4 replay.
 import { Decimal } from 'decimal.js';
-import type { EntryCheckResult, EntryResult, EvidenceRecord, ExitProof, ExitQuoteRequest, FeatureResult, ManagementCheckResult, ManagementResult, PositionContext, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, TokenRef, SocialPolicyFacts } from './contracts.js';
+import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
 import { entryDefinitions, managementDefinitions, featureMetadata } from './catalog.js';
-import { checkExitQuote } from './exit-proof.js';
-import { declaredPlanBasis, executionBasis, legCandidate, nextLeg, ORIGIN_PLAN, originBasis, quantityBasis, reduceLedger, upcomingLeg, type QuantityBasis } from './ledger.js';
-import { MANAGEMENT_POLICY_VERSION, MANAGEMENT_RULES, traceManagementRows, type ManagementRules } from './management-trace.js';
+import { proposeLeg, reduceLedger } from './legacy-ledger.js';
 
 export type Truth = 'TRUE' | 'FALSE' | 'UNKNOWN';
 export type StageInputs = { circulatingMarketCapUsd: string | null; tokenCreatedAt: string | null };
-/** What exact exit quotes are matched against: the assessed token, the snapshot's evidence records and the supplied proofs. */
-export type ExecutionInputs = { token: TokenRef | null; evidence: EvidenceRecord[]; exitProofs: ExitProof[] };
-export const NO_EXECUTION_INPUTS: ExecutionInputs = { token: null, evidence: [], exitProofs: [] };
-/** Truth plus the decisive features: the children that forced the value, or every child when all of them did. */
-export type PredicateExplanation = { truth: Truth; featureRefs: string[] };
-export const usable = (f: FeatureResult | undefined, cutoff: string) => !!f && f.quality === 'KNOWN' && f.applicability === 'APPLICABLE' && Date.parse(f.availableAt) <= Date.parse(cutoff) && f.value !== null;
+const usable = (f: FeatureResult | undefined, cutoff: string) => !!f && f.quality === 'KNOWN' && f.applicability === 'APPLICABLE' && Date.parse(f.availableAt) <= Date.parse(cutoff) && f.value !== null;
 const lookup = (fs: FeatureResult[], id: string, cutoff: string) => { const f = fs.find(x => x.id === id); return usable(f, cutoff) ? f! : undefined; };
 const decimal = (v: string | boolean) => { if (typeof v !== 'string') throw new Error('PREDICATE_TYPE'); const d = new Decimal(v); if (!d.isFinite()) throw new Error('PREDICATE_NUMBER'); return d; };
-export function combineExplanations(op: 'all' | 'any', xs: PredicateExplanation[]): PredicateExplanation {
-  const has = (t: Truth) => xs.some(x => x.truth === t);
-  const truth: Truth = op === 'all' ? (has('FALSE') ? 'FALSE' : has('UNKNOWN') ? 'UNKNOWN' : 'TRUE') : (has('TRUE') ? 'TRUE' : has('UNKNOWN') ? 'UNKNOWN' : 'FALSE');
-  const forced = truth === 'UNKNOWN' || (op === 'all' && truth === 'FALSE') || (op === 'any' && truth === 'TRUE');
-  return { truth, featureRefs: [...new Set((forced ? xs.filter(x => x.truth === truth) : xs).flatMap(x => x.featureRefs))] };
-}
-export function explainPredicate(ast: Predicate, features: FeatureResult[], cutoff: string): PredicateExplanation {
+export function evaluatePredicate(ast: Predicate, features: FeatureResult[], cutoff: string): Truth {
   let nodes = 0;
-  function visit(p: Predicate, depth: number): PredicateExplanation {
+  function visit(p: Predicate, depth: number): Truth {
     if (++nodes > 64 || depth > 8) throw new Error('PREDICATE_LIMIT');
     if (p.op === 'all' || p.op === 'any') {
       if (!p.children.length) throw new Error('PREDICATE_EMPTY');
-      return combineExplanations(p.op, p.children.map(x => visit(x, depth + 1)));
+      const xs = p.children.map(x => visit(x, depth + 1));
+      if (p.op === 'all') return xs.includes('FALSE') ? 'FALSE' : xs.includes('UNKNOWN') ? 'UNKNOWN' : 'TRUE';
+      return xs.includes('TRUE') ? 'TRUE' : xs.includes('UNKNOWN') ? 'UNKNOWN' : 'FALSE';
     }
     if (!('feature' in p)) throw new Error('PREDICATE_SHAPE');
     if (!featureMetadata.some(x => x.id === p.feature)) throw new Error(`UNKNOWN_FEATURE:${p.feature}`);
     if (p.op !== 'eq') decimal(p.value);
     if (typeof p.value === 'boolean' && p.unit !== 'bool') throw new Error('PREDICATE_UNIT');
-    const leaf = (truth: Truth): PredicateExplanation => ({ truth, featureRefs: [p.feature] });
     const f = lookup(features, p.feature, cutoff);
-    if (!f) return leaf('UNKNOWN');
+    if (!f) return 'UNKNOWN';
     if (f.unit !== p.unit) throw new Error(`UNIT_MISMATCH:${p.feature}`);
-    if (p.op === 'eq') return leaf(typeof f.value === 'string' && typeof p.value === 'string' && /^(0|[1-9]\d*)(\.\d+)?$/.test(f.value) && /^(0|[1-9]\d*)(\.\d+)?$/.test(p.value) ? (new Decimal(f.value).eq(p.value) ? 'TRUE' : 'FALSE') : f.value === p.value ? 'TRUE' : 'FALSE');
+    if (p.op === 'eq') return typeof f.value === 'string' && typeof p.value === 'string' && /^(0|[1-9]\d*)(\.\d+)?$/.test(f.value) && /^(0|[1-9]\d*)(\.\d+)?$/.test(p.value) ? (new Decimal(f.value).eq(p.value) ? 'TRUE' : 'FALSE') : f.value === p.value ? 'TRUE' : 'FALSE';
     const actual = decimal(f.value!), expected = decimal(p.value);
     const result = p.op === 'lt' ? actual.lt(expected) : p.op === 'lte' ? actual.lte(expected) : p.op === 'gt' ? actual.gt(expected) : actual.gte(expected);
-    return leaf(result ? 'TRUE' : 'FALSE');
+    return result ? 'TRUE' : 'FALSE';
   }
   return visit(ast, 0);
-}
-export function evaluatePredicate(ast: Predicate, features: FeatureResult[], cutoff: string): Truth {
-  return explainPredicate(ast, features, cutoff).truth;
 }
 
 function boolRule(features: FeatureResult[], ids: string[], cutoff: string): 'PASS' | 'FAIL' | 'UNKNOWN' {
@@ -60,7 +46,7 @@ function numericLimit(features: FeatureResult[], id: string, limit: string | und
   return new Decimal(f.value).lte(new Decimal(limit)) ? 'PASS' : 'FAIL';
 }
 const combineNumeric = (statuses: Array<'PASS'|'FAIL'|'UNKNOWN'>): 'PASS'|'FAIL'|'UNKNOWN' => statuses.includes('FAIL') ? 'FAIL' : statuses.includes('UNKNOWN') ? 'UNKNOWN' : 'PASS';
-export const predicateRefs = (p: Predicate): string[] => {
+const predicateRefs = (p: Predicate): string[] => {
   if (p.op === 'all' || p.op === 'any') return p.children.flatMap(predicateRefs);
   if (!('feature' in p)) throw new Error('PREDICATE_SHAPE');
   return [p.feature];
@@ -121,7 +107,7 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
 }
 
 const truthStatus = (truth: Truth, falseMeansFail = true): ManagementCheckResult['status'] => truth === 'UNKNOWN' ? 'UNKNOWN' : truth === 'TRUE' ? (falseMeansFail ? 'PASS' : 'FAIL') : (falseMeansFail ? 'FAIL' : 'PASS');
-export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }, rules: ManagementRules = MANAGEMENT_RULES[MANAGEMENT_POLICY_VERSION]!, execution: ExecutionInputs = NO_EXECUTION_INPUTS, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts): ManagementResult {
+export function evaluateManagement(episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs: StageInputs = { circulatingMarketCapUsd: null, tokenCreatedAt: null }, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY',social?:SocialPolicyFacts): ManagementResult {
   const t = episode.thesis;
   const support = t.support.map(p => evaluatePredicate(p, features, cutoff));
   const invalidation = t.invalidation.map(p => evaluatePredicate(p, features, cutoff));
@@ -134,32 +120,12 @@ export function evaluateManagement(episode: ThesisEpisode, features: FeatureResu
   const stage = resolveStage(stageInputs.circulatingMarketCapUsd,stageInputs.tokenCreatedAt,cutoff,profile);
   const knownPosition = position && Date.parse(position.entryAt) <= Date.parse(cutoff) && Date.parse(position.recordedAt) <= Date.parse(cutoff) ? position : null;
   const ledger = knownPosition ? reduceLedger(knownPosition, events, cutoff) : null;
-  // v7 (executionBasis): successors are measured by their declared plan basis, sized amounts need exact exit proof bound to the execution basis.
-  const exact = rules.executionBasis, plan = exact ? declaredPlanBasis(episode) : ORIGIN_PLAN;
-  const basis: QuantityBasis | 'UNRESOLVED' | null = !knownPosition || !ledger ? null : !plan ? 'UNRESOLVED' : exact ? quantityBasis(knownPosition, events, cutoff, plan) : originBasis(ledger);
-  const next = nextLeg(episode, basis, features, cutoff);
-  const candidate = legCandidate(next);
-  // While holding (next step known not due), v7 also quotes that step early, so MG-15 can be known without a sale being due.
-  const upcoming = exact && next.kind === 'NOT_DUE' && basis && basis !== 'UNRESOLVED' ? upcomingLeg(episode, basis, next.legId) : null;
-  const fingerprint = exact && knownPosition ? executionBasis(execution.token, episode, knownPosition, events, cutoff, basis === 'UNRESOLVED' ? null : basis) : null;
-  const request = (purpose: ExitQuoteRequest['purpose'], legId: string | null, quantityAtomic: string): ExitQuoteRequest =>
-    ({ purpose, token: execution.token, caseId: episode.caseId, episodeId: episode.id, positionId: knownPosition!.id, legId, quantityAtomic, decimals: knownPosition!.decimals, executionBasis: fingerprint! });
-  const quote = (r: ExitQuoteRequest) => checkExitQuote(r, execution.exitProofs, { cutoff, profile, evidence: execution.evidence, mode: knownPosition!.mode });
-  const exitQuotes = !fingerprint || !ledger ? [] : [
-    ...(BigInt(ledger.remainingQuantityAtomic) > 0n ? [quote(request('REMAINING_POSITION', null, ledger.remainingQuantityAtomic))] : []),
-    ...(candidate ? [quote(request('CANDIDATE_LEG', candidate.legId, candidate.quantityAtomic))] : []),
-    ...(upcoming ? [quote(request('NEXT_LEG', upcoming.legId, upcoming.quantityAtomic))] : []),
-  ];
-  const remainingQuote = exitQuotes.find(q => q.request.purpose === 'REMAINING_POSITION'), candidateQuote = exitQuotes.find(q => q.request.purpose === 'CANDIDATE_LEG');
-  const stepQuote = candidateQuote ?? exitQuotes.find(q => q.request.purpose === 'NEXT_LEG');
+  const candidate = ledger ? proposeLeg(episode, ledger, features, cutoff) : null;
   const legTruths = t.legs.map(l => evaluatePredicate(l.trigger, features, cutoff));
-  const triggerStatus: ManagementCheckResult['status'] = rules.legSelection === 'ORDERED'
-    ? (next.kind === 'DUE' ? 'PASS' : next.kind === 'NOT_DUE' ? 'FAIL' : 'UNKNOWN')
-    : !t.legs.length || legTruths.includes('UNKNOWN') ? 'UNKNOWN' : legTruths.includes('TRUE') ? 'PASS' : 'FAIL';
-  const statuses: Record<string, ManagementCheckResult['status']> = {
-    'MG-01': episode.baselineSnapshotId ? 'PASS' : 'UNKNOWN', 'MG-02': safety,
-    // Entry-sized exit rows never certify a holding: with inventory left, v7 also needs exact proof for the remaining quantity.
-    'MG-03': remainingQuote ? combineNumeric([exit, remainingQuote.status]) : exit,
+  const due = legTruths.includes('TRUE');
+  const triggerStatus: ManagementCheckResult['status'] = !t.legs.length || legTruths.includes('UNKNOWN') ? 'UNKNOWN' : due ? 'PASS' : 'FAIL';
+  const rules: Record<string, ManagementCheckResult['status']> = {
+    'MG-01': episode.baselineSnapshotId ? 'PASS' : 'UNKNOWN', 'MG-02': safety, 'MG-03': exit,
     'MG-04': [...new Set([...t.support,...t.invalidation,...(t.catalyst ? [t.catalyst] : [])].flatMap(predicateRefs))].some(id => !lookup(features,id,cutoff)) ? 'UNKNOWN' : 'PASS',
     'MG-05': stage.capBand !== 'UNKNOWN' && stage.ageBand ? 'PASS' : 'UNKNOWN',
     'MG-06': truthStatus(supportStatus), 'MG-07': truthStatus(invalidationStatus, false),
@@ -167,25 +133,13 @@ export function evaluateManagement(episode: ThesisEpisode, features: FeatureResu
     'MG-09': t.onchainTraction ? truthStatus(evaluatePredicate(t.onchainTraction, features, cutoff)) : 'UNKNOWN',
     'MG-10': t.externalTraction ? truthStatus(evaluatePredicate(t.externalTraction, features, cutoff)) : 'UNKNOWN',
     'MG-11': t.warning ? truthStatus(evaluatePredicate(t.warning, features, cutoff), false) : 'NOT_APPLICABLE',
-    'MG-12': triggerStatus, 'MG-13': ledger && ledger.knownCost !== null && t.legs.length && basis !== 'UNRESOLVED' ? 'PASS' : 'UNKNOWN',
+    'MG-12': triggerStatus, 'MG-13': ledger && ledger.knownCost !== null && t.legs.length ? 'PASS' : 'UNKNOWN',
     'MG-14': t.expiryAt ? (Date.parse(cutoff) >= Date.parse(t.expiryAt) ? 'FAIL' : 'PASS') : 'NOT_APPLICABLE',
-    'MG-15': exact ? stepQuote?.status ?? 'UNKNOWN' : candidate && exit === 'PASS' ? 'PASS' : 'UNKNOWN',
+    'MG-15': candidate && exit === 'PASS' ? 'PASS' : 'UNKNOWN',
   };
-  const trace = traceManagementRows({ episode, features, profile, cutoff, stageInputs, stage, entryChecks, position: knownPosition, ledger, candidate, legSelection: rules.legSelection === 'ORDERED' ? next : null, statuses, exact, exitRowsStatus: exit, executionBasis: fingerprint, exitQuotes });
-  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: statuses[d.checkId] ?? 'UNKNOWN', ...trace[d.checkId] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
+  const checks = managementDefinitions.map(d => ({ checkId: d.checkId, checklistKind: 'MANAGEMENT' as const, managementRole: d.managementRole, requiredFor: d.requiredFor, status: rules[d.checkId] ?? 'UNKNOWN', reasonCode: rules[d.checkId] === 'UNKNOWN' ? 'INSUFFICIENT_EVIDENCE' : rules[d.checkId] === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED', featureRefs: [], evidenceRefs: [] })).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const thesisUnknown = checks.some(c => c.requiredFor === 'THESIS' && c.status === 'UNKNOWN');
-  const thesisState: ManagementResult['thesisState'] = safety === 'FAIL' || statuses['MG-03'] === 'FAIL' || invalidationStatus === 'TRUE' || statuses['MG-14'] === 'FAIL' ? 'INVALIDATED' : thesisUnknown ? 'UNVERIFIABLE' : supportStatus === 'FALSE' || statuses['MG-08'] === 'FAIL' ? 'WEAKENING' : 'VALIDATED';
-  const proposal: ManagementResult['proposal'] = thesisState === 'INVALIDATED' ? 'EXIT_REVIEW' : thesisState === 'UNVERIFIABLE' ? 'REASSESS_REQUIRED' : thesisState === 'WEAKENING' ? 'REDUCE_REVIEW' : statuses['MG-09'] === 'PASS' && statuses['MG-10'] === 'PASS' && triggerStatus === 'PASS' && statuses['MG-13'] === 'PASS' && statuses['MG-15'] === 'PASS' ? 'DCA_OUT_PROPOSED' : triggerStatus === 'FAIL' && statuses['MG-09'] !== 'UNKNOWN' && statuses['MG-10'] !== 'UNKNOWN' ? 'MAINTAIN_THESIS' : 'REASSESS_REQUIRED';
-  const positionContext: PositionContext = knownPosition && ledger && fingerprint ? {
-    status: 'KNOWN', positionId: knownPosition.id, mode: knownPosition.mode, units: 'ATOMIC', decimals: knownPosition.decimals,
-    initialQuantityAtomic: ledger.initialQuantityAtomic, remainingQuantityAtomic: ledger.remainingQuantityAtomic, knownCost: ledger.knownCost, quoteCurrency: knownPosition.quoteCurrency,
-    planBasis: basis && basis !== 'UNRESOLVED' ? { mode: basis.mode, anchorAt: basis.anchorAt, baseQuantityAtomic: basis.baseQuantityAtomic } : { mode: 'UNRESOLVED' },
-    executionBasis: fingerprint,
-  } : { status: 'NONE' };
-  return {
-    checks, thesisState, proposal,
-    ...(proposal === 'DCA_OUT_PROPOSED' && candidate ? { proposedQuantityAtomic: candidate.quantityAtomic, proposedLegId: candidate.legId, ...(exact && knownPosition ? { positionMode: knownPosition.mode } : {}) } : {}),
-    ...(proposal === 'EXIT_REVIEW' && rules.exitReviewQuantity && knownPosition && ledger ? { remainingQuantityAtomic: ledger.remainingQuantityAtomic, positionMode: knownPosition.mode, ...(remainingQuote ? { executionFeasibility: remainingQuote.feasibility } : {}) } : {}),
-    ...(exact ? { position: positionContext, ...(exitQuotes.length ? { exitQuotes } : {}) } : {}),
-  };
+  const thesisState: ManagementResult['thesisState'] = safety === 'FAIL' || exit === 'FAIL' || invalidationStatus === 'TRUE' || rules['MG-14'] === 'FAIL' ? 'INVALIDATED' : thesisUnknown ? 'UNVERIFIABLE' : supportStatus === 'FALSE' || rules['MG-08'] === 'FAIL' ? 'WEAKENING' : 'VALIDATED';
+  const proposal: ManagementResult['proposal'] = thesisState === 'INVALIDATED' ? 'EXIT_REVIEW' : thesisState === 'UNVERIFIABLE' ? 'REASSESS_REQUIRED' : thesisState === 'WEAKENING' ? 'REDUCE_REVIEW' : rules['MG-09'] === 'PASS' && rules['MG-10'] === 'PASS' && triggerStatus === 'PASS' && rules['MG-13'] === 'PASS' && rules['MG-15'] === 'PASS' ? 'DCA_OUT_PROPOSED' : triggerStatus === 'FAIL' && rules['MG-09'] !== 'UNKNOWN' && rules['MG-10'] !== 'UNKNOWN' ? 'MAINTAIN_THESIS' : 'REASSESS_REQUIRED';
+  return { checks, thesisState, proposal, ...(proposal === 'DCA_OUT_PROPOSED' && candidate ? { proposedQuantityAtomic: candidate.quantityAtomic, proposedLegId: candidate.legId } : {}) };
 }

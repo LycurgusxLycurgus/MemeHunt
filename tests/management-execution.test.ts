@@ -487,11 +487,13 @@ test('an imported quote can only be a labeled scenario: it never confirms a repo
     try {
       const entry = service.analyze({ ...fixtureBundle(full(), firstPlan), token });
       service.recordPosition(pos({ caseId: entry.caseId, mode }));
-      const step = service.reassess(entry.caseId, imported()).result.exitQuotes!.find(q => q.request.purpose === 'CANDIDATE_LEG')!.request;
+      const step = service.reassess(entry.caseId, imported()).result.exitQuotes!.find(q => q.request.purpose === 'REMAINING_POSITION')!.request;
       const r = service.reassess(entry.caseId, imported([fixtureExitProof(step, { evidenceIds: [typed.id], route: { adapter: 'operator-entry', venue: 'operator' } })])).result;
-      const quote = quoteFor(r, 'CANDIDATE_LEG')!;
-      if (mode === 'MANUAL_REPORTED') assert.deepEqual(verdict(r, 'MG-15'), ['UNKNOWN', 'EXIT_PROOF_UNVERIFIED']);
-      else assert.deepEqual([verdict(r, 'MG-15'), quote.trust, quote.label], [['PASS', 'RULE_SATISFIED'], 'SCENARIO', SCENARIO_QUOTE_LABEL]);
+      const quote = quoteFor(r, 'REMAINING_POSITION')!;
+      assert.equal(r.checks.find(c=>c.checkId==='MG-03')?.status,'UNKNOWN');
+      assert.notEqual(r.proposal,'DCA_OUT_PROPOSED');
+      if (mode === 'MANUAL_REPORTED') assert.deepEqual([quote.status,quote.reasonCode], ['UNKNOWN', 'EXIT_PROOF_UNVERIFIED']);
+      else assert.deepEqual([quote.status, quote.trust, quote.label], ['PASS', 'SCENARIO', SCENARIO_QUOTE_LABEL]);
     } finally { service.close(); rmSync(directory, { recursive: true, force: true }); }
   }
 });
@@ -532,8 +534,8 @@ test('the CLI shows the quote request, proposes the proven sale with its positio
   try {
     const db = join(directory, 'dd.sqlite');
     const cli = (...args: string[]) => {
-      const r = spawnSync(process.execPath, ['dist/src/cli.js', ...args, '--db', db], { encoding: 'utf8' });
-      return { status: r.status, out: r.stdout ? JSON.parse(r.stdout) : null, err: r.stderr };
+      const r = spawnSync(process.execPath, ['dist/src/cli.js', ...args, '--json', '--db', db], { encoding: 'utf8' });
+      return { status: r.status, out: r.stdout ? JSON.parse(r.stdout) : null, err: r.stderr.replace(/^bigint: Failed to load bindings, pure JS will be used \(try npm run rebuild\?\)\r?\n/, '') };
     };
     const file = (name: string, value: unknown) => { const f = join(directory, name); writeFileSync(f, JSON.stringify(value)); return f; };
     const entry = cli('analyze', 'FIXTURE_TOKEN', '--chain', 'solana', '--bundle', file('entry.json', fixtureBundle(full(), firstPlan)));

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { EntryCheckResult, ExecutionBasisRef, ExitQuoteCheck, FeatureResult, ManagementBasisRef, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from './contracts.js';
+import type { EntryCheckResult, ExecutionBasisRef, ExitQuoteCheck, FeatureResult, ManagementBasisRef, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
 import type { ExitProofReason } from './exit-proof.js';
 import type { LedgerState, LegSelection } from './ledger.js';
 import { combineExplanations, evaluateManagement, explainPredicate, predicateRefs, usable, type ExecutionInputs, type PredicateExplanation, type StageInputs } from './policy.js';
@@ -16,6 +16,8 @@ export const MANAGEMENT_RULES: Readonly<Record<string, ManagementRules>> = {
   'thesis-management-v5': { legSelection: 'ALL_TRIGGERS', exitReviewQuantity: false, executionBasis: false },
   // v6: MG-12 follows the sale proposal's leg order; EXIT_REVIEW states remaining quantity and position mode (packet 2).
   'thesis-management-v6': { legSelection: 'ORDERED', exitReviewQuantity: true, executionBasis: false },
+  // v8: qualified live entry rows with the v7 exact-quantity management contract.
+  'thesis-management-v8': { legSelection: 'ORDERED', exitReviewQuantity: true, executionBasis: true },
   // v7: successors are measured by their declared plan basis; MG-03 needs exact proof for the remaining holding and MG-15 for the candidate leg,
   // both bound to the execution-basis fingerprint; every position-derived amount carries its position context (round two).
   'thesis-management-v7': { legSelection: 'ORDERED', exitReviewQuantity: true, executionBasis: true },
@@ -210,13 +212,13 @@ export function toLegacyManagementResult(result: ManagementResult): ManagementRe
   };
 }
 
-type ManagementInputs = [episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs?: StageInputs, execution?: ExecutionInputs];
+type ManagementInputs = [episode: ThesisEpisode, features: FeatureResult[], position: PositionRecord | null, events: PositionEvent[], profile: Profile, cutoff: string, stageInputs?: StageInputs, execution?: ExecutionInputs, attentionPolicy?: 'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4', social?: SocialPolicyFacts];
 
 /** Evaluates management with the rules and result shape of a recorded label; unknown labels fail closed. Labels before v7 ignore execution inputs. */
-export function evaluateManagementAs(policyVersion: unknown, ...[episode, features, position, events, profile, cutoff, stageInputs, execution]: ManagementInputs): ManagementResult {
+export function evaluateManagementAs(policyVersion: unknown, ...[episode, features, position, events, profile, cutoff, stageInputs, execution, attentionPolicy, social]: ManagementInputs): ManagementResult {
   const legacy = typeof policyVersion === 'string' && LEGACY_MANAGEMENT_POLICY_VERSIONS.includes(policyVersion);
   const rules = legacy ? MANAGEMENT_RULES['thesis-management-v5'] : typeof policyVersion === 'string' && Object.hasOwn(MANAGEMENT_RULES, policyVersion) ? MANAGEMENT_RULES[policyVersion] : undefined;
   if (!rules) throw new Error('UNSUPPORTED_POLICY_VERSION');
-  const result = evaluateManagement(episode, features, position, events, profile, cutoff, stageInputs, rules, execution);
+  const result = evaluateManagement(episode, features, position, events, profile, cutoff, stageInputs, rules, execution, policyVersion==='thesis-management-v8'?attentionPolicy:'LEGACY', policyVersion==='thesis-management-v8'?social:undefined);
   return legacy ? toLegacyManagementResult(result) : result;
 }

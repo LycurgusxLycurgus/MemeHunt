@@ -1,0 +1,122 @@
+import { entryDefinitions, featureMetadata } from '../domain/catalog.js';
+import { evaluatePredicate } from '../domain/policy.js';
+import type { BaselineAssessment, MissingCause } from '../domain/baseline.js';
+import type { AssessmentDetails, EntrySnapshot, ManagementSnapshot, Predicate } from '../domain/contracts.js';
+
+type Snapshot=EntrySnapshot|ManagementSnapshot;
+export const cleanText=(value:unknown,max=400)=>String(value??'').replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
+const names:Record<string,string>={'ID-01':'Token identity','CTX-01':'Your trade settings','CAP-01':'Chain and venue coverage','SEC-01':'Supply authority','SEC-02':'Transfer restrictions','SEC-03':'Program controls','SEC-04':'Transfer fees','SEC-05':'Venue provenance','LIQ-01':'Liquidity withdrawal exposure','EXE-01':'Entry and acquired-size exit','EXE-02':'Trade friction and costs','EXE-03':'Read-only simulation','OWN-01':'Holder coverage','OWN-02':'Owner/control concentration','MKT-01':'Valuation and scoped activity','NAR-01':'Narrative and game','NAR-02':'Origin and catalyst','NAR-03':'Explainable thesis','CAN-01':'Competing representations','CAN-02':'Observed leadership','ATT-01':'Qualified attention sample','ATT-02':'Attention or community growth','SOC-01':'Social identity binding','SOC-02':'Source integrity','SOC-03':'Independent participation','DAT-01':'Freshness and completeness','DAT-02':'Semantic qualification','DAT-03':'Conflicts','ADV-01':'Ownership patterns','ADV-02':'Flow patterns','ADV-03':'Attention context','ADV-04':'Actor context','ADV-05':'Market and lifecycle context','MG-01':'Frozen baseline','MG-02':'Current integrity','MG-03':'Exit feasibility','MG-04':'Thesis evidence','MG-05':'Age and cap context','MG-06':'Thesis support','MG-07':'Invalidation clear','MG-08':'Catalyst','MG-09':'On-chain traction','MG-10':'External traction','MG-11':'Warnings','MG-12':'Realization trigger','MG-13':'Position and exit plan','MG-14':'Holding horizon','MG-15':'Proposal feasibility'};
+export function predicateRefs(p:Predicate):string[]{return 'feature' in p?[p.feature]:p.children.flatMap(predicateRefs);}
+function describePredicate(p:Predicate):string {
+  if('children' in p)return '('+p.children.map(describePredicate).join(p.op==='all'?' AND ':' OR ')+')';
+  const name=featureMetadata.find(f=>f.id===p.feature)?.name??p.feature;
+  const operator={eq:'=',lt:'<',lte:'≤',gt:'>',gte:'≥'}[p.op];
+  return `${p.feature} ${cleanText(name,70)} ${operator} ${cleanText(p.value)} ${cleanText(p.unit)}`;
+}
+const managementRefs=(id:string,details?:AssessmentDetails):string[]=>{
+  const t=details?.thesis;
+  if(id==='MG-02')return entryDefinitions.filter(d=>['SEC-01','SEC-02','SEC-03','SEC-04','SEC-05','LIQ-01'].includes(d.checkId)).flatMap(d=>d.featureIds);
+  if(id==='MG-03'||id==='MG-15')return ['O10','O11','O13','O14','O15','O16'];
+  if(id==='MG-05')return [];
+  if(!t)return [];
+  const ps=id==='MG-04'?[...t.support,...t.invalidation,...(t.catalyst?[t.catalyst]:[])]:id==='MG-06'?t.support:id==='MG-07'?t.invalidation:id==='MG-08'?t.catalyst?[t.catalyst]:[]:id==='MG-09'?t.onchainTraction?[t.onchainTraction]:[]:id==='MG-10'?t.externalTraction?[t.externalTraction]:[]:id==='MG-11'?t.warning?[t.warning]:[]:id==='MG-12'?t.legs.map(l=>l.trigger):[];
+  return [...new Set(ps.flatMap(predicateRefs))];
+};
+const riskKeys:Record<string,string[]>={'CTX-01':['sizeUsd','horizonSeconds','maxTransferFeeBps','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps','maxDirectControlShare','maxRemovableLiquidityShare'],'SEC-04':['maxTransferFeeBps'],'LIQ-01':['maxRemovableLiquidityShare'],'OWN-02':['maxDirectControlShare'],'EXE-02':['sizeUsd','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps']};
+export function explainChecks(snapshot:Snapshot,details=snapshot.details) {
+  return snapshot.result.checks.map(check=>{
+    const refs=check.featureRefs.length?check.featureRefs:managementRefs(check.checkId,details);
+    const assessments=refs.flatMap(id=>details?.baseline.find(a=>a.id===id)?[details.baseline.find(a=>a.id===id)!]:[]);
+    const causes:MissingCause[]=[];
+    if(check.checkId==='MG-05'&&check.status==='UNKNOWN'){
+      for(const field of ['circulatingMarketCapUsd','tokenCreatedAt'] as const)if(details?.stageInputs[field]===null||!details)causes.push({category:snapshot.analysisKind==='LIVE'?'COLLECTION_UNIMPLEMENTED':'EVIDENCE_UNAVAILABLE',code:field==='tokenCreatedAt'?'TOKEN_CREATION_EVIDENCE_MISSING':'CIRCULATING_CAP_EVIDENCE_MISSING',featureId:'C01',field,evidenceIds:[],action:field==='tokenCreatedAt'?'Supply independently qualified token creation evidence; pool age is not mint age.':'Supply independently qualified circulating supply and valuation; FDV is not circulating cap.'});
+      if(!details?.profile.stage.ageBands.length)causes.push({category:'USER_INPUT_MISSING',code:'AGE_BANDS_MISSING',featureId:'C01',field:'stage.ageBands',evidenceIds:[],action:'Choose explicit age bands in the saved profile; no course-specific age threshold is invented.'});
+    }
+    if(check.status==='UNKNOWN'&&check.checkId==='MG-15'&&snapshot.result.checks.some(c=>c.checkId==='MG-13'&&c.status==='UNKNOWN'))causes.push({category:'USER_INPUT_MISSING',code:'PLAN_OR_POSITION_INCOMPLETE',featureId:'C10',evidenceIds:[],action:'Specify ordered realization legs and record a position with known cost before requesting a quantified proposal.'});
+    for(const field of riskKeys[check.checkId]??[])if(!details?.profile||((field==='sizeUsd'||field==='horizonSeconds')?details.profile[field]===undefined:details.profile.risk[field]===undefined))causes.push({category:'USER_INPUT_MISSING',code:'PROFILE_FIELD_MISSING',featureId:refs[0]??'C01',field,evidenceIds:[],action:'Run config init to choose and save this setting; historical snapshots stay unchanged.'});
+    if(check.status==='UNKNOWN'||check.checkId==='SOC-02'&&check.status==='FAIL')for(const id of refs){const a=assessments.find(a=>a.id===id),f=snapshot.features.find(f=>f.id===id);if(a?.causes.length)causes.push(...a.causes);else if(!f||f.quality!=='KNOWN'||f.value===null)causes.push({category:a?.collector==='UNIMPLEMENTED'?'COLLECTION_UNIMPLEMENTED':'EVIDENCE_UNAVAILABLE',code:f?.quality??'FEATURE_ABSENT',featureId:id,evidenceIds:f?.evidenceIds??[],action:a?.collector==='UNIMPLEMENTED'?'Complete the named evidence collector.':'Supply qualified, fresh evidence for this feature in a new analysis.'});}
+    if(check.status==='UNKNOWN'&&!causes.length){const missingPlan=['MG-09','MG-10','MG-12','MG-13','MG-15'].includes(check.checkId);causes.push({category:missingPlan?'USER_INPUT_MISSING':'EVIDENCE_UNAVAILABLE',code:missingPlan?'PLAN_OR_POSITION_INCOMPLETE':'DEPENDENCY_NOT_VERIFIED',featureId:refs[0]??'C10',evidenceIds:[],action:missingPlan?'Specify traction/exit predicates and record a hypothetical or reported position; no quantity is invented.':'Inspect the row evidence and frozen predicate; absence does not imply safety.'});}
+    const unique=[...new Map(causes.map(c=>[`${c.category}:${c.code}:${c.featureId}:${c.field??''}`,c])).values()];
+    const socialJudgment=check.checkId==='SOC-01'?details?.social?.identityReview:check.checkId==='SOC-02'?details?.social?.integrityReview:undefined;
+    return {socialJudgment,checkId:check.checkId,name:names[check.checkId]??check.checkId,status:check.status,featureRefs:refs,evidenceRefs:[...new Set([...check.evidenceRefs,...assessments.flatMap(a=>a.evidenceIds)])],values:refs.map(id=>{const f=snapshot.features.find(f=>f.id===id);return {id,name:details?.social&&id==='S05'?'Public account age and activity':details?.social&&id==='S04'?'Sampled synchrony contrast':featureMetadata.find(m=>m.id===id)?.name??id,value:f?.value??null,unit:f?.unit??null,quality:f?.quality??'MISSING'};}),thresholds:(riskKeys[check.checkId]??[]).map(field=>({field,value:field==='sizeUsd'?details?.profile.sizeUsd:field==='horizonSeconds'?details?.profile.horizonSeconds:details?.profile.risk[field]})),causes:unique};
+  });
+}
+const categoryText:Record<MissingCause['category'],string>={USER_INPUT_MISSING:'missing setting',EVIDENCE_UNAVAILABLE:'evidence unavailable',COLLECTION_UNIMPLEMENTED:'collection not implemented',CLAIM_UNVALIDATED:'claim not validated'};
+export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDetails;checklist?:boolean;check?:string;evidence?:boolean}={}):string {
+  const details=options.details??snapshot.details,rows=explainChecks(snapshot,details),lines:string[]=[];
+  if(options.check){const row=rows.find(r=>r.checkId===options.check);if(!row)throw new Error('CHECK_NOT_FOUND');lines.push(`${row.checkId} ${row.name}: ${row.status}`,...row.values.map(v=>`  ${v.id} ${cleanText(v.name)}: ${cleanText(v.value??'unknown')} ${cleanText(v.unit)} (${v.quality})`),...row.thresholds.map(t=>`  Your ${t.field}: ${cleanText(t.value??'unset')}`),...row.causes.map(c=>`  ${categoryText[c.category]} / ${c.code}: ${cleanText(c.action)}`));if(row.socialJudgment){lines.push(`  Public-evidence review: ${row.socialJudgment.verdict} — ${cleanText(row.socialJudgment.rationale)}`);if(row.socialJudgment.missingIndicators.length)lines.push(`  Desired indicators unavailable: ${row.socialJudgment.missingIndicators.join(', ')}. Missing statistics are visibility risks, not proof of fraud, bots or manipulation.`);if(row.checkId==='SOC-01'&&row.status==='FAIL')lines.push('  Inadequate or contradicted public identity evidence does not prove impersonation.');}if(options.evidence)lines.push(...snapshot.evidence.filter(e=>row.evidenceRefs.includes(e.id)).map(e=>`  Evidence ${cleanText(e.id)}: ${cleanText(e.sourceId)} / ${e.accessMode}, retrieved ${e.retrievedAt}, SHA256 ${e.contentHash}`));return lines.join('\n')+'\n';}
+  const title=snapshot.checklistKind==='ENTRY'?`ENTRY — ${snapshot.result.classification.replaceAll('_',' ')}`:`MANAGEMENT — ${snapshot.result.thesisState}`;
+  const mode='analysisKind' in snapshot?snapshot.analysisKind:undefined;
+  lines.push(title,`Evidence mode: ${mode??'saved management inputs'}${mode==='FIXTURE'?' — SYNTHETIC TEST SCENARIO; not a live token assessment':''}`,`Token: ${cleanText(snapshot.token?`${snapshot.token.chain} ${snapshot.token.address}`:'saved case '+snapshot.caseId)}`,`As of: ${snapshot.cutoff}`);
+  if(details)lines.push(`Scenario: $${details.profile.sizeUsd??'unset'} / ${details.profile.horizonSeconds===undefined?'unset horizon':`${details.profile.horizonSeconds/3600} hours`} / ${cleanText(details.profile.id)}`,`Risk limits: transfer ${details.profile.risk.maxTransferFeeBps??'unset'} bps; entry ${details.profile.risk.maxEntryImpactBps??'unset'} bps; exit ${details.profile.risk.maxExitImpactBps??'unset'} bps; round trip ${details.profile.risk.maxRoundTripLossBps??'unset'} bps; control ${details.profile.risk.maxDirectControlShare??'unset'}; removable liquidity ${details.profile.risk.maxRemovableLiquidityShare??'unset'}.`,`Settings origin: ${cleanText(Object.entries(details.origins).map(([k,v])=>`${k}=${v}`).join(', '))||'frozen snapshot'}. Preset thresholds are uncalibrated; friction is not a price stop.`);
+  else lines.push('Legacy snapshot: detailed settings/diagnostics were not stored in this envelope. Use explain to inspect its frozen checks.');
+  if(snapshot.checklistKind==='ENTRY')lines.push(`Required coverage: ${snapshot.result.coverage.known}/${snapshot.result.coverage.total}. Unknown is missing evidence, not a detected-rug finding.`);
+  else lines.push(`Baseline: ${snapshot.baselineSnapshotId} / episode ${snapshot.episodeId}`,`Proposal: ${snapshot.result.proposal}${snapshot.result.proposedQuantityAtomic?` (${snapshot.result.proposedQuantityAtomic} token atoms)`:'; no execution'}`);
+
+  if(snapshot.checklistKind==='MANAGEMENT'){
+    const position=snapshot.result.position;
+    if(position?.status==='KNOWN')lines.push(`Position: ${position.mode}; remaining ${position.remainingQuantityAtomic} token atoms; decimals ${position.decimals}`);
+    else if(position)lines.push('Position: missing; no quantity is invented.');
+    for(const quote of snapshot.result.exitQuotes??[])lines.push(`Exit quote ${quote.request.purpose}: ${quote.status} / ${quote.reasonCode}; quantity ${quote.request.quantityAtomic} token atoms; leg ${quote.request.legId??'all remaining'}; basis ${quote.request.executionBasis.fingerprint}${quote.label?`; ${cleanText(quote.label)}`:''}`);
+  }
+  if(snapshot.checklistKind==='ENTRY')for(const pillar of ['ONCHAIN','ATTENTION','SOCIAL','SHARED'] as const){const checks=snapshot.result.checks.filter(c=>c.pillar===pillar&&c.required);lines.push(`${pillar.toLowerCase()} pillar: ${checks.filter(c=>c.status==='PASS').length} supported, ${checks.filter(c=>c.status==='FAIL').length} contradicted, ${checks.filter(c=>c.status==='UNKNOWN').length} unknown.`);}
+  const market=snapshot.market?.pairs.find(p=>p.mintSide==='base'&&p.priceUsd!==null);
+  if(market)lines.push(`Market observation: $${market.priceUsd}/token; displayed liquidity $${market.liquidityUsd??'unknown'}; rolling 24h volume $${market.volume24hUsd??'unknown'}. This is not executable depth.`);
+  if(snapshot.collection)lines.push(`Sources: RPC ${snapshot.collection.rpc.state}${snapshot.collection.rpc.code?`/${snapshot.collection.rpc.code}`:''}; DEX ${snapshot.collection.dex.state}; web ${snapshot.collection.web.state}${snapshot.collection.web.code?`/${snapshot.collection.web.code}`:''}.`);
+  const recovered=snapshot.evidence.filter(e=>e.scope.method==='tinyfish-live-dex-json-v1').map(e=>e.id);
+  if(recovered.length)lines.push(`Market recovery: free TinyFish live Fetch (${recovered.join(', ')}); original direct responses retained. Recovery does not certify market accuracy.`);
+  const feeRetries=snapshot.evidence.filter(e=>e.id.endsWith('-min-context-recovery'));
+  if(feeRetries.length)lines.push(`Fee recovery: ${feeRetries.length} bounded retries while the RPC caught up to the required finalized slot; the slot requirement and quote expiry were preserved.`);
+  if(snapshot.evidence.some(e=>e.id==='social-repair-selection'))lines.push('Social review recovery: one reassessment and fresh independent review were attempted; the original rejection is retained. Only an accepted review can change the result.');
+  if(snapshot.semantic)lines.push(`Semantic extraction: ${snapshot.semantic.status}, ${snapshot.semantic.claims.length} claims. ${snapshot.semantic.status==='VALIDATED'?'Validated means source-qualified by automated review, not verified real-world truth.':'Candidates are source claims, not verified checklist evidence.'}`);
+  if(details?.shared){const s=details.shared;lines.push(`Shared evidence: ${s.witnesses.filter(w=>w.status!=='UNKNOWN').length}/${s.witnesses.length} required decisions resolved; semantic receipts ${s.semanticQualified?'qualified':'incomplete'}; conflict audit ${s.auditQualified?'qualified':'incomplete'} (${s.conflicts.length} scoped conflicts).`);if(s.unresolved.length)lines.push(`Shared coverage waits for: ${s.unresolved.join(', ')}.`);lines.push('Growth compares two equal time bins in the reviewed fixed sample. Data-quality checks assess this decision scope; they do not certify token truth or platform-wide coverage.');}
+  if(details?.social){
+    const s=details.social;
+    for(const [label,judgment] of [['Identity verifiability',s.identityReview],['Source integrity',s.integrityReview]] as const)if(judgment){
+      lines.push(`  ${label}: ${judgment.verdict} — ${cleanText(judgment.rationale)}`);
+      if(judgment.missingIndicators.length)lines.push(`    Desired indicators unavailable: ${judgment.missingIndicators.map(indicator=>cleanText(indicator)).join(', ')}. Missing statistics are visibility risks, not proof of fraud, bots or manipulation.`);
+    }
+    if(s.identityReview?.verdict==='CONTRADICTED')lines.push('  SOC-01 FAIL concerns inadequate or contradicted public identity evidence; it does not prove impersonation.');
+    lines.push(`Social assessment: automated extraction and independent source review when available, ${s.start} to ${s.end}. Accounts are not people; public binding is not an authenticity guarantee.`,
+      `  Sample: ${s.qualifiedOriginalCount??'unknown'} qualified original posts; ${s.accountUpperBound??'unknown'} source accounts; ${s.sampleComplete?'complete within the declared query sample':'incomplete query/review scope'}.`,
+      `  Independent origins: ${s.independentGroupCount??'unknown'}; communities: ${s.independentCommunityCount??'unknown'}; ${s.lineageComplete?'source lineage qualified':'source lineage unresolved'}. Participation threshold: 3 accounts / 2 origins / 2 communities.`);
+    const identity=details.baseline.find(a=>a.id==='S01')?.data as {claims?:Array<{accountId:string;status:string}>}|undefined;
+    for(const claim of identity?.claims??[])lines.push(`  Account ${cleanText(claim.accountId)}: ${cleanText(claim.status)}.`);
+    const metrics=details.baseline.find(a=>a.id==='S06')?.data as {required?:number;coverage?:Record<string,number>}|undefined;
+    if(metrics?.coverage)lines.push(`  Exact engagement fields: likes ${metrics.coverage.likes}/${metrics.required}; replies ${metrics.coverage.replies}/${metrics.required}; reposts ${metrics.coverage.reposts}/${metrics.required}. Missing fields are not zero.`);
+    const history=details.baseline.find(a=>a.id==='S05')?.data as {indicators?:Array<{createdAt:string|null;historyPosts:number}>}|undefined;
+    if(history?.indicators)lines.push(`  Account evidence: ${history.indicators.filter(a=>a.createdAt!==null).length}/${history.indicators.length} exact creation dates; ${history.indicators.filter(a=>a.historyPosts>=3).length}/${history.indicators.length} accounts with at least 3 dated original history posts.`);
+    const synchrony=details.baseline.find(a=>a.id==='S04')?.data as {currentPeakFraction?:string|null;previousPeakFraction?:string|null;previousOriginals?:number}|undefined;
+    if(synchrony?.currentPeakFraction!==undefined)lines.push(`  Minute synchrony: current peak fraction ${synchrony.currentPeakFraction??'unknown'}; prior equal-window peak ${synchrony.previousPeakFraction??'unknown'} (${synchrony.previousOriginals??0} prior originals). This is an uncalibrated sample contrast, not manipulation proof.`);
+    for(const id of ['S04','S05']){const a=details.baseline.find(a=>a.id===id);if(a?.causes.length)lines.push(`  ${id}: ${a.causes.map(c=>cleanText(c.code)).join('; ')}.`);}
+    const participation=rows.find(r=>r.checkId==='SOC-03');if(participation?.status==='FAIL'&&s.sampleComplete&&s.accountUpperBound!==null&&s.accountUpperBound<3)lines.push(`  SOC-03: the complete reviewed sample contains at most ${s.accountUpperBound} qualifying accounts, below 3. This bounded shortfall does not establish platform-wide inactivity.`);
+  }
+  const attention=details?.baseline.filter(a=>a.limitations.some(l=>l.startsWith('automated-source-review-v1')))??[];
+  if(attention.length){
+    lines.push('Attention qualification: two-pass automated source review. Describes cited source claims and a bounded search sample; it does not verify real-world claims or measure all social traffic.');
+    for(const id of ['A01','A02','A03','A04','A05']){const a=attention.find(a=>a.id===id);const data=a?.data as {summary?:string}|undefined;if(data?.summary)lines.push(`  ${featureMetadata.find(f=>f.id===id)?.name}: ${cleanText(data.summary)}`);}
+    const sample=attention.find(a=>a.id==='A16'),authors=attention.find(a=>a.id==='A17');
+    if(sample?.quality==='KNOWN')lines.push(`  Observed qualified posts: ${sample.projection?.value}; source accounts: ${authors?.projection?.value??'unknown'} (sample threshold: 10 posts / 3 accounts).`);
+    const representation=attention.find(a=>a.id==='A14')?.data as {method?:string;originRelationship?:{status:string;rationale:string};measuredAttention?:{status:string;shares:Array<{token:{chain:string;address:string};count:string;share:string|null}>};basis?:string}|undefined;
+    if(representation?.method==='representation-routes-v2'){
+      lines.push(`  Origin relationship: ${representation.originRelationship?.status??'UNKNOWN'} — ${cleanText(representation.originRelationship?.rationale)}`);
+      lines.push(`  Measured attention leadership: ${representation.measuredAttention?.status??'UNKNOWN'} (common-query sample; minimum 10 qualifying posts / 3 accounts / 2 representations).`);
+      if(representation.basis==='ORIGIN')lines.push('  CAN-02 basis: origin-supported representation. Attention popularity is evaluated separately; origin support does not establish safety or authenticity.');
+      else if(representation.basis==='MEASURED_ATTENTION')lines.push('  CAN-02 basis: unique measured attention leadership within the discovered sample.');
+      const shares=representation.measuredAttention?.shares??[];
+      for(const share of shares.slice(0,10))lines.push(`    ${cleanText(share.token.chain)}:${cleanText(share.token.address)} — ${cleanText(share.count)} weighted mentions${representation.measuredAttention?.status!=='UNKNOWN'?`; share ${cleanText(share.share)}`:'; insufficient comparative sample'}.`);
+    }
+  }
+  if(snapshot.checklistKind==='ENTRY'){const failures=rows.filter(r=>r.status==='FAIL');if(failures.length)lines.push(`Known entry contradictions: ${failures.map(r=>`${r.checkId} ${r.name}`).join('; ')}. Inspect these rows before addressing missing evidence.`);}
+  const program=details?.baseline.find(a=>a.id==='O05');if(program?.projection?.quality==='KNOWN'&&program.projection.value===false)lines.push('Program-control finding: an upgrade authority was observed on the shared token program. This fails the current immutable-program rule; it does not identify a token-specific rug.');
+  const comparison=details?.baseline.find(a=>a.id==='A09');
+  const adequacy=(comparison?.data as {evidenceAdequacy?:{rationale:string}}|undefined)?.evidenceAdequacy;
+  if(comparison?.projection?.quality==='KNOWN'&&comparison.projection.value===false&&adequacy)lines.push(`Public representation evidence: inadequate after independent source review — ${cleanText(adequacy.rationale)}. This screening failure does not prove another competing token or fraud.`);
+  if(details?.thesis){const t=details.thesis;const support=t.support.map(p=>({p,truth:evaluatePredicate(p,snapshot.features,snapshot.cutoff)})),invalid=t.invalidation.map(p=>({p,truth:evaluatePredicate(p,snapshot.features,snapshot.cutoff)}));lines.push(`Thesis: ${snapshot.checklistKind==='ENTRY'?(snapshot.result.binary==='PASS'?'eligible entry thesis':'proposed; management not started'):'frozen baseline comparison'}.`);for(const [label,xs] of [['Supports',support.filter(p=>p.truth==='TRUE')],['Contradicts',[...support.filter(p=>p.truth==='FALSE'),...invalid.filter(p=>p.truth==='TRUE')]],['Thesis unknown',[...support,...invalid].filter(p=>p.truth==='UNKNOWN')]] as const)lines.push(`${label}: ${xs.length?xs.map(x=>describePredicate(x.p)).join('; '):'none established'}.`);lines.push(`Plan readiness: ${t.legs.length&&t.onchainTraction&&t.externalTraction?'SPECIFIED':'INCOMPLETE (traction/realization not fully specified)'}. Expiry: ${t.expiryAt??'none selected'}.`);}
+  lines.push('',`${snapshot.checklistKind==='ENTRY'?'Entry':'Management'} checklist:`);
+  const selected=options.checklist?rows:rows.filter(r=>!r.checkId.startsWith('ADV-'));
+  for(const row of selected){const tags=[...new Set(row.causes.map(c=>categoryText[c.category]))];if(row.status==='UNKNOWN'&&row.featureRefs.some(id=>/^[OAS]/.test(id)))tags.push(...[...new Set(row.causes.map(c=>c.code))].slice(0,2));lines.push(`  ${row.status.padEnd(14)} ${row.checkId} ${row.name}${row.status==='UNKNOWN'?` — ${tags.join('; ')}`:''}`);}
+  const actions=[...new Set(rows.flatMap(r=>r.status==='UNKNOWN'?r.causes.map(c=>c.action):[]))];
+  lines.push('','Next actions:',...actions.slice(0,6).map(a=>`  - ${cleanText(a)}`),`  - Inspect a row offline: explain ${snapshot.id} --check <ID> --evidence`,`Snapshot: ${snapshot.id}`);
+  return lines.join('\n')+'\n';
+}

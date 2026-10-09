@@ -14,7 +14,11 @@ Docs commit: docs: record history cleanup limits
 Repository: https://github.com/LycurgusxLycurgus/MemeHunt
 ```
 
-The owner's current branch is `codex/entry-workflow-production`, with substantial **uncommitted** Checklist 1 work. Its HEAD still equals this published commit. A clone of that SHA does not receive the new work. This agreement and the [Checklist 2 handoff](handoffs/checklist-2-collaborator.md) may initially arrive out of band; use the supplied versions even when the old checkout contains the previous ownership agreement. Publishing these documents does not imply publishing the runtime work.
+At that initial 2026-10-05 checkpoint, the owner's `codex/entry-workflow-production` branch had substantial uncommitted Checklist 1 work and its HEAD matched this published commit. Those are starting-state facts, not a claim about the current topic-branch tip. A clone of the common base does not receive later work. This agreement and the [Checklist 2 handoff](handoffs/checklist-2-collaborator.md) may initially arrive out of band; use the supplied versions even when an older checkout contains the previous ownership agreement. Publishing these documents does not imply Checklist 2 integration.
+
+## Current owner Checklist 1 publication checkpoint (2026-10-08)
+
+The owner has completed accepted Checklist 1 work through Shared evidence qualification on `codex/entry-workflow-production`. The latest independent implementation review returned PASS; typecheck/build and the full suite passed, with 701/701 tests. This software acceptance does not complete Checklist 2 or establish its separate real-CA zero-UNKNOWN gate. The owner work is being published on its topic branch; it is not merged into `main` or `codex/checklist-2`. Use the published topic-branch SHA for any later integration and follow the human review gates below.
 
 | Area | Published starting commit | Newer owner working tree; unavailable until published |
 |---|---|---|
@@ -22,7 +26,7 @@ The owner's current branch is `codex/entry-workflow-production`, with substantia
 | Entry | 33-check catalog, feature/evidence bundles, evaluation and saved-thesis activation | Saved workflow profiles, 61-feature baseline derivation, live collection and qualified attention/social policies |
 | Management | MG-01 through MG-15, evaluation, stage resolver, frozen episodes, reassessment, manual ledger, ordered exit proposals, successors, replay and journal | Qualified inputs, assessment details and newer shared policy dispatch; full plan remains incomplete |
 | Acquisition | Some provider files; not today's live pipeline | Solana mint/control/holder acquisition, bounded canonical WSOL PumpSwap path, attention/comparison recovery and social work |
-| Evidence of readiness | Existing offline foundation to extend | Recorded validations for prior local changes; latest supplied social completion cycle is unfinished |
+| Evidence of readiness | Existing offline foundation to extend | Accepted owner validations through Shared completion; typecheck/build and 701/701 tests passed. Checklist 2 integration and its real-CA completion gate remain separate. |
 
 Four chain identifiers do not imply complete live coverage. Solana, BSC, Base and Robinhood remain the intended first coverage set; unsupported chains and venues report partial support. Current local EVM acquisition is explicitly unimplemented. Free data first and configurable limits remain the direction. Acquisition failure is not a token-level negative finding.
 
@@ -69,7 +73,7 @@ The next collaborator result must include the actual HOLD/reduction/EXIT_NOW dec
 
 ## Ownership by behavior
 
-**Checklist 1 owner (project owner)** owns entry rules/verdicts; on-chain, attention and social acquisition/qualification; existing `src/providers/`; `src/app/live.ts`; entry projection/configuration/reporting; and entry/provider/semantic tests. This includes finishing the active social cycle. The owner temporarily coordinates shared-file integration while the newer tree remains unpublished.
+**Checklist 1 owner (project owner)** owns entry rules/verdicts; on-chain, attention and social acquisition/qualification; existing `src/providers/`; `src/app/live.ts`; entry projection/configuration/reporting; and entry/provider/semantic tests. Accepted social and Shared capabilities remain bounded by their documented source limits. The owner coordinates shared-file integration until the newer tree is integrated into the common base.
 
 **Checklist 2 owner (collaborator)** owns management rules/explanations; frozen-thesis comparison; consumed exit-leg behavior; manual-position accounting; management scenarios/fixtures/tests; and management documentation. Extend the existing foundation. Add focused management modules/tests where that makes older-base work independently reviewable; do not build duplicate ingestion or a second permanent management engine.
 
@@ -158,4 +162,4 @@ A release packet gives commit/base SHA, problem/resulting behavior, changed cont
 
 The repository is public. Keep credentials, `.env`, private endpoint URLs, operator positions/journal, raw model envelopes/thoughts, private transcripts and `.data/` out of commits and public handoffs. Share synthetic/redacted fixtures. Ignore rules also exclude `AGENTS.md`, `bridgecode/` and `agentic/analysis.md`; collaborators may not have them. Follow applicable supplied instructions, but do not depend on private files or add them to Git to make this handoff work.
 
-Each clone maintains its own active checklist. Read `agentic/architecture.md`, verify it against checked-out source, and add management knowledge in scoped sections. Preserve unfinished social work if operating in the owner's directory. In this planning chat, the main agent does planning directly; use sub-agents only for reviews required by applicable Bridgecode instructions. Agent review does not replace the other person's integration review.
+Each clone maintains its own active checklist. Read `agentic/architecture.md`, verify it against checked-out source, and add management knowledge in scoped sections. Preserve any active owner work if operating in the owner's directory. In this planning chat, the main agent does planning directly; use sub-agents only for reviews required by applicable Bridgecode instructions. Agent review does not replace the other person's integration review.

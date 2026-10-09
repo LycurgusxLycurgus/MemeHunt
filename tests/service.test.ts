@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { Service } from '../src/app/service.js';
 import type { ManagementResult } from '../src/domain/contracts.js';
@@ -44,6 +48,32 @@ test('passing entry activates a frozen thesis and reassessment preserves the bas
     assert.deepEqual(service.replay(management.id), management);
   } finally {
     service.close();
+  }
+});
+
+test('new entry v2 and management v7 snapshots replay unchanged', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dd-attention-policy-versions-'));
+  const path = join(directory, 'snapshots.sqlite');
+  const service = new Service(path);
+  try {
+    const entry = service.analyze(fixtureBundle(completeFixtureEntryFeatures(), illustrativeFixtureThesis));
+    const management = service.reassess(entry.caseId, fixtureBundle(completeFixtureEntryFeatures(), undefined, fixtureStageObservations));
+    assert.deepEqual(service.replay(entry.id), entry);
+    assert.deepEqual(service.replay(management.id), management);
+    service.close();
+
+    const db = new DatabaseSync(path);
+    try {
+      const rows = db.prepare('SELECT kind,semantic FROM snapshots WHERE id IN (?,?) ORDER BY kind').all(entry.id, management.id) as Array<{ kind: string; semantic: string }>;
+      const byKind = new Map(rows.map(row => [row.kind, JSON.parse(row.semantic) as { policyVersion: string }]));
+      assert.equal(byKind.get('ENTRY')?.policyVersion, 'research-screen-v2');
+      assert.equal(byKind.get('MANAGEMENT')?.policyVersion, 'thesis-management-v7');
+    } finally {
+      db.close();
+    }
+  } finally {
+    try { service.close(); } catch { /* already closed before readonly inspection */ }
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

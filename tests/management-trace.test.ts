@@ -15,6 +15,29 @@ import {
 } from '../examples/fixtures.js';
 import { p, runAs, scenarios, stage, type Inputs } from './management-scenarios.js';
 
+test('published main v0–v4 management snapshots replay under their original qualified rules', () => {
+  // Captured from published main, not from this branch's compatibility evaluator.
+  const published = JSON.parse(readFileSync('tests/fixtures/management-published-main-golden.json', 'utf8')) as {
+    sourceCommit: string;
+    snapshots: Array<{ id: string; kind: string; payload: string; hash: string; semantic: string }>;
+  };
+  assert.match(published.sourceCommit, /^9a43bdd[0-9a-f]{33}$/);
+  assert.deepEqual(published.snapshots.map(s => JSON.parse(s.semantic).policyVersion),
+    [0, 1, 2, 3, 4].map(v => `thesis-management-v${v}`));
+  const temp = temporaryDatabase();
+  try {
+    new Service(temp.file).close();
+    const db = new DatabaseSync(temp.file);
+    try {
+      for (const s of published.snapshots) db.prepare('INSERT INTO snapshots VALUES(?,?,?,?,?)').run(s.id, s.kind, s.payload, s.hash, s.semantic);
+    } finally { db.close(); }
+    const reopened = new Service(temp.file);
+    try {
+      for (const s of published.snapshots) assert.deepEqual(reopened.replay(s.id), JSON.parse(s.payload), s.id);
+    } finally { reopened.close(); }
+  } finally { rmSync(temp.directory, { recursive: true, force: true }); }
+});
+
 /** Packet 1 expectations are those of thesis-management-v5; the sell-order changes of v6 are covered in management-sell-order.test.ts. */
 const run = (i: Inputs) => runAs('thesis-management-v5', i);
 const row = (r: ManagementResult, id: string) => r.checks.find(c => c.checkId === id)!;

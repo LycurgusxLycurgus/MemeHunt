@@ -1,6 +1,30 @@
 # Checklist 2 collaborator handoff — round 2 review and next implementation
 
-Updated 2026-10-06. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
+Updated 2026-10-09. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
+
+## Published main integration and fresh live run (2026-10-09)
+
+This section supersedes the earlier statements that Checklist 1 is unpublished or unavailable to integrate. Published main `9a43bdd` (PR #2; production publication `35abce9`) is merged into `codex/checklist-2`. The unpublished reference and other session's untracked files remain outside this integration.
+
+The merge preserves main's live collectors, provenance validation, saved settings, qualified social/shared inputs and schema-v2 replay. Checklist 2 keeps its position ledger, successor plan basis, exact exit-proof requests and v5–v7 behavior. New LIVE management snapshots use `thesis-management-v8` to freeze qualified attention/social evaluation alongside the v7 execution rules; manual and fixture paths remain v7. Published v0–v4 management dependencies are frozen separately rather than relabeled as v5. Five snapshots captured from an independently built tree of published main protect their original qualified results and persisted replay. Existing v0/v5/v6 goldens were not regenerated. The executable also waits for provider promises before exiting and reports position/quote context in human output.
+
+Validation: `npm run typecheck` passed; `npm test` passed **745/745**, zero failures. This combines main's 701-test suite with Checklist 2 regressions, updated explicit successor-basis/JSON contracts and the new historical replay regression. Mocked LIVE reassessment persists v8 and replays unchanged. Fixture acceptance remains separate from real-token acceptance.
+
+A fresh actual merged CLI run used `analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --json --entry` with the approved $25/six-hour starter profile: fee 1%, entry impact 2%, exit impact 3%, round-trip loss 10%, direct control and removable liquidity 10%, ALL_AGES. Snapshot `458d87b9-532b-4244-bf70-49280b84239c`, cutoff `2026-10-09T15:10:02.296Z`, hash `85410724eb39c5c19ed779ef364f746bfff1d0d5b7e812550b8be0f68de0f743` replayed identically after reopening.
+
+| Current merged LIVE entry | PASS | FAIL | UNKNOWN | Required known |
+|---|---:|---:|---:|---:|
+| Approved full available-source collection | 17 | 7 | 9 | 23/27 |
+
+Four required unknowns remain: `SOC-02`, `DAT-01`, `DAT-02`, `DAT-03`. Five advisory checks remain unknown. Social integrity review is UNRESOLVED with missing ACCOUNT_HISTORY, ENGAGEMENT and COMPARABLE_HISTORY. The shared audit is deliberately gated until all semantic witnesses are known; its sole unresolved witness is SOC-02, so the three DAT rows cannot claim qualified audit coverage. This is an evidence limitation, not a reason to supply fixture values or convert UNKNOWN to PASS. RPC and DEX were observed (five pairs); web acquisition was truncated with `ATT_FETCH_URL_ERROR` and 23 initial retained pages, plus bounded recovery evidence.
+
+Known failures: `ATT-01`, `ATT-02`, `CAN-01`, `NAR-03`, `OWN-02`, `SEC-03`, `SOC-03`. The entry is REJECTED and its case remains INITIAL_RESEARCH. A direct reassessment attempt correctly fails with `NO_ACTIVE_THESIS`: all **15 management rows are NOT_RUN** for this token. Zero-UNKNOWN real-CA acceptance remains **INCOMPLETE**. A failed entry is a known result, not an admissible live management baseline. Live exact-position exit-proof production, an admitted thesis, applicable observations and the agreed acceptance case list still govern the full management gate. No transaction was signed or broadcast.
+
+Raw receipts, database and verification are retained locally in the private temporary run directory; credentials remain in ignored `.env`. Neither those artifacts nor the unpublished checkpoint repair patch are published. Previous reference/experimental run counts below are historical and are not combined with this current frozen snapshot.
+
+## Historical owner Checklist 1 checkpoint (2026-10-08)
+
+The owner has completed accepted Checklist 1 work through Shared evidence qualification on `codex/entry-workflow-production`. The latest independent implementation review returned PASS; typecheck/build and the full suite passed, with 701/701 tests. The accepted implementation remains bounded by the provider, evidence and calibration limits recorded in `agentic/architecture.md`. The owner topic branch is being published separately; it is not merged into `main` or `codex/checklist-2`. Use the exact published topic-branch SHA for any later integration. This does not satisfy Checklist 2's separate real-CA zero-UNKNOWN acceptance gate or declare Checklist 2 complete.
 
 ## API-enabled diagnostic continuation (2026-10-09)
 
@@ -418,7 +442,7 @@ They remain readable at `9d8c218`, for example with `git show 9d8c218:handoffs/c
 - Packet 2: `b784f9c` ordered ledger selection, `f90601a` management v6.
 - The collaborator's `handoffs/checklist-2-handoff.md` and packet notes were inspected. Their packet 3 is explicitly a proposal with no implementation. Their delivered documentation is historical context; this file supplies the next instructions and resolves/corrects their integration recommendations.
 
-The owner reviewed a separate clone. Nothing was merged into the dirty owner checkout, and no production code was repaired in this review. Owner branch `codex/entry-workflow-production` still contains unpublished Checklist 1 source, qualified live policy/Service changes and an unfinished social task. You cannot access those through the common base yet. Use exact published checkpoints when they become available.
+At the time of this 2026-10-06 review, the owner reviewed a separate clone. Nothing was merged into the dirty owner checkout, and no production code was repaired in this review. The owner branch then contained unpublished Checklist 1 source, qualified live policy/Service changes and an unfinished social task. That dated state is superseded by the current owner checkpoint above; the Checklist 2 implementation and review findings below remain specific to the reviewed `9d8c218` branch.
 
 ## Independently observed validation
 
@@ -689,6 +713,6 @@ Continue on `codex/checklist-2` or a topic branch descended from reviewed HEAD. 
 
 Update this file with the result SHA, completed acceptance items, actual commands/results, sanitized examples, migration/version changes, known collector dependencies and next bounded action. Use `CONTRIBUTING.md` for the ownership/merge agreement. Older collaborator packet files can remain historical references; they must not continue directing a new agent to restart packet 1 or use the old ledger revision as execution proof.
 
-Keep `agentic/architecture.md` current in your clone, scoped to verified management behavior. Do not overwrite the owner's active social task. Public commits exclude credentials, private endpoints, operator positions/journal, source transcripts and raw model material. Do not publish or trade without authorization in your own session.
+Keep `agentic/architecture.md` current in your clone, scoped to verified management behavior. Do not overwrite active owner work. Public commits exclude credentials, private endpoints, operator positions/journal, source transcripts and raw model material. Do not publish or trade without authorization in your own session.
 
 **Next action:** preserve a v6 golden baseline, implement the execution-basis/reconciliation prerequisites and corrected packet 3, with explicit scenario/live separation and mode-labeled output. Coordinate shared live integration with the owner when a Checklist 1 checkpoint is available, then run the mandatory real-CA pillar/row acceptance and include its complete results in your next delivery; if blocked before then, report partial progress and NOT_RUN/INCOMPLETE. This review requests further implementation; it does not merge the current branch or declare Checklist 2 complete.
