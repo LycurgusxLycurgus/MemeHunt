@@ -59,7 +59,7 @@ const knownErrorCodes = new Set([
   'CASE_NOT_FOUND', 'TOKEN_CASE_MISMATCH', 'NO_ACTIVE_THESIS', 'NO_THESIS_AT_CUTOFF',
   'INVALID_EPISODE_TIMELINE', 'EPISODE_NOT_FOUND', 'SNAPSHOT_NOT_FOUND', 'SNAPSHOT_HASH_MISMATCH',
   'REPLAY_RESULT_MISMATCH', 'POSITION_NOT_FOUND', 'POSITION_ALREADY_EXISTS', 'IDEMPOTENCY_CONFLICT',
-  'JOURNAL_LIMIT', 'BACKUP_TARGET_EXISTS', 'INVALID_SUCCESSOR_TIME', 'SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR',
+  'JOURNAL_LIMIT', 'BACKUP_TARGET_EXISTS', 'SUCCESSOR_PLAN_BASIS_REQUIRED', 'EXIT_PROOFS_REQUIRE_REASSESSMENT', 'FUTURE_EXIT_PROOF', 'INVALID_SUCCESSOR_TIME', 'SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR',
   'PROVIDER_EMPTY_RESPONSE', 'INVALID_SEMANTIC_PACKET', 'HOSTED_SEMANTIC_DISABLED', 'GEMINI_KEY_MISSING',
   'GEMINI_JSON', 'DEX_SHAPE', 'NONFINITE_NUMBER', 'UNSERIALIZABLE_VALUE', 'PREDICATE_TYPE',
   'PREDICATE_NUMBER', 'PREDICATE_LIMIT', 'PREDICATE_EMPTY', 'PREDICATE_SHAPE', 'PREDICATE_UNIT',
@@ -160,7 +160,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial] [--advisory] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
@@ -324,6 +325,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         if(active&&explicitThesis)stderr('FROZEN_THESIS: management uses the saved episode. Use thesis successor to change it explicitly.\n');
         const live = await collectLiveToken(token, {
           profile,
+          advisoryEnabled:hasFlag(argv,'advisory'),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
@@ -350,7 +352,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     if (cmd === 'diff') { service = new Service(flagValue(argv, 'db')); output(service.diff(argv[1] ?? '', argv[2] ?? '')); return 0; }
     if (cmd === 'case' && argv[1] === 'show') { service = new Service(flagValue(argv, 'db')); output(service.showCase(argv[2] ?? '')); return 0; }
     if (cmd === 'case' && argv[1] === 'close') { service = new Service(flagValue(argv, 'db')); service.closeCase(argv[2] ?? ''); output({ closed: argv[2] }); return 0; }
-    if (cmd === 'thesis' && argv[1] === 'successor') { service = new Service(flagValue(argv, 'db')); output(service.successor(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as any, (runtime.now ?? (() => new Date().toISOString()))())); return 0; }
+    if (cmd === 'thesis' && argv[1] === 'successor') { service = new Service(flagValue(argv, 'db')); output(service.successor(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as any, (runtime.now ?? (() => new Date().toISOString()))(), ({continue:'CONTINUE','fresh-start':'FRESH_START'} as const)[flagValue(argv,'basis') as 'continue'|'fresh-start'])); return 0; }
     if (cmd === 'position' && argv[1] === 'record') { service = new Service(flagValue(argv, 'db')); output(service.recordPosition(fileJson(flagValue(argv, 'file')) as PositionRecord)); return 0; }
     if (cmd === 'position' && argv[1] === 'event') { service = new Service(flagValue(argv, 'db')); output(service.appendPositionEvent(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as PositionEvent)); return 0; }
     if (cmd === 'journal') { service = new Service(flagValue(argv, 'db')); service.journal(argv[1] ?? '', String(flagValue(argv, 'text') ?? '')); output({ saved: true }); return 0; }
@@ -369,7 +371,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   try {
     const envPath = resolve(process.cwd(), '.env');
     if (existsSync(envPath)) process.loadEnvFile(envPath);
-    void runCli(process.argv.slice(2)).then(code => { if (code !== 0) process.exitCode = code; });
+    const keepAlive=setInterval(()=>{},1000);
+    try { process.exitCode=await runCli(process.argv.slice(2)); } finally { clearInterval(keepAlive); }
   } catch {
     process.stderr.write('ENV_FILE_ERROR: Could not load the local .env file.\n');
     process.exitCode = 2;

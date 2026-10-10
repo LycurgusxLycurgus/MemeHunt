@@ -278,6 +278,57 @@ function schemaKeys(value: unknown, output = new Set<string>()): Set<string> {
   return output;
 }
 
+test('full comparison binds competitors to literal contract spans while inspecting URL-only context', async () => {
+  const read = comparisonRead(`Target ${TOKEN.address}. ${NARRATIVE}\n${'Source background without an address. '.repeat(220)}`);
+  read.sources.push({ id: 'url-only', url: `https://public.example/coin/${TOKEN.address}`,
+    text: 'River Lantern is a community project. Its mint is not present in this retained page body.',
+    availableAt: CUTOFF, publishedAt: null, authorId: null, kind: 'PAGE' });
+  read.comparisonSourceIds = ['page-1', 'url-only'];
+  const mock = mockModel(completeComparisonResponder({
+    candidates: () => [{ id: 'target', token: TOKEN, sourceId: 'page-1', sourceMatch: 'Target' }],
+    sourceDispositions: () => ({ 'page-1': 'RELEVANT', 'url-only': 'CONTEXT' }),
+  }));
+  const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+  assert.equal(result.scope?.comparisonComplete, true, JSON.stringify(result.scope?.codes));
+  const proposal = mock.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 1 && !request.packet.proposal)!;
+  const body = JSON.parse(String(proposal.init.body)) as { generationConfig: { responseJsonSchema: unknown } };
+  assert.deepEqual(claimSourceSpanBindings(body.generationConfig.responseJsonSchema), [
+    { sourceId: 'page-1', spanIds: [spanId(proposal.packet, 'page-1')] },
+  ]);
+  assert.deepEqual(proposal.packet.competitorCitationOptions, [{ sourceId: 'page-1', spanId: spanId(proposal.packet, 'page-1') }]);
+  const review = mock.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 1 && request.packet.proposal)!;
+  assert.deepEqual((review.packet.sources as PacketSource[]).map(source => source.id), ['page-1', 'url-only'], 'contract-free context remains in independent source review');
+});
+
+test('contract-free comparison accepts an empty proposal and rejects a URL-inferred mint', async t => {
+  for (const fabricate of [false, true]) await t.test(fabricate ? 'URL-inferred mint fails closed' : 'all context is inspected without invented competitors', async () => {
+    const read = sourceRead();
+    read.sources.push({ id: 'url-only', url: `https://public.example/coin/${TOKEN.address}`,
+      text: 'River Lantern has a community project page but no retained literal contract here. '.repeat(100),
+      availableAt: CUTOFF, publishedAt: null, authorId: null, kind: 'PAGE' });
+    read.comparisonComplete = true;
+    read.comparisonSourceIds = ['url-only'];
+    const responder = completeComparisonResponder({ sourceDispositions: () => ({ 'url-only': 'CONTEXT' }) });
+    const mock = mockModel(packet => {
+      if (fabricate && (packet.scope as { batch?: number } | undefined)?.batch === 1 && !packet.proposal) {
+        return { competitors: [{ id: 'invented-mint', token: TOKEN, sourceId: 'url-only', spanId: spanId(packet, 'url-only', 'River Lantern') }], posts: {} };
+      }
+      return responder(packet);
+    });
+    const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+    assert.equal(result.code, undefined, 'already qualified narrative survives comparison errors');
+    assert.equal(result.scope?.comparisonComplete, false, 'an empty acquired comparison cannot prove the target representation is accounted for');
+    assert.equal(result.proposal?.competitors.length, 0);
+    const proposal = mock.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 1 && !request.packet.proposal)!;
+    assert.deepEqual(proposal.packet.competitorCitationOptions, []);
+    if (fabricate) assert.ok(result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')));
+    else {
+      assert.equal(result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')), false);
+      assert.ok(mock.requests.some(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 1 && request.packet.proposal));
+    }
+  });
+});
+
 function claimSourceSpanBindings(value: unknown): Array<{ sourceId: string; spanIds: string[] }> {
   const bindings: Array<{ sourceId: string; spanIds: string[] }> = [];
   const visit = (node: unknown) => {
@@ -1970,7 +2021,7 @@ test('incomplete, rejected, invalid, and overflowed comparison batches cannot pr
     const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
     assert.equal(result.code, undefined, 'the already-qualified base narrative remains available');
     assert.equal(result.scope?.comparisonComplete, false);
-    assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_SPAN_INVALID'));
+    assert.ok(result.scope?.codes.some(code=>/^ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_(COMPARISON_SPAN_INVALID|COMPARISON_INVALID)$/.test(code)), 'invalid selectors are rejected at hosted wire parsing or literal resolution');
     assert.equal(result.review?.candidateSet?.complete, false);
   });
 
@@ -2918,7 +2969,7 @@ test('invalid and cross-source span selections fail before independent review', 
       return envelope(proposalWire(packet, { claims: [], competitors: [{ id: 'competitor-1', token: other, sourceId: 'post-1', spanId: spanId(packet, 'post-1') }] }));
     });
     assert.equal(calls, 1);
-    assert.equal(result.code, 'ATT_MODEL_SPAN_INVALID');
+    assert.match(result.code ?? '', /^ATT_MODEL_(SPAN_INVALID|INVALID)$/, 'outside-scope selectors fail at the wire boundary or exact resolution');
   });
 });
 
@@ -3186,10 +3237,49 @@ test('fresh hosted A05 rejects malformed structure, inconsistency, duplicates, a
       const packet = JSON.parse(JSON.parse(String(init?.body)).contents[0].parts[0].text) as Record<string, unknown>;
       return envelope(proposalWire(packet, { claims: item.claims(packet) }));
     });
-    assert.equal(calls, 1, 'invalid A05 never reaches an independent review request');
+    assert.equal(calls, item.name === 'value does not match an empty prerequisite list' ? 2 : 1, 'invalid A05 never reaches review; only inconsistent value/list receives one bounded repair');
     assert.equal(result.code, 'ATT_MODEL_INVALID');
     assert.equal(result.proposal, null);
     assert.equal(result.review, null);
+  });
+});
+
+test('A05 inconsistency receives one source-bound repair without changing unrelated claims or review requirements', async t => {
+  for (const outcome of ['accepted', 'review-rejected', 'scope-mutated', 'still-invalid'] as const) await t.test(outcome, async () => {
+    const initial = (packet: Record<string, unknown>) => proposalWire(packet, { claims: [
+      ...proposalWire(packet).claims as unknown[],
+      a05Claim(packet, { value: true, explanation: { ...A05_EXPLANATION, prerequisites: [
+        'Understanding bonding curves and decentralized exchange liquidity routing',
+        'Knowledge of token-burning mechanics and fee distribution structures',
+      ] } }),
+    ] });
+    const mock = mockModel((packet, call) => {
+      if (call === 1 || outcome === 'still-invalid') return initial(packet);
+      if (packet.invalidProposal) {
+        const candidate = initial(packet);
+        const claims = candidate.claims as Array<Record<string, unknown>>;
+        claims[1] = a05Claim(packet);
+        if (outcome === 'scope-mutated') claims[0]!.summary = 'A changed unrelated narrative cannot enter via an explanation repair.';
+        return candidate;
+      }
+      return reviewWire(packet, outcome !== 'review-rejected');
+    });
+    const result = await qualifyAttention(a05Read(), TOKEN, KEY, mock.fetcher);
+    assert.ok(result.rawArtifacts['attention-proposal-invalid-response']);
+    assert.ok(result.rawArtifacts['attention-proposal-repair-prompt']);
+    assert.ok(result.rawArtifacts['attention-proposal-repair-response']);
+    if (outcome === 'scope-mutated' || outcome === 'still-invalid') {
+      assert.equal(mock.requests.length, 2);
+      assert.equal(result.proposal, null);
+      assert.equal(result.review, null);
+      assert.equal(result.code, outcome === 'scope-mutated' ? 'ATT_MODEL_REPAIR_SCOPE_INVALID' : 'ATT_MODEL_INVALID');
+    } else {
+      assert.equal(mock.requests.length, 3, 'a corrected proposal always receives independent review');
+      assert.equal(result.code, undefined);
+      assert.equal(result.review?.decisions.find(decision => decision.id === 'claim-a05')?.accepted, outcome === 'accepted');
+      assert.equal(result.rawArtifacts['attention-proposal-response'], result.rawArtifacts['attention-proposal-repair-response'], 'canonical retained response is the actually decoded proposal');
+      assert.notEqual(result.rawArtifacts['attention-proposal-response'], result.rawArtifacts['attention-proposal-invalid-response']);
+    }
   });
 });
 

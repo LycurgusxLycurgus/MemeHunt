@@ -16,9 +16,14 @@ import { qualifySocial } from '../providers/social-model.js';
 import { deriveSocial, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
 import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,type SharedAudit,type SharedSource } from '../domain/shared.js';
 import { qualifyShared } from '../providers/shared-model.js';
+import { collectAdvisoryChain } from '../providers/advisory-chain.js';
+import { collectAdvisoryMarket } from '../providers/advisory-market.js';
+import { collectAdvisorySocial } from '../providers/advisory-social.js';
+import { PUBLIC_SOLANA_RPC } from '../providers/solana.js';
+import { reconstructAdvisory,type AdvisoryProof } from './advisory.js';
 
 
-export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; semanticEnabled: boolean; fetcher?: typeof fetch; now?: () => string };
+export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 const addressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -29,6 +34,7 @@ export async function collectLiveSolana(token: TokenRef, options: LiveOptions): 
 export async function collectLiveToken(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
   if(token.chain==='solana'){if(!addressPattern.test(token.address))throw new Error('INVALID_SOLANA_ADDRESS');decodeSolanaAddress(token.address);}
   else if(!/^0x[a-fA-F0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
+  if(options.advisoryEnabled&&token.chain!=='solana')throw new Error('ADVISORY_CHAIN_UNSUPPORTED');
   const now = options.now ?? (() => new Date().toISOString());
   if(options.research)validateResearch(options.research,token,now());
   let operations=0;
@@ -126,6 +132,14 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   };
   if(sharedEnabled)ingestDex(dex,'dex-discovery');
   else await captureCanonical();
+  const advisoryPool=dex.market?.pairs.find(pair=>pair.baseAddress===token.address||pair.quoteAddress===token.address)?.pairAddress??null;
+  const advisoryAddresses=[token.address,...(advisoryPool?[advisoryPool]:[])];
+  // Historical reads overlap semantic review; canonical execution state is still captured late.
+  const advisoryPending=options.advisoryEnabled?Promise.all([
+    collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
+    collectAdvisoryMarket(token,advisoryPool,fetcher,now,deadline),
+    collectAdvisorySocial(token,fetcher,now,deadline),
+  ]).then(value=>({value}),error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
   let attention:ReturnType<typeof deriveAttention>|undefined;
@@ -137,7 +151,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const attentionStartedAt=Date.now();
     let name:string|undefined;const discoveryUrls:string[]=[];
     try{
-      const pairs=JSON.parse(dex.recovery&&!dex.recovery.selected?'[]':dex.raw??'[]') as Array<{chainId:string;baseToken?:{address:string;name?:string};quoteToken?:{address:string;name?:string};info?:{websites?:Array<{url?:string}>;socials?:Array<{url?:string}>}}>; 
+      const pairs=JSON.parse(dex.recovery&&!dex.recovery.selected?'[]':dex.raw??'[]') as Array<{chainId:string;baseToken?:{address:string;name?:string};quoteToken?:{address:string;name?:string};info?:{websites?:Array<{url?:string}>;socials?:Array<{url?:string}>}}>;
       const matches=(address?:string)=>token.chain==='solana'?address===token.address:address?.toLowerCase()===token.address.toLowerCase();
       const pair=pairs.find(p=>p.chainId===token.chain&&(matches(p.baseToken?.address)||matches(p.quoteToken?.address)));name=matches(pair?.baseToken?.address)?pair?.baseToken?.name:pair?.quoteToken?.name;
       // Pair metadata describes the base token; a quote-side match cannot supply its project links.
@@ -195,13 +209,30 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const semanticFeatures=[...new Map([...features,...attention.flatMap(a=>a.projection?[a.projection]:[]),...(interimSocial?.assessments??[]).flatMap(a=>a.projection?[a.projection]:[])].map(f=>[f.id,f])).values()];
     const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
     if(semanticScope.every(w=>w.status!=='UNKNOWN')&&auditClaims.length>0&&semanticReceiptIds.length===2){
-      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true);
+      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true,
+        {cutoff:now(),...(interimSocial?{socialWindow:{start:interimSocial.facts.start,end:interimSocial.facts.end},socialFacts:interimSocial.facts}:{})});
       sharedAudit=audit.audit;
       addEvidence('shared-audit-status',JSON.stringify({method:'shared-conflict-review-v1',received:!!audit.audit,code:audit.code??null}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:audit.code??'SHARED_AUDIT_RECEIVED'});
       for(const [id,raw] of Object.entries(audit.rawArtifacts))addEvidence(id,raw,id.includes('prompt')||id.includes('response')?'gemini':'shared-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'shared-conflict-review-v1'});
     }
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
+  let advisoryProof:Omit<AdvisoryProof,'cutoff'|'socialDerivationId'>|undefined;
+  if(advisoryPending){
+    const result=await advisoryPending;
+    if('error' in result)throw new Error('ADVISORY_COLLECTION_INVALID');
+    const [chain,market,paid]=result.value;
+    const ingest=(namespace:'chain'|'market'|'paid',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
+      const artifactIds:Record<string,string>={};
+      for(const [key,raw] of Object.entries(read.rawArtifacts)){
+        const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
+        if(!at||read.requests[key]===undefined)throw new Error('ADVISORY_COLLECTION_INVALID');
+        artifactIds[key]=addEvidence(id,raw,`advisory-${namespace}`,'HISTORICAL_RECEIPT','PUBLIC_API',{request:read.requests[key]},at);
+      }
+      return {requests:read.requests,artifactIds};
+    };
+    advisoryProof={method:'advisory-provenance-v1',token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid)};
+  }
   if(sharedEnabled)await captureCanonical();
   const venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery):undefined;
   for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id];addEvidence(id,raw,a?.sourceId??(id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':id==='pump-quote-calculation'?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
@@ -218,6 +249,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     };
   const baseline=deriveBaseline({sharedMode:sharedEnabled,token,cutoff,profile:options.profile,features,evidence,observations,market:dex.market,collection,semantic,research:options.research,attention,social:social?.assessments,controls:venueRead?.controls??detailRead?.controls,holders:detailRead?.holders,program:detailRead?.program,venue:venueRead?.venue,venueInspection:venueRead?.inspection,directErrors:detailRead?.errors,thesis,origins:options.origins});
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
+  const advisory=advisoryProof?reconstructAdvisory(token,cutoff,baseline,evidence,rawArtifacts,{...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null}):undefined;
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v1'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
@@ -231,6 +264,6 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   return {
     token, cutoff, analysisKind: 'LIVE', evidence, rawArtifacts, observations, features, profile: options.profile,thesis,
     collection,semantic, market: dex.market ?? null,
-    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{})},
+    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{}),...(advisory?{advisory}:{})},
   };
 }

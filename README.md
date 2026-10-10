@@ -11,11 +11,33 @@ npm ci
 npm run typecheck
 npm test
 node dist/src/cli.js capabilities
+node dist/src/cli.js profile options
+node dist/src/cli.js analyze FIXTURE_TOKEN --chain solana --bundle examples/entry.json
+node dist/src/cli.js analyze FIXTURE_TOKEN --chain solana --bundle examples/reassessment.json
+node dist/src/cli.js analyze <real-address> --chain solana --partial
+node dist/src/cli.js show <snapshot-id>
+node dist/src/cli.js replay <snapshot-id>
+node dist/src/cli.js reassess <case-id> --bundle examples/reassessment.json
+node dist/src/cli.js thesis successor <case-id> --file thesis.json --basis continue
+node dist/src/cli.js diff <snapshot-a> <snapshot-b>
+node dist/src/cli.js backup .data/backup-001
 node dist/src/cli.js doctor
 npm run cli -- 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump
 ```
 
 The bare CA is an alias for `analyze`. The first interactive run offers saved settings and asks explicitly before TinyFish/Gemini calls; subsequent runs reuse the settings. In automation add `--full` to approve hosted calls or `--partial` for public RPC/DEX only. The executable loads `.env` from the project root. Solana is inferred only from a valid decoded key; EVM addresses require a saved chain choice or `--chain bsc|base|robinhood`.
+
+The advisory update is pending acceptance: terminal review found that O28 still trusts normalized baseline data rather than reconstructing its exact DEX source. Do not rely on advisory completeness until that provenance defect and its regression are fixed; see the canonical collaborator handoff.
+
+Add `--advisory` to a live Solana run for bounded public historical collection, for example:
+
+```sh
+npm run cli -- analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --advisory --entry
+```
+
+The opt-in pass retains finalized account movements, mint-bound completed hourly pool candles, BTC/ETH/SOL USD candles, matching completed daily Solana/BSC/Base DEX volumes, and exact-token paid orders/boosts. It inventories all 50 advisory metrics in `details.advisory` and reconstructs them from retained receipts before persistence. Historical observation times remain distinct from retrieval times. Token movements do not establish sales, wallet identity or bots; DEX activity does not establish bridge capital flow; a paid listing does not establish organic promotion. Missing history, undefined ratios and absent calibration retain explicit unresolved causes.
+
+Fresh opt-in snapshots use `research-screen-advisory-v1`. An advisory group passes only when every declared metric is measured; this means complete descriptive coverage, not favorable investment quality. The 27 required entry gates and historical policy replay remain unchanged. `--partial --advisory` requires no hosted-provider keys; `--full --advisory` also qualifies the available social sources through the existing approved hosted pass.
 
 Output is human-readable by default. Add `--json` for the full machine document. Save the printed snapshot ID to inspect the same frozen assessment offline:
 
@@ -31,6 +53,10 @@ node dist/src/cli.js diff $olderSnapshotId $newerSnapshotId --db .data/live.sqli
 `show`, `replay`, `diff`, and `backup` use stored data and make no provider requests. Replay recomputes the checklist from the saved input; it does not refresh live evidence. A new `analyze` call collects new evidence. For a token with a tracked thesis, it reassesses that case unless `--entry` is supplied.
 
 For Solana, choose one mode on every analysis. `--partial` explicitly requests RPC and DEX only, even when optional keys are set. `--full` explicitly approves a bounded TinyFish Search/Fetch and Gemini pass and is required for non-interactive runs. An interactive run with both keys and no mode presents the full pass first and asks for `y` or `yes`; Enter or any other answer cancels without collecting or saving. If either key is missing, it stops and prints secure setup commands instead of falling back. To decline hosted sources and continue, rerun with `--partial`. A non-interactive run without either flag fails with guidance; it never silently saves a partial result.
+
+A successor must say how its sell steps relate to sales already made. `--basis continue` keeps counting sales under the same step IDs, and percentages stay shares of the original quantity. `--basis fresh-start` starts a new book: percentages become shares of what you hold at the successor's time, and only later sales count. Without `--basis` the successor is refused. A successor saved before this choice existed blocks sized proposals until you save a new successor with a basis. Its invalidation is still reported, and saved theses are never rewritten.
+
+Management (`thesis-management-v7`) proposes a sale amount only with exact exit proof. When you hold a position, every reassessment lists the quotes it needs in `exitQuotes`. One is for selling everything you still hold (`REMAINING_POSITION`), which MG-03 needs before the thesis can count as validated. The other is for the next due sell step (`CANDIDATE_LEG`), which MG-15 needs before a DCA-out amount is proposed. While you are holding and no step is due, MG-15 instead asks for an early quote for the next planned step (`NEXT_LEG`), so a hold result can be fully known too; it reports whether that step could be sold now without changing the hold decision. Each request names the token, case, episode, position, step, exact atomic quantity, decimals and an execution-basis fingerprint. Answer a request by adding a matching proof to the next reassessment bundle's `exitProofs`; the fingerprint changes whenever the position records it was made for change. Set the profile's `exitProofLevel` (`QUOTED` or `SIMULATED`) and `risk.maxExitImpactBps`; without both, no sale is confirmed. A proof must be current at the cutoff and cite evidence in the bundle. It must also come from a supported quote adapter: none is certified yet, and only the synthetic fixture adapter exists. Quotes typed into a `USER_IMPORT` bundle count only for `HYPOTHETICAL` positions and are labeled "scenario quote, not verified". A blocked route or a price impact over the limit fails the step, and proofs that disagree are reported as unknown. Every result carries a `position` block with mode, units, decimals, remaining quantity and known cost, or states that there is none. No result claims profit or recovered principal, and an exit review never promises a fill.
 
 ## Optional inputs
 

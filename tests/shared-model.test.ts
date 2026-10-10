@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { qualifyShared } from '../src/providers/shared-model.js';
+import { decodeSharedAudit, qualifyShared, sharedTemporalScopeSchema } from '../src/providers/shared-model.js';
 import { deriveShared, type SharedClaim } from '../src/domain/shared.js';
 import { socialRubric } from '../src/providers/social-model.js';
 import type { AttentionSource } from '../src/providers/attention.js';
 import { sharedFixture } from './shared-fixtures.js';
 
 const KEY = 'shared-model-test-key';
-type Span = { id: string; sourceId: string; start: number; end: number; text: string };
+const capturedCatalog=(packet:Packet)=>packet.sources.flatMap(source=>source.spans);
+type Span = { id: string; sourceId: string; start: number; end: number; text: string; spanIndex?: number };
 type PacketSource = Omit<AttentionSource, 'text'> & { spans: Span[] };
 type Packet = {
   claims: SharedClaim[];
@@ -17,6 +18,7 @@ type Packet = {
   rejectedIds?: string[];
   socialScreeningCriteria?: Record<string, string>;
   socialConflictRule?: string;
+  temporalScope?: {cutoff:string;socialWindow?:{start:string;end:string};socialFacts?:unknown};
 };
 type Captured = { packet: Packet; raw: string };
 
@@ -38,7 +40,7 @@ function citationFor(packet: Packet, claim: SharedClaim) {
     const source = packet.sources.find(item => item.id === citation.sourceId);
     assert.ok(source, `the source catalog contains ${citation.sourceId}`);
     const span = source.spans.find(item => item.text.includes(citation.quote));
-    if (span) return { sourceId: source.id, spanId: span.id };
+    if (span) return span.spanIndex===undefined?{ sourceId: source.id, spanId: span.id }:{spanIndex:span.spanIndex};
   }
   assert.fail(`no submitted span contains a literal citation for ${claim.id}`);
 }
@@ -123,7 +125,7 @@ test('Shared social claims receive the existing screening criteria in both passe
           const citations = [citationFor(captured.packet, claim)];
           if (conflict) {
             const other = captured.packet.sources.find(source => source.id !== citations[0]!.sourceId)!;
-            citations.push({ sourceId: other.id, spanId: other.spans[0]!.id });
+            citations.push(other.spans[0]!.spanIndex===undefined?{ sourceId: other.id, spanId: other.spans[0]!.id }:{spanIndex:other.spans[0]!.spanIndex});
           }
           return [claim.id, {
             disposition: conflict ? 'CONFLICT' : 'CLEAR',
@@ -193,7 +195,7 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
           const first = citationFor(captured.packet, claim);
           const other = captured.packet.sources.find(source => source.id !== first.sourceId)!;
           const citations = falseConflict
-            ? [first, { sourceId: other.id, spanId: other.spans[0]!.id }]
+            ? [first, other.spans[0]!.spanIndex===undefined?{ sourceId: other.id, spanId: other.spans[0]!.id }:{spanIndex:other.spans[0]!.spanIndex}]
             : [first];
           const disposition = options.unclearInitial && claim.id === 'SOC-01' ? 'UNCLEAR' : falseConflict ? 'CONFLICT' : 'CLEAR';
           return [claim.id, {
@@ -266,7 +268,7 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
     };
     assert.deepEqual(receipt, {
       method: 'shared-conflict-review-v1', token: input.token, claims: input.claims, sources: input.sources,
-      audit: result.audit, wireMethod: 'shared-audit-wire-v2',
+      audit: result.audit, wireMethod: 'shared-audit-wire-v3',
       proposalResponseId: 'shared-repair-proposal-response', reviewResponseId: 'shared-repair-review-response',
     });
   });
@@ -376,4 +378,133 @@ test('empty or provider-failed shared audits stay typed and never manufacture a 
   assert.equal(failed.code, 'SHARED_MODEL_HTTP_400');
   assert.ok(failed.rawArtifacts['shared-proposal-response']);
   assert.equal(failed.rawArtifacts['shared-review-prompt'], undefined, 'failed proposal qualification never advances to review');
+});
+
+test('live Shared citation selectors bind source and span together and reject a one-sided conflict', async () => {
+  const fixture = sharedFixture();
+  for (const invalid of ['wrong-pair', 'one-sided-conflict'] as const) {
+    let calls = 0;
+    const fetcher: typeof fetch = async (_url, init) => {
+      calls++;
+      const { packet } = packetFrom(init);
+      const payload = JSON.parse(String(init!.body)) as { generationConfig: { responseJsonSchema: unknown } };
+      const schemaText = JSON.stringify(payload.generationConfig.responseJsonSchema);
+      assert.ok(capturedCatalog(packet).every(span=>span.text.length>0),'the prompt retains every code-owned exact span');
+      const claims = Object.fromEntries(packet.claims.map(claim => [claim.id, {
+        disposition: invalid === 'one-sided-conflict' ? 'CONFLICT' : 'CLEAR',
+        rationale: 'Synthetic malformed audit must never reach independent review.',
+        citations: [invalid === 'wrong-pair'
+          ? { sourceId: packet.sources[0]!.id, spanId: packet.sources[1]!.spans[0]!.id }
+          : citationFor(packet, claim)],
+      }]));
+      return envelope({ claims });
+    };
+    const result = await qualifyShared(fixture.claims, fixture.sources, fixture.token, KEY, fetcher);
+    assert.equal(result.audit, null, invalid);
+    assert.equal(result.code, invalid==='wrong-pair'?'SHARED_CITATION_INVALID':'SHARED_CONFLICT_CITATIONS_INCOMPLETE', invalid);
+    assert.equal(calls, 1, 'invalid selectors or a missing conflict side cannot reach review');
+    assert.equal(result.rawArtifacts['shared-review-prompt'], undefined);
+  }
+});
+
+test('historical Shared decoding retains the original receipt shape and literal citation validation', () => {
+  const fixture = sharedFixture();
+  const proposal = { claims: Object.fromEntries(fixture.claims.map(claim => [claim.id, {
+    disposition: 'CLEAR', rationale: 'Previously retained full-scope audit remains decodable.',
+    citations: [{ sourceId: fixture.sources[0]!.id, spanId: `${fixture.sources[0]!.id}:span:0` }],
+  }])) };
+  const review = { claims: Object.fromEntries(fixture.claims.map(claim => [claim.id, true])), sources: Object.fromEntries(fixture.sources.map(source => [source.id, true])) };
+  const wire = (value: unknown) => JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] });
+  const audit = decodeSharedAudit(fixture.claims, fixture.sources, wire(proposal), wire(review));
+  assert.equal(audit.claims.length, fixture.claims.length);
+  assert.equal(audit.claims[0]!.citations[0]!.quote, fixture.sources[0]!.text.slice(0, 1000));
+  proposal.claims[fixture.claims[0]!.id]!.citations[0]!.sourceId = fixture.sources[1]!.id;
+  assert.throws(() => decodeSharedAudit(fixture.claims, fixture.sources, wire(proposal), wire(review)), /SHARED_CITATION_INVALID/);
+});
+
+test('Shared request stays flat at a real-sized thirty-source catalog and accepts complete clear review', async () => {
+  const fixture=sharedFixture();
+  while(fixture.sources.length<30){const index=fixture.sources.length;fixture.sources.push({...fixture.sources[0]!,id:`scale-source-${index}`,text:`Additional retained source ${index} for the exact same bounded review scope.`});}
+  let calls=0;
+  const fetcher:typeof fetch=async(_url,init)=>{
+    calls++;
+    const {packet}=packetFrom(init);
+    const payload=JSON.parse(String(init!.body)) as {generationConfig:{responseJsonSchema:unknown}};
+    const schema=JSON.stringify(payload.generationConfig.responseJsonSchema);
+    assert.equal(schema.includes('anyOf'),false,'source count must not expand nested alternatives');
+    assert.equal(schema.includes('oneOf'),false,'disposition validation stays code-owned without nested alternatives');
+    if(!packet.proposal){
+      assert.ok(packet.sources.every(source=>source.spans.length>0));
+      return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,{disposition:'CLEAR',rationale:'All retained source context inspected without an incompatible assertion.',citations:[citationFor(packet,claim)]}]))});
+    }
+    return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,true])),sources:Object.fromEntries(packet.sources.map(source=>[source.id,true]))});
+  };
+  const result=await qualifyShared(fixture.claims,fixture.sources,fixture.token,KEY,fetcher);
+  assert.equal(result.code,undefined);
+  assert.equal(calls,2);
+  assert.equal(result.audit!.sources.length,30);
+  assert.ok(result.audit!.sources.every(source=>source.complete));
+});
+
+test('full Shared retries a malformed one-sided conflict once and retains its exact response before independent review',async()=>{
+  const fixture=sharedFixture();
+  for(const repaired of [true,false]){
+    let calls=0;
+    const fetcher:typeof fetch=async(_url,init)=>{
+      calls++;
+      const {packet,raw}=packetFrom(init);
+      if(packet.proposal)return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,true])),sources:Object.fromEntries(packet.sources.map(source=>[source.id,true]))});
+      if(calls===2){assert.match(raw,/SHARED_CONFLICT_CITATIONS_INCOMPLETE/);assert.match(raw,/Do not invent a missing side/);}
+      return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,{disposition:calls===1||!repaired?'CONFLICT':'CLEAR',rationale:'Synthetic retained scope exercises response-contract repair only.',citations:[citationFor(packet,claim)]}]))});
+    };
+    const result=await qualifyShared(fixture.claims,fixture.sources,fixture.token,KEY,fetcher,async()=>{},undefined,true);
+    assert.ok(result.rawArtifacts['shared-proposal-contract-attempt-1-response'],'the malformed hosted response remains auditable');
+    if(repaired){assert.equal(result.code,undefined);assert.equal(calls,3);assert.ok(result.audit!.review.every(row=>row.accepted));assert.notEqual(result.rawArtifacts['shared-proposal-response'],result.rawArtifacts['shared-proposal-contract-attempt-1-response']);}
+    else{assert.equal(result.code,'SHARED_CONFLICT_CITATIONS_INCOMPLETE');assert.equal(calls,2);assert.equal(result.audit,null);assert.equal(result.rawArtifacts['shared-review-prompt'],undefined);}
+  }
+});
+
+test('Shared proposal and independent review receive identical exact social time bounds and derived facts',async()=>{
+  const fixture=sharedFixture(),scope={cutoff:fixture.cutoff,socialWindow:{start:fixture.social!.start,end:fixture.social!.end},socialFacts:fixture.social!};
+  let calls=0;
+  const fetcher:typeof fetch=async(_url,init)=>{
+    calls++;
+    const {packet,raw}=packetFrom(init);
+    assert.deepEqual(packet.temporalScope,scope);
+    assert.match(raw,/do not treat collection time as publication time/);
+    assert.match(raw,/not independent world truth/);
+    assert.match(raw,/do not assume them correct or force acceptance/);
+    if(!packet.proposal)return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,{disposition:'CLEAR',rationale:'Retained dates and exact current window show no incompatible assertions.',citations:[citationFor(packet,claim)]}]))});
+    return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,true])),sources:Object.fromEntries(packet.sources.map(source=>[source.id,true]))});
+  };
+  const result=await qualifyShared(fixture.claims,fixture.sources,fixture.token,KEY,fetcher,async()=>{},undefined,true,scope);
+  assert.equal(result.code,undefined);
+  assert.equal(calls,2);
+  assert.deepEqual(JSON.parse(result.rawArtifacts['shared-qualified-receipt']!).temporalScope,scope);
+  assert.equal(sharedTemporalScopeSchema.safeParse({...scope,socialWindow:{start:scope.cutoff,end:'2099-01-01T00:00:00.000Z'}}).success,false);
+  assert.equal(sharedTemporalScopeSchema.safeParse({...scope,socialFacts:{...scope.socialFacts,end:'2026-10-01T11:00:00.000Z'}}).success,false);
+});
+
+test('Shared INDEX wire has a source-count-independent citation schema and rejects invalid or mixed selectors',async()=>{
+  const fixture=sharedFixture();
+  while(fixture.sources.length<33){const index=fixture.sources.length;fixture.sources.push({...fixture.sources[0]!,id:`large-source-${index}`,text:'Retained full inspection context. '.repeat(220)});}
+  for(const invalid of [undefined,-1,0.5,99999,'mixed'] as const){
+    let calls=0;
+    const fetcher:typeof fetch=async(_url,init)=>{
+      calls++;
+      const {packet}=packetFrom(init);
+      const schema=JSON.stringify((JSON.parse(String(init!.body)) as {generationConfig:{responseJsonSchema:unknown}}).generationConfig.responseJsonSchema);
+      if(packet.proposal)return envelope({claims:Object.fromEntries(packet.claims.map(c=>[c.id,true])),sources:Object.fromEntries(packet.sources.map(s=>[s.id,true]))});
+      assert.ok(schema.includes('spanIndex'));
+      assert.ok(capturedCatalog(packet).length>200,'no source spans are truncated to reduce the schema');
+      assert.ok(capturedCatalog(packet).every(span=>!schema.includes(span.id)),'source strings never expand model schema state');
+      return envelope({claims:Object.fromEntries(packet.claims.map(claim=>[claim.id,{disposition:'CLEAR',rationale:'Complete synthetic source context exercises closed index selection.',citations:[invalid===undefined?citationFor(packet,claim):invalid==='mixed'?{spanIndex:0,sourceId:packet.sources[0]!.id}:{spanIndex:invalid}]}]))});
+    };
+    const result=await qualifyShared(fixture.claims,fixture.sources,fixture.token,KEY,fetcher,async()=>{},undefined,true);
+    if(invalid===undefined){
+      assert.equal(result.code,undefined);assert.equal(calls,2);
+      assert.deepEqual(decodeSharedAudit(fixture.claims,fixture.sources,result.rawArtifacts['shared-proposal-response']!,result.rawArtifacts['shared-review-response']!,'INDEX'),result.audit);
+      assert.throws(()=>decodeSharedAudit(fixture.claims,fixture.sources,result.rawArtifacts['shared-proposal-response']!,result.rawArtifacts['shared-review-response']!),'historical PAIR decoder must not silently accept INDEX');
+    }else{assert.equal(result.code,'SHARED_MODEL_INVALID');assert.equal(calls,1);assert.equal(result.audit,null);}
+  }
 });
