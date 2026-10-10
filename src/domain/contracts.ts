@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { advisoryFactsSchema,type AdvisoryFacts } from './advisory-contracts.js';
 
 export const qualityStateSchema = z.enum(['KNOWN', 'MISSING', 'STALE', 'CONFLICT', 'UNSUPPORTED', 'TRUNCATED', 'INVALID']);
 export type QualityState = z.infer<typeof qualityStateSchema>;
@@ -209,13 +210,13 @@ export const sharedPolicyFactsSchema=z.object({
   values:z.object({C03:z.boolean().nullable(),C04:z.boolean().nullable(),C05:z.boolean().nullable(),C06:z.boolean().nullable()}).strict(),
 }).strict();
 export type SharedPolicyFacts=z.infer<typeof sharedPolicyFactsSchema>;
-export type AssessmentDetails = { version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts };
+export type AssessmentDetails = { version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts;advisory?:AdvisoryFacts };
 const baselineAssessmentSchema=z.object({
   id:z.string(),version:z.literal('baseline-v1'),evaluator:z.literal('IMPLEMENTED'),collector:z.enum(['IMPLEMENTED','UNIMPLEMENTED','NOT_REQUIRED']),quality:qualityStateSchema,unit:z.string(),data:z.unknown(),
   observationIds:z.array(z.string()),evidenceIds:z.array(z.string()),limitations:z.array(z.string()),
   causes:z.array(z.object({category:z.enum(['USER_INPUT_MISSING','EVIDENCE_UNAVAILABLE','COLLECTION_UNIMPLEMENTED','CLAIM_UNVALIDATED']),code:z.string(),featureId:z.string(),sourceId:z.string().optional(),field:z.string().optional(),evidenceIds:z.array(z.string()),action:z.string()}).strict()),projection:featureResultSchema.optional(),
 }).strict();
-export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional()}).strict();
+export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional(),advisory:advisoryFactsSchema.optional()}).strict();
 const atomicPositive = z.string().regex(/^[1-9]\d*$/), atomicAmount = z.string().regex(/^(0|[1-9]\d*)$/), instant = z.iso.datetime({ offset: true });
 const exitFeeSchema = z.object({
   asset: z.string().min(1).max(64), decimals: z.number().int().min(0).max(36), amountAtomic: atomicAmount, includedInOutput: z.boolean(),

@@ -27,6 +27,18 @@ npm run cli -- 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump
 
 The bare CA is an alias for `analyze`. The first interactive run offers saved settings and asks explicitly before TinyFish/Gemini calls; subsequent runs reuse the settings. In automation add `--full` to approve hosted calls or `--partial` for public RPC/DEX only. The executable loads `.env` from the project root. Solana is inferred only from a valid decoded key; EVM addresses require a saved chain choice or `--chain bsc|base|robinhood`.
 
+The advisory update is pending acceptance: terminal review found that O28 still trusts normalized baseline data rather than reconstructing its exact DEX source. Do not rely on advisory completeness until that provenance defect and its regression are fixed; see the canonical collaborator handoff.
+
+Add `--advisory` to a live Solana run for bounded public historical collection, for example:
+
+```sh
+npm run cli -- analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --advisory --entry
+```
+
+The opt-in pass retains finalized account movements, mint-bound completed hourly pool candles, BTC/ETH/SOL USD candles, matching completed daily Solana/BSC/Base DEX volumes, and exact-token paid orders/boosts. It inventories all 50 advisory metrics in `details.advisory` and reconstructs them from retained receipts before persistence. Historical observation times remain distinct from retrieval times. Token movements do not establish sales, wallet identity or bots; DEX activity does not establish bridge capital flow; a paid listing does not establish organic promotion. Missing history, undefined ratios and absent calibration retain explicit unresolved causes.
+
+Fresh opt-in snapshots use `research-screen-advisory-v1`. An advisory group passes only when every declared metric is measured; this means complete descriptive coverage, not favorable investment quality. The 27 required entry gates and historical policy replay remain unchanged. `--partial --advisory` requires no hosted-provider keys; `--full --advisory` also qualifies the available social sources through the existing approved hosted pass.
+
 Output is human-readable by default. Add `--json` for the full machine document. Save the printed snapshot ID to inspect the same frozen assessment offline:
 
 ```powershell

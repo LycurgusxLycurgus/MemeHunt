@@ -160,7 +160,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial] [--advisory] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
@@ -324,6 +325,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         if(active&&explicitThesis)stderr('FROZEN_THESIS: management uses the saved episode. Use thesis successor to change it explicitly.\n');
         const live = await collectLiveToken(token, {
           profile,
+          advisoryEnabled:hasFlag(argv,'advisory'),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),

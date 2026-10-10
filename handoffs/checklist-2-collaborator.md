@@ -1,10 +1,48 @@
 # Checklist 2 collaborator handoff — round 2 review and next implementation
 
-Updated 2026-10-09. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
+Updated 2026-10-10. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
+
+## Advisory historical collection and actual token run (2026-10-10)
+
+**Review status: UNRESOLVED; this update is not accepted or merge-ready.** Typecheck and the full suite pass **800/800**, but Bridgecode terminal review reproduced an O28 provenance bypass: `deriveAdvisory` reuses caller-supplied normalized baseline O28, and reconstruction compares against that same baseline. A partial advisory bundle can replace the reported DEX counts with fabricated flow data, recompute its advisory inventory and persist without changing any retained raw receipt. The next correction must derive/validate O28 against its exact retained DEX source, with a rehashed baseline-tamper regression. Existing tests do not cover that bypass.
+
+The first review's two blockers were corrected: removal of the entire optional details object now fails when advisory evidence remains; advisory social dependencies require the existing complete social source/model validator. Regression and actual valid-bundle dependency-removal checks pass. Terminal review then found the separate O28 defect. Cycle `advisory-completion-2026-10-10` ends UNRESOLVED after its one correction stage; installed Bridgecode requires a new user instruction to begin another cycle. Do not treat a passing test count or the fresh snapshot as complete provenance acceptance.
+
+The branch now provides an opt-in `--advisory` live Solana pass, developed under installed Bridgecode 4.3.2. It adds bounded public historical collectors, an explicit inventory of all 50 advisory metrics, retained raw provenance and a distinct `research-screen-advisory-v1` policy. A group's PASS means every declared metric is measured; it does not mean favorable investment quality. The 27 required entry rules and old snapshot policies remain unchanged.
+
+The actual supplied-mint run used the unchanged approved $25/six-hour profile:
+
+```sh
+npm run cli -- analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --advisory --json --entry
+```
+
+Snapshot `e9aeeaf7-c5eb-4f23-8310-175757d6f28c`, cutoff `2026-10-10T13:38:56.945Z`, hash `433e1d4f217aa798b6f21a62913914e1c163f7c25090d49d980c8940f89a1d74`, has **21 PASS, 7 FAIL and 5 advisory UNKNOWN**, with **27/27 required checks known**. Its complete retained LIVE bundle passed the current validator, and the reopened database replayed identically; the O28 provenance gap above prevents full acceptance. The token remains REJECTED; `ATT-01`, `ATT-02`, `CAN-01`, `OWN-02`, `SEC-03`, `SOC-02` and `SOC-03` fail. CAN-01 is an additional failure in this new snapshot; earlier results are retained separately. RPC was observed, DEX retained six pairs, and web collection reported `TRUNCATED / ATT_FETCH_URL_ERROR` with 24 initial fetched pages. Decisions describe the qualified retained scope.
+
+**Eight of 50 metric states are KNOWN**, including C14's explicit NOT_REQUESTED chart-predicate configuration. All five advisory groups still have unmet empirical or implementation prerequisites:
+
+| Group | Known / total | What this run established | Remaining requirements |
+|---|---:|---|---|
+| ADV-01 | 0/5 | Bounded exact-mint account movements retained as partial evidence | Independent strong control edges, oldest-wallet history, null baselines, endpoint-pinned fixed cohorts, inventory cost and age history. |
+| ADV-02 | 1/5 | O28: qualified descriptive DEX rolling trade counts | Decoded circular trade motifs, related-party evidence, comparable cohort/depth histories, independently verified automation attribution. |
+| ADV-03 | 2/17 | A19: fixed-sample equal-bin acceleration; A20: reviewed propagation breadth | Reviewed theme/artifact/persistence histories, competitor economic participation, external-origin/paid/topic classifications, aligned lead-lag/null tests, meaningful buyers, positive growth denominators, identifiable decay/catalyst regime and inventory/depth histories. |
+| ADV-04 | 0/13 | Social sample retained; returning-participant denominator is zero | Forward-call/edit and incentive review, public actor-wallet binding, transfer-aware trade/cost histories, preregistered follower simulation, tracker/follow-flow evidence, independent actor groups and repeated campaigns/null baselines. |
+| ADV-05 | 5/10 | C08 price context, C11 covered-chain DEX activity, C13 chart structure, C14 NOT_REQUESTED, C15 USD macro context | Repeated lifecycle/hysteresis observations, calibrated regime, explicit typed thesis conditions, finalized deduplicated bridge transfers, launch/migration/cohort history. |
+
+Acquired history is real, bounded and retained:
+
+- Exact-mint/pool finalized signature pages and 16 retained transaction reads yielded 10 observed transactions and 22 account movements, covering `2026-10-10T13:15:35Z`–`13:35:25Z`. This is incomplete indexed history, not wallet-universe coverage, decoded sales or proof of circular trading.
+- GeckoTerminal returned 72 contiguous completed hourly USD candles for pool `4zLRGHwKdXyaTovP8UkV66CskWgo9E7kAaGYcw1vFh7E`, covering `2026-10-07T13:00Z`–`2026-10-10T13:00Z`. Code-derived confirmed structure was DOWN, with endpoint return fraction approximately `-0.6354524`. This is historical description, not a prediction.
+- Coinbase returned 72 completed hourly USD candles each for BTC, ETH and SOL. DefiLlama returned matching completed daily Solana/BSC/Base DEX volumes and prior-day comparisons; covered-chain shares exclude Robinhood and do not measure capital flow.
+- The exact-token DEX paid-visibility endpoint returned one approved profile order and two boosts. A22 remains MISSING because this does not establish social paid-disclosure coverage or organic promotion.
+- The reviewed current fixed-query social sample contained zero qualified original posts. A19's three bin counts and A20's group/community counts are measured zeros within that inspected scope. A23 price-only fraction and S11 returning ratio remain undefined with zero denominators; older posts were not assigned fresh publication dates.
+
+Every provider response or bounded failure receipt carries its request and retrieval time. Collection overlaps hosted review, while canonical execution state is captured late. Advisory reconstruction precedes persistence and uses retained raw bytes; source clocks, exact mint/pool binding, unfinished/gapped/future candles, capped chain history and undefined denominators remain explicit. The reported inventory does not implement unavailable calibration or declare the unresolved contracts satisfied.
+
+The case remains INITIAL_RESEARCH. Reassessment returns `NO_ACTIVE_THESIS`; all **15 management rows remain NOT_RUN**. The combined zero-unknown acceptance gate is **INCOMPLETE**, including all five advisory groups. Repeated requests cannot establish hidden actor identities, tracker populations, absent history or a statistically identifiable decay regime. No transaction was signed or broadcast. Credentials, raw databases and receipts remain private; the unpublished reference fingerprint remains unchanged.
 
 ## Continued unknown investigation (2026-10-09)
 
-The latest actual full LIVE collection resolved **all 27 required entry checks**, with zero required UNKNOWNs. Its 33 rows contain **22 PASS, 6 FAIL and 5 advisory UNKNOWN**. This supersedes the older merged-run count below; it does not close the advisory or management acceptance gates.
+The October 9 actual full LIVE collection resolved **all 27 required entry checks**, with zero required UNKNOWNs. Its 33 rows contain **22 PASS, 6 FAIL and 5 advisory UNKNOWN**. This supersedes the older merged-run count below; it does not close the advisory or management acceptance gates.
 
 Snapshot `a659d690-8178-49bc-92db-4d53b1a33e6a`, cutoff `2026-10-09T16:23:39.460Z`, hash `dbd5c9bfb3dd6a65547717f95a94be9726f659714269334d8703be33197ff022`, used the supplied mint and unchanged approved $25/six-hour profile. Its database was reopened, its complete retained LIVE bundle validated under the final code, and its saved result replayed identically. Shared semantic qualification and cross-claim audit qualification are both true. RPC and DEX were observed (five pairs); web acquisition reports `TRUNCATED / ATT_FETCH_URL_ERROR` with 25 initial pages plus retained bounded recovery. Known decisions describe the inspected, qualified scopes, not universal completeness of the internet.
 
@@ -40,7 +78,7 @@ The five advisory unknowns are not five missing settings. Their implementation a
 | ADV-04, S07–S09, S11–S20 | Required social qualification only | Reviewed call events, participant histories, public wallet binding, preregistered follower simulation and recurring campaigns. |
 | ADV-05, C07–C16 | C10 structured thesis assessment | Completed OHLCV bars, comparable chain/bridge/macro/launchpad series and repeated lifecycle observations. |
 
-The current advisory evaluator uses boolean predicates over descriptive features. Adding numeric or structured metrics alone cannot give these rows a meaningful PASS. A future advisory interpretation needs its own versioned contract and old-result replay, not filler booleans or relabeling missing collectors as FAIL. Some registry definitions expressly preserve UNKNOWN without identifiable decay, positive denominators, tracker-population evidence, or repeated campaign/lifecycle history. Thus literal zero across all 33 entry rows cannot be guaranteed by repeated calls on a single token. Required-check resolution and advisory completeness must be reported separately.
+At this October 9 snapshot, before the opt-in advisory policy above, the advisory evaluator used boolean predicates over descriptive features. Adding numeric or structured metrics alone cannot give these rows a meaningful PASS. A future advisory interpretation needs its own versioned contract and old-result replay, not filler booleans or relabeling missing collectors as FAIL. Some registry definitions expressly preserve UNKNOWN without identifiable decay, positive denominators, tracker-population evidence, or repeated campaign/lifecycle history. Thus literal zero across all 33 entry rows cannot be guaranteed by repeated calls on a single token. Required-check resolution and advisory completeness must be reported separately.
 
 ## Published main integration and fresh live run (2026-10-09)
 

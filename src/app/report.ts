@@ -64,6 +64,15 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   if(market)lines.push(`Market observation: $${market.priceUsd}/token; displayed liquidity $${market.liquidityUsd??'unknown'}; rolling 24h volume $${market.volume24hUsd??'unknown'}. This is not executable depth.`);
   if(snapshot.collection)lines.push(`Sources: RPC ${snapshot.collection.rpc.state}${snapshot.collection.rpc.code?`/${snapshot.collection.rpc.code}`:''}; DEX ${snapshot.collection.dex.state}; web ${snapshot.collection.web.state}${snapshot.collection.web.code?`/${snapshot.collection.web.code}`:''}.`);
   const recovered=snapshot.evidence.filter(e=>e.scope.method==='tinyfish-live-dex-json-v1').map(e=>e.id);
+  if(details?.advisory){
+    const a=details.advisory;
+    lines.push(`Advisory measurements: ${a.metrics.filter(m=>m.quality==='KNOWN').length}/${a.metrics.length} measured. Coverage is descriptive, not an investment verdict.`);
+    for(const group of a.groups){
+      lines.push(`  ${group.checkId}: ${group.known}/${group.total} measured; ${group.unresolved.length} unresolved.`);
+      for(const id of group.unresolved){const metric=a.metrics.find(m=>m.id===id)!;lines.push(`    ${id}: ${cleanText(metric.reasonCode)}.`);}
+    }
+    lines.push('Historical data became available at retrieval time. Token movements are not automatically sales; routers are not bot or common-control identities. Undefined ratios and uncalibrated regimes remain unresolved.');
+  }
   if(recovered.length)lines.push(`Market recovery: free TinyFish live Fetch (${recovered.join(', ')}); original direct responses retained. Recovery does not certify market accuracy.`);
   const feeRetries=snapshot.evidence.filter(e=>e.id.endsWith('-min-context-recovery'));
   if(feeRetries.length)lines.push(`Fee recovery: ${feeRetries.length} bounded retries while the RPC caught up to the required finalized slot; the slot requirement and quote expiry were preserved.`);
