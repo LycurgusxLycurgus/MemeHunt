@@ -16,7 +16,8 @@ import { qualifySocial } from '../providers/social-model.js';
 import { deriveSocial, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
 import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,type SharedAudit,type SharedSource } from '../domain/shared.js';
 import { qualifyShared } from '../providers/shared-model.js';
-import { collectAdvisoryTrades } from '../providers/advisory-trades.js';
+import { collectAdvisoryWalletHistory } from '../providers/advisory-wallet-history.js';
+import { decodeAdvisoryTrades, collectAdvisoryTrades } from '../providers/advisory-trades.js';
 import { collectAdvisoryContextHistory } from '../providers/advisory-context-history.js';
 import { qualifyAdvisorySemantic,advisorySemanticRequests } from '../providers/advisory-semantic.js';
 import { collectAdvisoryChain } from '../providers/advisory-chain.js';
@@ -139,12 +140,17 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const advisoryAddresses=[token.address,...(advisoryPool?[advisoryPool]:[])];
   // Historical reads overlap semantic review; canonical execution state is still captured late.
   const advisoryPending=options.advisoryEnabled?Promise.all([
-    collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
+    collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline,true),
     collectAdvisoryMarket(token,advisoryPool,fetcher,now,deadline),
     collectAdvisorySocial(token,fetcher,now,deadline),
     collectAdvisoryTrades(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
     collectAdvisoryContextHistory(token,fetcher,now,deadline),
-  ]).then(value=>({value}),error=>({error})):null;
+  ]).then(async value=>{
+    const [chain,,,trades]=value;
+    const decoded=decodeAdvisoryTrades(token,advisoryPool,chain.data,chain.rawArtifacts,chain.retrievedAt,chain.requests,trades.rawArtifacts,trades.retrievedAt,trades.requests);
+    const wallets=await collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);
+    return {value,wallets};
+  },error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
   let attention:ReturnType<typeof deriveAttention>|undefined;
@@ -227,7 +233,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const result=await advisoryPending;
     if('error' in result)throw new Error('ADVISORY_COLLECTION_INVALID');
     const [chain,market,paid,trades,context]=result.value;
-    const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
+    const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
       const artifactIds:Record<string,string>={};
       for(const [key,raw] of Object.entries(read.rawArtifacts)){
         const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
@@ -243,7 +249,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       const requests=Object.fromEntries(Object.keys(classified.rawArtifacts).map(key=>[key,{operation:key,modelRequests:advisorySemanticRequests()}]));
       if(Object.keys(classified.rawArtifacts).length)classification=ingest('semantic',{rawArtifacts:classified.rawArtifacts,retrievedAt:now(),requests});
     }
-    advisoryProof={method:'advisory-provenance-v2',token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification};
+    advisoryProof={method:'advisory-provenance-v3',wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification};
   }
   if(sharedEnabled)await captureCanonical();
   const venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery):undefined;
@@ -263,7 +269,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v2'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v3'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};

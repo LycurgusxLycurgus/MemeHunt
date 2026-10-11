@@ -5,8 +5,8 @@ type Request = { method: string; params: unknown[] };
 type Status = 'OBSERVED' | 'UNAVAILABLE' | 'INVALID' | 'TRUNCATED';
 export type ChainMovement = { signature: string; slot: number; at: string; account: string; owner: string; mint: string; decimals: number; preAtomic: string; postAtomic: string; deltaAtomic: string };
 export type ChainHistory = {
-  token: TokenRef; method: 'solana-bounded-movements-v1'; genesisVerified: boolean; addresses: string[];
-  sourceUniverseComplete: false; pageLimit: 32; transactionLimit: 16;
+  token: TokenRef; method: 'solana-bounded-movements-v1' | 'solana-paginated-movements-v2'; genesisVerified: boolean; addresses: string[];
+  sourceUniverseComplete: false; pageLimit: 32; transactionLimit: 16 | 32;
   pages: Array<{ address: string; status: Status; returned: number; retained: number; oldestAt: string | null; newestAt: string | null; exhausted: boolean; code?: string }>;
   transactions: Array<{ signature: string; slot: number; at: string | null; status: Status; code?: string; movements: ChainMovement[] }>;
   movements: ChainMovement[]; coveredInterval: { start: string; end: string } | null;
@@ -26,8 +26,8 @@ function inputs(token: TokenRef, addresses: string[]) {
   if (token.chain !== 'solana' || !address(token.address) || addresses.length > 3 || !addresses.length || new Set(addresses).size !== addresses.length || !addresses.every(address)) throw new Error('ADVISORY_CHAIN_SCOPE');
 }
 const genesisRequest: Request = { method: 'getGenesisHash', params: [] };
-const pageRequest = (key: string): Request => ({ method: 'getSignaturesForAddress', params: [key, { commitment: 'finalized', limit: 32 }] });
-const txRequest = (sig: string): Request => ({ method: 'getTransaction', params: [sig, { commitment: 'finalized', encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }] });
+const pageRequest = (key: string, before?: string): Request => ({ method: 'getSignaturesForAddress', params: [key, { commitment: 'finalized', limit: 32, ...(before ? {before} : {}) }] });
+const txRequest = (sig: string, expanded=false): Request => ({ method: 'getTransaction', params: [sig, { commitment: 'finalized', encoding: 'jsonParsed', maxSupportedTransactionVersion: expanded?1:0 }] });
 function read(id: string, expected: Request, raws: Record<string,string>, times: Record<string,string>, requests: Record<string,Request>): { value: unknown; at: number } {
   if (JSON.stringify(requests[id]) !== JSON.stringify(expected) || typeof raws[id] !== 'string' || !Number.isFinite(Date.parse(times[id] ?? ''))) shape();
   const parsed: unknown = JSON.parse(raws[id]!);
@@ -40,8 +40,8 @@ function read(id: string, expected: Request, raws: Record<string,string>, times:
   return { value: parsed.result, at: Date.parse(times[id]!) };
 }
 const failure=(error:unknown,fallback:string):{status:'INVALID'|'UNAVAILABLE';code:string}=>{const code=error instanceof Error&&/^RPC_[A-Z0-9_-]{1,50}$/.test(error.message)?error.message:fallback;return {status:code.startsWith('RPC_')?'UNAVAILABLE':'INVALID',code};};
-type SignatureRow = { signature: string; slot: number; blockTime: number | null; err: unknown };
-function pageRows(value: unknown, retrieved: number): SignatureRow[] {
+export type SignatureRow = { signature: string; slot: number; blockTime: number | null; err: unknown };
+export function pageRows(value: unknown, retrieved: number): SignatureRow[] {
   if (!Array.isArray(value) || value.length > 32) shape();
   const seen = new Set<string>(); let previous = Infinity;
   return value.map((v: unknown) => {
@@ -76,41 +76,56 @@ function transaction(value: unknown, row: SignatureRow, retrieved: number, mint:
 }
 
 /** Reconstructs only the declared bounded account-index sample, never whole-wallet or mint history. */
-export function decodeAdvisoryChain(token: TokenRef, addresses: string[], rawArtifacts: Record<string,string>, retrievedAt: Record<string,string>, requests: Record<string,Request>): ChainHistory {
+export function decodeAdvisoryChain(token: TokenRef, addresses: string[], rawArtifacts: Record<string,string>, retrievedAt: Record<string,string>, requests: Record<string,Request>, expanded=false): ChainHistory {
   inputs(token, addresses);
-  const result: ChainHistory = { token, method: 'solana-bounded-movements-v1', genesisVerified: false, addresses: [...addresses], sourceUniverseComplete: false, pageLimit: 32, transactionLimit: 16, pages: [], transactions: [], movements: [], coveredInterval: null, complete: false, tradeCoverageComplete: false, limitations: ['Selected addresses do not enumerate all token activity or all wallet history.', 'Account balance movements do not distinguish transfers, sales, LP operations or routed trade legs.', 'No bot, shared control, wallet creation or organic-demand attribution is made.'] };
+  const result: ChainHistory = { token, method: expanded?'solana-paginated-movements-v2':'solana-bounded-movements-v1', genesisVerified: false, addresses: [...addresses], sourceUniverseComplete: false, pageLimit: 32, transactionLimit: expanded?32:16, pages: [], transactions: [], movements: [], coveredInterval: null, complete: false, tradeCoverageComplete: false, limitations: ['Selected addresses do not enumerate all token activity or all wallet history.', 'Account balance movements do not distinguish transfers, sales, LP operations or routed trade legs.', 'No bot, shared control, wallet creation or organic-demand attribution is made.'] };
   try { result.genesisVerified = read('advisory-chain-genesis', genesisRequest, rawArtifacts, retrievedAt, requests).value === SOLANA_MAINNET_GENESIS; } catch { /* unavailable or invalid genesis fails closed */ }
   if (!result.genesisVerified) { result.limitations.push('Mainnet genesis verification unavailable or invalid.'); return result; }
+  let unknownClock=false;
   const rows = new Map<string,SignatureRow>(), indexedBy = new Map<string,string[]>(), listedAt = new Map<string,number>();
   for (const [i,key] of addresses.entries()) {
-    try {
-      const response = read(`advisory-chain-page-${i}`, pageRequest(key), rawArtifacts, retrievedAt, requests), found = pageRows(response.value, response.at);
-      for (const row of found) { const prior = rows.get(row.signature); if (prior && JSON.stringify(prior) !== JSON.stringify(row)) shape(); }
-      for (const row of found) { rows.set(row.signature,row); indexedBy.set(row.signature,[...(indexedBy.get(row.signature)??[]),key]);listedAt.set(row.signature,Math.max(listedAt.get(row.signature)??0,response.at)); }
-      const dates = found.flatMap(x => x.blockTime === null ? [] : [new Date(x.blockTime*1000).toISOString()]);
-      result.pages.push({ address: key, status: found.length === 32 || found.some(x => x.blockTime === null) ? 'TRUNCATED' : 'OBSERVED', returned: found.length, retained: found.length, oldestAt: dates.length ? dates.reduce((a,b)=>a<b?a:b) : null, newestAt: dates.length ? dates.reduce((a,b)=>a>b?a:b) : null, exhausted: found.length < 32 });
-    } catch(error) { result.pages.push({ address: key, ...failure(error,'ADVISORY_CHAIN_PAGE_INVALID'), returned: 0, retained: 0, oldestAt: null, newestAt: null, exhausted: false }); }
+    let before: string | undefined, previousSlot=Infinity, previousAt=0; const seen=new Set<string>();
+    for(let page=0;page<(expanded?3:1);page++){
+      const id=page===0?`advisory-chain-page-${i}`:`advisory-chain-page-${i}-${page}`;
+      try {
+        const response=read(id,pageRequest(key,before),rawArtifacts,retrievedAt,requests),found=pageRows(response.value,response.at);
+        if(response.at<previousAt||found.some(row=>seen.has(row.signature)||row.slot>previousSlot))shape();
+        for(const row of found){const prior=rows.get(row.signature);if(prior&&JSON.stringify(prior)!==JSON.stringify(row))shape();}
+        if(found.some(row=>row.blockTime===null))unknownClock=true;
+        for(const row of found){seen.add(row.signature);rows.set(row.signature,row);indexedBy.set(row.signature,[...new Set([...(indexedBy.get(row.signature)??[]),key])]);listedAt.set(row.signature,Math.max(listedAt.get(row.signature)??0,response.at));}
+        const dates=found.flatMap(x=>x.blockTime===null?[]:[new Date(x.blockTime*1000).toISOString()]);
+        result.pages.push({address:key,status:found.length===32||found.some(x=>x.blockTime===null)?'TRUNCATED':'OBSERVED',returned:found.length,retained:found.length,oldestAt:dates.length?dates.reduce((a,b)=>a<b?a:b):null,newestAt:dates.length?dates.reduce((a,b)=>a>b?a:b):null,exhausted:found.length<32});
+        if(found.length<32)break;
+        before=found.at(-1)!.signature;previousSlot=found.at(-1)!.slot;previousAt=response.at;
+      }catch(error){result.pages.push({address:key,...failure(error,'ADVISORY_CHAIN_PAGE_INVALID'),returned:0,retained:0,oldestAt:null,newestAt:null,exhausted:false});break;}
+    }
   }
-  const selected = [...rows.values()].slice(0,16);
+  const selected=selectRows(rows,indexedBy,addresses,expanded);
   for (const [i,row] of selected.entries()) {
     const base = { signature: row.signature, slot: row.slot, at: row.blockTime === null ? null : new Date(row.blockTime*1000).toISOString(), movements: [] as ChainMovement[] };
     if (row.err !== null) { result.transactions.push({ ...base, status: 'UNAVAILABLE', code: 'TRANSACTION_FAILED' }); continue; }
     try {
-      const response = read(`advisory-chain-transaction-${i}`, txRequest(row.signature), rawArtifacts, retrievedAt, requests);
+      const response = read(`advisory-chain-transaction-${i}`, txRequest(row.signature,expanded), rawArtifacts, retrievedAt, requests);
       if (response.value === null) { result.transactions.push({ ...base, status: 'UNAVAILABLE', code: 'TRANSACTION_NOT_AVAILABLE' }); continue; }
-      if(response.at < (listedAt.get(row.signature)??Infinity))shape();
+      if(response.at < (listedAt.get(row.signature)??Infinity)||expanded&&(!object(response.value)||!['legacy',0,1].includes(response.value.version)))shape();
       const movements = transaction(response.value,row,response.at,token.address,indexedBy.get(row.signature)??[]);
       result.transactions.push({ ...base, status: 'OBSERVED', movements }); result.movements.push(...movements);
     } catch(error) { result.transactions.push({ ...base, ...failure(error,'ADVISORY_CHAIN_TRANSACTION_INVALID') }); }
   }
-  if (rows.size > 16) result.limitations.push(`Transaction retention cap: ${rows.size} indexed signatures, at most 16 retained.`);
-  result.complete = rows.size <= 16 && result.pages.every(x=>x.status === 'OBSERVED') && result.transactions.every(x=>x.status === 'OBSERVED');
+  if (rows.size > result.transactionLimit) result.limitations.push(`Transaction retention cap: ${rows.size} indexed signatures, at most ${result.transactionLimit} retained.`);
+  result.complete = !unknownClock && rows.size <= result.transactionLimit && addresses.every(key=>result.pages.filter(p=>p.address===key).at(-1)?.exhausted) && result.pages.every(x=>x.status === 'OBSERVED'||expanded&&x.status==='TRUNCATED'&&x.oldestAt!==null) && result.transactions.every(x=>x.status === 'OBSERVED');
   const times = result.transactions.filter(x=>x.status==='OBSERVED' && x.at !== null).map(x=>x.at!);
   if (times.length) result.coveredInterval = { start: times.reduce((a,b)=>a<b?a:b), end: times.reduce((a,b)=>a>b?a:b) };
   return result;
 }
 
-export async function collectAdvisoryChain(token: TokenRef, addresses: string[], rpcUrl: string, fetcher: typeof fetch, now: ()=>string, signal?: AbortSignal): Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>;data:ChainHistory}> {
+function selectRows(rows:Map<string,SignatureRow>,indexedBy:Map<string,string[]>,addresses:string[],expanded:boolean){
+ const list=[...rows.values()];
+ if(expanded)list.sort((a,b)=>Number(a.err!==null)-Number(b.err!==null)||Number(!(indexedBy.get(a.signature)??[]).includes(addresses[1]??''))-Number(!(indexedBy.get(b.signature)??[]).includes(addresses[1]??''))||b.slot-a.slot||a.signature.localeCompare(b.signature));
+ return list.slice(0,expanded?32:16);
+}
+
+export async function collectAdvisoryChain(token: TokenRef, addresses: string[], rpcUrl: string, fetcher: typeof fetch, now: ()=>string, signal?: AbortSignal, expanded=false): Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>;data:ChainHistory}> {
   inputs(token,addresses);
   const rawArtifacts: Record<string,string> = {}, retrievedAt: Record<string,string> = {}, requests: Record<string,Request> = {};
   const run = async (id: string, request: Request) => {
@@ -121,11 +136,21 @@ export async function collectAdvisoryChain(token: TokenRef, addresses: string[],
   await run('advisory-chain-genesis',genesisRequest);
   let mainnet = false; try { mainnet = read('advisory-chain-genesis',genesisRequest,rawArtifacts,retrievedAt,requests).value === SOLANA_MAINNET_GENESIS; } catch {}
   if (mainnet) {
-    await Promise.all(addresses.map((key,i)=>run(`advisory-chain-page-${i}`,pageRequest(key))));
-    const rows = new Map<string,SignatureRow>();
-    for (const [i,key] of addresses.entries()) { try { const response=read(`advisory-chain-page-${i}`,pageRequest(key),rawArtifacts,retrievedAt,requests); for(const row of pageRows(response.value,response.at)) if(!rows.has(row.signature))rows.set(row.signature,row); } catch {} }
-    const selected=[...rows.values()].slice(0,16);
-    for(let offset=0;offset<selected.length;offset+=4) await Promise.all(selected.slice(offset,offset+4).map((row,j)=>row.err===null?run(`advisory-chain-transaction-${offset+j}`,txRequest(row.signature)):Promise.resolve()));
+    const rows=new Map<string,SignatureRow>(),indexedBy=new Map<string,string[]>();
+    for(const [i,key] of addresses.entries()){
+      let before:string|undefined,previousSlot=Infinity;const seen=new Set<string>();
+      for(let page=0;page<(expanded?3:1);page++){
+        const id=page===0?`advisory-chain-page-${i}`:`advisory-chain-page-${i}-${page}`;
+        await run(id,pageRequest(key,before));
+        try{const response=read(id,pageRequest(key,before),rawArtifacts,retrievedAt,requests),found=pageRows(response.value,response.at);
+          if(found.some(row=>seen.has(row.signature)||row.slot>previousSlot))shape();
+          for(const row of found){seen.add(row.signature);if(!rows.has(row.signature))rows.set(row.signature,row);indexedBy.set(row.signature,[...new Set([...(indexedBy.get(row.signature)??[]),key])]);}
+          if(found.length<32)break;before=found.at(-1)!.signature;previousSlot=found.at(-1)!.slot;
+        }catch{break;}
+      }
+    }
+    const selected=selectRows(rows,indexedBy,addresses,expanded);
+    for(let offset=0;offset<selected.length;offset+=2)await Promise.all(selected.slice(offset,offset+2).map((row,j)=>row.err===null?run(`advisory-chain-transaction-${offset+j}`,txRequest(row.signature,expanded)):Promise.resolve()));
   }
-  return {rawArtifacts,retrievedAt,requests,data:decodeAdvisoryChain(token,addresses,rawArtifacts,retrievedAt,requests)};
+  return {rawArtifacts,retrievedAt,requests,data:decodeAdvisoryChain(token,addresses,rawArtifacts,retrievedAt,requests,expanded)};
 }
