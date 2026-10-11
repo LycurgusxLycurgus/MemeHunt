@@ -1,44 +1,52 @@
 # Checklist 2 collaborator handoff — round 2 review and next implementation
 
-Updated 2026-10-10. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
+Updated 2026-10-11. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
 
-## Advisory historical collection and actual token run (2026-10-10)
+## Advisory correction and historical measurements (2026-10-11)
 
-**Review status: UNRESOLVED; this update is not accepted or merge-ready.** Typecheck and the full suite pass **800/800**, but Bridgecode terminal review reproduced an O28 provenance bypass: `deriveAdvisory` reuses caller-supplied normalized baseline O28, and reconstruction compares against that same baseline. A partial advisory bundle can replace the reported DEX counts with fabricated flow data, recompute its advisory inventory and persist without changing any retained raw receipt. The next correction must derive/validate O28 against its exact retained DEX source, with a rehashed baseline-tamper regression. Existing tests do not cover that bypass.
+The user authorized a new Bridgecode 4.3.2 correction cycle, `advisory-correction-2026-10-11`, after the previous cycle ended UNRESOLVED. The fresh independent native reviewer returned **PASS**, with no correction stage. The final retained LIVE bundle validates and save/reopen/replay is identical. Typecheck and **836/836 tests** pass. Zero-UNKNOWN acceptance has not been achieved.
 
-The first review's two blockers were corrected: removal of the entire optional details object now fails when advisory evidence remains; advisory social dependencies require the existing complete social source/model validator. Regression and actual valid-bundle dependency-removal checks pass. Terminal review then found the separate O28 defect. Cycle `advisory-completion-2026-10-10` ends UNRESOLVED after its one correction stage; installed Bridgecode requires a new user instruction to begin another cycle. Do not treat a passing test count or the fresh snapshot as complete provenance acceptance.
+O28 no longer copies normalized baseline data. The advisory adapter reconstructs exact PumpSwap quote amounts from retained finalized transactions, with pool/program/mint/vault, instruction, signer, event and invocation checks. Service also reconstructs canonical DEX metadata and baseline O28 from its original response, rejecting fabricated baseline or market data even after advisory recomputation. LP events and unsupported/failed transactions cannot become directional flow. A bounded tape remains TRUNCATED.
 
-The branch now provides an opt-in `--advisory` live Solana pass, developed under installed Bridgecode 4.3.2. It adds bounded public historical collectors, an explicit inventory of all 50 advisory metrics, retained raw provenance and a distinct `research-screen-advisory-v1` policy. A group's PASS means every declared metric is measured; it does not mean favorable investment quality. The 27 required entry rules and old snapshot policies remain unchanged.
+New measurements and collectors:
 
-The actual supplied-mint run used the unchanged approved $25/six-hour profile:
+- `advisory-trades.ts`: O28 decoded WSOL quote flow; O26 repeated relative inventory-return motifs with arbitrage alternatives; O29 aligned event-price, quote-flow and reserve vectors; A30 six trailing hourly demand windows with an explicit 0.01 WSOL descriptive threshold. Missing transfers, defined depth, cohort baselines and pre-window buyer history stay explicit.
+- `advisory-semantic.ts`: two independent reviews of the unchanged retained corpus, strict literal citations, compact hosted source arrays with local exact-membership checks, deterministic call/incentive/topic/artifact/disclosure measurements, and creator grouping from public accounts and reviewed lineage. Same-author artifacts and evidenced shared campaigns cannot inflate independent creator counts. A saved-corpus exploratory probe passed both HTTP 200 calls and raw reconstruction; five empty current-window inventories were measured. This is not the fresh gate.
+- `advisory-context-history.ts`: two recent Wormholescan pages, canonical message deduplication and local source/target-chain binding. Provider completion and USD figures are retained separately from independently verified finality and valuation. This sample cannot certify C12 chain netflow; launch/migration cohorts remain unavailable.
+- C10 evaluates the actual frozen typed entry conditions after final Shared features. The CLI's existing starter template is labeled as uncalibrated configuration, not a user-authored investment hypothesis. Unknown predicate inputs remain MISSING. The retained configuration must match the token, cutoff and thesis.
+- Historical read-only Solana RPCs use existing bounded HTTP429 recovery. PumpSwap simulation checks up to 50 already-observed unique holder owners, preserving funding, absent-WSOL, fee/setup and unsigned-accounting checks. A real public-RPC partial run recovered EXE-02 PASS after the former five-owner limit found no eligible payer. No transaction is signed or broadcast.
+
+Fresh opt-in policy/provenance is v2. Frozen v1 snapshots retain their original replay; they cannot be submitted as fresh v2 bundles. The October 10 snapshot `e9aeeaf7-c5eb-4f23-8310-175757d6f28c` still replays identically with hash `433e1d4f217aa798b6f21a62913914e1c163f7c25090d49d980c8940f89a1d74`. Its old eight-KNOWN count included O28 rolling transaction counts; that claim is deliberately not carried forward as measured quote flow.
+
+The approved scenario remains $25/six hours, with the same fees, impacts, friction and control limits. Run:
 
 ```sh
 npm run cli -- analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --advisory --json --entry
 ```
 
-Snapshot `e9aeeaf7-c5eb-4f23-8310-175757d6f28c`, cutoff `2026-10-10T13:38:56.945Z`, hash `433e1d4f217aa798b6f21a62913914e1c163f7c25090d49d980c8940f89a1d74`, has **21 PASS, 7 FAIL and 5 advisory UNKNOWN**, with **27/27 required checks known**. Its complete retained LIVE bundle passed the current validator, and the reopened database replayed identically; the O28 provenance gap above prevents full acceptance. The token remains REJECTED; `ATT-01`, `ATT-02`, `CAN-01`, `OWN-02`, `SEC-03`, `SOC-02` and `SOC-03` fail. CAN-01 is an additional failure in this new snapshot; earlier results are retained separately. RPC was observed, DEX retained six pairs, and web collection reported `TRUNCATED / ATT_FETCH_URL_ERROR` with 24 initial fetched pages. Decisions describe the qualified retained scope.
+The five groups require every declared metric to be KNOWN. PASS means complete descriptive coverage, not favorable investment quality. Empty bounded inventories can be measured zeros; zero-denominator ratios remain undefined. A rejected entry remains INITIAL_RESEARCH, with 15 management rows NOT_RUN and NO_ACTIVE_THESIS.
 
-**Eight of 50 metric states are KNOWN**, including C14's explicit NOT_REQUESTED chart-predicate configuration. All five advisory groups still have unmet empirical or implementation prerequisites:
+Remaining dependencies include complete trade/holder histories, endpoint-pinned cohorts and transfer-aware inventory/cost basis; explicit public actor-wallet evidence; comparable competitor execution and participant histories; preregistered empirical baselines and identifiable attention/decay regimes; verified bridge finality/valuation and launch/migration cohorts. The user has no additional historical dataset or indexer access. Current public samples cannot substitute for those contracts. Credentials and full raw receipts remain private, and other-session files are excluded.
 
-| Group | Known / total | What this run established | Remaining requirements |
-|---|---:|---|---|
-| ADV-01 | 0/5 | Bounded exact-mint account movements retained as partial evidence | Independent strong control edges, oldest-wallet history, null baselines, endpoint-pinned fixed cohorts, inventory cost and age history. |
-| ADV-02 | 1/5 | O28: qualified descriptive DEX rolling trade counts | Decoded circular trade motifs, related-party evidence, comparable cohort/depth histories, independently verified automation attribution. |
-| ADV-03 | 2/17 | A19: fixed-sample equal-bin acceleration; A20: reviewed propagation breadth | Reviewed theme/artifact/persistence histories, competitor economic participation, external-origin/paid/topic classifications, aligned lead-lag/null tests, meaningful buyers, positive growth denominators, identifiable decay/catalyst regime and inventory/depth histories. |
-| ADV-04 | 0/13 | Social sample retained; returning-participant denominator is zero | Forward-call/edit and incentive review, public actor-wallet binding, transfer-aware trade/cost histories, preregistered follower simulation, tracker/follow-flow evidence, independent actor groups and repeated campaigns/null baselines. |
-| ADV-05 | 5/10 | C08 price context, C11 covered-chain DEX activity, C13 chart structure, C14 NOT_REQUESTED, C15 USD macro context | Repeated lifecycle/hysteresis observations, calibrated regime, explicit typed thesis conditions, finalized deduplicated bridge transfers, launch/migration/cohort history. |
+### Current actual result and remaining gate
 
-Acquired history is real, bounded and retained:
+Snapshot **26857a3e-5544-42a6-b3a2-8d0d8ebc2783**, cutoff **2026-10-11T14:12:21.198Z**, hash **9cf4412189a4d44398c058bc660f3c4438f871962d3f69a063f603a9e1205cf2**, contains **13/50 KNOWN, 35 MISSING and 2 TRUNCATED** advisory states. All five advisory groups remain UNKNOWN. Earlier attempts remain separate; no values are grafted between snapshots.
 
-- Exact-mint/pool finalized signature pages and 16 retained transaction reads yielded 10 observed transactions and 22 account movements, covering `2026-10-10T13:15:35Z`–`13:35:25Z`. This is incomplete indexed history, not wallet-universe coverage, decoded sales or proof of circular trading.
-- GeckoTerminal returned 72 contiguous completed hourly USD candles for pool `4zLRGHwKdXyaTovP8UkV66CskWgo9E7kAaGYcw1vFh7E`, covering `2026-10-07T13:00Z`–`2026-10-10T13:00Z`. Code-derived confirmed structure was DOWN, with endpoint return fraction approximately `-0.6354524`. This is historical description, not a prediction.
-- Coinbase returned 72 completed hourly USD candles each for BTC, ETH and SOL. DefiLlama returned matching completed daily Solana/BSC/Base DEX volumes and prior-day comparisons; covered-chain shares exclude Robinhood and do not measure capital flow.
-- The exact-token DEX paid-visibility endpoint returned one approved profile order and two boosts. A22 remains MISSING because this does not establish social paid-disclosure coverage or organic promotion.
-- The reviewed current fixed-query social sample contained zero qualified original posts. A19's three bin counts and A20's group/community counts are measured zeros within that inspected scope. A23 price-only fraction and S11 returning ratio remain undefined with zero denominators; older posts were not assigned fresh publication dates.
+| Group | Known / total | Unresolved metrics |
+|---|---:|---|
+| ADV-01 | 0/5 | O21, O22, O23, O24, O25 |
+| ADV-02 | 0/5 | O26 (TRUNCATED), O27, O28 (TRUNCATED), O29, O30 |
+| ADV-03 | 5/17 | A06, A12, A13, A21, A23, A24, A25, A26, A27, A28, A29, A30 |
+| ADV-04 | 3/13 | S09, S11, S13, S14, S15, S16, S17, S18, S19, S20 |
+| ADV-05 | 5/10 | C07, C09, C10, C12, C16 |
 
-Every provider response or bounded failure receipt carries its request and retrieval time. Collection overlaps hosted review, while canonical execution state is captured late. Advisory reconstruction precedes persistence and uses retained raw bytes; source clocks, exact mint/pool binding, unfinished/gapped/future candles, capped chain history and undefined denominators remain explicit. The reported inventory does not implement unavailable calibration or declare the unresolved contracts satisfied.
+Known states are A07, A08, A19, A20, A22, S07, S08, S12, C08, C11, C13, C14 and C15. C14 is the explicit NOT_REQUESTED configuration state. Empty inventories are scoped to the inspected sample; undefined fractions stay MISSING. Both new semantic classification requests returned HTTP200.
 
-The case remains INITIAL_RESEARCH. Reassessment returns `NO_ACTIVE_THESIS`; all **15 management rows remain NOT_RUN**. The combined zero-unknown acceptance gate is **INCOMPLETE**, including all five advisory groups. Repeated requests cannot establish hidden actor identities, tracker populations, absent history or a statistically identifiable decay regime. No transaction was signed or broadcast. Credentials, raw databases and receipts remain private; the unpublished reference fingerprint remains unchanged.
+The complete result is **15 PASS, 5 FAIL and 13 UNKNOWN**, with **20/27 required entry checks known**. Required UNKNOWN: CAN-01, DAT-01, DAT-02, DAT-03, EXE-02, OWN-01 and OWN-02. Holder RPC_HTTP_429 prevents ownership/payer/cost evidence; two unresolved comparison leads prevent CAN/shared-DAT qualification. C10 is implemented but its referenced O15 condition is unavailable in this snapshot. Failed checks are ATT-01, ATT-02, SEC-03, SOC-02 and SOC-03. Entry remains rejected, INITIAL_RESEARCH; all15 management checks are NOT_RUN and reassessment returns NO_ACTIVE_THESIS.
+
+A separate operational probe of the officially listed free PublicNode endpoint returned HTTP403 for getGenesisHash and the exact holder query. It was not selected for a production run. Earlier partial EXE-02 PASS proves bounded payer recovery worked at that time, not whole-entry acceptance or permanent RPC availability.
+
+Continue from the active checklist in agentic/analysis.md and the maintained map in agentic/architecture.md. Relevant code is src/app/advisory.ts::reconstructAdvisory, src/app/service.ts::validateAdvisoryDexBaseline, src/providers/advisory-trades.ts, advisory-semantic.ts and advisory-context-history.ts, src/domain/advisory.ts and adjacent tests. Required Bridgecode specialists are best-agent and writing. Next evidence work must obtain compatible histories/baselines and public attribution for the unresolved contracts above; repeated unchanged runs or invented identities cannot establish them. This cycle accepts the code and its bounded evidence handling, **not the zero-UNKNOWN goal**. Publication is on camilo_work and existing draft PR#3.
 
 ## Continued unknown investigation (2026-10-09)
 

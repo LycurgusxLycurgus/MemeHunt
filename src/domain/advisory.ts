@@ -1,7 +1,8 @@
 import { deriveMarketContext, type BaselineAssessment } from './baseline.js';
-import type { TokenRef, EvidenceRecord } from './contracts.js';
+import type { TokenRef, EvidenceRecord, Thesis, FeatureResult } from './contracts.js';
 import { advisoryFactsSchema, advisoryGroups, advisoryIds, type AdvisoryFacts, type AdvisoryMetric } from './advisory-contracts.js';
 import type { ChainHistory } from '../providers/advisory-chain.js';
+import { explainPredicate } from './policy.js';
 import type { MarketHistory } from '../providers/advisory-market.js';
 
 const missing:Record<string,string>={
@@ -11,7 +12,7 @@ const missing:Record<string,string>={
   S07:'FORWARD_CALL_EVENT_AND_EDIT_REVIEW_REQUIRED',S08:'CITED_INCENTIVE_DISCLOSURE_REVIEW_REQUIRED',S09:'QUALIFIED_CALL_EVENT_DENOMINATOR_REQUIRED',S11:'COMPARABLE_PARTICIPANT_WINDOWS_REQUIRED',S12:'ORIGINAL_CREATOR_AND_ASSOCIATION_EVIDENCE_REQUIRED',S13:'EXPLICIT_PUBLIC_WALLET_ASSOCIATION_REQUIRED',S14:'BOUND_ACTOR_TRADE_AND_CALL_HISTORY_REQUIRED',S15:'TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',S16:'PREREGISTERED_FOLLOWER_SIMULATION_REQUIRED',S17:'BOUND_ACTOR_PRE_POST_CALL_INVENTORY_REQUIRED',S18:'MEASURED_TRACKER_AND_FOLLOW_FLOW_EVIDENCE_REQUIRED',S19:'HISTORICAL_INDEPENDENT_ACTOR_GROUPS_REQUIRED',S20:'REPEATED_CAMPAIGNS_AND_NULL_BASELINE_REQUIRED',
   C07:'RECORDED_LIFECYCLE_WINDOWS_AND_HYSTERESIS_REQUIRED',C08:'MINT_BOUND_COMPLETED_CANDLES_REQUIRED',C09:'COMPLETE_DECLARED_CONTEXT_REQUIRED',C10:'FROZEN_TYPED_THESIS_CONDITIONS_REQUIRED',C11:'COMPARABLE_COMPLETED_CHAIN_VOLUMES_REQUIRED',C12:'FINALIZED_DEDUPLICATED_BRIDGE_TRANSFER_COVERAGE_REQUIRED',C13:'CONFIRMED_PIVOT_STRUCTURE_REQUIRED',C14:'CHART_CORROBORATION_CONTEXT_REQUIRED',C15:'COMPLETED_USD_MACRO_CANDLES_REQUIRED',C16:'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED',
 };
-export type AdvisoryInputs={token:TokenRef;cutoff:string;evidence:EvidenceRecord[];baseline:BaselineAssessment[];chain:ChainHistory|null;market:MarketHistory|null;socialMetrics:AdvisoryMetric[];chainIds:string[];marketIds:string[];paidIds:string[]};
+export type AdvisoryInputs={token:TokenRef;cutoff:string;evidence:EvidenceRecord[];baseline:BaselineAssessment[];chain:ChainHistory|null;market:MarketHistory|null;socialMetrics:AdvisoryMetric[];chainIds:string[];marketIds:string[];paidIds:string[];additionalMetrics?:AdvisoryMetric[];contextHistory?:unknown;contextIds?:string[];thesis?:Thesis|null;features?:FeatureResult[];thesisEvidenceId?:string};
 
 /** Measurements are descriptive; absence and undefined ratios are never adverse-token booleans. */
 export function deriveAdvisory(input:AdvisoryInputs):AdvisoryFacts{
@@ -21,10 +22,6 @@ export function deriveAdvisory(input:AdvisoryInputs):AdvisoryFacts{
   };
   const validIds=(ids:string[])=>ids.every(id=>input.evidence.some(e=>e.id===id&&Date.parse(e.availableAt)<=Date.parse(input.cutoff)));
   if(!validIds([...input.chainIds,...input.marketIds,...input.paidIds]))throw new Error('ADVISORY_EVIDENCE_INVALID');
-  for(const id of ['O28']){
-    const assessment=input.baseline.find(a=>a.id===id);
-    if(assessment?.quality==='KNOWN'&&assessment.data!==null&&assessment.evidenceIds.length&&validIds(assessment.evidenceIds))set(id,'KNOWN',assessment.data,assessment.evidenceIds,'EXISTING_QUALIFIED_MEASUREMENT',assessment.unit);
-  }
   if(input.chain){
     const c=input.chain;
     if(c.token.chain!==input.token.chain||c.token.address!==input.token.address)throw new Error('ADVISORY_TOKEN_INVALID');
@@ -53,11 +50,21 @@ export function deriveAdvisory(input:AdvisoryInputs):AdvisoryFacts{
     }
     set('C09','MISSING',{chains:m.chainVolumes,macroInstruments:m.macro.map(series=>series.instrument),bridge:null,launch:null,classification:null,meaning:'No fitted HOT/NORMAL/COLD regime; missing bridge and launch context remains explicit.'},input.marketIds,missing.C09);
   }
-  for(const observation of input.socialMetrics){
+  if(input.contextHistory)set('C12','MISSING',input.contextHistory,input.contextIds??[],'BRIDGE_SAMPLE_INCOMPLETE_FINALITY_AND_VALUATION_UNVERIFIED');
+  if(input.thesis&&input.features&&input.thesisEvidenceId){
+    const t=input.thesis,observed=input.features;
+    const evaluate=(predicate:Thesis['support'][number])=>({predicate,...explainPredicate(predicate,observed,input.cutoff)});
+    const support=t.support.map(evaluate),invalidation=t.invalidation.map(evaluate),optional=Object.fromEntries(['catalyst','onchainTraction','externalTraction','warning'].map(key=>{const p=t[key as 'catalyst'];return [key,p?evaluate(p):{configuration:'NOT_CONFIGURED'}];})),legs=t.legs.map(leg=>({...leg,...evaluate(leg.trigger)}));
+    const values=[...support,...invalidation,...Object.values(optional).filter(v=>'truth' in v),...legs];
+    const known=values.every(v=>v.truth!=='UNKNOWN'),refs=[...new Set(values.flatMap(v=>'featureRefs' in v?v.featureRefs:[]))];
+    const ids=[input.thesisEvidenceId,...observed.filter(f=>refs.includes(f.id)).flatMap(f=>f.evidenceIds)];if(!validIds(ids))throw new Error('ADVISORY_THESIS_EVIDENCE_INVALID');
+    set('C10',known?'KNOWN':'MISSING',{method:'frozen-typed-thesis-conditions-v1',thesis:t,support,invalidation,...optional,legs,expiryAt:t.expiryAt,expired:t.expiryAt?Date.parse(input.cutoff)>=Date.parse(t.expiryAt):null,scope:'Configured frozen entry conditions only; a default template is not a calibrated investment hypothesis or an active management episode.'},ids,known?'FROZEN_TYPED_CONDITIONS_EVALUATED':'THESIS_CONDITION_FEATURES_UNAVAILABLE');
+  }
+  for(const observation of [...input.socialMetrics,...(input.additionalMetrics??[])]){
     if(!advisoryIds.includes(observation.id)||!validIds(observation.evidenceIds))throw new Error('ADVISORY_SOCIAL_INPUT_INVALID');
     const ids=observation.id==='A22'?[...observation.evidenceIds,...input.paidIds]:observation.evidenceIds;
     set(observation.id,observation.quality,observation.data,ids,observation.reasonCode,observation.unit);
   }
   const values=advisoryIds.map(id=>metrics.get(id)!);
-  return advisoryFactsSchema.parse({method:'advisory-measurements-v1',token:input.token,cutoff:input.cutoff,metrics:values,groups:advisoryGroups.map(group=>{const unresolved=group.featureIds.filter(id=>metrics.get(id)!.quality!=='KNOWN');return {checkId:group.checkId,total:group.featureIds.length,known:group.featureIds.length-unresolved.length,unresolved};})});
+  return advisoryFactsSchema.parse({method:'advisory-measurements-v2',token:input.token,cutoff:input.cutoff,metrics:values,groups:advisoryGroups.map(group=>{const unresolved=group.featureIds.filter(id=>metrics.get(id)!.quality!=='KNOWN');return {checkId:group.checkId,total:group.featureIds.length,known:group.featureIds.length-unresolved.length,unresolved};})});
 }

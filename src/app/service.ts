@@ -21,6 +21,20 @@ import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/manag
 import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy-policy.js';
 import { reconstructAdvisory } from './advisory.js';
 
+/** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
+function validateAdvisoryDexBaseline(b:LiveBundle){
+  const record=b.evidence.find(e=>e.id==='dex-pairs');let market:LiveBundle['market']=null;
+  if(record){
+    if(!(record.sourceId==='dexscreener'&&record.accessMode==='PUBLIC_API'||record.sourceId==='tinyfish-fetch'&&record.accessMode==='FREE_ACCOUNT'&&record.scope.method==='tinyfish-live-dex-json-v1'))throw new Error('ADVISORY_PROOF_INVALID');
+    try{market=parseDexPairs(JSON.parse(b.rawArtifacts[record.id]!),b.token.chain,b.token.address);}catch{if(b.market!==null)throw new Error('ADVISORY_PROOF_INVALID');}
+  }
+  if(decisionHash(market)!==decisionHash(b.market))throw new Error('ADVISORY_PROOF_INVALID');
+  const expected=deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:b.features,evidence:b.evidence,observations:b.observations,market:market??undefined,sharedMode:!!b.details?.shared}).find(a=>a.id==='O28');
+  const claimed=b.details?.baseline.find(a=>a.id==='O28');
+  if(!expected||!claimed)throw new Error('ADVISORY_PROOF_INVALID');
+  for(const field of ['data','quality','unit','evidenceIds'] as const)if(decisionHash(expected?.[field])!==decisionHash(claimed?.[field]))throw new Error('ADVISORY_PROOF_INVALID');
+}
+
 function validateFeeRecovery(b:LiveBundle){
   for(const e of b.evidence.filter(e=>e.id.endsWith('-min-context-recovery'))){
     const id=e.id.replace(/-min-context-recovery$/,''),receipt=JSON.parse(b.rawArtifacts[e.id]);
@@ -161,7 +175,7 @@ export class Service {
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API' };
         if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -185,6 +199,7 @@ export class Service {
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
       const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-'));
       if(hasAdvisoryEvidence&&!b.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+      if(hasAdvisoryEvidence)validateAdvisoryDexBaseline(b);
       if(b.details){
         const details=b.details;
         if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify(details).length>2_000_000)throw new Error('INVALID_ASSESSMENT_DETAILS');
@@ -194,7 +209,7 @@ export class Service {
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
-            const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof);
+            const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
           }catch{throw new Error('ADVISORY_PROOF_INVALID');}
         }else if(b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')))throw new Error('ADVISORY_PROOF_INVALID');
@@ -397,7 +412,7 @@ export class Service {
     this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,b.analysisKind==='LIVE'?b.details?.advisory:undefined);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v1':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v2':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -511,10 +526,10 @@ export class Service {
     const policyVersion=semantic.policyVersion??(semantic.schemaVersion===1?(row.kind==='ENTRY'?'research-screen-v0':'thesis-management-v0'):undefined);
     const modern=['thesis-management-v5','thesis-management-v6','thesis-management-v7','thesis-management-v8'].includes(policyVersion);
     const historical=['thesis-management-v0','thesis-management-v1','thesis-management-v2','thesis-management-v3','thesis-management-v4'].includes(policyVersion);
-    const entryVersions=['research-screen-v0','research-screen-v1','research-screen-v2','research-screen-v3','research-screen-v4','research-screen-shared-v1','research-screen-advisory-v1'];
+    const entryVersions=['research-screen-v0','research-screen-v1','research-screen-v2','research-screen-v3','research-screen-v4','research-screen-shared-v1','research-screen-advisory-v1','research-screen-advisory-v2'];
     if(row.kind==='ENTRY'?!entryVersions.includes(policyVersion):!modern&&!historical)throw new Error(row.kind==='ENTRY'?'UNSUPPORTED_SNAPSHOT_VERSION':'UNSUPPORTED_POLICY_VERSION');
-    if(policyVersion==='research-screen-advisory-v1'&&!semantic.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-advisory-v1'].includes(policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):policyVersion==='research-screen-v4'?'QUALIFIED_V4':policyVersion==='research-screen-v3'?'QUALIFIED_V3':policyVersion==='research-screen-v2'?'QUALIFIED_V2':policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,policyVersion==='research-screen-shared-v1'||policyVersion==='research-screen-advisory-v1'&&!!semantic.details?.shared,policyVersion==='research-screen-advisory-v1'?semantic.details?.advisory:undefined) : modern ? evaluateManagementAs(policyVersion,semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,execution,semantic.attentionPolicy,semantic.details?.social) : evaluateLegacyManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,policyVersion==='thesis-management-v4'?'QUALIFIED_V4':policyVersion==='thesis-management-v3'?'QUALIFIED_V3':policyVersion==='thesis-management-v2'?'QUALIFIED_V2':policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    if(['research-screen-advisory-v1','research-screen-advisory-v2'].includes(policyVersion)&&!semantic.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-advisory-v1','research-screen-advisory-v2'].includes(policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):policyVersion==='research-screen-v4'?'QUALIFIED_V4':policyVersion==='research-screen-v3'?'QUALIFIED_V3':policyVersion==='research-screen-v2'?'QUALIFIED_V2':policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,policyVersion==='research-screen-shared-v1'||['research-screen-advisory-v1','research-screen-advisory-v2'].includes(policyVersion)&&!!semantic.details?.shared,['research-screen-advisory-v1','research-screen-advisory-v2'].includes(policyVersion)?semantic.details?.advisory:undefined) : modern ? evaluateManagementAs(policyVersion,semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,execution,semantic.attentionPolicy,semantic.details?.social) : evaluateLegacyManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,policyVersion==='thesis-management-v4'?'QUALIFIED_V4':policyVersion==='thesis-management-v3'?'QUALIFIED_V3':policyVersion==='thesis-management-v2'?'QUALIFIED_V2':policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

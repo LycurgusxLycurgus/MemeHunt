@@ -46,7 +46,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v1');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v2');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -57,6 +57,10 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     try{assert.throws(()=>service.analyzeLive(candidate),/ADVISORY_PROOF|FUTURE_EVIDENCE|FUTURE_/,name);}finally{service.close();}
   };
   try{
+    reject('normalized-o28-forgery',b=>{b.details!.baseline.find(a=>a.id==='O28')!.data={netQuoteFlowUsd:'999999999999',meaning:'fabricated organic buys'};b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features);});
+    reject('normalized-market-forgery',b=>{b.market!.pairs[0]!.buys24h=999999;b.details!.baseline.find(a=>a.id==='O28')!.data={fabricated:true};b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features);});
+    reject('legacy-proof-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v1';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('context-request-forgery',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.context.requests['bridge-page-0'].url='https://unrelated.example';b.evidence.find(e=>e.id===proof.context.artifactIds['bridge-page-0'])!.scope.request=proof.context.requests['bridge-page-0'];b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('entire-details-removal',b=>{delete b.details;});
     reject('claimed-measurement',b=>{b.details!.advisory!.metrics.find(m=>m.id==='C08')!.data={returnFraction:'999'};});
     reject('wrong-request-token',b=>{
@@ -114,7 +118,7 @@ test('a local-only reviewed social packet cannot certify advisory metrics withou
   rehash(bundle,'social-derivation');
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);proof.socialDerivationId='social-derivation';
   bundle.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(bundle,'advisory-derivation');
-  bundle.details!.advisory=reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,proof);
+  bundle.details!.advisory=reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,proof,bundle.thesis??null,bundle.features);
   assert.equal(bundle.details!.advisory.metrics.find(m=>m.id==='A19')?.quality,'KNOWN');
   try{
     const service=new Service(join(directory,'missing-social.sqlite'));
@@ -127,4 +131,18 @@ test('a local-only reviewed social packet cannot certify advisory metrics withou
     const removed=new Service(join(directory,'removed-social.sqlite'));
     try{assert.throws(()=>removed.analyzeLive(bundle),/ADVISORY_PROOF_INVALID/);}finally{removed.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+
+test('C10 evaluates frozen typed entry conditions and binds their retained configuration',async()=>{
+ const thesis={support:[{op:'eq' as const,feature:'O28',value:true,unit:'bool'}],invalidation:[{op:'eq' as const,feature:'O28',value:false,unit:'bool'}],catalyst:null,expiryAt:null,onchainTraction:null,externalTraction:null,warning:null,legs:[]};
+ const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher,now:()=>at,thesis});
+ const metric=bundle.details!.advisory!.metrics.find(m=>m.id==='C10')!;assert.equal(metric.quality,'KNOWN');
+ const data=metric.data as {support:{truth:string}[];invalidation:{truth:string}[]};assert.equal(data.support[0]!.truth,'TRUE');assert.equal(data.invalidation[0]!.truth,'FALSE');
+ const directory=mkdtempSync(join(tmpdir(),'advisory-thesis-'));const service=new Service(join(directory,'live.sqlite'));
+ try{const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);
+ const mutated=structuredClone(bundle),raw=JSON.parse(mutated.rawArtifacts['advisory-thesis-context']!);raw.thesis.support[0].value=false;mutated.rawArtifacts['advisory-thesis-context']=JSON.stringify(raw);rehash(mutated,'advisory-thesis-context');assert.throws(()=>service.analyzeLive(mutated),/ADVISORY_PROOF/);
+ }finally{service.close();rmSync(directory,{recursive:true,force:true});}
+ const unavailable=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher,now:()=>at,thesis:{...thesis,support:[{op:'eq',feature:'S01',value:true,unit:'bool'}]}});
+ assert.equal(unavailable.details!.advisory!.metrics.find(m=>m.id==='C10')!.quality,'MISSING');
 });

@@ -44,7 +44,7 @@ export async function solanaRpc(url: string, method: string, params: unknown[], 
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
     signal,
   };
-  const reads = new Set(['getGenesisHash','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
+  const reads = new Set(['getGenesisHash','getSignaturesForAddress','getTransaction','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
   const response = reads.has(method)
     ? await fetchReadResponse(url, init, fetcher, method==='getProgramAccounts'?15_000:8000, true)
     : await fetcher(url,{...init,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});

@@ -60,3 +60,16 @@ test('indexed addresses and retrieval chronology must match the returned transac
  const result=await collectAdvisoryChain(token,[token.address],'https://rpc.example',fetcher(),()=>at);result.retrievedAt['advisory-chain-transaction-0']='2026-10-10T11:59:59.000Z';
  const changed=decodeAdvisoryChain(token,[token.address],result.rawArtifacts,result.retrievedAt,result.requests);assert.equal(changed.transactions[0]?.status,'INVALID');
 });
+
+
+test('historical read-only RPCs recover bounded HTTP429 gaps before retaining canonical receipts',async()=>{
+ const underlying=fetcher(),attempts=new Map<string,number>();
+ const intermittent:typeof fetch=async(url,init)=>{const request=JSON.parse(String(init?.body));const method=request.method;attempts.set(method,(attempts.get(method)??0)+1);
+  if(['getSignaturesForAddress','getTransaction'].includes(method)&&attempts.get(method)===1)return new Response('rate limited',{status:429,headers:{'retry-after':'0'}});
+  return underlying(url,init);
+ };
+ const collected=await collectAdvisoryChain(token,[token.address],'https://rpc.example',intermittent,()=>at);
+ assert.equal(attempts.get('getSignaturesForAddress'),2);assert.equal(attempts.get('getTransaction'),2);
+ assert.equal(collected.data.transactions[0]?.status,'OBSERVED');assert.equal(collected.data.movements[0]?.deltaAtomic,'2');
+ assert.deepEqual(decodeAdvisoryChain(token,[token.address],collected.rawArtifacts,collected.retrievedAt,collected.requests),collected.data);
+});

@@ -106,7 +106,12 @@ export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:Co
     let simulationProof:Record<string,unknown>|undefined;
     try{
       const rankedOwners=[...(holders?.accounts??[])].filter(a=>BigInt(a.amount)>0n).sort((a,b)=>BigInt(a.amount)>BigInt(b.amount)?-1:BigInt(a.amount)<BigInt(b.amount)?1:0);
-      let candidates=[...new Set(rankedOwners.map(a=>a.owner))].slice(0,5).map(a=>new PublicKey(a));
+      // A token's largest holders can be pool accounts or underfunded wallets.
+      // Check up to fifty already-observed owners in one bounded RPC batch;
+      // their two ATAs fit the RPC's hundred-account maximum.
+      let candidates=[...new Set(rankedOwners.map(a=>a.owner))].slice(0,50).map(a=>new PublicKey(a));
+      let payerSource='HOLDER_OBSERVATION',payerAccountsEvidenceId='pump-simulation-payers',ataAccountsEvidenceId='pump-simulation-user-accounts';
+      let payerSourceEvidenceIds=holders?.evidenceIds??[];
       let payerInfos=candidates.length?await multiple('pump-simulation-payers',candidates):[];
       const funded=(a:AccountInfo<Buffer>|null)=>!!a&&!a.executable&&a.owner.equals(PublicKey.default)&&BigInt(a.lamports)>=BigInt(quote.toString())+30_000_000n;
       const choose=async(id:string)=>{
@@ -124,6 +129,8 @@ export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:Co
         // Verified protocol configuration supplies public simulation subjects, never user identity.
         const seen=new Set(candidates.map(k=>k.toBase58()));
         candidates=[...globalConfig.protocolFeeRecipients,globalConfig.admin].filter(k=>!k.equals(PublicKey.default)&&!seen.has(k.toBase58())&&!!seen.add(k.toBase58())).slice(0,8);
+        payerSource='VERIFIED_PROTOCOL_CONFIG';payerSourceEvidenceIds=['pump-pool-config','pump-mints-vaults'];
+        payerAccountsEvidenceId='pump-simulation-fallback-payers';ataAccountsEvidenceId='pump-simulation-fallback-user-accounts';
         payerInfos=candidates.length?await multiple('pump-simulation-fallback-payers',candidates):[];selection=await choose('pump-simulation-fallback-user-accounts');
       }
       if(!selection)throw new Error('PUMP_SIMULATION_PAYER_UNAVAILABLE');const index=selection.index,user=candidates[index];
@@ -196,7 +203,8 @@ export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:Co
       if(setup<0n||pre[baseIndex]===0&&setup<BigInt(post[baseIndex]))throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');
       venue.entryExternalCostUsd=entryFee.add(setup.toString()).div(1e9).mul(price).toFixed();venue.costsReconciled=true;delete errors.execution;
       venue.simulation={setupVerified:true,buySucceeded:true,sellSucceeded:true};
-      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString()};
+      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString(),
+        payerSelection:{source:payerSource,sourceEvidenceIds:payerSourceEvidenceIds,candidateOwners:candidates.map(key=>key.toBase58()),selectedIndex:index,payerAccountsEvidenceId,ataAccountsEvidenceId}};
     }catch(e){errors.simulation=e instanceof Error&&/^PUMP_/.test(e.message)?e.message:safeRpcCode(e);}
     rawArtifacts['pump-quote-calculation']=JSON.stringify({sdk:inspection.version,pool:poolKey.toBase58(),requestedUsd:profile.sizeUsd,quoteAtomic:quote.toString(),actualEntryAtomic:actualBuy.uiQuote.toString(),acquiredAtomic:buy.base.toString(),exitAtomic:sell.uiQuote.toString(),method:'INDEPENDENT_QUOTES',virtualQuoteReserves:pool.virtualQuoteReserves.toString(),actualQuoteReserve:quoteVault.amount.toString(),slot:stateSlot,...(recovery?{nativeUsd:solUsd,nativePriceEvidenceId:'pump-sol-usd'}:{}),simulationProof});retrievedAt['pump-quote-calculation']=now();inspection.evidenceIds.push('pump-quote-calculation');
     venue.evidenceIds=inspection.evidenceIds.filter(id=>id!=='rpc-genesis'&&id!=='pump-pool-config'&&!['pump-program','pump-program-data','pump-simulation-payers','pump-simulation-fallback-payers','pump-simulation-user-accounts'].includes(id));
