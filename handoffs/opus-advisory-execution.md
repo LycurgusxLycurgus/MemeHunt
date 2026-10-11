@@ -1,3 +1,38 @@
+# Accepted acquisition result — feasible-advisory-next-2026-10-11
+
+O30 is newly KNOWN on the user's token. Advisory coverage increases from 16/50 to **17/50 KNOWN**, with **31 MISSING and 2 TRUNCATED: 33 unresolved**, down from 34. All five advisory groups remain UNKNOWN; zero unknowns is not achieved.
+
+Claude Code exact `claude-opus-5-5` independently ranked the acquisition options and authored `src/providers/advisory-automation.ts` and its adjacent regression tests. Codex obtained the primary evidence, applied the authored files through its permitted executor, integrated provenance/versioning/persistence, ran validation and completed publication. The Claude CLI remained read-only; no tool denial was bypassed. Codex retained a portable sanitized mainnet regression and ran the complete private mainnet receipt probe separately.
+
+## Verified behavior and evidence
+
+The fixed `jupiter-legacy-dca-flash-fill-v1` registry contains the officially documented legacy DCA program `DCA265Vj8a9CEuX1eb1LWRnDT7uK6q1xMipnNyatn23M`. Four exact URL/hash/byte/literal source receipts bind the commit-pinned declaration, IDL and README with the legacy automatic-execution document; a fresh finalized executable program-account receipt binds mainnet state. The successor DCA product is excluded. Sources and program state are retained before persistence; unavailable or changed sources leave the measurement unresolved.
+
+A real mainnet transaction established that the swap is a sibling between initiation and repayment, rather than a child of the DCA invocation. Attribution therefore requires a successful top-level `initiateFlashFill`/`fulfillFlashFill` pair, identical keeper/DCA/mint/token-account roles, exact IDL discriminators/widths/fixed programs, a signing keeper, token/WSOL orientation and the intervening Pump trade's user and base account. Failed branches/ancestors, malformed or ambiguous sequences and incomplete execution logs cannot certify flow. Ordinary router calls and wallet labels supply no attribution. Shared-account or multi-hop routes without the required bindings stay unattributed.
+
+The fresh run covers ten trades in one complete selected-pool hour, **21:00–22:00 UTC on 11 October 2026**. Covered fee-exclusive quote notional is **118880579 WSOL atomic units (0.118880579 WSOL)**. No flow matched the fixed legacy DCA registry: attributed quote notional and transactions are zero. All remaining flow is unattributed and `unknownAutomation` stays `NOT_MEASURED`. This is a scoped registry observation, not proof of organic/manual activity or absence of other automation. Historical deployed bytecode upgrades are not independently attested.
+
+## Validation and actual run
+
+- Typecheck/build PASS; full regression **902/902 PASS**, zero skips; portable automation **8/8**, integration **10/10**.
+- First fresh native independent review **PASS**; no correction or terminal review required. Root acceptance verified.
+- Actual public-RPC DCA transaction `5Ybi5yHnTFqmSQ5joAw4gxM7ZpCsviBhhSJX2bwvj2ye1jN38PyaYedUAreC2xPAvecZdgk6HJ5GVTUzqVTLNddP` binds the expected top-level initiation/repayment pair. Its foreign mint pair is not attributed to this token.
+- Fresh approved $25/six-hour profile snapshot `27954bfa-f17a-4a32-820a-f272db6e3b7b`, cutoff `2026-10-11T22:09:20.566Z`, hash `09f9ac9b25c0e3a6fa25da49d6c39849586fb906b522149e336c289783ee1423`. Retained-bundle reconstruction, idempotent persistence, disk show/replay and marker-forgery rejection PASS. Management remains **15 NOT_RUN / NO_ACTIVE_THESIS**.
+- All checks: **16 PASS, 6 FAIL, 11 UNKNOWN**. Required checks: **21/27 known**, six UNKNOWN (`CAN-01`, `CAN-02`, `DAT-01`, `DAT-02`, `DAT-03`, `NAR-02`). Entry remains **REJECTED**. Comparison acquisition/qualification is incomplete; the previous run's 27/27 required coverage is not presented as current.
+- O26 and O28 stay KNOWN: eight of eight trader accounts, ten account receipts, zero qualifying motifs; O28 net fee-exclusive quote flow **0.102404881 WSOL** in this new hour.
+- The first diagnostic `7fcc9a2d-0b68-4bd6-91c7-cb5f4ecca34a` at `2026-10-11T22:04:06.475Z` gained O30 but lost eight social measurements (41 unresolved). One bounded fresh collection recovered those eight and retained O30. Both immutable raw runs remain private; no old corpus was grafted into a new cutoff and no failed source was removed.
+- Accepted previous snapshot `744d0138-4739-40e4-a566-0ac21d8e6315` show/replay remains identical with original hash `45a48f412bbbf19f0df7af16df4ca7eb6e2fe4dd3ffca12673de906e78fa461b`.
+
+## Maintained boundaries and next action
+
+`src/providers/advisory-automation.ts` owns fixed public acquisition, source/program verification, strict successful flash-fill binding and O30 derivation. `src/app/advisory.ts` reconstructs the new receipt namespace; `live.ts` collects it through the existing shared 150-request allowance, adding five reads only for eligible windows. The separate O26 account allowance remains 64. `service.ts` rejects older/forged fresh proofs while saved facts replay unchanged. Current proof/facts/policy labels are **v8/v9/v9**; old policy v1–v8 replay and O28 fee-exclusive window-v3 semantics remain supported.
+
+Tests and four official source fixtures live under `tests/`; `agentic/architecture.md` maps the maintained contracts. This cycle is complete. The active checklist was condensed and removed from `agentic/analysis.md`; unrelated tasks remain there. For a new acquisition cycle, load `AGENTS.md`, `bridgecode/best-agent.md`, architecture and current evidence, then re-rank the remaining prerequisites. O24 needs an evidenced fixed creator/early-owner cohort and pinned endpoints; O29 needs matched depth and comparable cohort calibration. Recover required comparison evidence separately rather than relabeling incomplete acquisition. Public wallet attribution, compatible history and zero denominators remain substantive blockers. Raw/operator artifacts, credentials and other-session work are excluded from publication.
+
+The previous accepted O26 result and original assignment follow as dated history.
+
+---
+
 # Accepted execution result — opus-execution-2026-10-11
 
 The O26 complete-window collector is integrated and verified. Claude Code `claude-opus-5-5` implemented the acquisition/decoder/integration slice; Codex executed the unrestricted tests and fresh token runs, corrected the runtime execution filter, and completed independent native review. The earlier mediated CLI timeout did not produce code; the later direct execution in the isolated checkout did.

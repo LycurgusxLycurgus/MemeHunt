@@ -74,6 +74,7 @@ function steps(value:any):Step[]{
  for(const entry of invocations)list[entry.position]!.executed=entry.success===true&&(entry.parent===null||list[entry.parent]!.executed);
  return list;
 }
+export {steps as executedWindowInstructions};
 const frame=(list:Step[],position:number)=>{const result:number[]=[];for(let q=position+1;q<list.length&&list[q]!.top===list[position]!.top&&list[q]!.depth>list[position]!.depth;q++)result.push(q);return result;};
 const parsedToken=(step:Step)=>tokenPrograms.has(step.ix.programId)&&object(step.ix.parsed)&&typeof step.ix.parsed.type==='string'&&object(step.ix.parsed.info)?step.ix.parsed as {type:string;info:Record<string,any>}:null;
 const amountOf=(info:Record<string,any>)=>atomic(object(info.tokenAmount)?info.tokenAmount.amount:info.amount);
