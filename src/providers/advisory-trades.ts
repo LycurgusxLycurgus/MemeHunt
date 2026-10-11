@@ -1,13 +1,15 @@
 import { Decimal } from 'decimal.js';
 import { PublicKey } from '@solana/web3.js';
-import { NATIVE_MINT } from '@solana/spl-token';
-import { OFFLINE_PUMP_AMM_PROGRAM, PUMP_AMM_SDK, PUMP_AMM_PROGRAM_ID, poolPda, pumpAmmJson } from '@pump-fun/pump-swap-sdk';
+import { NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { OFFLINE_PUMP_AMM_PROGRAM, PUMP_AMM_SDK, PUMP_AMM_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, PUMP_AMM_EVENT_AUTHORITY_PDA, userVolumeAccumulatorPda, poolPda, pumpAmmJson } from '@pump-fun/pump-swap-sdk';
 import type { TokenRef } from '../domain/contracts.js';
 import { decodeAdvisoryChain, type ChainHistory } from './advisory-chain.js';
 import { safeRpcCode, solanaRpc } from './solana.js';
+import { decodePinnedWindowInstruction,decodePinnedWindowEvent,reconcileWindowQuote,type QuoteAccounting } from './pumpswap-window-abi.js';
 type Request={method:string;params:unknown[]};
-export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number};
+export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting};
 export type TradeHistory={method:'pumpswap-decoded-sample-v1';token:TokenRef;pool:string|null;quoteMint:string;quoteDecimals:9;poolVerified:boolean;stateSlot:number|null;trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;coveredInterval:{start:string;end:string}|null;sourceUniverseComplete:false;complete:false;transactionsInspected:number;transactionsExcluded:number;excluded:Array<{signature:string;code:string}>;limitations:string[]};
+export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[]};
 const program=PUMP_AMM_PROGRAM_ID.toBase58();
 const obj=(x:unknown):x is Record<string,any>=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const integer=(x:unknown):x is number=>Number.isSafeInteger(x)&&Number(x)>=0;
@@ -15,35 +17,97 @@ const atomic=(x:unknown):string=>{const s=String(x);if(!/^(0|[1-9]\d{0,19})$/.te
 const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{encoding:'base64',commitment:'finalized'}]});
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
-function side(ix:any):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string):DecodedTrade[]{
+function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
+ if(windowProof){
+  if(!Number.isFinite(Date.parse(retrieved))||!['legacy',0,1].includes(value.version)||!keys.length||keys.length>256||keys.some((k:any)=>!obj(k)||typeof k.pubkey!=='string'||typeof k.signer!=='boolean')||new Set(keys.map((k:any)=>k.pubkey)).size!==keys.length)throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
+  for(const k of keys){try{new PublicKey(k.pubkey);}catch{throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');}}
+ }
  const pumpInstructions:any[]=[];
  const groups=new Map<number,any[]>();for(const g of value.meta.innerInstructions){if(!integer(g.index)||g.index>=message.instructions.length||groups.has(g.index)||!Array.isArray(g.instructions))throw new Error('ADVISORY_TRADE_INNER_SHAPE');groups.set(g.index,g.instructions);}
  for(const [i,ix] of message.instructions.entries()){if(ix.programId===program)pumpInstructions.push({...ix,depth:1});for(const inner of groups.get(i)??[])if(inner.programId===program){if(!integer(inner.stackHeight)||inner.stackHeight<2)throw new Error('ADVISORY_TRADE_INNER_DEPTH');pumpInstructions.push({...inner,depth:inner.stackHeight});}}
- type Frame={program:string;ix:any|null;events:DecodedTrade[]};const stack:Frame[]=[],trades:DecodedTrade[]=[];let cursor=0;
+ const decodeEvent=currentAbi?(payload:string)=>decodePinnedWindowEvent(payload,feeExclusive):(payload:string)=>OFFLINE_PUMP_AMM_PROGRAM.coder.events.decode(payload);
+ const authorized=(key:string,depth:number)=>keys.some((k:any)=>k.pubkey===key&&(k.signer===true||depth>1));
+ const tokenProgram=(key:string)=>key===TOKEN_PROGRAM_ID.toBase58()||key===TOKEN_2022_PROGRAM_ID.toBase58();
+ if(windowProof)for(const ix of pumpInstructions){
+  if(!Array.isArray(ix.accounts)||ix.accounts.some((a:any)=>typeof a!=='string'||!keys.some((k:any)=>k.pubkey===a)))throw new Error('ADVISORY_TRADE_INSTRUCTION_ACCOUNTS');
+  const bytes=bytes58(ix.data),definition=pumpAmmJson.instructions.find(d=>Buffer.from(d.discriminator).equals(bytes.subarray(0,8)));
+  const pinned=currentAbi?decodePinnedWindowInstruction(bytes):null;
+  if(pinned){
+   ix.pinned=pinned;const a=ix.accounts;
+   if(pinned.side){
+    if(a.length!==17||a[2]!==GLOBAL_CONFIG_PDA.toBase58()||!tokenProgram(a[9])||!tokenProgram(a[10])||a[11]!=='11111111111111111111111111111111'||a[12]!==userVolumeAccumulatorPda(new PublicKey(a[1])).toBase58()||a[13]!==PUMP_AMM_FEE_CONFIG_PDA.toBase58()||a[15]!==PUMP_AMM_EVENT_AUTHORITY_PDA.toBase58()||a[16]!==program||!authorized(a[1],ix.depth)||a[0]===poolKey&&a[10]!==TOKEN_PROGRAM_ID.toBase58())throw new Error('ADVISORY_TRADE_V2_ACCOUNT_BINDING');
+   }else{
+    if(a.length!==12||!authorized(a[0],ix.depth)||a[1]!==GLOBAL_CONFIG_PDA.toBase58()||!tokenProgram(a[4])||a[8]!=='11111111111111111111111111111111'||a[9]!==ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()||a[10]!==PUMP_AMM_EVENT_AUTHORITY_PDA.toBase58()||a[11]!==program||a[7]!==getAssociatedTokenAddressSync(new PublicKey(a[3]),new PublicKey(a[6]),true,new PublicKey(a[4])).toBase58()||a[2]===poolKey&&(a[3]!==NATIVE_MINT.toBase58()||a[4]!==TOKEN_PROGRAM_ID.toBase58()||a[5]!==pool.poolQuoteTokenAccount.toBase58()))throw new Error('ADVISORY_TRADE_SWEEP_ACCOUNT_BINDING');
+    windowProof.nonSwapInvocations++;
+   }
+   continue;
+  }
+  if(!definition){
+   // Anchor emit_cpi uses a reserved discriminator, not an ordinary IDL instruction.
+   const eventAuthority=PublicKey.findProgramAddressSync([Buffer.from('__event_authority')],PUMP_AMM_PROGRAM_ID)[0].toBase58();
+   const payload=bytes.subarray(8).toString('base64');
+   if(!bytes.subarray(0,8).equals(Buffer.from('e445a52e51cb9a1d','hex'))||ix.depth<2||ix.accounts.length!==1||ix.accounts[0]!==eventAuthority||!decodeEvent(payload))throw new Error('ADVISORY_TRADE_UNSUPPORTED_INSTRUCTION');
+   ix.eventCpiPayload=payload;continue;
+  }
+  if(!side(ix,currentAbi)){
+   const decoded=(OFFLINE_PUMP_AMM_PROGRAM.coder.instruction as typeof OFFLINE_PUMP_AMM_PROGRAM.coder.instruction & {decode(data:string,encoding:'base58'):unknown}).decode(ix.data,'base58');
+   if(!decoded||ix.accounts.length<definition.accounts.length)throw new Error('ADVISORY_TRADE_UNSUPPORTED_INSTRUCTION');
+   windowProof.nonSwapInvocations++;
+  }else if(!definition.accounts.some(a=>a.name==='user'&&'signer' in a&&a.signer===true))throw new Error('ADVISORY_TRADE_SIGNER_CONTRACT');
+ }
+ type Frame={program:string;ix:any|null;events:DecodedTrade[];observedEvents:number;eventPayload?:string};const stack:Frame[]=[],trades:DecodedTrade[]=[];let cursor=0;
  for(const line of value.meta.logMessages){if(typeof line!=='string')throw new Error('ADVISORY_TRADE_LOG_SHAPE');let m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/);
-  if(m){const depth=Number(m[2]);if(depth!==stack.length+1)throw new Error('ADVISORY_TRADE_LOG_DEPTH');let ix=null;if(m[1]===program){ix=pumpInstructions[cursor++];if(!ix||ix.depth!==depth)throw new Error('ADVISORY_TRADE_INVOCATION_BINDING');}stack.push({program:m[1]!,ix,events:[]});continue;}
-  m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) (success|failed:.*)$/);if(m){const f=stack.pop();if(!f||f.program!==m[1]||m[2]!=='success')throw new Error('ADVISORY_TRADE_LOG_FAILURE');trades.push(...f.events);continue;}
-  if(!line.startsWith('Program data: '))continue;const frame=stack.at(-1);if(!frame||frame.program!==program||!frame.ix)continue;const direction=side(frame.ix);if(!direction)continue;
-  const payload=line.slice(14);if(payload.length>4000||Buffer.from(payload,'base64').toString('base64')!==payload)throw new Error('ADVISORY_TRADE_EVENT_ENCODING');const event=OFFLINE_PUMP_AMM_PROGRAM.coder.events.decode(payload);if(!event||!['buyEvent','sellEvent'].includes(event.name))continue;
-  if(frame.events.length||event.name!==(direction==='BUY'?'buyEvent':'sellEvent'))throw new Error('ADVISORY_TRADE_EVENT_DUPLICATE');
-  const d=event.data as any,a=frame.ix.accounts;if(!Array.isArray(a)||a.length<17||a[0]!==poolKey||a[3]!==pool.baseMint.toBase58()||a[4]!==NATIVE_MINT.toBase58()||a[7]!==pool.poolBaseTokenAccount.toBase58()||a[8]!==pool.poolQuoteTokenAccount.toBase58()||a[16]!==program||d.pool?.toBase58()!==poolKey||d.user?.toBase58()!==a[1]||d.userBaseTokenAccount?.toBase58()!==a[5]||d.userQuoteTokenAccount?.toBase58()!==a[6]||!keys.some((k:any)=>k.pubkey===a[1]&&k.signer===true)||String(d.timestamp)!==String(value.blockTime))throw new Error('ADVISORY_TRADE_EVENT_BINDING');
-  const instructionBytes=bytes58(frame.ix.data);const definition=definitions.find(x=>Buffer.from(x.discriminator).equals(instructionBytes.subarray(0,8)));if(!definition||(instructionBytes.length!==24&&instructionBytes.length!==25)||definition.name==='sell'&&instructionBytes.length!==24||instructionBytes.length===25&&instructionBytes[24]!>1)throw new Error('ADVISORY_TRADE_INSTRUCTION_DECODE');
+  if(m){const depth=Number(m[2]);if(depth!==stack.length+1)throw new Error('ADVISORY_TRADE_LOG_DEPTH');let ix=null;if(m[1]===program){ix=pumpInstructions[cursor++];if(!ix||ix.depth!==depth)throw new Error('ADVISORY_TRADE_INVOCATION_BINDING');if(windowProof&&ix.eventCpiPayload){const parent=stack.at(-1);if(parent?.program!==program||parent.eventPayload!==ix.eventCpiPayload)throw new Error('ADVISORY_TRADE_EVENT_CPI_BINDING');}}stack.push({program:m[1]!,ix,events:[],observedEvents:0});continue;}
+  m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) (success|failed:.*)$/);if(m){const f=stack.pop();if(!f||f.program!==m[1]||m[2]!=='success')throw new Error('ADVISORY_TRADE_LOG_FAILURE');if(windowProof&&f.ix&&(side(f.ix,currentAbi)||f.ix.pinned)&&f.observedEvents!==1)throw new Error('ADVISORY_TRADE_EVENT_MISSING');trades.push(...f.events);continue;}
+  if(!line.startsWith('Program data: '))continue;const frame=stack.at(-1);if(!frame||frame.program!==program||!frame.ix)continue;const direction=side(frame.ix,currentAbi);if(!direction&&!windowProof)continue;
+  const payload=line.slice(14);if(payload.length>4000||Buffer.from(payload,'base64').toString('base64')!==payload)throw new Error('ADVISORY_TRADE_EVENT_ENCODING');const event=decodeEvent(payload);if(windowProof&&event)frame.eventPayload=payload;
+  if(currentAbi&&frame.ix.pinned&&!direction){
+   const d=event?.data,a=frame.ix.accounts;
+   // The IDL declares bucket as u8, without an enum. This guarded mapping was
+   // observed on all 21 named sweeps in the three retained 2026-10-11 receipts;
+   // an unobserved bucket stays unsupported rather than being treated as zero flow.
+   if(frame.observedEvents||event?.name!=='sweepPoolFeeEvent'||d.pool?.toBase58()!==a[2]||d.quoteMint?.toBase58()!==a[3]||d.recipient?.toBase58()!==a[6]||d.payer?.toBase58()!==a[0]||String(d.timestamp)!==String(value.blockTime)||d.bucket!==(frame.ix.pinned.name==='sweep_protocol_fee'?0:1)||a[2]===poolKey&&d.baseMint?.toBase58()!==pool.baseMint.toBase58())throw new Error('ADVISORY_TRADE_SWEEP_EVENT_BINDING');
+   atomic(d.amount);frame.observedEvents++;continue;
+  }
+  if(!direction||!event||!['buyEvent','sellEvent'].includes(event.name))continue;
+  if(frame.events.length||windowProof&&frame.observedEvents||event.name!==(direction==='BUY'?'buyEvent':'sellEvent'))throw new Error('ADVISORY_TRADE_EVENT_DUPLICATE');
+  frame.observedEvents++;
+  const d=event.data as any,a=frame.ix.accounts;
+  if(windowProof&&Array.isArray(a)&&a[0]!==poolKey){
+   if(a.length<17||a[16]!==program||d.pool?.toBase58()!==a[0]||d.user?.toBase58()!==a[1]||d.userBaseTokenAccount?.toBase58()!==a[5]||d.userQuoteTokenAccount?.toBase58()!==a[6]||String(d.timestamp)!==String(value.blockTime))throw new Error('ADVISORY_TRADE_FOREIGN_EVENT_BINDING');
+   windowProof.foreignSwapLegs++;continue;
+  }
+  const transactionSigner=Array.isArray(a)&&keys.some((k:any)=>k.pubkey===a[1]&&k.signer===true);
+  const cpiAuthorized=!!windowProof&&frame.ix.depth>1&&Array.isArray(a)&&keys.some((k:any)=>k.pubkey===a[1]);
+  if(!Array.isArray(a)||a.length<17||a[0]!==poolKey||a[3]!==pool.baseMint.toBase58()||a[4]!==NATIVE_MINT.toBase58()||a[7]!==pool.poolBaseTokenAccount.toBase58()||a[8]!==pool.poolQuoteTokenAccount.toBase58()||a[16]!==program||d.pool?.toBase58()!==poolKey||d.user?.toBase58()!==a[1]||d.userBaseTokenAccount?.toBase58()!==a[5]||d.userQuoteTokenAccount?.toBase58()!==a[6]||!transactionSigner&&!cpiAuthorized||String(d.timestamp)!==String(value.blockTime))throw new Error('ADVISORY_TRADE_EVENT_BINDING');
+  if(!transactionSigner&&cpiAuthorized&&!windowProof!.cpiAuthorizedAccounts.includes(a[1]))windowProof!.cpiAuthorizedAccounts.push(a[1]);
+  const instructionBytes=bytes58(frame.ix.data);const definition=definitions.find(x=>Buffer.from(x.discriminator).equals(instructionBytes.subarray(0,8)));const pinned=frame.ix.pinned;
+  if(!pinned&&(!definition||(instructionBytes.length!==24&&instructionBytes.length!==25)||definition.name==='sell'&&instructionBytes.length!==24||instructionBytes.length===25&&instructionBytes[24]!>1))throw new Error('ADVISORY_TRADE_INSTRUCTION_DECODE');
   // Successfully executed pre-track-volume buy instructions retain the same two IDL u64 fields.
   // Read that exact legacy 24-byte form; current forms use the pinned SDK decoder.
-  const instruction=instructionBytes.length===24&&definition.name!=='sell'?{name:definition.name==='buy_exact_quote_in'?'buyExactQuoteIn':'buy',data:Object.fromEntries(definition.args.slice(0,2).map((arg,i)=>[arg.name.replace(/_([a-z])/g,(_m,c:string)=>c.toUpperCase()),instructionBytes.readBigUInt64LE(8+i*8).toString()]))}:(OFFLINE_PUMP_AMM_PROGRAM.coder.instruction as typeof OFFLINE_PUMP_AMM_PROGRAM.coder.instruction & {decode(data:string,encoding:'base58'):{name:string;data:unknown}|null}).decode(frame.ix.data,'base58');if(!instruction)throw new Error('ADVISORY_TRADE_INSTRUCTION_DECODE');const args=instruction.data as any;
+  const instruction=pinned?{name:pinned.name==='buy_exact_quote_in_v2'?'buyExactQuoteIn':pinned.name==='buy_v2'?'buy':'sell',data:pinned.args}:instructionBytes.length===24&&definition!.name!=='sell'?{name:definition!.name==='buy_exact_quote_in'?'buyExactQuoteIn':'buy',data:Object.fromEntries(definition!.args.slice(0,2).map((arg,i)=>[arg.name.replace(/_([a-z])/g,(_m,c:string)=>c.toUpperCase()),instructionBytes.readBigUInt64LE(8+i*8).toString()]))}:(OFFLINE_PUMP_AMM_PROGRAM.coder.instruction as typeof OFFLINE_PUMP_AMM_PROGRAM.coder.instruction & {decode(data:string,encoding:'base58'):{name:string;data:unknown}|null}).decode(frame.ix.data,'base58');if(!instruction)throw new Error('ADVISORY_TRADE_INSTRUCTION_DECODE');const args=instruction.data as any;
   if(instruction.name==='buy'&&(String(args.baseAmountOut)!==String(d.baseAmountOut)||BigInt(atomic(args.maxQuoteAmountIn))<BigInt(atomic(d.userQuoteAmountIn)))||instruction.name==='sell'&&(String(args.baseAmountIn)!==String(d.baseAmountIn)||BigInt(atomic(args.minQuoteAmountOut))>BigInt(atomic(d.userQuoteAmountOut)))||instruction.name==='buyExactQuoteIn'&&(BigInt(atomic(args.spendableQuoteIn))<BigInt(atomic(d.userQuoteAmountIn))||BigInt(atomic(args.minBaseAmountOut))>BigInt(atomic(d.baseAmountOut))))throw new Error('ADVISORY_TRADE_ARGUMENT_BINDING');
   // The event supplies quote notionals, not transaction counts or inferred token balance deltas.
-  const baseAtomic=atomic(direction==='BUY'?d.baseAmountOut:d.baseAmountIn),quoteAtomic=atomic(direction==='BUY'?d.quoteAmountIn:d.quoteAmountOut);
+  const instructionName=pinned?.name??definition!.name;
+  const quoteAccounting=feeExclusive?reconcileWindowQuote(instructionName,d):undefined;
+  if(quoteAccounting&&direction==='BUY'&&BigInt(atomic(instruction.name==='buyExactQuoteIn'?args.spendableQuoteIn:args.maxQuoteAmountIn))<BigInt(quoteAccounting.grossQuoteAtomic))throw new Error('ADVISORY_TRADE_ARGUMENT_BINDING');
+  const baseAtomic=atomic(direction==='BUY'?d.baseAmountOut:d.baseAmountIn),quoteAtomic=quoteAccounting?.coreQuoteAtomic??atomic(direction==='BUY'?d.quoteAmountIn:d.quoteAmountOut);
   if(BigInt(baseAtomic)<=0n||BigInt(quoteAtomic)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
-  frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex:cursor-1});
+  frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex:cursor-1,...(quoteAccounting?{instructionName,quoteAccounting}:{})});
  }
  if(stack.length||cursor!==pumpInstructions.length)throw new Error('ADVISORY_TRADE_LOG_INCOMPLETE');
- const expectedSwaps=pumpInstructions.filter(ix=>side(ix)!==null&&ix.accounts?.[0]===poolKey).length;
+ const expectedSwaps=pumpInstructions.filter(ix=>side(ix,currentAbi)!==null&&ix.accounts?.[0]===poolKey).length;
  if(expectedSwaps!==trades.length)throw new Error('ADVISORY_TRADE_EVENT_MISSING');return trades;
+}
+/** Scoped pool-flow decoder. CPI authorization is an executed-program observation, never a person or wallet-control binding. */
+export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false):WindowTransactionProof{
+ if(feeExclusive&&!currentAbi)throw new Error('ADVISORY_TRADE_FEE_SCOPE');
+ const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[]};
+ proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive);return proof;
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{

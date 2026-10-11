@@ -5,6 +5,7 @@ import { thesisSchema, type Thesis, type FeatureResult } from '../domain/contrac
 import type { TokenRef,EvidenceRecord } from '../domain/contracts.js';
 import { deriveAdvisory } from '../domain/advisory.js';
 import { decodeAdvisoryWalletHistory,deriveWalletHistoryMetrics } from '../providers/advisory-wallet-history.js';
+import { decodeAdvisoryWindow,deriveO28Window } from '../providers/advisory-window.js';
 import { deriveAdvisoryDemand } from '../domain/advisory-demand.js';
 import { decodeAdvisoryChain } from '../providers/advisory-chain.js';
 import { decodeAdvisoryMarket } from '../providers/advisory-market.js';
@@ -16,9 +17,10 @@ import { socialInputSchema,socialProposalSchema,socialReviewSchema } from '../do
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
+  window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
 export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -27,8 +29,8 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
   const proof=advisoryProofSchema.parse(input);
   if(token.chain!==proof.token.chain||token.address!==proof.token.address||cutoff!==proof.cutoff||JSON.stringify(proof.addresses)!==JSON.stringify([token.address,...(proof.pool?[proof.pool]:[])]))throw new Error('ADVISORY_PROOF_INVALID');
-  if((proof.method==='advisory-provenance-v3')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets'))throw new Error('ADVISORY_PROOF_INVALID');
-  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets')=>{
+  if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(['advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6'].includes(proof.method))!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
+  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window')=>{
     const d=proof[namespace]! ,raw:Record<string,string>={},times:Record<string,string>={};
     const keys=Object.keys(d.requests);
     if((keys.length===0&&namespace!=='trades')||keys.length>64||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
@@ -51,7 +53,7 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   // The market adapter gives its whole batch one availability boundary after all reads complete.
   const marketTimes=[...new Set(Object.values(market.times))];
   if(marketTimes.length!==1)throw new Error('ADVISORY_PROOF_INVALID');
-  const chainData=decodeAdvisoryChain(token,proof.addresses,chain.raw,chain.times,chain.requests as Record<string,{method:string;params:unknown[]}>,proof.method==='advisory-provenance-v3');
+  const chainData=decodeAdvisoryChain(token,proof.addresses,chain.raw,chain.times,chain.requests as Record<string,{method:string;params:unknown[]}>,proof.method!=='advisory-provenance-v2');
   const marketData=decodeAdvisoryMarket(token,proof.pool,market.raw,marketTimes[0]!,market.requests as Record<string,{url:string}>);
   const paidData=decodeAdvisorySocial(token,paid.raw,paid.times,paid.requests as Record<string,{url:string}>);
   const contextTimes=[...new Set(Object.values(context.times))];if(contextTimes.length!==1)throw new Error('ADVISORY_PROOF_INVALID');
@@ -78,5 +80,6 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   }
   if(proof.wallets){const w=resolve('wallets'),history=decodeAdvisoryWalletHistory(token,tradeData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:w.requests as Record<string,{method:string;params:unknown[]}>},cutoff);additionalMetrics.push(...deriveWalletHistoryMetrics(history,tradeData,chainData,chain.raw,[...chain.ids,...trades.ids,...w.ids]));}
   additionalMetrics.push(...deriveAdvisoryDemand(tradeData,socialMetrics.find(m=>m.id==='A19'),cutoff,[...chain.ids,...trades.ids]));
+  if(proof.window){const w=resolve('window');additionalMetrics.push(deriveO28Window(decodeAdvisoryWindow(token,proof.pool,proof.window.end,w.raw,w.times,w.requests as Record<string,{method:string;params:unknown[]}>,cutoff,['advisory-provenance-v5','advisory-provenance-v6'].includes(proof.method),proof.method==='advisory-provenance-v6'),w.ids));}
   return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id});
 }
