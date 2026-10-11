@@ -6,6 +6,7 @@ import type { TokenRef,EvidenceRecord } from '../domain/contracts.js';
 import { deriveAdvisory } from '../domain/advisory.js';
 import { decodeAdvisoryWalletHistory,deriveWalletHistoryMetrics } from '../providers/advisory-wallet-history.js';
 import { decodeAdvisoryWindow,deriveO28Window } from '../providers/advisory-window.js';
+import { decodeAdvisoryWindowAccounts,deriveO26Window } from '../providers/advisory-window-accounts.js';
 import { deriveAdvisoryDemand } from '../domain/advisory-demand.js';
 import { decodeAdvisoryChain } from '../providers/advisory-chain.js';
 import { decodeAdvisoryMarket } from '../providers/advisory-market.js';
@@ -17,10 +18,11 @@ import { socialInputSchema,socialProposalSchema,socialReviewSchema } from '../do
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
+  accounts:descriptor.optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
 export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -29,11 +31,13 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
   const proof=advisoryProofSchema.parse(input);
   if(token.chain!==proof.token.chain||token.address!==proof.token.address||cutoff!==proof.cutoff||JSON.stringify(proof.addresses)!==JSON.stringify([token.address,...(proof.pool?[proof.pool]:[])]))throw new Error('ADVISORY_PROOF_INVALID');
-  if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(['advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6'].includes(proof.method))!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
-  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window')=>{
+  if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(['advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7'].includes(proof.method))!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
+  if((proof.method==='advisory-provenance-v7')!==!!proof.accounts||!proof.accounts&&evidence.some(e=>e.sourceId==='advisory-accounts'))throw new Error('ADVISORY_PROOF_INVALID');
+  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts')=>{
     const d=proof[namespace]! ,raw:Record<string,string>={},times:Record<string,string>={};
     const keys=Object.keys(d.requests);
-    if((keys.length===0&&namespace!=='trades')||keys.length>64||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
+    // Trader-account receipts are absent when the selected window is incomplete.
+    if((keys.length===0&&namespace!=='trades'&&namespace!=='accounts')||keys.length>64||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
     for(const [key,id] of Object.entries(d.artifactIds)){
       const record=evidence.find(e=>e.id===id);
       const model=namespace==='semantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
@@ -80,6 +84,12 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   }
   if(proof.wallets){const w=resolve('wallets'),history=decodeAdvisoryWalletHistory(token,tradeData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:w.requests as Record<string,{method:string;params:unknown[]}>},cutoff);additionalMetrics.push(...deriveWalletHistoryMetrics(history,tradeData,chainData,chain.raw,[...chain.ids,...trades.ids,...w.ids]));}
   additionalMetrics.push(...deriveAdvisoryDemand(tradeData,socialMetrics.find(m=>m.id==='A19'),cutoff,[...chain.ids,...trades.ids]));
-  if(proof.window){const w=resolve('window');additionalMetrics.push(deriveO28Window(decodeAdvisoryWindow(token,proof.pool,proof.window.end,w.raw,w.times,w.requests as Record<string,{method:string;params:unknown[]}>,cutoff,['advisory-provenance-v5','advisory-provenance-v6'].includes(proof.method),proof.method==='advisory-provenance-v6'),w.ids));}
+  if(proof.window){
+    const w=resolve('window'),windowRequests=w.requests as Record<string,{method:string;params:unknown[]}>;
+    const windowData=decodeAdvisoryWindow(token,proof.pool,proof.window.end,w.raw,w.times,windowRequests,cutoff,['advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7'].includes(proof.method),['advisory-provenance-v6','advisory-provenance-v7'].includes(proof.method));
+    additionalMetrics.push(deriveO28Window(windowData,w.ids));
+    // Appended after the bounded-sample O26 so complete account coverage supersedes it; an incomplete window keeps the older value.
+    if(proof.accounts){const a=resolve('accounts'),history=decodeAdvisoryWindowAccounts(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},a.raw,a.times,a.requests as Record<string,{method:string;params:unknown[]}>,cutoff),metric=deriveO26Window(history,windowData,[...w.ids,...a.ids]);if(metric)additionalMetrics.push(metric);}
+  }
   return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id});
 }

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { collectLiveToken } from '../src/app/live.js';
-import { Service } from '../src/app/service.js';
+import { admittedFetchers,collectLiveToken } from '../src/app/live.js';
+import { Service,decisionHash } from '../src/app/service.js';
 import { starterProfile } from '../src/app/config.js';
 import { SOLANA_MAINNET_GENESIS } from '../src/providers/solana.js';
 import { advisoryFactsSchema } from '../src/domain/advisory-contracts.js';
@@ -38,10 +38,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v6');assert.ok(proof.wallets);assert.ok(proof.window);assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v7');assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v7');
+  assert.equal(facts.method,'advisory-measurements-v8');
   assert.equal(facts.metrics.length,50);assert.equal(facts.metrics.find(m=>m.id==='C08')?.quality,'KNOWN');
   assert.equal(facts.metrics.find(m=>m.id==='C11')?.quality,'KNOWN');assert.equal(facts.metrics.find(m=>m.id==='C15')?.quality,'KNOWN');
   assert.equal(facts.metrics.find(m=>m.id==='A22')?.quality,'MISSING');assert.equal(facts.metrics.find(m=>m.id==='O26')?.quality,'MISSING');
@@ -50,8 +50,41 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v7');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v8');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('a saved research-screen-advisory-v7 snapshot still replays from its stored facts',async()=>{
+  const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
+  try{
+    const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
+    const db=new DatabaseSync(file);
+    try{
+      db.exec('DROP TRIGGER snapshots_no_update');
+      const stored=db.prepare('SELECT payload,semantic FROM snapshots WHERE id=?').get(id) as {payload:string;semantic:string};
+      const payload=JSON.parse(stored.payload),semantic=JSON.parse(stored.semantic);
+      semantic.policyVersion='research-screen-advisory-v7';semantic.details.advisory.method='advisory-measurements-v7';
+      if(payload.details?.advisory)payload.details.advisory.method='advisory-measurements-v7';
+      payload.hash=relabeled=decisionHash(semantic);
+      db.prepare('UPDATE snapshots SET payload=?,hash=?,semantic=? WHERE id=?').run(JSON.stringify(payload),payload.hash,JSON.stringify(semantic),id);
+    }finally{db.close();}
+    const reader=new Service(file);try{const replayed=reader.replay(id);assert.deepEqual(replayed,reader.show(id));assert.equal(replayed.hash,relabeled);}finally{reader.close();}
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('trader-account history has its own bounded allowance and never consumes the shared 150-request budget',()=>{
+  let calls=0;const base:typeof fetch=async()=>{calls++;return new Response('{}');};
+  const controller=new AbortController(),admission=admittedFetchers(base,controller.signal,64);
+  for(let i=0;i<64;i++)void admission.accountFetcher('https://rpc.example');
+  assert.throws(()=>admission.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
+  assert.deepEqual(admission.counts,{shared:0,accounts:64});
+  for(let i=0;i<150;i++)void admission.fetcher('https://rpc.example');
+  assert.throws(()=>admission.fetcher('https://rpc.example'),/COLLECTION_BUDGET/);
+  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64},limit:{shared:150,accounts:64},calls:214});
+  const disabled=admittedFetchers(base,controller.signal,0);
+  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0});
+  controller.abort(new Error('COLLECTION_DEADLINE'));
+  const late=admittedFetchers(base,controller.signal,64);assert.throws(()=>late.accountFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.accounts,0);
 });
 
 test('advisory rehashed metric, raw request, clock and marker tampering cannot certify a live result',async()=>{
@@ -69,7 +102,19 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     reject('window-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v3';delete proof.window;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-abi-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v4';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-fee-basis-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';delete proof.accounts;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('accounts-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('accounts-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.accounts;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-accounts-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';delete proof.accounts;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('forged-accounts-receipt',b=>{
+      // A receipt for a window that never bound any trader account must not enter the proof.
+      const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),key='account-0-page-0',id=`advisory-accounts-${key}`;
+      const request={method:'getSignaturesForAddress',params:[pool,{commitment:'finalized',limit:32,minContextSlot:1}]};
+      proof.accounts={requests:{[key]:request},artifactIds:{[key]:id}};b.rawArtifacts[id]=JSON.stringify({jsonrpc:'2.0',id:1,result:[]});
+      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId:'advisory-accounts',scope:{...template.scope,request}});rehash(b,id);
+      b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');
+      assert.throws(()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features),/ADVISORY_ACCOUNTS_RECEIPT_MEMBERSHIP/);
+    });
     reject('window-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.window;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-future-end',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.window.end='2026-10-10T12:31:00.000Z';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-request-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.window.requests['window-genesis'];b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
