@@ -4,6 +4,7 @@ import type { BaselineAssessment } from '../domain/baseline.js';
 import { thesisSchema, type Thesis, type FeatureResult } from '../domain/contracts.js';
 import type { TokenRef,EvidenceRecord } from '../domain/contracts.js';
 import { deriveAdvisory } from '../domain/advisory.js';
+import { deriveAdvisoryDemand } from '../domain/advisory-demand.js';
 import { decodeAdvisoryChain } from '../providers/advisory-chain.js';
 import { decodeAdvisoryMarket } from '../providers/advisory-market.js';
 import { decodeAdvisorySocial,deriveSocialAdvisory } from '../providers/advisory-social.js';
@@ -73,5 +74,6 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
     // An absent social corpus cannot certify a complete paid-post inventory.
     socialMetrics=[{id:'A22',quality:paidData.quality==='INVALID'?'INVALID':'MISSING',unit:'scoped-record',data:{dex:paidData,disclosedPosts:null,disclosureCoverage:'NOT_COLLECTED'},evidenceIds:paid.ids,reasonCode:'PAID_POST_DISCLOSURE_REVIEW_MISSING'}];
   }
+  additionalMetrics.push(...deriveAdvisoryDemand(tradeData,socialMetrics.find(m=>m.id==='A19'),cutoff,[...chain.ids,...trades.ids]));
   return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id});
 }

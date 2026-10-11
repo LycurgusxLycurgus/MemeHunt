@@ -99,3 +99,21 @@ test('hosted schema stays compact for 32 sources while local validation enforces
  const duplicated=structuredClone(p);duplicated.sources[31]=duplicated.sources[0]!;assert.throws(()=>decodeAdvisorySemantic(read,envelope(duplicated),envelope(r),token),/SOURCE_MEMBERSHIP/);
  const extra=structuredClone(r);extra.sources[0]!.id='not-in-corpus';assert.throws(()=>decodeAdvisorySemantic(read,envelope(p),envelope(extra),token),/SOURCE_MEMBERSHIP/);
 });
+
+test('caller concentration consumes canonical reviewed forward calls with explicit account shares',()=>{
+ const f=artifactFixture(false,false),semantic=decodeAdvisorySemantic(f.read,envelope(f.p),envelope(f.r),token);
+ const metric=deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],semantic,f.paid).find(m=>m.id==='S09')!;
+ assert.equal(metric.quality,'KNOWN');assert.equal((metric.data as any).callEvents,2);assert.equal((metric.data as any).top1Share,'0.5');assert.equal((metric.data as any).top5Share,'1');assert.equal((metric.data as any).reach,null);
+});
+test('caller concentration preserves empty denominators, unclear events and missing attribution',()=>{
+ for(const caseId of ['empty','unclear','author']){
+ const f=fixture(caseId==='empty');if(caseId==='unclear')f.p.sources.p.event='UNCLEAR';if(caseId==='author')f.read.sources[0]!.authorId=null;
+ const semantic=decodeAdvisorySemantic(f.read,envelope(f.p),envelope(f.r),token),m=deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],semantic,f.paid).find(m=>m.id==='S09')!;
+ assert.equal(m.quality,'MISSING');assert.equal((m.data as any).top1Share,null);assert.equal((m.data as any).top5Share,null);
+ if(caseId==='empty')assert.equal(m.reasonCode,'CALL_CONCENTRATION_DENOMINATOR_ZERO');
+ }
+});
+test('warning and news events are excluded from call-event concentration denominator',()=>{
+ const f=artifactFixture(false,false);f.p.sources.q.event='WARNING';const semantic=decodeAdvisorySemantic(f.read,envelope(f.p),envelope(f.r),token),m=deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],semantic,f.paid).find(m=>m.id==='S09')!;
+ assert.equal(m.quality,'KNOWN');assert.equal((m.data as any).callEvents,1);assert.equal((m.data as any).top1Share,'1');
+});

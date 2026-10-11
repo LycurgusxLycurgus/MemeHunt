@@ -66,5 +66,5 @@ export function deriveAdvisory(input:AdvisoryInputs):AdvisoryFacts{
     set(observation.id,observation.quality,observation.data,ids,observation.reasonCode,observation.unit);
   }
   const values=advisoryIds.map(id=>metrics.get(id)!);
-  return advisoryFactsSchema.parse({method:'advisory-measurements-v2',token:input.token,cutoff:input.cutoff,metrics:values,groups:advisoryGroups.map(group=>{const unresolved=group.featureIds.filter(id=>metrics.get(id)!.quality!=='KNOWN');return {checkId:group.checkId,total:group.featureIds.length,known:group.featureIds.length-unresolved.length,unresolved};})});
+  return advisoryFactsSchema.parse({method:'advisory-measurements-v3',token:input.token,cutoff:input.cutoff,metrics:values,groups:advisoryGroups.map(group=>{const unresolved=group.featureIds.filter(id=>metrics.get(id)!.quality!=='KNOWN');return {checkId:group.checkId,total:group.featureIds.length,known:group.featureIds.length-unresolved.length,unresolved};})});
 }

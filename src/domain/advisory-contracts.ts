@@ -9,7 +9,7 @@ export const advisoryMetricSchema=z.object({
 }).strict();
 export type AdvisoryMetric=z.infer<typeof advisoryMetricSchema>;
 export const advisoryFactsSchema=z.object({
-  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2']),
+  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2','advisory-measurements-v3']),
   token:z.object({chain:z.enum(['solana','bsc','base','robinhood']),address:z.string().min(1)}).strict(),
   cutoff:z.iso.datetime({offset:true}),metrics:z.array(advisoryMetricSchema).length(advisoryIds.length),
   groups:z.array(z.object({checkId:z.string(),known:z.number().int().nonnegative(),total:z.number().int().positive(),unresolved:z.array(z.string())}).strict()).length(advisoryGroups.length),

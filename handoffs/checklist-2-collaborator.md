@@ -2,6 +2,54 @@
 
 Updated 2026-10-11. This is the canonical owner-to-collaborator handoff. It replaces this file's initial instructions to start packet 1. Read it with the revised `CONTRIBUTING.md`; no separate chat snippet is needed. Keep future round-two decisions/results here rather than creating another competing handoff.
 
+## Alternative evidence correction cycle (2026-10-11)
+
+The user explicitly opened cycle alternative-evidence-2026-10-11 to investigate the remaining37 advisory states. Typecheck and845/845 tests pass. S09 now consumes the independently reviewed canonical forward-call inventory and computes public-account top1/top5 event shares. A26/A27 now retain matched qualified post counts, meaningful sampled first-observed buyer counts and descriptive ratios; incomplete tape stays TRUNCATED and missing/zero/nonpositive denominators remain unresolved. Fresh measurement and policy labels are v3; v1/v2 saved replay is unchanged.
+
+First native review found that the initial implementation selected the attention window before finding earliest meaningful buys. The one correction stage now finds the earliest meaningful buy across the retained temporally eligible history first, then selects window buyers. Prior dust or sells do not suppress first meaningful buys. The fresh final native reviewer returned **PASS**. Root verified both full retained bundles, save/reopen/replay and marker-removal checks. This completes the permitted correction/review stage; empirical zero-UNKNOWN acceptance remains incomplete.
+
+### Alternative-source findings
+
+| Source | Actual supported-path evidence | Use/limit |
+|---|---|---|
+| Solana mainnet | Finalized full query returned26747 accounts; fresh full run recovered ownership and execution decisions | Shared public limits are intermittent; no claim of permanent availability |
+| Solana Vibe Station public endpoint | Correct mainnet genesis, full26747-account population, finalized signature/transaction and account reads | Used via existing process-only SOLANA_RPC_URL override; partial and full actual ownership decisions known, later PumpSwap quote request429; not selected as a permanent default |
+| PublicNode | Node runtime genesis/account reads200 | Indexed holder methods require a personal token or return429; earlier Python403 did not prove all methods unavailable |
+| dRPC public Solana | Explicit free-plan chain unavailable response | Paid-plan requirement; not adopted |
+| OnFinality public Solana | Genesis, holders and history429 | No usable supported-path proof; not adopted |
+| Tatum free Solana | Correct genesis; account scan explicitly paid-only | Not adopted; nominal endpoint availability is insufficient |
+| GeckoTerminal / archive provider documentation | Public market feed is cached/rate-limited; archive APIs advertise provider account access | A recent trade feed is not a complete holder/cost-basis/actor history; no paid access/signup introduced |
+
+Primary provider references: [Solana](https://solana.com/docs/references/clusters), [Vibe Station](https://solanavibestation.com/), [PublicNode](https://solana.publicnode.com/), [dRPC](https://drpc.org/docs/solana-api), [OnFinality](https://onfinality.io/en/networks/solana), [Tatum free RPC](https://freerpc.com/solana), [GeckoTerminal](https://api.geckoterminal.com/docs/index.html), [archival data](https://docs.chainstack.com/docs/solana-archive-nodes-the-backbone-of-solanas-data-availability-and-developer-tooling). Actual receipts, not marketing claims, determine which paths are usable.
+
+### Why the remaining measurements cannot all become known from another RPC
+
+| Metrics | Required evidence beyond endpoint reachability |
+|---|---|
+| O21–O25 | Strong attributable control edges, oldest covered wallet activity, independent synchronized-behavior/null baselines, fixed creator/early-owner cohort states, transfer-aware entry-cost/age history |
+| O26, O28 | Adequate retained decoded tape; current caps leave observed motifs/quote flow TRUNCATED |
+| O27, O30 | Evidenced related-party groups and official automation/program attribution; a shared router is insufficient |
+| O29, A12 | Matched depth/impact, cohort calibration and comparable competitor execution measurements |
+| A13, A24, A29, A30 | Comparable economic participant/cohort inventory/depth/concentration histories, fixed-window baselines and calibrated saturation components |
+| A06, A25, A28 | Cited persistence mechanism, preregistered aligned lead/lag/null tests, and identifiable catalyst-free post-peak decay interval |
+| A21, A23, A26, A27, S09, S11 | Positive eligible denominators/comparable windows; current qualified post/call/earlier-author samples are empty, so ratios are mathematically undefined |
+| S13–S20 | Public wallet/actor associations, transfer-aware trade/cost histories, preregistered follower simulation, measured trackers and repeated independent campaigns with null models |
+| C07, C09, C12, C16 | Recorded lifecycle windows/hysteresis, complete named context, verified deduplicated bridge finality/valuation, covered launch/migration counts and mature-cohort follow-up |
+
+The user has no additional historical or actor dataset. No zero/KNOWN substitution or invented identity is authorized. C10 recovered in the fresh mainnet run after O15 execution evidence became available; the remaining empirical gate is still incomplete. Actual attempts are separate and cannot be combined:
+
+| Attempt | Snapshot / cutoff UTC | Advisory known | Required known | Total PASS / FAIL / UNKNOWN |
+|---|---|---:|---:|---|
+| Mainnet full | 330913fd-a501-47b7-9e8b-906ba28b41ae / 2026-10-11T15:05:00.334Z | 14/50 (34MISSING,2TRUNCATED) | 21/27 | 16/6/11 |
+| Vibe Station partial | 128cae5c-e7b5-4fac-b671-ed05f64a604d / 2026-10-11T15:04:40.215Z | 5/50; hosted social deliberately not requested | 9/27 | 7/2/24 |
+| Vibe Station full, latest | d662a79c-018d-4b64-98dc-801162b9cb67 / 2026-10-11T15:14:19.754Z | 13/50 (35MISSING,2TRUNCATED) | 17/27 | 12/5/16 |
+
+All three retained bundles validate and save/reopen/replay identically. Mainnet hash21f8b0055aa2ca895f703bd1c24f0afb53d1a720252a3850e5a339340bdf005e; latest Vibe full hashd05c6ef8550b8343cf694240fbf070ae9cb55678a6e43c248b188dd239c1ea5f. Mainnet resolves C10/ownership/execution but CAN-01,CAN-02,DAT-01/02/03,NAR-02 remain UNKNOWN. Latest Vibe full C10 is again MISSING because O15 cost evidence is unavailable; required UNKNOWN CAN-01,CAP-01,DAT-01/02/03,EXE-01,EXE-02,LIQ-01,SEC-05,SOC-02. Both full runs remain rejected INITIAL_RESEARCH with15managementNOT_RUN/NO_ACTIVE_THESIS.
+
+The latest all50 inventory has the same known IDs and unresolved group membership as the previous13/50 snapshot documented below, with more specific causes for newly implemented S09/A26/A27: CALL_CONCENTRATION_DENOMINATOR_ZERO, BUYER_POST_DENOMINATOR_ZERO and ATTENTION_GROWTH_DENOMINATOR_NONPOSITIVE. C10 is the additional known state in the mainnet attempt only. Do not claim that source alternatives permanently clear37states, and do not replace undefined ratios with zero.
+
+Resume from agentic/analysis.md and agentic/architecture.md. Responsible new symbol src/domain/advisory-demand.ts::deriveAdvisoryDemand, caller shares in src/providers/advisory-semantic.ts, reconstruction in src/app/advisory.ts and policy dispatch in src/app/service.ts. A future implementation cycle requires compatible covered history/attribution/calibration inputs for the table above; API reachability alone cannot satisfy those contracts. No environment keys, raw databases, or other-session files are published.
+
 ## Advisory correction and historical measurements (2026-10-11)
 
 The user authorized a new Bridgecode 4.3.2 correction cycle, `advisory-correction-2026-10-11`, after the previous cycle ended UNRESOLVED. The fresh independent native reviewer returned **PASS**, with no correction stage. The final retained LIVE bundle validates and save/reopen/replay is identical. Typecheck and **836/836 tests** pass. Zero-UNKNOWN acceptance has not been achieved.
