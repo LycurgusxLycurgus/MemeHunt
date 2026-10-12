@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import type { EvidenceRecord } from '../src/domain/contracts.js';
-import { collectAuthorityTopology, deriveAuthorityTopology, type TopologyReceipts } from '../src/providers/advisory-topology.js';
+import { archiveHolderPopulation, collectAuthorityTopology, deriveAuthorityTopology, HOLDER_ARCHIVE_ADAPTER, HOLDER_ARCHIVE_SOURCE_BYTES, unpackHolderPopulation, type TopologyReceipts } from '../src/providers/advisory-topology.js';
 import { LEGACY_TOKEN_PROGRAM as LEGACY, SOLANA_MAINNET_GENESIS as GENESIS, TOKEN_2022_PROGRAM as T22, decodeSolanaAddress, encodeSolanaAddress } from '../src/providers/solana.js';
 
 const key = (n: number) => encodeSolanaAddress(Buffer.alloc(32, n));
@@ -316,4 +316,56 @@ test('full canonical Token-2022 population is reused under its full-data scope w
   const scoped=edit(withRaw(canonical,'rpc-holder-population',raw),'rpc-holder-population',{scope:{operation:'rpc-holder-population',commitment:'finalized',mint:MINT,fullAccountData:true}});
   const m=run(scoped);assert.equal(m.quality,'KNOWN');assert.equal((m.data as any).coverage.populationSource,'rpc-holder-population');assert.deepEqual(m.evidenceIds,['rpc-genesis','rpc-mint-raw','rpc-holder-population']);assert.equal((m.data as any).approvedExposure.effectiveAtomic,'3500');
   missing(edit(canonical,'rpc-holder-population',{scope:{operation:'rpc-holder-population',commitment:'finalized',mint:MINT,fullAccountData:true}}),'TOKEN_2022_ACCOUNT_DATA_SLICED');
+});
+
+// Proof v22: the canonical holder population is stored as one holder-population-archive-v1 container; O21 replays only the exact original body.
+const HOLDER = 'rpc-holder-population';
+const archived = (b: Bundle): Bundle => edit(withRaw(b, HOLDER, archiveHolderPopulation(b.raw[HOLDER]!)), HOLDER, { adapterVersion: HOLDER_ARCHIVE_ADAPTER });
+const runArchived = (b: Bundle) => deriveAuthorityTopology(token, cutoff, b.evidence, b.raw, b.topology, true);
+
+test('a holder archive replays the exact original JSON-RPC body to the identical O21 result', () => {
+  const plain = legacy(LEGACY_ACCOUNTS), stored = archived(plain), source = plain.raw[HOLDER]!, container = JSON.parse(stored.raw[HOLDER]!);
+  assert.deepEqual(Object.keys(container), ['method', 'encoding', 'sourceBytes', 'sourceHash', 'data']);
+  assert.deepEqual([container.method, container.encoding, container.sourceBytes, container.sourceHash], ['advisory-demand-rpc-archive-v1', 'DEFLATE_RAW_BASE64', Buffer.byteLength(source), sha(source)]);
+  assert.equal(unpackHolderPopulation(stored.raw[HOLDER]!), source);
+  const m = runArchived(stored); assert.equal(m.quality, 'KNOWN'); assert.deepEqual(m, run(plain));
+  // The full-data Token-2022 canonical read and a retained remote error keep their exact meaning through the archive.
+  const t = t22(), full = edit(withRaw(canonicalOnly(t), HOLDER, t.fullRaw!), HOLDER, { scope: { operation: HOLDER, commitment: 'finalized', mint: MINT, fullAccountData: true } });
+  assert.equal(run(full).quality, 'KNOWN'); assert.deepEqual(runArchived(archived(full)), run(full));
+  const remote = withRaw(plain, HOLDER, JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32010, message: 'excluded from account secondary indexes' } }));
+  assert.equal(run(remote).reasonCode, 'RPC_REMOTE_-32010'); assert.deepEqual(runArchived(archived(remote)), run(remote));
+  // A larger population of the same JSON-RPC shape compresses well below its source bytes and still replays identically.
+  const many = legacy(Array.from({ length: 6000 }, (_, i): Acc => ({ owner: wide(i), amount: 1n, pubkey: wide(50000 + i) }))), packed = archived(many);
+  assert.ok(Buffer.byteLength(packed.raw[HOLDER]!) * 2 < Buffer.byteLength(many.raw[HOLDER]!)); assert.deepEqual(runArchived(packed), run(many));
+});
+
+test('holder archive dispatch is exclusive and forged or nested containers never certify a population', () => {
+  const plain = legacy(LEGACY_ACCOUNTS), stored = archived(plain), source = plain.raw[HOLDER]!, container = JSON.parse(stored.raw[HOLDER]!);
+  const forge = (c: Record<string, unknown>) => withRaw(stored, HOLDER, JSON.stringify(c));
+  const cases: Array<[() => unknown, string]> = [
+    [() => run(stored), 'ADVISORY_TOPOLOGY_RECEIPT_METADATA'],
+    [() => runArchived(plain), 'ADVISORY_TOPOLOGY_RECEIPT_METADATA'],
+    [() => runArchived(edit(plain, HOLDER, { adapterVersion: HOLDER_ARCHIVE_ADAPTER })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(edit(stored, 'rpc-mint-raw', { adapterVersion: HOLDER_ARCHIVE_ADAPTER })), 'ADVISORY_TOPOLOGY_RECEIPT_METADATA'],
+    [() => runArchived(edit(stored, HOLDER, { contentHash: sha(source) })), 'ADVISORY_TOPOLOGY_RECEIPT_HASH'],
+    [() => runArchived(edit(stored, HOLDER, { scope: { operation: HOLDER, commitment: 'finalized', mint: X } })), 'ADVISORY_TOPOLOGY_RECEIPT_SCOPE'],
+    [() => runArchived(forge({ ...container, sourceHash: sha('forged') })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(forge({ ...container, sourceBytes: container.sourceBytes + 1 })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(forge({ ...container, sourceBytes: HOLDER_ARCHIVE_SOURCE_BYTES + 1 })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(forge({ ...container, method: HOLDER_ARCHIVE_ADAPTER })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(forge({ ...container, data: `${container.data.slice(0, -8)}AAAAAAAA` })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(forge({ data: container.data, method: container.method, encoding: container.encoding, sourceBytes: container.sourceBytes, sourceHash: container.sourceHash })), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    [() => runArchived(withRaw(stored, HOLDER, ` ${stored.raw[HOLDER]}`)), 'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+  ];
+  for (const [call, code] of cases) assert.throws(call, { message: code }, code);
+  // Archives are single-level: a nested container is never unwrapped twice, so its inner text is not a JSON-RPC body and O21 stays MISSING.
+  const nested = runArchived(withRaw(stored, HOLDER, archiveHolderPopulation(stored.raw[HOLDER]!)));
+  assert.deepEqual([nested.quality, nested.reasonCode], ['MISSING', 'RPC_SHAPE']);
+});
+
+test('holder archive refuses bodies above the unchanged 20 MB source ceiling and round-trips one at it', () => {
+  assert.equal(HOLDER_ARCHIVE_SOURCE_BYTES, 20_000_000);
+  for (const body of ['', 'x'.repeat(HOLDER_ARCHIVE_SOURCE_BYTES + 1), 'é'.repeat(HOLDER_ARCHIVE_SOURCE_BYTES / 2 + 1)]) assert.throws(() => archiveHolderPopulation(body), { message: 'HOLDER_ARCHIVE_SOURCE_LIMIT' });
+  const edge = 'x'.repeat(HOLDER_ARCHIVE_SOURCE_BYTES), stored = archiveHolderPopulation(edge);
+  assert.ok(Buffer.byteLength(stored) < 100_000); assert.equal(unpackHolderPopulation(stored), edge);
 });

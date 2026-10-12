@@ -104,7 +104,7 @@ const REJECTED=/ADVISORY_PROOF_INVALID|LIVE_PROVENANCE_INVALID|FUTURE_EVIDENCE|D
 
 test('a KNOWN creator inventory is fresh proof v20 and facts v21, persists under policy v20 and replays exactly',async()=>{
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!,o24=facts.metrics.find(m=>m.id==='O24')!;
- assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v21','advisory-measurements-v22',50,null]);
+ assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v22','advisory-measurements-v22',50,null]);
  assert.deepEqual([o24.quality,(o24.data as any).method,(o24.data as any).cohort.wallet,facts.metrics.find(m=>m.id==='S13')!.quality,facts.metrics.find(m=>m.id==='A30')!.quality],['KNOWN','creator-signer-wallet-inventory-v1',wallet,'KNOWN','KNOWN']);
  // C16 and the one-hour supplement keep their accepted wiring; the supplement stays outside the 50 metrics.
  assert.equal(facts.metrics.find(m=>m.id==='C16')!.reasonCode,'LAUNCHPAD_RECEIPTS_NOT_COLLECTED');assert.ok(facts.supplements?.shortDemand);

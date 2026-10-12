@@ -187,7 +187,7 @@ const rehash=(bundle:{evidence:Array<{id:string;contentHash:string}>;rawArtifact
 test('live collection persists one verified S13 creator role through Service and rejects forged, downgraded, orphaned and claimed receipts',async()=>{
  const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'tinyfish-live-key',fetcher:liveFetcher,now:()=>at});
  const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,s13=facts.metrics.find(m=>m.id==='S13')!;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v21','advisory-measurements-v22']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v22','advisory-measurements-v22']);
  assert.deepEqual(Object.keys(proof.creatorRole.artifactIds),['page','index','transaction-0','transaction-1']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-role');
  assert.ok(receipts.length===4&&receipts.every(e=>e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'&&Object.keys(e.scope).join()==='request'));

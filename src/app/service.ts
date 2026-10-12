@@ -20,6 +20,7 @@ import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, 
 import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
 import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy-policy.js';
 import { reconstructAdvisory } from './advisory.js';
+import { HOLDER_ARCHIVE_ADAPTER } from '../providers/advisory-topology.js';
 
 /** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
 const ADVISORY_SCREENS=Array.from({length:20},(_,i)=>`research-screen-advisory-v${i+1}`);
@@ -202,7 +203,8 @@ export class Service {
       validateDexRecovery(b);
       validateFeeRecovery(b);
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
-      const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-'));
+      // The proof-v22 holder archive keeps its canonical solana-rpc source, so its adapter alone also demands the advisory proof that binds it.
+      const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
       if(hasAdvisoryEvidence&&!b.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
       if(hasAdvisoryEvidence)validateAdvisoryDexBaseline(b);
       if(b.details){
@@ -213,8 +215,8 @@ export class Service {
           if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
-            // Fresh persistence requires current accounting and the archived dense window; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v21')throw new Error('ADVISORY_PROOF_INVALID');
+            // Fresh persistence requires current accounting, the archived dense window and the archived holder population; historical snapshots replay their recorded facts.
+            if(proof.method!=='advisory-provenance-v22')throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');

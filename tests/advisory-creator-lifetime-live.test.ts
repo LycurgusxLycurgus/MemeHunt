@@ -106,7 +106,7 @@ const metric=(facts:{metrics:Array<{id:string}>},id:string)=>facts.metrics.find(
 
 test('fresh proof v20 derives O25 from the same typed role, tape, inventory receipts and reuse as O24, keeps S15 unready without failed-fee reads, persists under policy v20 and replays exactly',async()=>{
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!,o24=metric(facts,'O24'),o25=metric(facts,'O25'),d=o25.data,i=o24.data;
- assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v21','advisory-measurements-v22',50,null]);
+ assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v22','advisory-measurements-v22',50,null]);
  // S15 needs a target position; this created, never-funded account has none, so the gate is unready, no failed-fee read is admitted and the descriptor stays null, never a zero.
  const s15=metric(facts,'S15');
  assert.deepEqual([proof.creatorFailedFees,s15.quality,s15.reasonCode,s15.data.status,s15.data.position,s15.data.networkFees,s15.data.basis.lifetimeReasonCode],[null,'MISSING','S15_NO_TARGET_POSITION','PREREQUISITE_UNRESOLVED',null,null,'CREATOR_LIFETIME_VECTOR_OBSERVED']);

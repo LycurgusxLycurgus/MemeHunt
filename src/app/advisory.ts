@@ -1,4 +1,4 @@
-import { deriveAuthorityTopology, type TopologyReceipts } from '../providers/advisory-topology.js';
+import { deriveAuthorityTopology, HOLDER_ARCHIVE_ADAPTER, type TopologyReceipts } from '../providers/advisory-topology.js';
 import { deriveO30Window, type AutomationReceipts } from '../providers/advisory-automation.js';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -32,7 +32,7 @@ import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID,type FailedFeeReceipt } from '.
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -85,6 +85,10 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   const windowOwned=evidence.filter(e=>e.sourceId==='advisory-window'||e.id.startsWith(WINDOW_EVIDENCE_PREFIX)||e.adapterVersion===WINDOW_ARCHIVE_ADAPTER);
   if(version<21&&windowOwned.some(e=>e.adapterVersion===WINDOW_ARCHIVE_ADAPTER))throw new Error('ADVISORY_PROOF_INVALID');
   if(version>=21){const owned=windowOwned.map(e=>e.id).sort(),declared=Object.values(proof.window!.artifactIds).sort();if(new Set(declared).size!==declared.length||JSON.stringify(owned)!==JSON.stringify(declared))throw new Error('ADVISORY_PROOF_INVALID');}
+  // Proof v22 is v21 with the canonical rpc-holder-population body stored as one holder-population-archive-v1 archive; facts are unchanged. Earlier proofs never carry that adapter. From v22 the adapter and that receipt id bind one-to-one with a stored body, so a plain, foreign-adapter, renamed, duplicated, rawless or recordless holder receipt is invalid; the topology replay then checks source, scope, clock, stored hash and the exact original body.
+  const holderOwned=evidence.filter(e=>e.id==='rpc-holder-population'||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
+  if(version<22&&holderOwned.some(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER))throw new Error('ADVISORY_PROOF_INVALID');
+  if(version>=22&&(holderOwned.length>1||holderOwned.some(e=>e.id!=='rpc-holder-population'||e.adapterVersion!==HOLDER_ARCHIVE_ADAPTER||typeof rawArtifacts[e.id]!=='string')||!holderOwned.length&&Object.hasOwn(rawArtifacts,'rpc-holder-population')))throw new Error('ADVISORY_PROOF_INVALID');
   const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory'|'creatorFailedFees')=>{
     const d=proof[namespace]! ,raw:Record<string,string>={},times:Record<string,string>={};
     const keys=Object.keys(d.requests);
@@ -185,7 +189,8 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
           if(f&&(s15.data as {status?:unknown}).status==='PREREQUISITE_UNRESOLVED')throw new Error('ADVISORY_PROOF_INVALID');
           failedReplayed=!!f;additionalMetrics.push(s15);}}}
   }
-  if(proof.topology){const t=resolve('topology'),receipts:TopologyReceipts={rawArtifacts:t.raw,retrievedAt:t.times,requests:t.requests};additionalMetrics.push(deriveAuthorityTopology(token,cutoff,evidence,rawArtifacts,receipts));}
+  // Proof v22 replays the canonical holder population only through its holder archive; earlier proofs only through the plain live-v1 body.
+  if(proof.topology){const t=resolve('topology'),receipts:TopologyReceipts={rawArtifacts:t.raw,retrievedAt:t.times,requests:t.requests};additionalMetrics.push(deriveAuthorityTopology(token,cutoff,evidence,rawArtifacts,receipts,version>=22));}
   // Proof v17 is v16 plus C16 decoded only from the four retained launchpad receipts; an uncollected run discloses that state instead of the registry default. The v16 supplement is unchanged.
   if(version>=17){if(proof.launchpad){const l=resolve('launchpad');additionalMetrics.push(deriveC16Launchpad(decodeLaunchpadContext({rawArtifacts:l.raw,retrievedAt:l.times,requests:l.requests as Record<string,LaunchpadRequest>},cutoff),l.ids));}else additionalMetrics.push(uncollectedC16());}
   // A populated inventory descriptor is valid only when its O24 replay ran over this proof's window and demand tape.

@@ -3,8 +3,21 @@ import { Decimal } from 'decimal.js';
 import type { EvidenceRecord, TokenRef } from '../domain/contracts.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import { LEGACY_TOKEN_PROGRAM, SOLANA_MAINNET_GENESIS, TOKEN_2022_PROGRAM, decodeHolderPopulation, decodeRawMintControls, decodeSolanaAddress, encodeSolanaAddress, safeRpcCode, solanaRpc } from './solana.js';
+import { archiveDemandReceipt, unpackDemandReceipt } from './advisory-demand-windows.js';
 
 const METHOD='spl-authority-topology-v1',RULE='spl-authority-association-v1',OUTPUT_LIMIT_BYTES=2_000_000,POPULATION_LIMIT_BYTES=20_000_000;
+// Proof v22 stores the canonical rpc-holder-population body with the exact demand archive codec (container method advisory-demand-rpc-archive-v1);
+// the adapter belongs to this one receipt. The source ceiling is the unchanged 20 MB holder read cap: compression, never truncation.
+export const HOLDER_ARCHIVE_ADAPTER='holder-population-archive-v1' as const,HOLDER_ARCHIVE_SOURCE_BYTES=POPULATION_LIMIT_BYTES;
+/** Exact reversible storage form of one holder-population body; a body above the source ceiling is refused, never cut. */
+export function archiveHolderPopulation(raw:string):string{
+  if(typeof raw!=='string'||!raw.length||Buffer.byteLength(raw,'utf8')>HOLDER_ARCHIVE_SOURCE_BYTES)throw new Error('HOLDER_ARCHIVE_SOURCE_LIMIT');
+  return archiveDemandReceipt(raw);
+}
+/** Strict single-level unpack: canonical container, claimed size bounded before inflation, then exact length, SHA-256 and UTF-8 round trip. */
+export function unpackHolderPopulation(stored:string):string{
+  try{return unpackDemandReceipt(stored,HOLDER_ARCHIVE_SOURCE_BYTES);}catch{return fail('ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID');}
+}
 const RECEIPTS=['rpc-genesis','rpc-mint-raw','rpc-holder-population'] as const;
 const POPULATION_KEY='topology-population',POPULATION_EVIDENCE=`advisory-topology-${POPULATION_KEY}`;
 /** Only evidenced benign Token-2022 extensions; every other type leaves O21 unresolved. */
@@ -31,23 +44,28 @@ const min=(a:bigint,b:bigint)=>a<b?a:b;
 const sameScope=(scope:JsonObject,expected:JsonObject)=>{const keys=Object.keys(scope).sort();return JSON.stringify(keys)===JSON.stringify(Object.keys(expected).sort())&&keys.every(k=>scope[k]===expected[k]);};
 const count=(counts:Record<string,number>,key:string|number)=>{counts[key]=(counts[key]??0)+1;};
 
-/** Exact live-v1 receipt binding: forged metadata, clocks or hashes throw; receipts absent on both sides stay unresolved. */
-function verifyReceipts(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],raw:Record<string,string>):ReceiptId[]{
+/** Exact receipt binding: forged metadata, clocks or hashes throw; receipts absent on both sides stay unresolved.
+ * Genesis and mint are always live-v1. The holder population is live-v1 before proof v22 and only holder-population-archive-v1 from it;
+ * the stored container hash is checked first, then the archive is unpacked to the exact original body every decoder reads. */
+function verifyReceipts(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],raw:Record<string,string>,holderArchive:boolean):{present:ReceiptId[];bodies:Partial<Record<ReceiptId,string>>}{
   const cut=Date.parse(cutoff);if(!/^\d{4}-\d\d-\d\dT/.test(cutoff)||!Number.isFinite(cut))fail('ADVISORY_TOPOLOGY_CUTOFF');
   checkToken(token);
-  return RECEIPTS.filter(id=>{
+  const bodies:Partial<Record<ReceiptId,string>>={};
+  const present=RECEIPTS.filter(id=>{
     const records=evidence.filter(e=>e.id===id),body=Object.hasOwn(raw,id)?raw[id]:undefined;
     if(records.length>1)fail('ADVISORY_TOPOLOGY_RECEIPT_DUPLICATE');
     if(!records.length&&body===undefined)return false;
     if(records.length!==1||typeof body!=='string')fail('ADVISORY_TOPOLOGY_RECEIPT_MEMBERSHIP');
-    const e=records[0]!;
-    if(e.sourceId!=='solana-rpc'||e.sourceType!=='JSON_RPC'||e.accessMode!=='PUBLIC_API'||e.adapterVersion!=='live-v1')fail('ADVISORY_TOPOLOGY_RECEIPT_METADATA');
+    const e=records[0]!,archived=holderArchive&&id==='rpc-holder-population';
+    if(e.sourceId!=='solana-rpc'||e.sourceType!=='JSON_RPC'||e.accessMode!=='PUBLIC_API'||e.adapterVersion!==(archived?HOLDER_ARCHIVE_ADAPTER:'live-v1'))fail('ADVISORY_TOPOLOGY_RECEIPT_METADATA');
     const expected=id==='rpc-genesis'?{method:'getGenesisHash',genesisHash:typeof e.scope.genesisHash==='string'?e.scope.genesisHash:null}:{operation:id,commitment:'finalized',mint:token.address,...(id==='rpc-holder-population'&&e.scope.fullAccountData===true?{fullAccountData:true}:{})};
     if(!sameScope(e.scope,expected))fail('ADVISORY_TOPOLOGY_RECEIPT_SCOPE');
     if(e.availableAt!==e.retrievedAt||!(Date.parse(e.retrievedAt)<=cut))fail('ADVISORY_TOPOLOGY_RECEIPT_TIME');
     if(sha256(body)!==e.contentHash)fail('ADVISORY_TOPOLOGY_RECEIPT_HASH');
+    bodies[id]=archived?unpackHolderPopulation(body):body;
     return true;
   });
+  return {present,bodies};
 }
 function checkToken(token:TokenRef){if(token.chain!=='solana')fail('ADVISORY_TOPOLOGY_SCOPE');try{decodeSolanaAddress(token.address);}catch{fail('ADVISORY_TOPOLOGY_SCOPE');}}
 function rpcResult(raw:string):unknown{
@@ -172,22 +190,23 @@ function graph(edges:Array<{pair:Pair;ref:string}>,positive:Map<string,bigint>,s
     components:components.map(c=>c.row),singletons:{count:single.length,totalAtomic:singleTotal.toString(),share:share(singleTotal,supply),largest:single[0]?{owner:single[0],balanceAtomic:positive.get(single[0])!.toString(),share:share(positive.get(single[0])!,supply)}:null}};
 }
 
-export function deriveAuthorityTopology(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,topology:TopologyReceipts={rawArtifacts:{},retrievedAt:{},requests:{}}):AdvisoryMetric{
-  const present=verifyReceipts(token,cutoff,evidence,rawArtifacts),mintRecord=evidence.find(e=>e.id==='rpc-mint-raw');
-  const expected=present.includes('rpc-mint-raw')?plan(token,rawArtifacts['rpc-mint-raw']):{};
+/** holderArchive (proof v22): the canonical holder population is read only through its holder-population-archive-v1 container. */
+export function deriveAuthorityTopology(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,topology:TopologyReceipts={rawArtifacts:{},retrievedAt:{},requests:{}},holderArchive=false):AdvisoryMetric{
+  const {present,bodies}=verifyReceipts(token,cutoff,evidence,rawArtifacts,holderArchive),mintRecord=evidence.find(e=>e.id==='rpc-mint-raw');
+  const expected=present.includes('rpc-mint-raw')?plan(token,bodies['rpc-mint-raw']):{};
   const full=verifyTopology(evidence,topology,expected,Date.parse(cutoff),mintRecord?Date.parse(mintRecord.retrievedAt):Number.NaN);
   let ids:string[]=[...present,...(full?[full.id]:[])];
   const metric=(known:boolean,data:JsonObject,reasonCode:string):AdvisoryMetric=>({id:'O21',quality:known?'KNOWN':'MISSING',unit:'scoped-record',data:{method:METHOD,rule:RULE,token,...data},evidenceIds:[...ids],reasonCode});
   try{
     for(const id of ['rpc-genesis','rpc-mint-raw'] as const)if(!present.includes(id))unresolved(`${id.toUpperCase().replace(/-/g,'_')}_UNAVAILABLE`);
-    const genesis=rpcResult(rawArtifacts['rpc-genesis']!);
+    const genesis=rpcResult(bodies['rpc-genesis']!);
     if(evidence.find(e=>e.id==='rpc-genesis')!.scope.genesisHash!==(typeof genesis==='string'?genesis:null))fail('ADVISORY_TOPOLOGY_RECEIPT_SCOPE');
     if(genesis!==SOLANA_MAINNET_GENESIS)unresolved('GENESIS_NOT_MAINNET');
-    const mint=mintFacts(rpcResult(rawArtifacts['rpc-mint-raw']!)),supply=mint.supply;
+    const mint=mintFacts(rpcResult(bodies['rpc-mint-raw']!)),supply=mint.supply;
     let items:Item[],holders:ReturnType<typeof decodeHolderPopulation>,coverage:JsonObject;
     if(mint.program===LEGACY_TOKEN_PROGRAM){
       if(!present.includes('rpc-holder-population'))unresolved('RPC_HOLDER_POPULATION_UNAVAILABLE');
-      const population=rpcResult(rawArtifacts['rpc-holder-population']!);
+      const population=rpcResult(bodies['rpc-holder-population']!);
       holders=decoded(()=>decodeHolderPopulation(population,token.address,LEGACY_TOKEN_PROGRAM,supply.toString(),mint.slot));
       items=(population as {value:Item[]}).value;
       coverage={program:LEGACY_TOKEN_PROGRAM,populationSource:'rpc-holder-population',mintExtensions:[],accountExtensions:{},bareAccounts:items.length,extendedAccounts:0};
@@ -196,7 +215,7 @@ export function deriveAuthorityTopology(token:TokenRef,cutoff:string,evidence:Ev
       if(full||!canonical)ids=ids.filter(id=>id!=='rpc-holder-population');
       if(!full&&!canonical)unresolved('TOKEN_2022_FULL_POPULATION_UNAVAILABLE');
       if(!full&&Date.parse(canonical!.retrievedAt)<Date.parse(evidence.find(e=>e.id==='rpc-mint-raw')!.retrievedAt))fail('ADVISORY_TOPOLOGY_RECEIPT_TIME');
-      const populationRaw=full?full.raw:rawArtifacts['rpc-holder-population']!;
+      const populationRaw=full?full.raw:bodies['rpc-holder-population']!;
       const parsed=fullPopulation(rpcResult(populationRaw),mint.slot);
       holders=decoded(()=>decodeHolderPopulation(parsed.projected,token.address,TOKEN_2022_PROGRAM,supply.toString(),mint.slot));
       items=parsed.projected.value;

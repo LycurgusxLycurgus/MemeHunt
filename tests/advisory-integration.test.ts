@@ -22,6 +22,7 @@ import { CREATOR_FAILED_FEE_REQUEST_CAP } from '../src/providers/advisory-creato
 import { archiveCreatorFailedFeeReceipt,failedFeeReceiptId,failedFeeRequest,FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../src/providers/advisory-creator-failed-fees.js';
 import { WINDOW_ARCHIVE_ADAPTER,WINDOW_ARCHIVE_SOURCE_BYTES,WINDOW_DENSE_PAGE_LIMIT,WINDOW_DENSE_REQUEST_CAP } from '../src/providers/advisory-window.js';
 import { legacyWindowBundle } from './window-legacy-fixtures.js';
+import { HOLDER_ARCHIVE_ADAPTER,unpackHolderPopulation } from '../src/providers/advisory-topology.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { makeSocialFixture,SOCIAL_TOKEN,SOCIAL_CUTOFF } from './social-fixtures.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -50,7 +51,7 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v21');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
   assert.equal(facts.method,'advisory-measurements-v22');
@@ -132,7 +133,7 @@ test('complete selected hour stores exact demand archives through live collectio
     assert.equal(original,bodies.get(JSON.stringify(proof.demand.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
   }
   // Proof v21 stores every selected-window receipt as an exact window-archive-v1 archive with a sole request scope and the stored archive hash; the original body and its source hash are recoverable byte for byte.
-  assert.equal(proof.method,'advisory-provenance-v21');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
+  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
   const windowIds=proof.window.artifactIds as Record<string,string>;
   assert.deepEqual(bundle.evidence.filter(e=>e.sourceId==='advisory-window').map(e=>e.id).sort(),Object.values(windowIds).sort());
   for(const [key,id] of Object.entries(windowIds)){
@@ -493,7 +494,7 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   const owner=encodeSolanaAddress(Buffer.alloc(32,31)),delegate=encodeSolanaAddress(Buffer.alloc(32,32)),account=encodeSolanaAddress(Buffer.alloc(32,33));
   const mint=Buffer.alloc(82);mint.writeBigUInt64LE(100n,36);mint[44]=6;mint[45]=1;
   const full=Buffer.alloc(170);decodeSolanaAddress(token.address).copy(full);decodeSolanaAddress(owner).copy(full,32);full.writeBigUInt64LE(100n,64);full.writeUInt32LE(1,72);decodeSolanaAddress(delegate).copy(full,76);full[108]=1;full.writeBigUInt64LE(30n,121);full[165]=2;full.writeUInt16LE(7,166);
-  const calls:string[]=[];
+  const calls:string[]=[];let populationBody='';
   const liveFetcher:typeof fetch=async(input,init)=>{
     if(init?.method==='POST'){
       const req=JSON.parse(String(init.body));
@@ -504,7 +505,8 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
       }
       if(req.method==='getProgramAccounts'&&req.params[0]===TOKEN_2022_PROGRAM){
         const sliced=!!req.params[1].dataSlice;calls.push(sliced?'population-sliced':'population-full');
-        return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{context:{slot:2},value:[{pubkey:account,account:{owner:TOKEN_2022_PROGRAM,executable:false,space:170,data:[(sliced?full.subarray(0,165):full).toString('base64'),'base64']}}]}}));
+        const text=JSON.stringify({jsonrpc:'2.0',id:1,result:{context:{slot:2},value:[{pubkey:account,account:{owner:TOKEN_2022_PROGRAM,executable:false,space:170,data:[(sliced?full.subarray(0,165):full).toString('base64'),'base64']}}]}});
+        if(!sliced)populationBody=text;return new Response(text);
       }
     }
     return fetcher(input,init);
@@ -513,6 +515,35 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   assert.ok(calls.indexOf('population-full')>calls.indexOf('mint-raw'));assert.equal(calls.filter(x=>x==='population-full').length,1);
   const m=bundle.details!.advisory!.metrics.find(m=>m.id==='O21')!;assert.equal(m.quality,'KNOWN');assert.equal((m.data as any).approvedExposure.effectiveAtomic,'30');
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(Object.keys(proof.topology.artifactIds).length,0);assert.ok(m.evidenceIds.includes('rpc-holder-population'));
+  // Proof v22 stores the canonical holder body as one exact holder-population-archive-v1 archive: same id, source, scope and clock; the stored hash is the container's and the original body is recoverable byte for byte.
+  const sha=(raw:string)=>createHash('sha256').update(raw).digest('hex'),holder=bundle.evidence.find(e=>e.id==='rpc-holder-population')!,stored=bundle.rawArtifacts['rpc-holder-population']!,container=JSON.parse(stored);
+  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(unpackHolderPopulation(stored),populationBody);
+  assert.deepEqual([holder.sourceId,holder.sourceType,holder.accessMode,holder.adapterVersion,holder.scope,holder.retrievedAt,holder.availableAt,holder.contentHash],['solana-rpc','JSON_RPC','PUBLIC_API',HOLDER_ARCHIVE_ADAPTER,{operation:'rpc-holder-population',commitment:'finalized',mint:token.address,fullAccountData:true},at,at,sha(stored)]);
+  assert.deepEqual([container.method,container.encoding,container.sourceBytes,container.sourceHash],['advisory-demand-rpc-archive-v1','DEFLATE_RAW_BASE64',Buffer.byteLength(populationBody),sha(populationBody)]);
+  assert.deepEqual(bundle.evidence.filter(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER).map(e=>e.id),['rpc-holder-population']);
+  const rebuild=(b:typeof bundle,p:unknown)=>reconstructAdvisory(token,b.cutoff,b.details!.baseline,b.evidence,b.rawArtifacts,p,b.thesis??null,b.features);
+  assert.equal(decisionHash(rebuild(bundle,proof)),decisionHash(bundle.details!.advisory));
+  // Older proofs replay only the plain live-v1 holder receipt: the exact proof-v20 form rebuilds the identical O21, and the archive never satisfies an older proof.
+  const {bundle:v20Bundle,proof:v20}=legacyWindowBundle(bundle);
+  assert.equal(v20Bundle.rawArtifacts['rpc-holder-population'],populationBody);assert.equal(v20Bundle.evidence.find(e=>e.id==='rpc-holder-population')!.adapterVersion,'live-v1');
+  assert.deepEqual(rebuild(v20Bundle,v20).metrics.find(x=>x.id==='O21'),m);
+  for(const method of ['advisory-provenance-v20','advisory-provenance-v21'])assert.throws(()=>rebuild(bundle,{...proof,method}),{message:'ADVISORY_PROOF_INVALID'},method);
+  // Proof v22 binds exactly one archived holder receipt: plain bodies, forged containers, foreign adapters, masquerading, duplicate, rawless or recordless receipts are rejected.
+  const holderOf=(b:typeof bundle)=>b.evidence.find(e=>e.id==='rpc-holder-population')!;
+  const variant=(change:(b:typeof bundle)=>void)=>{const b=structuredClone(bundle);change(b);return b;};
+  const store=(b:typeof bundle,raw:string,adapterVersion:string=HOLDER_ARCHIVE_ADAPTER)=>{b.rawArtifacts['rpc-holder-population']=raw;Object.assign(holderOf(b),{contentHash:sha(raw),adapterVersion});};
+  const tampered:Array<[string,typeof bundle,string]>=[
+    ['plain-live-v1-body',variant(b=>store(b,populationBody,'live-v1')),'ADVISORY_PROOF_INVALID'],
+    ['plain-body-under-archive-adapter',variant(b=>store(b,populationBody)),'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    ['forged-source-hash',variant(b=>store(b,JSON.stringify({...container,sourceHash:sha('forged')}))),'ADVISORY_TOPOLOGY_HOLDER_ARCHIVE_INVALID'],
+    ['stored-hash-mismatch',variant(b=>{holderOf(b).contentHash=sha(populationBody);}),'ADVISORY_TOPOLOGY_RECEIPT_HASH'],
+    ['foreign-archive-adapter',variant(b=>{holderOf(b).adapterVersion=DEMAND_ARCHIVE_ADAPTER;}),'ADVISORY_PROOF_INVALID'],
+    ['masquerading-receipt',variant(b=>{b.evidence.find(e=>e.id==='rpc-mint-raw')!.adapterVersion=HOLDER_ARCHIVE_ADAPTER;}),'ADVISORY_PROOF_INVALID'],
+    ['duplicate-receipt',variant(b=>{b.evidence.push(structuredClone(holderOf(b)));}),'ADVISORY_PROOF_INVALID'],
+    ['missing-body',variant(b=>{delete b.rawArtifacts['rpc-holder-population'];}),'ADVISORY_PROOF_INVALID'],
+    ['missing-record',variant(b=>{b.evidence=b.evidence.filter(e=>e.id!=='rpc-holder-population');}),'ADVISORY_PROOF_INVALID'],
+  ];
+  for(const [name,b,code] of tampered)assert.throws(()=>rebuild(b,proof),{message:code},name);
   const directory=mkdtempSync(join(tmpdir(),'advisory-topology-live-')),service=new Service(join(directory,'live.sqlite'));
-  try{const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);const forged=structuredClone(bundle);(forged.details!.advisory!.metrics.find(m=>m.id==='O21')!.data as any).approvedExposure.effectiveAtomic='100';assert.throws(()=>service.analyzeLive(forged),/ADVISORY_PROOF/);}finally{service.close();rmSync(directory,{recursive:true,force:true});}
+  try{const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);const forged=structuredClone(bundle);(forged.details!.advisory!.metrics.find(m=>m.id==='O21')!.data as any).approvedExposure.effectiveAtomic='100';assert.throws(()=>service.analyzeLive(forged),/ADVISORY_PROOF/);assert.throws(()=>service.analyzeLive(tampered[0]![1]),/ADVISORY_PROOF_INVALID/);}finally{service.close();rmSync(directory,{recursive:true,force:true});}
 });
