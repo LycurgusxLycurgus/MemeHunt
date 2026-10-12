@@ -1,3 +1,21 @@
+# Accepted execution result — sponsored-synchrony-2026-10-12
+
+O23 is newly KNOWN. Exact Claude Code `claude-opus-5-5` authored the provider, integration and regressions; Codex applied the proposals and acquired, tested, reviewed and published the evidence. The Claude CLI remained read-only.
+
+- Snapshot `112ce542-e27f-4d16-83af-87e2e8205bfb`, cutoff **2026-10-12T03:04:45.061Z**, hash `5654dfd60ed8f15c3c4418ea2a308eeb3ee6d076b97a01c38ef3858f2364c242`. Advisory **22/50 KNOWN,25 MISSING,3 TRUNCATED:28 unresolved**. All five groups remain UNKNOWN. A21 remains KNOWN and A30 is restored; O26 remains TRUNCATED (`RPC_HTTP_429`). Zero unknowns is not achieved, and old measurements are not copied into this cutoff.
+- Complete selected-pool tape **11 October14:00–12 October02:00 UTC**:265 successful references (248 fresh,17 exact reuses),124 failed references. O23's denominator is **228 decoded trades:170 SELF,33 SPONSORED,25 PROGRAM**. Five fee-payer accounts sponsor the33 trades. Fee sponsorship establishes transaction-fee payment, not incoming wallet funding, people or common owners.
+- A sponsored trade needs a same-payer/same-side partner in its declared slot bin, from a different transaction AND user. Every trade remains in the denominator; same-transaction legs and same-user repeats cannot synchronize each other. All five width/offset bins **1/0,10/0,10/5,150/0,150/75** observe **0 synchronized trades /228**. Each reports999 SHA-seeded within-hour transaction-slot permutations preserving payers/users/sides/legs/slot occupancy. Null summaries and ranks remain descriptive; coordination and commonControl stay null.
+- Incomplete tapes or unverifiable fee roles leave all fractions null. A complete tradeless tape has an undefined denominator. No new reads, namespaces, formats or allowances were added; stored artifacts total **21,552,695 bytes**, below24MB.
+- Typecheck/build,22 focused tests and **961/961 full tests PASS**, zero skipped. Native first review PASS, correction unused. Actual raw reconstruction/idempotence/show/disk replay PASS; sixteen caller provenance mutations plus ten window/demand mutations at the real Service persistence boundary are rejected. Window adapter/scope integrity is enforced through its shared parent; demand has explicit archive guards. A direct low-level window reconstruction alone is not that persistence boundary. Portable tests cover known-zero persistence, bad-fee MISSING with A30 retained, claimed-bin/rehashed-fee forgery and version downgrades.
+- Fresh proof/facts/policy **v13/v14/v14** derives O23 only underproofv13. Proofv12 never retrospectively derives it; saved policiesv1–v13 replay frozen facts. A21 wirev3/legacywirev2 dispatch and existing A30/S09/A23/O28 formulas remain unchanged. The accepted A21 snapshot5755c035 retains its hash.
+- Required **27/27 known**; across33 rows **21 PASS,7 FAIL,5 UNKNOWN**. Entry remains REJECTED and15 management checks remain NOT_RUN / NO_ACTIVE_THESIS. An operator-only alternate public RPC was verified for mainnet identity/history; no.env or credential changes. The separate private pacing harness passed checks but was not used for this accepted run.
+
+Continue via `agentic/analysis.md`, `agentic/architecture.md` and applicable Bridgecode specialists. Opus's O29 proposal still requires real reserve/curve/ordering evidence before acceptance. Operator data, secrets and other-session documents are excluded from publication.
+
+Earlier accepted cycles follow as dated history.
+
+---
+
 # Accepted execution result — external-attention-2026-10-12
 
 A21 is newly KNOWN: **0 external-origin sources out of14 eligible classified posts** in the fixed historical attention sample. Exact Claude Code `claude-opus-5-5` authored the category rubric, measurement, version dispatch and regression tests; Codex applied the proposals and acquired, verified and published evidence. The Claude CLI remained read-only.
