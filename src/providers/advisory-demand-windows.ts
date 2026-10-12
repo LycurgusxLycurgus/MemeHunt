@@ -96,7 +96,7 @@ export const demandPoolRequest=(pool:string,anchorSlot:number):Request=>({method
 // The exact O28 jsonParsed request; only an identical retained request is reused.
 const windowTransactionRequest=(signature:string):Request=>({method:'getTransaction',params:[signature,{commitment:'finalized',encoding:'jsonParsed',maxSupportedTransactionVersion:1}]});
 
-const eligible=(w:AdvisoryWindowHistory)=>w.complete&&w.method==='pumpswap-selected-pool-window-v3'&&w.genesisVerified&&w.pool!==null&&w.anchorSlot!==null&&Number.isFinite(Date.parse(w.window.end));
+const eligible=(w:AdvisoryWindowHistory)=>w.complete&&['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(w.method)&&w.genesisVerified&&w.pool!==null&&w.anchorSlot!==null&&Number.isFinite(Date.parse(w.window.end));
 function bounds(w:AdvisoryWindowHistory):Bounds{const end=Date.parse(w.window.end);return{start:end-HOURS*HOUR,baselineEnd:end-BASELINE_HOURS*HOUR,end};}
 function base58(text:unknown,code:string):Buffer{
  if(typeof text!=='string'||text.length>2000||!/^[1-9A-HJ-NP-Za-km-z]*$/.test(text))fail(code);

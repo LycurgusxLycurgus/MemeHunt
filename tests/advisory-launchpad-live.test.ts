@@ -65,7 +65,7 @@ const persist = (b: Bundle, policy: string) => {
 
 test('a keyed advisory run captures one Lighthouse and three public Llama receipts and persists a replayable C16', async () => {
   const calls: Call[] = [], bundle = await collect(tracker(calls), KEY), proof = proofOf(bundle), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v22', 'advisory-measurements-v22']);
+  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v23', 'advisory-measurements-v22']);
   assert.deepEqual(Object.keys(proof.launchpad.artifactIds).sort(), ['lighthouse', 'llama-fees', 'llama-revenue', 'llama-volume']);
   for (const [key, id] of Object.entries(proof.launchpad.artifactIds as Record<LaunchpadKey, string>) as Array<[LaunchpadKey, string]>) {
     const record = bundle.evidence.find(e => e.id === id)!, envelope = JSON.parse(bundle.rawArtifacts[id]!);

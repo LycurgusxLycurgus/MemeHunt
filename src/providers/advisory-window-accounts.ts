@@ -92,7 +92,7 @@ function windowTransactions(window:AdvisoryWindowHistory,receipts:ReceiptSet){
 type Binding={trade:number;account:string;user:string;signature:string;position:number;side:'BUY'|'SELL';baseAtomic:string};
 /** Binds every decoded window trade to its one executed pool-vault leg; the event never adds a second movement. */
 function bindTrades(token:TokenRef,window:AdvisoryWindowHistory,receipts:ReceiptSet){
- if(!window.complete||!window.pool||window.method!=='pumpswap-selected-pool-window-v3')fail('ADVISORY_ACCOUNTS_WINDOW_INCOMPLETE');
+ if(!window.complete||!window.pool||!['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(window.method))fail('ADVISORY_ACCOUNTS_WINDOW_INCOMPLETE');
  // decodeAdvisoryWindow bound a[7] to the verified pool state's base vault for every selected-pool trade.
  const values=windowTransactions(window,receipts),bindings:Binding[]=[],used=new Set<string>();let vault:string|null=null;
  window.trades.forEach((trade,index)=>{

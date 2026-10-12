@@ -4,7 +4,7 @@ import { PUMP_AMM_SDK, PUMP_AMM_PROGRAM_ID, poolPda } from '@pump-fun/pump-swap-
 import type { TokenRef } from '../domain/contracts.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import { pageRows, type SignatureRow } from './advisory-chain.js';
-import { decodePumpSwapWindowTransaction, type DecodedTrade } from './advisory-trades.js';
+import { decodePumpSwapWindowTransaction, type DecodedTrade, type LogRecovery } from './advisory-trades.js';
 import { archiveDemandReceipt, unpackDemandReceipt, DEMAND_ARCHIVE_METHOD } from './advisory-demand-windows.js';
 import { decodeSolanaAddress, encodeSolanaAddress, safeRpcCode, solanaRpc, SOLANA_MAINNET_GENESIS } from './solana.js';
 import { PUMP_WINDOW_ABI_HASH,PUMP_WINDOW_ABI_SOURCE } from './pumpswap-window-abi.js';
@@ -23,12 +23,13 @@ export type AdvisoryWindowAcquisition={version:typeof WINDOW_DENSE_VERSION;pageL
  indexedReferences:number;newerReferences:number;witnessRow:number|null;stopCode:string|null};
 export type AdvisoryWindowStorage={adapterVersion:typeof WINDOW_ARCHIVE_ADAPTER;archiveMethod:typeof DEMAND_ARCHIVE_METHOD;receipts:number;storedBytes:number;sourceBytes:number;storedBytesCap:number};
 export type AdvisoryWindowHistory={
- method:'pumpswap-selected-pool-window-v1'|'pumpswap-selected-pool-window-v2'|'pumpswap-selected-pool-window-v3';abi?:{source:string;sha256:string};token:TokenRef;pool:string|null;window:{start:string;end:string};
+ method:'pumpswap-selected-pool-window-v1'|'pumpswap-selected-pool-window-v2'|'pumpswap-selected-pool-window-v3'|'pumpswap-selected-pool-window-v4';abi?:{source:string;sha256:string};token:TokenRef;pool:string|null;window:{start:string;end:string};
  genesisVerified:boolean;anchorSlot:number|null;anchorTime:string|null;poolVerified:boolean;stateSlot:number|null;coverageReachedStart:boolean;indexComplete:boolean;complete:boolean;sourceUniverseComplete:false;
  pages:Array<{id:string;returned:number;oldestAt:string|null;newestAt:string|null;exhausted:boolean;status:Status;code?:string}>;
- successfulSignatures:number;failedReferences:number;transactions:Array<{signature:string;slot:number;at:string;status:Status;code?:string;trades:number}>;
+ successfulSignatures:number;failedReferences:number;transactions:Array<{signature:string;slot:number;at:string;status:Status;code?:string;trades:number;logRecovery?:LogRecovery}>;
  trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[];
  limitations:string[];reasonCode:string;acquisition?:AdvisoryWindowAcquisition;
+ logRecovery?:{truncatedTransactions:number;unresolvedNonFlowInvocations:number;emptyForeignSweeps:number};
 };
 const object=(v:unknown):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const integer=(v:unknown):v is number=>Number.isSafeInteger(v)&&Number(v)>=0;
@@ -104,17 +105,24 @@ function index(pool:string,window:AdvisoryWindowHistory['window'],receipts:Recei
 }
 function selectedRows(rows:SignatureRow[],window:AdvisoryWindowHistory['window']){return rows.filter(row=>row.err===null&&row.blockTime!==null&&row.blockTime*1000>=Date.parse(window.start)&&row.blockTime*1000<Date.parse(window.end));}
 
+const RECOVERY_LIMITATION='Terminal log truncation: a receipt with its single runtime "Log truncated" marker is retained only when guarded decoding proves every selected-pool flow frame closed before the marker, with no unbound or open invocation after it and no empty fee sweep; meta.err proves top-level success, and every other truncated, malformed or incomplete frame stays unobserved.';
+// The exact verified shape: truncation after the last flow frame, nothing unresolved and no empty sweep.
+const terminalTruncation=(r:LogRecovery|undefined)=>r?.truncated===true&&r.unresolvedInvocations===0&&r.emptyForeignSweeps===0;
+
 /** Rebuilds complete coverage of one declared finalized pool index window, not universal mint or wallet history.
- * dense (requires feeExclusive) selects the bounded 256x4/64 acquisition geometry; without it the v3 replay path is unchanged. */
-export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:string,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,currentAbi=false,feeExclusive=false,dense=false):AdvisoryWindowHistory{
+ * dense (requires feeExclusive) selects the bounded 256x4/64 acquisition geometry; without it the v3 replay path is unchanged.
+ * logRecovery (requires dense) is the O28-only v4 decode: strict receipts decode exactly as v3, and only a strict failure with terminal log truncation is retained. */
+export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:string,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,currentAbi=false,feeExclusive=false,dense=false,logRecovery=false):AdvisoryWindowHistory{
  if(feeExclusive&&!currentAbi)fail('ADVISORY_WINDOW_FEE_SCOPE');
  if(dense&&!feeExclusive)fail('ADVISORY_WINDOW_DENSE_SCOPE');
+ if(logRecovery&&!dense)fail('ADVISORY_WINDOW_RECOVERY_SCOPE');
  const window=scope(token,pool,windowEnd),receipts={rawArtifacts,retrievedAt,requests},g=dense?DENSE:LEGACY;
  if(!Number.isFinite(Date.parse(cutoff))||Date.parse(windowEnd)>Date.parse(cutoff))fail('ADVISORY_WINDOW_TIME');
  const rawKeys=Object.keys(rawArtifacts).sort();if(rawKeys.length>(dense?WINDOW_DENSE_REQUEST_CAP:48)||JSON.stringify(rawKeys)!==JSON.stringify(Object.keys(requests).sort())||JSON.stringify(rawKeys)!==JSON.stringify(Object.keys(retrievedAt).sort()))fail('ADVISORY_WINDOW_RECEIPT_MEMBERSHIP');
  const result:AdvisoryWindowHistory={method:'pumpswap-selected-pool-window-v1',token,pool,window,genesisVerified:false,anchorSlot:null,anchorTime:null,poolVerified:false,stateSlot:null,coverageReachedStart:false,indexComplete:false,complete:false,sourceUniverseComplete:false,pages:[],successfulSignatures:0,failedReferences:0,transactions:[],trades:[],buyQuoteAtomic:'0',sellQuoteAtomic:'0',netQuoteAtomic:'0',foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],reasonCode:'SELECTED_POOL_WINDOW_INCOMPLETE',limitations:['One selected pool and declared half-open hour only; other pools, venues and universal token activity are not covered.','WSOL quote notionals exclude fees and have no inferred historical USD conversion.','CPI-authorized program accounts and transaction signers are not proven economic persons; foreign pool legs are excluded.','No bot, common-control, organic-demand or inventory-history completeness is inferred.']};
  if(currentAbi){result.method='pumpswap-selected-pool-window-v2';result.abi={source:PUMP_WINDOW_ABI_SOURCE,sha256:PUMP_WINDOW_ABI_HASH};result.limitations.push('Pinned v2 swaps are quote flow; protocol/creator fee sweeps are classified non-trades and never enter buy/sell notionals. Recipient roles are verified within executed instructions, not public person or control bindings.');}
  if(feeExclusive){result.method='pumpswap-selected-pool-window-v3';result.limitations[result.limitations.length-1]='Pinned v2 swaps are quote flow; fee sweeps contribute zero notionals. Sweep recipients are checked for instruction/event consistency and associated-token-account derivation; creator/protocol economic roles and ownership are not independently verified.';result.limitations.push('The source IDL is a mutable public document pinned by hash; the upgradeable program deployed during this window is not independently version-attested. Runtime account/event/argument bindings are verified.','Instruction-specific core quote amounts reconcile LP, protocol and creator fees exactly. Buyback is not added to protocol fees again; cashback and holder-reward accounting without a supported identity prevents observation. Accrued creatorFeeUnclaimed is state, not a per-trade fee.');}
+ if(logRecovery){result.method='pumpswap-selected-pool-window-v4';result.limitations.push(RECOVERY_LIMITATION);result.logRecovery={truncatedTransactions:0,unresolvedNonFlowInvocations:0,emptyForeignSweeps:0};}
  if(dense){result.limitations.push(DENSE_LIMITATION);result.acquisition={version:WINDOW_DENSE_VERSION,pageLimit:WINDOW_DENSE_PAGE_LIMIT,maxPages:WINDOW_DENSE_MAX_PAGES,transactionCap:WINDOW_DENSE_TRANSACTION_CAP,requestCap:WINDOW_DENSE_REQUEST_CAP,responseBytes:WINDOW_RESPONSE_BYTES,storedBytesCap:WINDOW_DENSE_STORED_BYTES,indexedReferences:0,newerReferences:0,witnessRow:null,stopCode:null};}
  // A receipt replaced at the namespace ceiling leaves the whole dense window incomplete under one precise reason.
  const capped=dense&&Object.values(rawArtifacts).includes(STORAGE_CAP_RECEIPT);
@@ -156,8 +164,14 @@ export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:s
   try{
    const id=`window-transaction-${i}`,response=read(id,transaction(row.signature),receipts,cutoff,dense),value=response.value;
    if(!decodedPool||result.stateSlot===null||response.at>poolAt||response.at<Date.parse(window.end)||response.at<row.blockTime!*1000||!object(value)||value.slot!==row.slot||value.blockTime!==row.blockTime||value.transaction?.signatures?.[0]!==row.signature||!value.transaction?.message?.accountKeys?.some((k:any)=>k.pubkey===pool))fail('ADVISORY_WINDOW_TRANSACTION_BINDING');
-   const proof=decodePumpSwapWindowTransaction(value,entry,pool,decodedPool!,result.stateSlot!,retrievedAt[id]!,currentAbi,feeExclusive);
-   result.transactions.push({...entry,status:'OBSERVED',trades:proof.trades.length});result.trades.push(...proof.trades);result.foreignSwapLegs+=proof.foreignSwapLegs;result.nonSwapInvocations+=proof.nonSwapInvocations;result.cpiAuthorizedAccounts.push(...proof.cpiAuthorizedAccounts);
+   const strict=()=>decodePumpSwapWindowTransaction(value,entry,pool,decodedPool!,result.stateSlot!,retrievedAt[id]!,currentAbi,feeExclusive);
+   const hasTruncationMarker=Array.isArray(value.meta?.logMessages)&&value.meta.logMessages.includes('Log truncated');
+   const proof=!logRecovery||!hasTruncationMarker?strict():(()=>{
+    const recovered=decodePumpSwapWindowTransaction(value,entry,pool,decodedPool!,result.stateSlot!,retrievedAt[id]!,currentAbi,feeExclusive,true);
+    if(!terminalTruncation(recovered.logRecovery))fail('ADVISORY_TRADE_LOG_TRUNCATED');
+    result.logRecovery!.truncatedTransactions++;return recovered;
+   })();
+   result.transactions.push({...entry,status:'OBSERVED',trades:proof.trades.length,...(proof.logRecovery?{logRecovery:proof.logRecovery}:{})});result.trades.push(...proof.trades);result.foreignSwapLegs+=proof.foreignSwapLegs;result.nonSwapInvocations+=proof.nonSwapInvocations;result.cpiAuthorizedAccounts.push(...proof.cpiAuthorizedAccounts);
   }catch(error){result.transactions.push({...entry,...bad(error)});}
  }
  result.cpiAuthorizedAccounts=[...new Set(result.cpiAuthorizedAccounts)].sort();result.trades.sort((a,b)=>a.slot-b.slot||a.signature.localeCompare(b.signature)||a.instructionIndex-b.instructionIndex);
@@ -168,9 +182,10 @@ export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:s
 
 /** Bounded acquisition; reuse retains the original finalized raw envelope, request and clock.
  * dense returns plain receipts for in-run consumers while metering their archive size against the namespace ceiling. */
-export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,windowEnd:string,signal?:AbortSignal,reuse?:AdvisoryWindowReuse,currentAbi=true,feeExclusive=true,dense=false):Promise<ReceiptSet&{data:AdvisoryWindowHistory}>{
+export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,windowEnd:string,signal?:AbortSignal,reuse?:AdvisoryWindowReuse,currentAbi=true,feeExclusive=true,dense=false,logRecovery=false):Promise<ReceiptSet&{data:AdvisoryWindowHistory}>{
  if(feeExclusive&&!currentAbi)fail('ADVISORY_WINDOW_FEE_SCOPE');
  if(dense&&!feeExclusive)fail('ADVISORY_WINDOW_DENSE_SCOPE');
+ if(logRecovery&&!dense)fail('ADVISORY_WINDOW_RECOVERY_SCOPE');
  const window=scope(token,pool,windowEnd),receipts:ReceiptSet={rawArtifacts:{},retrievedAt:{},requests:{}},g=dense?DENSE:LEGACY;
  // Dense only: a receipt whose archive would overflow the ceiling (room is kept for one in-flight sibling) is replaced, and no later request is made.
  let storedBytes=0,capped=false;
@@ -178,7 +193,7 @@ export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcU
   if(dense){const size=Buffer.byteLength(archiveDemandReceipt(raw));if(capped||storedBytes+size+2*STORAGE_CAP_STORED>WINDOW_DENSE_STORED_BYTES){capped=true;raw=STORAGE_CAP_RECEIPT;storedBytes+=STORAGE_CAP_STORED;}else storedBytes+=size;}
   receipts.rawArtifacts[id]=raw;receipts.retrievedAt[id]=at;
  };
- const decode=()=>decodeAdvisoryWindow(token,pool,windowEnd,receipts.rawArtifacts,receipts.retrievedAt,receipts.requests,now(),currentAbi,feeExclusive,dense);
+ const decode=()=>decodeAdvisoryWindow(token,pool,windowEnd,receipts.rawArtifacts,receipts.retrievedAt,receipts.requests,now(),currentAbi,feeExclusive,dense,logRecovery);
  const run=async(id:string,request:Request,reusable=false)=>{
   if(capped)return;
   receipts.requests[id]=request;

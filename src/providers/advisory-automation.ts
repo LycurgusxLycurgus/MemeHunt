@@ -43,7 +43,7 @@ const LIMITATIONS=[
 const sourceRequest=(url:string)=>({method:'GET',url});
 const programRequest=(anchorSlot:number)=>({method:'getAccountInfo',params:[DCA_PROGRAM,{encoding:'base64',commitment:'finalized',minContextSlot:anchorSlot,dataSlice:{offset:0,length:0}}]});
 const transactionRequest=(signature:string)=>({method:'getTransaction',params:[signature,{commitment:'finalized',encoding:'jsonParsed',maxSupportedTransactionVersion:1}]});
-const eligible=(w:AdvisoryWindowHistory)=>w.complete&&w.method==='pumpswap-selected-pool-window-v3'&&w.pool!==null&&w.anchorSlot!==null&&w.trades.length>0;
+const eligible=(w:AdvisoryWindowHistory)=>w.complete&&['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(w.method)&&w.pool!==null&&w.anchorSlot!==null&&w.trades.length>0;
 function plan(window:AdvisoryWindowHistory):Record<string,unknown>{
  if(!eligible(window))return {};
  return Object.fromEntries([...OFFICIAL_AUTOMATION_SOURCES.map(s=>[`source-${s.id}`,sourceRequest(s.url)]),['program-account',programRequest(window.anchorSlot!)]]);
@@ -180,7 +180,7 @@ export function deriveO30Window(token:TokenRef,window:AdvisoryWindowHistory,wind
  const ids=[...new Set(evidenceIds)];
  const base={method:'official-automation-flash-fill-window-v1',registryVersion:AUTOMATION_REGISTRY_VERSION,scope:'VERIFIED_PUMPSWAP_WSOL_POOL_HOUR',window:{pool:window.pool,start:window.window.start,end:window.window.end,anchorSlot:window.anchorSlot,method:window.method,complete:window.complete},quoteMint:WSOL,quoteDecimals:9,quoteBasis:'fee-exclusive core quote atomic units',unknownAutomation:'NOT_MEASURED',meaning:MEANING,limitations:LIMITATIONS};
  const unresolved=(reasonCode:string,extra:Record<string,unknown>={}):AdvisoryMetric=>({id:'O30',quality:'MISSING',unit:UNIT,data:{...base,coveredQuoteAtomic:null,knownAutomatedQuoteAtomic:null,knownAutomatedTrades:null,knownAutomatedTransactions:null,knownAutomatedFraction:null,unattributedQuoteAtomic:null,...extra},evidenceIds:ids,reasonCode});
- if(!keys.length)return unresolved(!window.complete||window.method!=='pumpswap-selected-pool-window-v3'||!window.pool?'AUTOMATION_WINDOW_INCOMPLETE':'AUTOMATION_WINDOW_WITHOUT_TRADES');
+ if(!keys.length)return unresolved(!window.complete||!['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(window.method)||!window.pool?'AUTOMATION_WINDOW_INCOMPLETE':'AUTOMATION_WINDOW_WITHOUT_TRADES');
  const {sources,bodies}=verifySources(receipts),program=verifyProgram(receipts,window);
  let abi:FlashFillAbi|null=null;try{if(bodies['dca-idl'])abi=flashFillAbi(bodies['dca-idl']);}catch{abi=null;}
  const registry={version:AUTOMATION_REGISTRY_VERSION,programs:[{programId:DCA_PROGRAM,role:'KEEPER_EXECUTED_FLASH_FILL',sources,account:program}]};

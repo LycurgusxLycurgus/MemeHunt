@@ -110,7 +110,7 @@ function feeSweep(reference: Row, method: 'sweep_creator_fee' | 'sweep_protocol_
   tx.meta.logMessages = [`Program ${program} invoke [1]`, `Program data: ${payload.toString('base64')}`, `Program ${program} success`];
   bindKeys(tx); return tx;
 }
-async function fixture(pages: Row[][] = [[row(1, endSeconds - 10), row(2, startSeconds - 1)]], transactions = new Map<string, any>(), mutate?: (request: RpcRequest, result: any) => any) {
+async function fixture(pages: Row[][] = [[row(1, endSeconds - 10), row(2, startSeconds - 1)]], transactions = new Map<string, any>(), mutate?: (request: RpcRequest, result: any) => any, dense = false) {
   const state = { ...defaults('pool'), creator, baseMint: new PublicKey(token.address), quoteMint: NATIVE_MINT, poolBaseTokenAccount: baseVault, poolQuoteTokenAccount: quoteVault };
   const poolData = await sdk.coder.accounts.encode('pool', state), calls: RpcRequest[] = [];
   const fetcher: typeof fetch = async (_input, init) => {
@@ -131,8 +131,8 @@ async function fixture(pages: Row[][] = [[row(1, endSeconds - 10), row(2, startS
     result = mutate ? mutate(request, result) : result;
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
   };
-  const collected = await collectAdvisoryWindow(token, pool, 'https://rpc.example', fetcher, () => cutoff, end);
-  const decode = (currentAbi = true, feeExclusive = currentAbi) => decodeAdvisoryWindow(token, pool, end, collected.rawArtifacts, collected.retrievedAt, collected.requests, cutoff, currentAbi, feeExclusive);
+  const collected = await collectAdvisoryWindow(token, pool, 'https://rpc.example', fetcher, () => cutoff, end, undefined, undefined, true, true, dense);
+  const decode = (currentAbi = true, feeExclusive = currentAbi, logRecovery = false, dense = false) => decodeAdvisoryWindow(token, pool, end, collected.rawArtifacts, collected.retrievedAt, collected.requests, cutoff, currentAbi, feeExclusive, dense, logRecovery);
   return { collected, decode, calls, fetcher };
 }
 function receiptId(x: Awaited<ReturnType<typeof fixture>>, method: string) {
@@ -194,6 +194,29 @@ test('missing receipts, null clocks, failed reads and unsupported transaction ve
   const unknownTime = await fixture([[row(1, null), row(2, startSeconds - 1)]]); assert.equal(unknownTime.decode().complete, false);
   const error = await fixture(undefined, undefined, (request, result) => request.method === 'getGenesisHash' ? 'wrong-network' : result);
   assert.equal(error.decode().complete, false); assert.notEqual(deriveO28Window(error.decode(), []).quality, 'KNOWN');
+});
+
+test('v4 window recovery admits only a terminal truncation after all PumpSwap frames close', async () => {
+  const reference = row(1, endSeconds - 1), tx = swap(reference), memo = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+  tx.transaction.message.instructions.push({ programId: memo, accounts: [], data: '' });
+  tx.transaction.message.accountKeys.push({ pubkey: memo, signer: false });
+  tx.meta.logMessages.push(`Program ${memo} invoke [1]`, 'Log truncated');
+  const x = await fixture([[reference, row(2, startSeconds - 1)]], new Map([[reference.signature, tx]]), undefined, true);
+  assertIncomplete(() => x.decode(true, true, false, true));
+  const recovered = x.decode(true, true, true, true);
+  assert.equal(recovered.method, 'pumpswap-selected-pool-window-v4');
+  assert.equal(recovered.complete, true);
+  assert.equal(recovered.trades.length, 1);
+  assert.equal(recovered.logRecovery?.truncatedTransactions, 1);
+  assert.equal(recovered.transactions[0]?.logRecovery?.unresolvedInvocations, 0);
+  assert.equal(deriveO28Window(recovered, []).quality, 'KNOWN');
+
+  const flowBelow = swap(reference);
+  flowBelow.meta.logMessages = ['Log truncated', ...flowBelow.meta.logMessages];
+  const unsafe = await fixture([[reference, row(2, startSeconds - 1)]], new Map([[reference.signature, flowBelow]]), undefined, true);
+  assert.equal(unsafe.decode(true, true, true, true).complete, false);
+  assert.notEqual(deriveO28Window(unsafe.decode(true, true, true, true), []).quality, 'KNOWN');
+  assert.throws(() => decodeAdvisoryWindow(token, pool, end, x.collected.rawArtifacts, x.collected.retrievedAt, x.collected.requests, cutoff, true, true, false, true), /ADVISORY_WINDOW_RECOVERY_SCOPE/);
 });
 
 test('raw reconstruction binds the token, pool, request, cutoff and every availability clock', async () => {

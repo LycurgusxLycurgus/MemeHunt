@@ -51,7 +51,7 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v23');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
   assert.equal(facts.method,'advisory-measurements-v22');
@@ -133,7 +133,7 @@ test('complete selected hour stores exact demand archives through live collectio
     assert.equal(original,bodies.get(JSON.stringify(proof.demand.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
   }
   // Proof v21 stores every selected-window receipt as an exact window-archive-v1 archive with a sole request scope and the stored archive hash; the original body and its source hash are recoverable byte for byte.
-  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
+  assert.equal(proof.method,'advisory-provenance-v23');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
   const windowIds=proof.window.artifactIds as Record<string,string>;
   assert.deepEqual(bundle.evidence.filter(e=>e.sourceId==='advisory-window').map(e=>e.id).sort(),Object.values(windowIds).sort());
   for(const [key,id] of Object.entries(windowIds)){
@@ -517,7 +517,7 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(Object.keys(proof.topology.artifactIds).length,0);assert.ok(m.evidenceIds.includes('rpc-holder-population'));
   // Proof v22 stores the canonical holder body as one exact holder-population-archive-v1 archive: same id, source, scope and clock; the stored hash is the container's and the original body is recoverable byte for byte.
   const sha=(raw:string)=>createHash('sha256').update(raw).digest('hex'),holder=bundle.evidence.find(e=>e.id==='rpc-holder-population')!,stored=bundle.rawArtifacts['rpc-holder-population']!,container=JSON.parse(stored);
-  assert.equal(proof.method,'advisory-provenance-v22');assert.equal(unpackHolderPopulation(stored),populationBody);
+  assert.equal(proof.method,'advisory-provenance-v23');assert.equal(unpackHolderPopulation(stored),populationBody);
   assert.deepEqual([holder.sourceId,holder.sourceType,holder.accessMode,holder.adapterVersion,holder.scope,holder.retrievedAt,holder.availableAt,holder.contentHash],['solana-rpc','JSON_RPC','PUBLIC_API',HOLDER_ARCHIVE_ADAPTER,{operation:'rpc-holder-population',commitment:'finalized',mint:token.address,fullAccountData:true},at,at,sha(stored)]);
   assert.deepEqual([container.method,container.encoding,container.sourceBytes,container.sourceHash],['advisory-demand-rpc-archive-v1','DEFLATE_RAW_BASE64',Buffer.byteLength(populationBody),sha(populationBody)]);
   assert.deepEqual(bundle.evidence.filter(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER).map(e=>e.id),['rpc-holder-population']);
