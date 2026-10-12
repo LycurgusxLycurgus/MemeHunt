@@ -3,14 +3,14 @@ import { Decimal } from 'decimal.js';
 import type { EvidenceRecord, TokenRef } from '../domain/contracts.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import { canonicalSocialUrl, socialAccount } from '../domain/social.js';
-import { validateAdvisorySemanticWire, type AdvisorySemantic } from './advisory-semantic.js';
+import { ADVISORY_ORIGIN_CATEGORY, ADVISORY_SEMANTIC_WIRE, validateAdvisorySemanticWire, type AdvisorySemantic, type AdvisorySemanticWire } from './advisory-semantic.js';
 import { callerHistoryRequests, callerHistorySelectionHash, decodeCallerHistory, type CallerHistory, type CallerHistorySelection, type CallerSourceLayer } from './advisory-caller-history.js';
 
 /**
  * Advisory-only historical caller measures over a fixed X status corpus.
  * - callerSeedFromEvidence: freezes the corpus from the retained fixed-query attention post sample before any caller read.
  * - replayCallerHistory: offline replay of the frozen seed, exact receipts and optional reviewed classification.
- * - deriveCallerHistoryMetrics: S07/S09/A23 over current-revision bodies; S11 is not derivable from one search-ranked sample.
+ * - deriveCallerHistoryMetrics: S07/S09/A23, plus A21 under the v3 origin rubric, over current-revision bodies; S11 is not derivable from one search-ranked sample.
  * - supersedingCallerMetrics: historical values fill only metrics the current 24h corpus left unmeasured.
  */
 export const CALLER_SEED_METHOD = 'attention-post-sample-14d-v1' as const;
@@ -62,7 +62,7 @@ export function callerSeedFromEvidence(token: TokenRef, evidence: EvidenceRecord
 }
 
 /** Offline replay: the seed is recomputed from retained attention evidence and must equal the frozen selection byte for byte. */
-export function replayCallerHistory(token: TokenRef, cutoff: string, evidence: EvidenceRecord[], rawArtifacts: Record<string, string>, callers: Resolved, selectionId: string, semantic: Resolved | null): AdvisoryMetric[] {
+export function replayCallerHistory(token: TokenRef, cutoff: string, evidence: EvidenceRecord[], rawArtifacts: Record<string, string>, callers: Resolved, selectionId: string, semantic: Resolved | null, wire: AdvisorySemanticWire = ADVISORY_SEMANTIC_WIRE): AdvisoryMetric[] {
   const record = evidence.find(e => e.id === selectionId && e.sourceId === 'advisory-collector' && e.sourceType === 'SAMPLE_SCOPE' && e.accessMode === 'LOCAL_DERIVED');
   if (selectionId !== CALLER_SELECTION_ID || !record || evidence.filter(e => e.id === selectionId).length !== 1 || record.adapterVersion !== 'live-v1' || record.contentHash !== sha(rawArtifacts[record.id] ?? '') || record.availableAt !== record.retrievedAt || Date.parse(record.availableAt) > Date.parse(cutoff) || record.scope.method !== CALLER_SEED_METHOD) fail('ADVISORY_PROOF_INVALID');
   const seed = callerSeedFromEvidence(token, evidence, rawArtifacts, record.availableAt);
@@ -78,7 +78,7 @@ export function replayCallerHistory(token: TokenRef, cutoff: string, evidence: E
   const history = decodeCallerHistory(seed.selection, callers.raw);
   if (semantic && !history.socialInput.sources.length) fail('ADVISORY_PROOF_INVALID');
   let qualified: AdvisorySemantic | null = null;
-  if (semantic) { try { qualified = validateAdvisorySemanticWire(history.socialInput, semantic.raw, token); } catch { /* Invalid or failed classification cannot supply a measured metric. */ } }
+  if (semantic) { try { qualified = validateAdvisorySemanticWire(history.socialInput, semantic.raw, token, wire); } catch { /* Invalid or failed classification cannot supply a measured metric. */ } }
   return deriveCallerHistoryMetrics(token, cutoff, history, qualified, [record.id, ...seed.evidenceIds, ...callers.ids, ...(semantic?.ids ?? [])]);
 }
 
@@ -119,6 +119,15 @@ export function deriveCallerHistoryMetrics(token: TokenRef, cutoff: string, hist
   const fractionKnown = measured && eligible.length > 0 && classified.length === eligible.length;
   set('A23', fractionKnown, { eligible: eligible.length, classified: classified.length, unclassified: eligible.length - classified.length, numerator, fraction: fractionKnown ? new Decimal(numerator).div(classified.length).toFixed() : null },
     fractionKnown ? 'HISTORICAL_CLASSIFIED_FRACTION_OBSERVED' : blocked ?? (!eligible.length ? 'HISTORICAL_CLASSIFIED_FRACTION_DENOMINATOR_ZERO' : 'HISTORICAL_CLASSIFIED_FRACTION_INCOMPLETE'), 'fraction');
+  // A21 exists only for the v3 origin rubric; legacy v2 categories conflated news with external origin and never become a historical value.
+  if (semantic?.method === 'advisory-source-classification-v3') {
+    const categorized = eligible.filter(r => r.claim!.category !== 'UNKNOWN'), external = categorized.filter(r => r.claim!.category === 'EXTERNAL');
+    const originKnown = measured && eligible.length > 0 && categorized.length === eligible.length;
+    set('A21', originKnown, { ...ADVISORY_ORIGIN_CATEGORY, eligible: eligible.length, classified: categorized.length, unclassified: eligible.length - categorized.length, numerator: external.length,
+      fraction: originKnown ? new Decimal(external.length).div(categorized.length).toFixed() : null, categories: eligible.map(r => ({ sourceId: r.source.id, category: r.claim!.category })),
+      external: external.map(r => ({ sourceId: r.source.id, statusId: r.layer.statusId, authorId: r.source.authorId, citations: r.claim!.citations })) },
+      originKnown ? 'HISTORICAL_CLASSIFIED_FRACTION_OBSERVED' : blocked ?? (!eligible.length ? 'HISTORICAL_CLASSIFIED_FRACTION_DENOMINATOR_ZERO' : 'HISTORICAL_CLASSIFIED_FRACTION_INCOMPLETE'), 'fraction');
+  }
   return metrics;
 }
 

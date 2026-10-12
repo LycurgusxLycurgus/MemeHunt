@@ -47,7 +47,7 @@ function advisoryFixture(url: string, init?: RequestInit): Response {
   return json(value);
 }
 
-type Variant = { missingSyndication?: string; reviewStatus?: number; releaseAfterReads?: number };
+type Variant = { missingSyndication?: string; reviewStatus?: number; releaseAfterReads?: number; categories?: Record<string, string> };
 /** One live run in which every RPC request is held until the caller pipeline reaches its declared point (fallback after 15 s). */
 async function run(variant: Variant = {}) {
   let tick = 0, held = 0, callerReads = 0, firstCallerTick: number | null = null, heldAtReview: number | null = null, releasedBy: string | null = null;
@@ -77,7 +77,7 @@ async function run(variant: Variant = {}) {
         }
         return json(envelope({ persistence: null, sources: sources.map(s => {
           const span = s.spans.find((x: any) => x.text.includes(MINT));
-          return { id: s.id, binding: 'EXACT_CONTRACT', event: 'FORWARD_CALL', category: 'CRYPTO_CALLER', topic: span.text.includes('Chart') ? 'PRICE_CHART' : 'OTHER', artifact: 'NONE', theme: null,
+          return { id: s.id, binding: 'EXACT_CONTRACT', event: 'FORWARD_CALL', category: variant.categories?.[posts.find(p => s.id === `caller-${p.id}`)?.handle ?? ''] ?? 'CRYPTO_CALLER', topic: span.text.includes('Chart') ? 'PRICE_CHART' : 'OTHER', artifact: 'NONE', theme: null,
             paidDisclosure: 'NOT_OBSERVED', incentives: [], citations: [{ sourceId: s.id, spanId: span.id }], rationale: 'The cited span is an explicit prospective call naming the exact contract.' };
         }) }));
       }
@@ -124,7 +124,8 @@ test('caller bodies and the independent classification pair run in the backgroun
   assert.equal(receipts.length, 6);
   assert.ok(receipts.every(e => Date.parse(e.retrievedAt) > Date.parse(selection.availableAt)));
   const proof = proofOf(r);
-  assert.equal(proof.method, 'advisory-provenance-v11');
+  assert.equal(proof.method, 'advisory-provenance-v12');
+  assert.equal(JSON.parse(r.bundle.rawArtifacts['advisory-callerSemantic-advisory-semantic-selection']!).method, 'advisory-source-selection-v3');
   assert.equal(Object.keys(proof.callers.artifactIds).length, 6);
   const semanticIds = Object.values(proof.callerSemantic.artifactIds) as string[];
   assert.ok(semanticIds.includes('advisory-callerSemantic-advisory-semantic-proposal-response'));
@@ -140,6 +141,9 @@ test('caller bodies and the independent classification pair run in the backgroun
   assert.equal((metric(r, 'S09').data as any).top1Share, '0.5');
   assert.equal((metric(r, 'S09').data as any).top5Share, '1');
   assert.equal((metric(r, 'A23').data as any).fraction, '0.5');
+  const a21 = metric(r, 'A21').data as any;
+  assert.equal(metric(r, 'A21').quality, 'KNOWN'); assert.equal(a21.method, 'historical-caller-sample-v1'); assert.equal(a21.categoryRubric, 'reviewed-public-origin-v1');
+  assert.deepEqual([a21.eligible, a21.classified, a21.numerator, a21.fraction], [2, 2, 0, '0'], 'a complete crypto-native sample is a measured zero, not missing');
   persists(r, 'classified');
 });
 
@@ -166,4 +170,18 @@ test('a failed caller review is retained once, non-fatally, and cannot certify h
   assert.equal(diagnostics(r).callerStatus, 'ADV_SEMANTIC_HTTP_400');
   for (const id of ['S07', 'S09', 'A23']) assert.equal(metric(r, id).quality, 'MISSING', id);
   persists(r, 'review-failed');
+});
+
+test('a reviewed external origin gives a proper historical A21 fraction; an UNKNOWN origin leaves A21 MISSING without disturbing call measures', async () => {
+  const external = await run({ categories: { beta_caller: 'EXTERNAL' } });
+  const a21 = metric(external, 'A21').data as any;
+  assert.equal(metric(external, 'A21').quality, 'KNOWN');
+  assert.deepEqual([a21.eligible, a21.classified, a21.numerator, a21.fraction], [2, 2, 1, '0.5']);
+  assert.deepEqual(a21.external.map((e: any) => e.sourceId), [`caller-${posts[1]!.id}`]);
+  persists(external, 'external');
+  const unknown = await run({ categories: { beta_caller: 'UNKNOWN' } });
+  assert.equal(metric(unknown, 'A21').quality, 'MISSING');
+  assert.notEqual((metric(unknown, 'A21').data as any)?.method, 'historical-caller-sample-v1');
+  assert.equal(metric(unknown, 'S09').quality, 'KNOWN', 'an unresolved origin does not disturb the call-event measures');
+  persists(unknown, 'unknown-origin');
 });

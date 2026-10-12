@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import type { EvidenceRecord } from '../src/domain/contracts.js';
 import type { AdvisoryMetric } from '../src/domain/advisory-contracts.js';
-import type { AdvisorySemantic } from '../src/providers/advisory-semantic.js';
+import { qualifyAdvisorySemantic, type AdvisorySemantic } from '../src/providers/advisory-semantic.js';
 import { callerHistoryKey, collectCallerHistory, decodeCallerHistory, type CallerHistory, type CallerProvider } from '../src/providers/advisory-caller-history.js';
 import { CALLER_SEED_METHOD, CALLER_SELECTION_ID, callerSeedFromEvidence, deriveCallerHistoryMetrics, replayCallerHistory, supersedingCallerMetrics } from '../src/providers/advisory-caller-measures.js';
 
@@ -174,4 +174,48 @@ test('historical values fill only current metrics that are not KNOWN', () => {
   const metric = (id: string, quality: AdvisoryMetric['quality'], reasonCode = 'current'): AdvisoryMetric => ({ id, quality, unit: 'fraction', data: {}, evidenceIds: [], reasonCode });
   const kept = supersedingCallerMetrics([metric('S09', 'KNOWN'), metric('A23', 'MISSING')], [metric('S09', 'KNOWN', 'historical'), metric('A23', 'KNOWN', 'historical'), metric('S07', 'MISSING', 'historical')]);
   assert.deepEqual(kept.map(m => `${m.id}:${m.reasonCode}`), ['A23:historical']);
+});
+
+test('reviewed v3 origin categories give historical A21 with the A23 completeness rule; legacy categories never graft', async () => {
+  const exchange = post('kcex_listings', A_AT, `KCEX spot listing opens for ${MINT}`), caller = post('beta_caller', B_AT), sports = post('match_desk', '2026-10-01T10:00:00.000Z', `Stadium crowd chant went viral at the match tonight. Ca: ${MINT}`);
+  const { history } = await run([exchange, caller, sports]), id = (s: Spec) => `caller-${s.id}`, v3: Partial<AdvisorySemantic> = { method: 'advisory-source-classification-v3' };
+  const derive = (patch: Record<string, Partial<Claim>> = {}, extra = v3) => deriveCallerHistoryMetrics(token, CUTOFF, history, classify(history, patch, extra), []);
+  const a21 = (patch: Record<string, Partial<Claim>> = {}) => pick(derive(patch), 'A21');
+  const news: Record<string, Partial<Claim>> = { [id(exchange)]: { event: 'NEWS' } };
+  const crypto = a21(news), data = crypto.data as any;
+  assert.equal(`${crypto.quality}:${crypto.reasonCode}`, 'KNOWN:HISTORICAL_CLASSIFIED_FRACTION_OBSERVED', 'a complete crypto-native sample is a measured zero');
+  assert.deepEqual([data.eligible, data.classified, data.unclassified, data.numerator, data.fraction, data.categoryRubric, data.method], [3, 3, 0, 0, '0', 'reviewed-public-origin-v1', 'historical-caller-sample-v1']);
+  const mixed = a21({ ...news, [id(sports)]: { category: 'EXTERNAL' } }), m = mixed.data as any;
+  assert.equal(mixed.quality, 'KNOWN'); assert.equal(m.fraction, new Decimal(1).div(3).toFixed()); assert.deepEqual(m.external.map((e: any) => e.statusId), [sports.id]);
+  const unknown = a21({ [id(exchange)]: { event: 'NEWS', category: 'UNKNOWN' } }), u = unknown.data as any;
+  assert.equal(`${unknown.quality}:${unknown.reasonCode}`, 'MISSING:HISTORICAL_CLASSIFIED_FRACTION_INCOMPLETE'); assert.deepEqual([u.eligible, u.classified, u.fraction], [3, 2, null], 'UNKNOWN never shrinks the denominator');
+  assert.equal(a21({ [id(sports)]: { binding: 'UNCLEAR' } }).reasonCode, 'HISTORICAL_BINDING_UNRESOLVED');
+  assert.equal(a21({ [id(sports)]: { accepted: false } }).reasonCode, 'HISTORICAL_CLASSIFICATION_REJECTED');
+  assert.equal(a21({ [id(sports)]: { complete: false } }).quality, 'MISSING');
+  const excluded = a21({ [id(sports)]: { binding: 'UNRELATED', category: 'EXTERNAL' } });
+  assert.deepEqual([(excluded.data as any).eligible, (excluded.data as any).fraction], [2, '0'], 'an unrelated source is outside the population, not an unclassified member');
+  const legacy = deriveCallerHistoryMetrics(token, CUTOFF, history, classify(history, news), []);
+  assert.deepEqual(legacy.map(x => x.id), ['S07', 'S09', 'A23'], 'legacy v2 categories never produce A21');
+  assert.deepEqual(states(derive(news)).slice(0, 3), states(legacy), 'S07/S09/A23 are unchanged by the origin rubric');
+  assert.deepEqual(supersedingCallerMetrics([{ ...crypto, data: {}, reasonCode: 'current' }], [crypto]), [], 'a current KNOWN A21 keeps precedence');
+  assert.deepEqual(supersedingCallerMetrics([{ ...crypto, quality: 'MISSING', reasonCode: 'current' }], [crypto]).map(x => x.id), ['A21']);
+});
+
+test('offline replay binds historical A21 to the v3 wire produced by the production qualifier', async () => {
+  const a = post('alpha_caller', A_AT), b = post('kcex_listings', B_AT, `KCEX spot listing opens for ${MINT}`), w = await run([a, b]);
+  let n = 0;
+  const fetcher = (async (_url: unknown, init?: RequestInit) => {
+    const sources = JSON.parse(JSON.parse(String(init?.body)).contents[0].parts[0].text).sources as any[];
+    const body = n++ === 0 ? { persistence: null, sources: sources.map(s => { const span = s.spans.find((x: any) => x.text.includes(MINT)); return { id: s.id, binding: 'EXACT_CONTRACT', event: s.id === `caller-${b.id}` ? 'NEWS' : 'FORWARD_CALL', category: 'CRYPTO_CALLER', topic: 'OTHER', artifact: 'NONE', theme: null,
+      paidDisclosure: 'NOT_OBSERVED', incentives: [], citations: [{ sourceId: s.id, spanId: span.id }], rationale: 'Cited crypto-native exchange or caller context.' }; }) }
+      : { sources: sources.map(s => ({ id: s.id, complete: true, accepted: true })), persistence: false };
+    return new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(body) }] } }] }), { status: 200 });
+  }) as typeof fetch;
+  const classified = await qualifyAdvisorySemantic(w.history.socialInput, null, null, token, 'test-only', fetcher, async () => {});
+  assert.equal(classified.code, null); assert.equal(n, 2);
+  const semantic = { raw: classified.rawArtifacts, times: {}, requests: {}, ids: [] };
+  const fresh = replayCallerHistory(token, CUTOFF, w.evidence, w.rawArtifacts, w.callers, CALLER_SELECTION_ID, semantic, 'v3');
+  assert.equal(pick(fresh, 'A21').quality, 'KNOWN'); assert.deepEqual([(pick(fresh, 'A21').data as any).eligible, (pick(fresh, 'A21').data as any).fraction], [2, '0']);
+  const crossed = replayCallerHistory(token, CUTOFF, w.evidence, w.rawArtifacts, w.callers, CALLER_SELECTION_ID, semantic, 'v2');
+  assert.deepEqual(states(crossed), ['S07', 'S09', 'A23'].map(id => `${id}:MISSING:HISTORICAL_CLASSIFICATION_UNAVAILABLE`), 'a v3 packet never replays under a legacy proof');
 });
