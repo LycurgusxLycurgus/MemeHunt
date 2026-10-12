@@ -12,6 +12,7 @@ import { SOLANA_MAINNET_GENESIS } from '../src/providers/solana.js';
 import { reconstructAdvisory } from '../src/app/advisory.js';
 import type { AdvisoryMetric } from '../src/domain/advisory-contracts.js';
 import { LAUNCHPAD_REQUESTS, type LaunchpadKey } from '../src/providers/advisory-launchpad.js';
+import { legacyWindowBundle } from './window-legacy-fixtures.js';
 
 const token = { chain: 'solana' as const, address: '3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump' };
 const pool = '4zLRGHwKdXyaTovP8UkV66CskWgo9E7kAaGYcw1vFh7E', quote = 'So11111111111111111111111111111111111111112';
@@ -64,7 +65,7 @@ const persist = (b: Bundle, policy: string) => {
 
 test('a keyed advisory run captures one Lighthouse and three public Llama receipts and persists a replayable C16', async () => {
   const calls: Call[] = [], bundle = await collect(tracker(calls), KEY), proof = proofOf(bundle), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v20', 'advisory-measurements-v21']);
+  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v21', 'advisory-measurements-v22']);
   assert.deepEqual(Object.keys(proof.launchpad.artifactIds).sort(), ['lighthouse', 'llama-fees', 'llama-revenue', 'llama-volume']);
   for (const [key, id] of Object.entries(proof.launchpad.artifactIds as Record<LaunchpadKey, string>) as Array<[LaunchpadKey, string]>) {
     const record = bundle.evidence.find(e => e.id === id)!, envelope = JSON.parse(bundle.rawArtifacts[id]!);
@@ -149,16 +150,16 @@ test('without a key no launchpad request is made; errored receipts are retained 
 });
 
 test('legacy proofs keep their frozen C16 dispatch and cannot adopt launchpad receipts', async () => {
-  const bundle = await collect(tracker([])), proof = proofOf(bundle);
+  const { bundle, proof } = legacyWindowBundle(await collect(tracker([])));
   // Proof v16 (short supplement) rebuilds facts v17 with the same supplement and the registry C16 default; proof v15 keeps facts v16 without it.
-  const current = bundle.details!.advisory!, v16 = reconstruct(bundle, { ...proof, method: 'advisory-provenance-v16', launchpad: undefined });
+  const current = reconstruct(bundle, proof), v16 = reconstruct(bundle, { ...proof, method: 'advisory-provenance-v16', launchpad: undefined });
   assert.deepEqual([v16.method, v16.supplements, v16.metrics.filter(m => m.id !== 'C16'), v16.groups], ['advisory-measurements-v17', current.supplements, current.metrics.filter(m => m.id !== 'C16'), current.groups]);
   assert.equal(c16(v16).reasonCode, 'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED');
   proof.method = 'advisory-provenance-v15'; delete proof.launchpad;
   const facts = reconstruct(bundle, proof);
   assert.equal(facts.method, 'advisory-measurements-v16'); assert.equal(facts.supplements, undefined);
   assert.equal(c16(facts).reasonCode, 'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED');
-  const keyed = await collect(tracker([]), KEY), legacy = proofOf(keyed);
+  const keyed = legacyWindowBundle(await collect(tracker([]), KEY)).bundle, legacy = proofOf(keyed);
   legacy.method = 'advisory-provenance-v16'; legacy.launchpad = null;
   assert.throws(() => reconstruct(keyed, legacy), /ADVISORY_PROOF_INVALID/);
 });

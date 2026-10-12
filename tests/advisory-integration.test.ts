@@ -20,6 +20,8 @@ import { CALLER_REQUEST_CAP } from '../src/providers/advisory-caller-history.js'
 import { CREATOR_INVENTORY_REQUEST_CAP } from '../src/providers/advisory-creator-inventory-collector.js';
 import { CREATOR_FAILED_FEE_REQUEST_CAP } from '../src/providers/advisory-creator-performance-collector.js';
 import { archiveCreatorFailedFeeReceipt,failedFeeReceiptId,failedFeeRequest,FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../src/providers/advisory-creator-failed-fees.js';
+import { WINDOW_ARCHIVE_ADAPTER,WINDOW_ARCHIVE_SOURCE_BYTES,WINDOW_DENSE_PAGE_LIMIT,WINDOW_DENSE_REQUEST_CAP } from '../src/providers/advisory-window.js';
+import { legacyWindowBundle } from './window-legacy-fixtures.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { makeSocialFixture,SOCIAL_TOKEN,SOCIAL_CUTOFF } from './social-fixtures.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -48,30 +50,37 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v20');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v21');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v21');
+  assert.equal(facts.method,'advisory-measurements-v22');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
   assert.ok(short.windows.every(w=>w.condition===null&&w.flow===null&&w.firstObservedBuyers===null));
-  const prior=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v15'},bundle.thesis??null,bundle.features);
+  // Older proofs replay only plain legacy windows: the same fixture's exact proof-v20 form rebuilds facts v21, and every older relabel is compared with that frozen result.
+  const {bundle:v20Bundle,proof:v20}=legacyWindowBundle(bundle),rebuild=(p:unknown)=>reconstructAdvisory(token,at,v20Bundle.details!.baseline,v20Bundle.evidence,v20Bundle.rawArtifacts,p,v20Bundle.thesis??null,v20Bundle.features),facts20=rebuild(v20);
+  assert.equal(facts20.method,'advisory-measurements-v21');
+  assert.equal((facts.metrics.find(m=>m.id==='O28')!.data as {acquisition?:{version:string}}).acquisition?.version,'window-dense-v1');assert.equal(Object.hasOwn(facts20.metrics.find(m=>m.id==='O28')!.data as object,'acquisition'),false);
+  // Archived window receipts never replay under an older proof, and plain legacy receipts never satisfy proof v21.
+  assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v20'},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
+  assert.throws(()=>rebuild({...v20,method:'advisory-provenance-v21'}),/ADVISORY_PROOF_INVALID/);
+  const prior=rebuild({...v20,method:'advisory-provenance-v15'});
   // C16 is the only metric proof v17 adds; proof v15 and the short-only proof v16 keep the registry C16 default and every other metric and group count.
   const withoutC16=(metrics:typeof facts.metrics)=>metrics.filter(m=>m.id!=='C16');
-  assert.deepEqual([prior.method,prior.supplements,withoutC16(prior.metrics),prior.groups],['advisory-measurements-v16',undefined,withoutC16(facts.metrics),facts.groups]);
-  const shortOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v16',launchpad:undefined},bundle.thesis??null,bundle.features);
-  assert.deepEqual([shortOnly.method,shortOnly.supplements,withoutC16(shortOnly.metrics),shortOnly.groups,shortOnly.metrics.find(m=>m.id==='C16')?.reasonCode],['advisory-measurements-v17',facts.supplements,withoutC16(facts.metrics),facts.groups,'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED']);
+  assert.deepEqual([prior.method,prior.supplements,withoutC16(prior.metrics),prior.groups],['advisory-measurements-v16',undefined,withoutC16(facts20.metrics),facts20.groups]);
+  const shortOnly=rebuild({...v20,method:'advisory-provenance-v16',launchpad:undefined});
+  assert.deepEqual([shortOnly.method,shortOnly.supplements,withoutC16(shortOnly.metrics),shortOnly.groups,shortOnly.metrics.find(m=>m.id==='C16')?.reasonCode],['advisory-measurements-v17',facts20.supplements,withoutC16(facts20.metrics),facts20.groups,'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED']);
   // Proof v17 (C16 and the supplement, no inventory key) still rebuilds facts v18 identically; a fresh v18 proof must carry the key, null here without a creator role.
-  const c16Only=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v17',creatorInventory:undefined},bundle.thesis??null,bundle.features);
-  assert.deepEqual([c16Only.method,c16Only.supplements,c16Only.metrics,c16Only.groups],['advisory-measurements-v18',facts.supplements,facts.metrics,facts.groups]);
+  const c16Only=rebuild({...v20,method:'advisory-provenance-v17',creatorInventory:undefined});
+  assert.deepEqual([c16Only.method,c16Only.supplements,c16Only.metrics,c16Only.groups],['advisory-measurements-v18',facts20.supplements,facts20.metrics,facts20.groups]);
   assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,creatorInventory:undefined},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
   // Proof v18 (inventory key, no O25) rebuilds facts v19 identically here: without a creator role there is no inventory, so O25 keeps its registry default in both.
-  const inventoryOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v18'},bundle.thesis??null,bundle.features);
-  assert.deepEqual([inventoryOnly.method,inventoryOnly.supplements,inventoryOnly.metrics,inventoryOnly.groups],['advisory-measurements-v19',facts.supplements,facts.metrics,facts.groups]);
+  const inventoryOnly=rebuild({...v20,method:'advisory-provenance-v18'});
+  assert.deepEqual([inventoryOnly.method,inventoryOnly.supplements,inventoryOnly.metrics,inventoryOnly.groups],['advisory-measurements-v19',facts20.supplements,facts20.metrics,facts20.groups]);
   // Proof v19 (no failed-fee key) rebuilds facts v20 identically here: without inventory S15 keeps its registry default in both; a fresh v20 proof must carry the key.
-  const lifetimeOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v19',creatorFailedFees:undefined},bundle.thesis??null,bundle.features);
-  assert.deepEqual([lifetimeOnly.method,lifetimeOnly.supplements,lifetimeOnly.metrics,lifetimeOnly.groups],['advisory-measurements-v20',facts.supplements,facts.metrics,facts.groups]);
+  const lifetimeOnly=rebuild({...v20,method:'advisory-provenance-v19',creatorFailedFees:undefined});
+  assert.deepEqual([lifetimeOnly.method,lifetimeOnly.supplements,lifetimeOnly.metrics,lifetimeOnly.groups],['advisory-measurements-v20',facts20.supplements,facts20.metrics,facts20.groups]);
   assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,creatorFailedFees:undefined},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
@@ -122,7 +131,15 @@ test('complete selected hour stores exact demand archives through live collectio
     assert.equal(record.contentHash,createHash('sha256').update(stored).digest('hex'));assert.equal(container.method,'advisory-demand-rpc-archive-v1');
     assert.equal(original,bodies.get(JSON.stringify(proof.demand.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
   }
-  assert.ok(bundle.evidence.filter(e=>e.sourceId==='advisory-window').every(e=>e.adapterVersion==='live-v1'&&JSON.parse(bundle.rawArtifacts[e.id]!).jsonrpc==='2.0'));
+  // Proof v21 stores every selected-window receipt as an exact window-archive-v1 archive with a sole request scope and the stored archive hash; the original body and its source hash are recoverable byte for byte.
+  assert.equal(proof.method,'advisory-provenance-v21');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
+  const windowIds=proof.window.artifactIds as Record<string,string>;
+  assert.deepEqual(bundle.evidence.filter(e=>e.sourceId==='advisory-window').map(e=>e.id).sort(),Object.values(windowIds).sort());
+  for(const [key,id] of Object.entries(windowIds)){
+    const record=bundle.evidence.find(e=>e.id===id)!,stored=bundle.rawArtifacts[id]!,container=JSON.parse(stored),original=unpackDemandReceipt(stored,WINDOW_ARCHIVE_SOURCE_BYTES);
+    assert.deepEqual([record.sourceId,record.sourceType,record.accessMode,record.adapterVersion,Object.keys(record.scope),record.scope.request,record.contentHash,container.method],['advisory-window','HISTORICAL_RECEIPT','PUBLIC_API',WINDOW_ARCHIVE_ADAPTER,['request'],proof.window.requests[key],createHash('sha256').update(stored).digest('hex'),'advisory-demand-rpc-archive-v1']);
+    assert.equal(original,bodies.get(JSON.stringify(proof.window.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
+  }
   const facts=bundle.details!.advisory!,a30=facts.metrics.find(m=>m.id==='A30')!,data=a30.data as any;
   assert.equal(facts.metrics.length,50);assert.equal(a30.quality,'KNOWN');assert.equal(data.method,'complete-pool-baseline-demand-windows-v1');
   assert.deepEqual([data.complete,data.satisfiedWindows,data.share,data.denominator,data.windows.length],[true,0,'0',6,6]);
@@ -138,6 +155,21 @@ test('complete selected hour stores exact demand archives through live collectio
   assert.throws(direct(plainUnderArchive),/ADVISORY_DEMAND_ARCHIVE_INVALID/);
   assert.throws(direct(tamper(b=>{const c=JSON.parse(b.rawArtifacts[poolId]!);c.sourceHash=createHash('sha256').update('forged').digest('hex');b.rawArtifacts[poolId]=JSON.stringify(c);})),/ADVISORY_DEMAND_ARCHIVE_INVALID/);
   assert.throws(direct(tamper(b=>{b.evidence.find(e=>e.id===poolId)!.adapterVersion='live-v1';})),/ADVISORY_PROOF_INVALID/);
+  // Window archives fail closed at resolve: plain or forged bodies, a downgraded adapter, extra scope, a stale hash, a duplicate and orphan source-, prefix- or adapter-identified receipts are all rejected.
+  const pageId=windowIds['window-page-0']!,pageRecord=(b:typeof bundle)=>b.evidence.find(e=>e.id===pageId)!;
+  const copy=(b:typeof bundle,id:string,change:(r:any)=>void)=>{b.rawArtifacts[id]=b.rawArtifacts[pageId]!;const r:any=structuredClone(pageRecord(b));r.id=id;change(r);b.evidence.push(r);rehash(b,id);};
+  const windowForgeries:Array<[string,(b:typeof bundle)=>void]>=[
+    ['plain-under-archive',b=>{b.rawArtifacts[pageId]=unpackDemandReceipt(b.rawArtifacts[pageId]!,WINDOW_ARCHIVE_SOURCE_BYTES);rehash(b,pageId);}],
+    ['forged-source-hash',b=>{const c=JSON.parse(b.rawArtifacts[pageId]!);c.sourceHash=createHash('sha256').update('forged').digest('hex');b.rawArtifacts[pageId]=JSON.stringify(c);rehash(b,pageId);}],
+    ['adapter-downgrade',b=>{pageRecord(b).adapterVersion='live-v1';}],
+    ['extra-scope-key',b=>{(pageRecord(b).scope as Record<string,unknown>).extra=1;}],
+    ['stale-hash',b=>{pageRecord(b).contentHash='0'.repeat(64);}],
+    ['duplicate-id',b=>{b.evidence.push(structuredClone(pageRecord(b)));}],
+    ['orphan-by-prefix',b=>copy(b,'advisory-window-shadow',r=>{r.sourceId='advisory-context';r.adapterVersion='live-v1';})],
+    ['orphan-by-source',b=>copy(b,'loose-window-source',r=>{r.adapterVersion='live-v1';})],
+    ['orphan-by-adapter',b=>copy(b,'loose-window-adapter',r=>{r.sourceId='advisory-context';})],
+  ];
+  for(const [name,change] of windowForgeries){const b=structuredClone(bundle);change(b);assert.throws(direct(b),/ADVISORY_PROOF_INVALID/,name);}
   const directory=mkdtempSync(join(tmpdir(),'advisory-demand-archive-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='';
@@ -146,7 +178,7 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18],[18,19],[19,20]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
+for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18],[18,19],[19,20],[20,21]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -174,22 +206,27 @@ test('trader-account history has its own bounded allowance and never consumes th
   assert.throws(()=>admission.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
   for(let i=0;i<CALLER_REQUEST_CAP;i++)void admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result');
   assert.throws(()=>admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result'),/COLLECTION_BUDGET/);
-  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0});
+  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0,window:0});
   for(let i=0;i<150;i++)void admission.fetcher('https://rpc.example');
   assert.throws(()=>admission.fetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0},calls:214+DEMAND_REQUEST_CAP+CALLER_REQUEST_CAP});
+  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0,window:0},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0,window:0},calls:214+DEMAND_REQUEST_CAP+CALLER_REQUEST_CAP});
   const disabled=admittedFetchers(base,controller.signal,0);
-  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.callerFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.failedFeeFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0});
+  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.callerFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.failedFeeFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.windowFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0,window:0});
   // Creator inventory has its own derived 102-request pool and never touches the shared 150.
   const inventory=admittedFetchers(base,controller.signal,0,0,0,CREATOR_INVENTORY_REQUEST_CAP);
   for(let i=0;i<CREATOR_INVENTORY_REQUEST_CAP;i++)void inventory.inventoryFetcher('https://rpc.example');
   assert.throws(()=>inventory.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual([inventory.counts,inventory.limit,CREATOR_INVENTORY_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:102,failedFees:0},{shared:150,accounts:0,demand:0,callers:0,inventory:102,failedFees:0},102]);
+  assert.deepEqual([inventory.counts,inventory.limit,CREATOR_INVENTORY_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:102,failedFees:0,window:0},{shared:150,accounts:0,demand:0,callers:0,inventory:102,failedFees:0,window:0},102]);
   // Failed-fee receipts have their own 130-request pool; it never touches the shared 150, inventory or any other allowance.
   const failed=admittedFetchers(base,controller.signal,0,0,0,0,CREATOR_FAILED_FEE_REQUEST_CAP);
   for(let i=0;i<CREATOR_FAILED_FEE_REQUEST_CAP;i++)void failed.failedFeeFetcher('https://rpc.example');
   assert.throws(()=>failed.failedFeeFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>failed.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual([failed.counts,failed.limit,CREATOR_FAILED_FEE_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:130},{shared:150,accounts:0,demand:0,callers:0,inventory:0,failedFees:130},130]);
+  assert.deepEqual([failed.counts,failed.limit,CREATOR_FAILED_FEE_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:130,window:0},{shared:150,accounts:0,demand:0,callers:0,inventory:0,failedFees:130,window:0},130]);
+  // Dense selected-window reads have their own 72-request pool; they never touch the shared 150 or any other allowance.
+  const dense=admittedFetchers(base,controller.signal,0,0,0,0,0,WINDOW_DENSE_REQUEST_CAP);
+  for(let i=0;i<WINDOW_DENSE_REQUEST_CAP;i++)void dense.windowFetcher('https://rpc.example');
+  assert.throws(()=>dense.windowFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
+  assert.deepEqual([dense.counts,dense.limit,WINDOW_DENSE_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0,window:72},{shared:150,accounts:0,demand:0,callers:0,inventory:0,failedFees:0,window:72},72]);
   controller.abort(new Error('COLLECTION_DEADLINE'));
   const late=admittedFetchers(base,controller.signal,64,DEMAND_REQUEST_CAP);assert.throws(()=>late.accountFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.accounts,0);assert.throws(()=>late.demandFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.demand,0);
   const lateFailed=admittedFetchers(base,controller.signal,0,0,0,0,CREATOR_FAILED_FEE_REQUEST_CAP);assert.throws(()=>lateFailed.failedFeeFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(lateFailed.counts.failedFees,0);
@@ -244,8 +281,8 @@ test('the unchanged 24 MB live artifact cap admits a bundle at the cap and rejec
 test('advisory rehashed metric, raw request, clock and marker tampering cannot certify a live result',async()=>{
   const original=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-tamper-'));
   const reject=(name:string,mutate:(bundle:typeof original)=>void)=>{
-    const candidate=structuredClone(original);mutate(candidate);const service=new Service(join(directory,`${name}.sqlite`));
-    try{assert.throws(()=>service.analyzeLive(candidate),/ADVISORY_PROOF|FUTURE_EVIDENCE|FUTURE_|RAW_ARTIFACT_REQUIRED|LIVE_PROVENANCE_INVALID/,name);}finally{service.close();}
+    const candidate=structuredClone(original),service=new Service(join(directory,`${name}.sqlite`));
+    try{assert.throws(()=>{mutate(candidate);service.analyzeLive(candidate);},/ADVISORY_PROOF|FUTURE_EVIDENCE|FUTURE_|RAW_ARTIFACT_REQUIRED|LIVE_PROVENANCE_INVALID/,name);}finally{service.close();}
   };
   try{
     reject('normalized-o28-forgery',b=>{b.details!.baseline.find(a=>a.id==='O28')!.data={netQuoteFlowUsd:'999999999999',meaning:'fabricated organic buys'};b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features);});
@@ -320,7 +357,7 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
       const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),key='automation-program',id=`advisory-automation-${key}`;
       const request={method:'getAccountInfo',params:[pool,{commitment:'finalized',encoding:'base64',minContextSlot:1,dataSlice:{offset:0,length:0}}]};
       proof.automation={requests:{[key]:request},artifactIds:{[key]:id}};b.rawArtifacts[id]=JSON.stringify({jsonrpc:'2.0',id:1,result:{context:{slot:1},value:{executable:true}}});
-      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId:'advisory-automation',scope:{...template.scope,request}});rehash(b,id);
+      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId:'advisory-automation',adapterVersion:'live-v1',scope:{...template.scope,request}});rehash(b,id);
       b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');
     });
     reject('forged-accounts-receipt',b=>{
@@ -328,7 +365,7 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
       const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),key='account-0-page-0',id=`advisory-accounts-${key}`;
       const request={method:'getSignaturesForAddress',params:[pool,{commitment:'finalized',limit:32,minContextSlot:1}]};
       proof.accounts={requests:{[key]:request},artifactIds:{[key]:id}};b.rawArtifacts[id]=JSON.stringify({jsonrpc:'2.0',id:1,result:[]});
-      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId:'advisory-accounts',scope:{...template.scope,request}});rehash(b,id);
+      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId:'advisory-accounts',adapterVersion:'live-v1',scope:{...template.scope,request}});rehash(b,id);
       b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');
       assert.throws(()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features),/ADVISORY_ACCOUNTS_RECEIPT_MEMBERSHIP/);
     });

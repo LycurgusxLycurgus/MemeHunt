@@ -19,7 +19,7 @@ import { deriveSocial, type SocialInput, type SocialProposal, type SocialReview 
 import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,type SharedAudit,type SharedSource } from '../domain/shared.js';
 import { qualifyShared } from '../providers/shared-model.js';
 import { collectAdvisoryWalletHistory } from '../providers/advisory-wallet-history.js';
-import { collectAdvisoryWindow } from '../providers/advisory-window.js';
+import { archiveAdvisoryWindowReceipts, collectAdvisoryWindow, WINDOW_ARCHIVE_ADAPTER, WINDOW_DENSE_REQUEST_CAP } from '../providers/advisory-window.js';
 import { collectAdvisoryWindowAccounts, ACCOUNT_RECEIPT_CAP } from '../providers/advisory-window-accounts.js';
 import { collectAdvisoryDemandWindows, DEMAND_REQUEST_CAP, DEMAND_ARCHIVE_ADAPTER } from '../providers/advisory-demand-windows.js';
 import { decodeAdvisoryTrades, collectAdvisoryTrades } from '../providers/advisory-trades.js';
@@ -41,16 +41,16 @@ import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../providers/advisory-c
 
 export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
-/** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory and creator failed-fee reads have their own explicit allowances. */
-export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0){
-  const limit={shared:150,accounts:accountLimit,demand:demandLimit,callers:callerLimit,inventory:inventoryLimit,failedFees:failedFeeLimit},counts={shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0};
-  const wrap=(pool:'shared'|'accounts'|'demand'|'callers'|'inventory'|'failedFees'):typeof fetch=>(url,init)=>{
+/** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
+export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
+  const limit={shared:150,accounts:accountLimit,demand:demandLimit,callers:callerLimit,inventory:inventoryLimit,failedFees:failedFeeLimit,window:windowLimit},counts={shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0,window:0};
+  const wrap=(pool:'shared'|'accounts'|'demand'|'callers'|'inventory'|'failedFees'|'window'):typeof fetch=>(url,init)=>{
     if(deadline.aborted)throw deadline.reason;
     if(counts[pool]>=limit[pool])throw new Error('COLLECTION_BUDGET');
     counts[pool]++;
     return base(url,{...init,signal:init?.signal?AbortSignal.any([deadline,init.signal]):deadline});
   };
-  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),demandFetcher:wrap('demand'),callerFetcher:wrap('callers'),inventoryFetcher:wrap('inventory'),failedFeeFetcher:wrap('failedFees'),limit,counts};
+  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),demandFetcher:wrap('demand'),callerFetcher:wrap('callers'),inventoryFetcher:wrap('inventory'),failedFeeFetcher:wrap('failedFees'),windowFetcher:wrap('window'),limit,counts};
 }
 const addressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 /** Caller work stops this long before the run deadline so late canonical, topology and venue capture keep their time. */
@@ -71,7 +71,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const runStartedAt=Date.now();let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
   const runBudgetMs=options.semanticEnabled?600_000:120_000;
   const deadline=AbortSignal.timeout(runBudgetMs);
-  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_FAILED_FEE_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher}=admission;
+  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_FAILED_FEE_REQUEST_CAP:0,options.advisoryEnabled?WINDOW_DENSE_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher,windowFetcher}=admission;
   const evidence: EvidenceRecord[] = [];
   const rawArtifacts: Record<string,string> = {};
   const observations: Observation[] = [];
@@ -173,7 +173,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const decoded=decodeAdvisoryTrades(token,advisoryPool,chain.data,chain.rawArtifacts,chain.retrievedAt,chain.requests,trades.rawArtifacts,trades.retrievedAt,trades.requests);
     const [wallets,{window,accounts,automation,demand}]=await Promise.all([
       collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
-      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,advisoryWindowEnd,deadline,chain)
+      // Proof v21: the dense selected hour reads on its own 72-request allowance; every in-run consumer below receives its plain receipts.
+      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,windowFetcher,now,advisoryWindowEnd,deadline,chain,true,true,true)
         .then(async window=>{const [accounts,automation,demand]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,deadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),collectAdvisoryDemandWindows(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,demandFetcher,now,deadline)]);return {window,accounts,automation,demand};}),
     ]);
     return {value,wallets,window,accounts,automation,demand};
@@ -290,7 +291,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
         const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
         if(!at||read.requests[key]===undefined)throw new Error('ADVISORY_COLLECTION_INVALID');
         const model=namespace==='semantic'||namespace==='callerSemantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
-        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':namespace==='creatorFailedFees'?FAILED_FEE_SOURCE_ID:`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:namespace==='creatorFailedFees'?FAILED_FEE_ADAPTER:'live-v1');
+        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':namespace==='creatorFailedFees'?FAILED_FEE_SOURCE_ID:`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API',{request:read.requests[key]},at,namespace==='window'?WINDOW_ARCHIVE_ADAPTER:namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:namespace==='creatorFailedFees'?FAILED_FEE_ADAPTER:'live-v1');
       }
       return {requests:read.requests,artifactIds};
     };
@@ -332,7 +333,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     if(inventoryPending){const inventory=await inventoryPending;if(inventory&&!('error' in inventory)&&Object.keys(inventory.rawArtifacts).length)creatorInventory=ingest('creatorInventory',inventory);}
     // The failed-fee task settles here, before the cutoff, on its own allowance; its receipts are held for the late cap-guarded ingestion and only beside an ingested inventory.
     if(failedFeesPending){const read=await failedFeesPending;if(creatorRole&&creatorInventory&&read&&!('error' in read))failedFeeRead=read;}
-    advisoryProof={method:'advisory-provenance-v20',launchpad,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    // Window receipts are stored as exact window-archive-v1 archives under the 1.25 MB namespace ceiling (fail closed above it); the plain collected window already fed accounts, automation, demand, inventory and failed fees.
+    advisoryProof={method:'advisory-provenance-v21',launchpad,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled)await captureCanonical();
   if(advisoryProof&&!detailRead?.rawArtifacts['rpc-holder-population']){const topology=await collectAuthorityTopology(token,detailRead?.rawArtifacts['rpc-mint-raw'],options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);advisoryProof.topology=ingest('topology',topology);}
@@ -361,7 +363,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v20'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v21'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};

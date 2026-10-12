@@ -191,7 +191,7 @@ const rehash=(b:{evidence:Array<{id:string;contentHash:string}>;rawArtifacts:Rec
 
 test('live collection persists a KNOWN creator inventory O24 through Service and rejects removed, downgraded, duplicated, extra, moved, rescoped and claimed receipts',async()=>{
  const bundle=await live(),proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,o24=facts.metrics.find(m=>m.id==='O24')!,data=o24.data as any;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v20','advisory-measurements-v21']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v21','advisory-measurements-v22']);
  assert.deepEqual([facts.metrics.find(m=>m.id==='A30')!.quality,facts.metrics.find(m=>m.id==='S13')!.quality],['KNOWN','KNOWN']);
  assert.deepEqual(Object.keys(proof.creatorInventory.artifactIds),['creator-ata-head','creator-ata-page-0',`creator-tx-${ataSig}`,'creator-owner-accounts','creator-wallet-page-0']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-inventory');
