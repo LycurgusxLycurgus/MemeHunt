@@ -25,10 +25,11 @@ import { deriveO29ReservePath } from '../providers/advisory-reserve-path.js';
 import { deriveShortDemandReport,type ShortDemandReport } from '../providers/advisory-short-demand.js';
 import { decodeCreatorRole,creatorRoleS13,CREATOR_RECEIPT_CAP } from '../providers/advisory-creator-role-collector.js';
 import { decodeLaunchpadContext,deriveC16Launchpad,uncollectedC16,type LaunchpadRequest } from '../providers/advisory-launchpad.js';
+import { creatorInventoryReuse,creatorInventoryTape,replayCreatorInventory,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -36,6 +37,7 @@ export const advisoryProofSchema=z.object({
   callers:descriptor.extend({selectionId:z.literal('advisory-callers-selection')}).strict().nullable().optional(),callerSemantic:descriptor.nullable().optional(),
   creatorRole:descriptor.nullable().optional(),
   launchpad:descriptor.nullable().optional(),
+  creatorInventory:descriptor.nullable().optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
 export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -44,7 +46,7 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
   const proof=advisoryProofSchema.parse(input);
   if(token.chain!==proof.token.chain||token.address!==proof.token.address||cutoff!==proof.cutoff||JSON.stringify(proof.addresses)!==JSON.stringify([token.address,...(proof.pool?[proof.pool]:[])]))throw new Error('ADVISORY_PROOF_INVALID');
-  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts; v14 is v13 plus O29 from one demand decode that retains per-event virtual quote reserves; v16 is v15 plus the supplementary one-hour report from that same decode, kept outside metrics and groups.
+  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts; v14 is v13 plus O29 from one demand decode that retains per-event virtual quote reserves; v16 is v15 plus the supplementary one-hour report from that same decode, kept outside metrics and groups; v18 is v17 plus the creator-inventory O24 over the recomputed S13 role and the complete A30 tape.
   const version=Number(proof.method.slice('advisory-provenance-v'.length));
   if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(version>=4)!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
   if((version>=7)!==!!proof.accounts||!proof.accounts&&evidence.some(e=>e.sourceId==='advisory-accounts'))throw new Error('ADVISORY_PROOF_INVALID');
@@ -62,20 +64,24 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if((version>=17?proof.launchpad===undefined:!!proof.launchpad)||!proof.launchpad&&evidence.some(e=>e.sourceId==='advisory-launchpad'||e.id.startsWith('advisory-launchpad-')))throw new Error('ADVISORY_PROOF_INVALID');
   // A populated descriptor owns the complete launchpad catalog: every source- or prefix-identified record is exactly one declared artifact, so no extra, missing or duplicate receipt can persist unvalidated.
   if(proof.launchpad){const owned=evidence.filter(e=>e.sourceId==='advisory-launchpad'||e.id.startsWith('advisory-launchpad-')).map(e=>e.id).sort(),declared=Object.values(proof.launchpad.artifactIds).sort();if(new Set(declared).size!==declared.length||JSON.stringify(owned)!==JSON.stringify(declared))throw new Error('ADVISORY_PROOF_INVALID');}
-  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad')=>{
+  // Proof v18 carries an explicit creatorInventory key (null when not collected); earlier proofs may carry only null, a populated descriptor needs the role descriptor that recomputes its cohort, and inventory receipts without a descriptor are orphans.
+  if((version>=18?proof.creatorInventory===undefined:!!proof.creatorInventory)||proof.creatorInventory&&!proof.creatorRole||!proof.creatorInventory&&evidence.some(e=>e.sourceId==='advisory-creator-inventory'||e.id.startsWith('advisory-creatorInventory-')))throw new Error('ADVISORY_PROOF_INVALID');
+  // A populated descriptor owns the complete inventory catalog exactly as launchpad does: every source- or prefix-identified record is exactly one declared artifact, so no extra, missing, duplicate or cross-id receipt can persist unvalidated.
+  if(proof.creatorInventory){const owned=evidence.filter(e=>e.sourceId==='advisory-creator-inventory'||e.id.startsWith('advisory-creatorInventory-')).map(e=>e.id).sort(),declared=Object.values(proof.creatorInventory.artifactIds).sort();if(new Set(declared).size!==declared.length||JSON.stringify(owned)!==JSON.stringify(declared))throw new Error('ADVISORY_PROOF_INVALID');}
+  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory')=>{
     const d=proof[namespace]! ,raw:Record<string,string>={},times:Record<string,string>={};
     const keys=Object.keys(d.requests);
     // Trader-account receipts are absent when the selected window is incomplete.
-    if((keys.length===0&&namespace!=='trades'&&namespace!=='accounts'&&namespace!=='automation'&&namespace!=='topology'&&namespace!=='demand')||keys.length>(namespace==='demand'?DEMAND_REQUEST_CAP:namespace==='callers'?CALLER_REQUEST_CAP:namespace==='creatorRole'?CREATOR_RECEIPT_CAP:64)||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
+    if((keys.length===0&&namespace!=='trades'&&namespace!=='accounts'&&namespace!=='automation'&&namespace!=='topology'&&namespace!=='demand')||keys.length>(namespace==='demand'?DEMAND_REQUEST_CAP:namespace==='callers'?CALLER_REQUEST_CAP:namespace==='creatorRole'?CREATOR_RECEIPT_CAP:namespace==='creatorInventory'?CREATOR_INVENTORY_REQUEST_CAP:64)||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
     for(const [key,id] of Object.entries(d.artifactIds)){
       const record=evidence.find(e=>e.id===id);
       const model=namespace==='semantic'||namespace==='callerSemantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
-      const source=model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':`advisory-${namespace}`;
+      const source=model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':`advisory-${namespace}`;
       const access=model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API';
       // Current demand receipts bind the known archive adapter, a sole exact request scope, the stored archive hash and a unique id; the archive's own source hash is checked on unpack. Older namespaces keep their recorded checks.
       if(namespace==='demand'&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!==DEMAND_ARCHIVE_ADAPTER||!record.scope||JSON.stringify(Object.keys(record.scope))!=='["request"]'||JSON.stringify(record.scope.request)!==JSON.stringify(d.requests[key])||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
       // Caller receipts and caller classification bind the live adapter, a sole exact request scope, the stored content hash and a unique id.
-      if((namespace==='callers'||namespace==='callerSemantic'||namespace==='creatorRole'||namespace==='launchpad')&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!=='live-v1'||!record.scope||Object.keys(record.scope).join()!=='request'||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
+      if((namespace==='callers'||namespace==='callerSemantic'||namespace==='creatorRole'||namespace==='launchpad'||namespace==='creatorInventory')&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!=='live-v1'||!record.scope||Object.keys(record.scope).join()!=='request'||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
       if(id!==`advisory-${namespace}-${key}`||!record||record.sourceId!==source||record.accessMode!==access||record.sourceType!=='HISTORICAL_RECEIPT'||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||advisoryHash(record.scope.request)!==advisoryHash(d.requests[key])||typeof rawArtifacts[id]!=='string')throw new Error('ADVISORY_PROOF_INVALID');
       if(model&&advisoryHash(d.requests[key])!==advisoryHash({operation:key,modelRequests:advisorySemanticRequests()}))throw new Error('ADVISORY_PROOF_INVALID');
       raw[key]=rawArtifacts[id]!;times[key]=record.retrievedAt;
@@ -119,7 +125,9 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if(proof.callers){const c=resolve('callers'),s=proof.callerSemantic?resolve('callerSemantic'):null;additionalMetrics.push(...supersedingCallerMetrics([...socialMetrics,...additionalMetrics],replayCallerHistory(token,cutoff,evidence,rawArtifacts,c,proof.callers.selectionId,s,semanticWire)));}
   if(proof.wallets){const w=resolve('wallets'),history=decodeAdvisoryWalletHistory(token,tradeData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:w.requests as Record<string,{method:string;params:unknown[]}>},cutoff);additionalMetrics.push(...deriveWalletHistoryMetrics(history,tradeData,chainData,chain.raw,[...chain.ids,...trades.ids,...w.ids]));}
   // Proof v15 appends the exact public creator-role decode to S13 after the co-signing edges; failures keep the prior S13 quality and disclose every candidate.
-  if(version>=15&&proof.creatorRole){const c=resolve('creatorRole'),prior=[...additionalMetrics].reverse().find(m=>m.id==='S13');additionalMetrics.push(creatorRoleS13(prior,decodeCreatorRole(token,{rawArtifacts:c.raw,retrievedAt:c.times,requests:c.requests},cutoff),c.ids));}
+  // Proof v18 keeps this decode and its receipts so the inventory cohort is recomputed from S13 itself, never read from a claim.
+  let roleDecode:ReturnType<typeof decodeCreatorRole>|null=null,roleReceipts:{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,unknown>;ids:string[]}|null=null,inventoryReplayed=false;
+  if(version>=15&&proof.creatorRole){const c=resolve('creatorRole'),prior=[...additionalMetrics].reverse().find(m=>m.id==='S13');roleReceipts={rawArtifacts:c.raw,retrievedAt:c.times,requests:c.requests,ids:c.ids};roleDecode=decodeCreatorRole(token,roleReceipts,cutoff);additionalMetrics.push(creatorRoleS13(prior,roleDecode,c.ids));}
   additionalMetrics.push(...deriveAdvisoryDemand(tradeData,socialMetrics.find(m=>m.id==='A19'),cutoff,[...chain.ids,...trades.ids]));
   let shortDemand:ShortDemandReport|undefined;
   if(proof.window){
@@ -136,12 +144,18 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
       // Proof v14 adds O29 from that same retained-V history; A30 serializes no trades and O23 keeps its own default decode.
       if(version>=14){const o29=deriveO29ReservePath(history,[...w.ids,...d.ids]);if(o29)additionalMetrics.push(o29);}
       // Proof v16 adds the supplementary one-hour report from this same raw-receipt decode; an ineligible hour still yields an explicit NOT_ELIGIBLE report and earlier proofs never derive it.
-      if(version>=16)shortDemand=deriveShortDemandReport(history,[...w.ids,...d.ids]);}
+      if(version>=16)shortDemand=deriveShortDemandReport(history,[...w.ids,...d.ids]);
+      // Proof v18 adds O24 for the recomputed S13 creation signer over A30's measured hours from this complete tape and the inventory namespace; only a KNOWN result supersedes the sampled O24, and earlier proofs never derive it.
+      if(version>=18&&proof.creatorInventory){const i=resolve('creatorInventory'),windowSet={rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests};inventoryReplayed=true;
+        const o24=replayCreatorInventory(token,roleDecode,creatorInventoryTape(windowData,windowSet,history),{rawArtifacts:i.raw,retrievedAt:i.times,requests:i.requests as Record<string,{method:string;params:unknown[]}>},creatorInventoryReuse([['advisory-creatorRole-',roleReceipts!],['advisory-window-',windowSet]]),cutoff,[...w.ids,...d.ids,...roleReceipts!.ids,...i.ids]);
+        if(o24.quality==='KNOWN'&&!additionalMetrics.some(m=>m.id==='O24'&&m.quality==='KNOWN'))additionalMetrics.push(o24);}}
   }
   if(proof.topology){const t=resolve('topology'),receipts:TopologyReceipts={rawArtifacts:t.raw,retrievedAt:t.times,requests:t.requests};additionalMetrics.push(deriveAuthorityTopology(token,cutoff,evidence,rawArtifacts,receipts));}
   // Proof v17 is v16 plus C16 decoded only from the four retained launchpad receipts; an uncollected run discloses that state instead of the registry default. The v16 supplement is unchanged.
   if(version>=17){if(proof.launchpad){const l=resolve('launchpad');additionalMetrics.push(deriveC16Launchpad(decodeLaunchpadContext({rawArtifacts:l.raw,retrievedAt:l.times,requests:l.requests as Record<string,LaunchpadRequest>},cutoff),l.ids));}else additionalMetrics.push(uncollectedC16());}
+  // A populated inventory descriptor is valid only when its O24 replay ran over this proof's window and demand tape.
+  if(proof.creatorInventory&&!inventoryReplayed)throw new Error('ADVISORY_PROOF_INVALID');
   let supplements:{shortDemand:ShortDemandReport}|undefined;
   if(version>=16){if(!shortDemand)throw new Error('ADVISORY_PROOF_INVALID');supplements={shortDemand};}
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
 }
