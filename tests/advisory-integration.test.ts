@@ -16,6 +16,7 @@ import { PublicKey } from '@solana/web3.js';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { OFFLINE_PUMP_AMM_PROGRAM as sdk,PUMP_AMM_PROGRAM_ID,poolPda } from '@pump-fun/pump-swap-sdk';
 import { DEMAND_REQUEST_CAP,DEMAND_ARCHIVE_ADAPTER,archiveDemandReceipt,unpackDemandReceipt,demandArchiveSourceLimit } from '../src/providers/advisory-demand-windows.js';
+import { CALLER_REQUEST_CAP } from '../src/providers/advisory-caller-history.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { makeSocialFixture,SOCIAL_TOKEN,SOCIAL_CUTOFF } from './social-fixtures.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -43,10 +44,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v10');assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v11');assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v11');
+  assert.equal(facts.method,'advisory-measurements-v12');
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
   assert.equal((facts.metrics.find(m=>m.id==='A30')?.data as {method?:string}|null)?.method,'sample-demand-windows-v1');assert.equal(facts.metrics.find(m=>m.id==='A30')?.quality,'MISSING');
   assert.equal(facts.metrics.length,50);assert.equal(facts.metrics.find(m=>m.id==='C08')?.quality,'KNOWN');
@@ -57,7 +58,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v11');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v12');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -111,7 +112,7 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const version of [7,8,9,10])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
+for(const version of [7,8,9,10,11])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -131,17 +132,19 @@ for(const version of [7,8,9,10])test(`a saved research-screen-advisory-v${versio
 
 test('trader-account history has its own bounded allowance and never consumes the shared 150-request budget',()=>{
   let calls=0;const base:typeof fetch=async()=>{calls++;return new Response('{}');};
-  const controller=new AbortController(),admission=admittedFetchers(base,controller.signal,64,DEMAND_REQUEST_CAP);
+  const controller=new AbortController(),admission=admittedFetchers(base,controller.signal,64,DEMAND_REQUEST_CAP,CALLER_REQUEST_CAP);
   for(let i=0;i<64;i++)void admission.accountFetcher('https://rpc.example');
   assert.throws(()=>admission.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
   for(let i=0;i<DEMAND_REQUEST_CAP;i++)void admission.demandFetcher('https://rpc.example');
   assert.throws(()=>admission.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP});
+  for(let i=0;i<CALLER_REQUEST_CAP;i++)void admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result');
+  assert.throws(()=>admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result'),/COLLECTION_BUDGET/);
+  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP});
   for(let i=0;i<150;i++)void admission.fetcher('https://rpc.example');
   assert.throws(()=>admission.fetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP},calls:214+DEMAND_REQUEST_CAP});
+  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP},calls:214+DEMAND_REQUEST_CAP+CALLER_REQUEST_CAP});
   const disabled=admittedFetchers(base,controller.signal,0);
-  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0});
+  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.callerFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0,callers:0});
   controller.abort(new Error('COLLECTION_DEADLINE'));
   const late=admittedFetchers(base,controller.signal,64,DEMAND_REQUEST_CAP);assert.throws(()=>late.accountFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.accounts,0);assert.throws(()=>late.demandFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.demand,0);
 });
@@ -150,7 +153,7 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
   const original=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-tamper-'));
   const reject=(name:string,mutate:(bundle:typeof original)=>void)=>{
     const candidate=structuredClone(original);mutate(candidate);const service=new Service(join(directory,`${name}.sqlite`));
-    try{assert.throws(()=>service.analyzeLive(candidate),/ADVISORY_PROOF|FUTURE_EVIDENCE|FUTURE_|RAW_ARTIFACT_REQUIRED/,name);}finally{service.close();}
+    try{assert.throws(()=>service.analyzeLive(candidate),/ADVISORY_PROOF|FUTURE_EVIDENCE|FUTURE_|RAW_ARTIFACT_REQUIRED|LIVE_PROVENANCE_INVALID/,name);}finally{service.close();}
   };
   try{
     reject('normalized-o28-forgery',b=>{b.details!.baseline.find(a=>a.id==='O28')!.data={netQuoteFlowUsd:'999999999999',meaning:'fabricated organic buys'};b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features);});
@@ -161,17 +164,17 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     reject('window-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v3';delete proof.window;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-abi-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v4';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-fee-basis-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';delete proof.accounts;delete proof.automation;delete proof.topology;delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';delete proof.accounts;delete proof.automation;delete proof.topology;delete proof.demand;delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('accounts-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('accounts-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.accounts;delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-accounts-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';delete proof.accounts;delete proof.automation;delete proof.topology;delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-accounts-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';delete proof.accounts;delete proof.automation;delete proof.topology;delete proof.demand;delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('automation-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('automation-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-automation-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';delete proof.automation;delete proof.topology;delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
-    reject('topology-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v8';delete proof.topology;delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-automation-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';delete proof.automation;delete proof.topology;delete proof.demand;delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('topology-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v8';delete proof.topology;delete proof.demand;delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('demand-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v9';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('demand-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-demand-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v9';delete proof.demand;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-demand-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v9';delete proof.demand;delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('claimed-demand-measurement',b=>{const metric=b.details!.advisory!.metrics.find(m=>m.id==='A30')!;metric.quality='KNOWN';metric.data={satisfiedWindows:6,share:'1',claim:'persistent organic demand'};for(const group of b.details!.advisory!.groups)if(group.unresolved.includes('A30')){group.known++;group.unresolved=group.unresolved.filter(id=>id!=='A30');}});
     reject('forged-demand-receipt',b=>{
       // An ineligible selected hour admits no demand receipt, even one with valid hash, source and scope.
@@ -203,6 +206,13 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
       b.evidence.find(e=>e.id===id)!.adapterVersion='live-v0';
     });
     reject('topology-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('callers-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v10';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-callers-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v10';delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('callers-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.callers;delete proof.callerSemantic;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    for(const [name,id,sourceId] of [['orphan-caller-receipt','advisory-callers-caller-history:1:oembed','advisory-callers'],['orphan-caller-selection','advisory-callers-selection','advisory-collector'],['orphan-caller-semantic','advisory-callerSemantic-advisory-semantic-proposal-response','gemini']] as const)reject(name,b=>{
+      const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId});b.rawArtifacts[id]='{}';rehash(b,id);
+      assert.throws(()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features),/ADVISORY_PROOF_INVALID/);
+    });
     reject('claimed-topology-measurement',b=>{b.details!.advisory!.metrics.find(m=>m.id==='O21')!.data={largestProvenControlFraction:'1',inventedOwners:true};});
     reject('claimed-automation-measurement',b=>{b.details!.advisory!.metrics.find(m=>m.id==='O30')!.quality='KNOWN';b.details!.advisory!.metrics.find(m=>m.id==='O30')!.data={knownAutomatedFraction:'0',claim:'bot-free'};for(const group of b.details!.advisory!.groups)if(group.unresolved.includes('O30')){group.known++;group.unresolved=group.unresolved.filter(id=>id!=='O30');}});
     reject('forged-automation-receipt',b=>{
