@@ -124,7 +124,7 @@ test('caller bodies and the independent classification pair run in the backgroun
   assert.equal(receipts.length, 6);
   assert.ok(receipts.every(e => Date.parse(e.retrievedAt) > Date.parse(selection.availableAt)));
   const proof = proofOf(r);
-  assert.equal(proof.method, 'advisory-provenance-v13');
+  assert.equal(proof.method, 'advisory-provenance-v14');
   assert.equal(JSON.parse(r.bundle.rawArtifacts['advisory-callerSemantic-advisory-semantic-selection']!).method, 'advisory-source-selection-v3');
   assert.equal(Object.keys(proof.callers.artifactIds).length, 6);
   const semanticIds = Object.values(proof.callerSemantic.artifactIds) as string[];

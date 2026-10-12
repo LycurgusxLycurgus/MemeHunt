@@ -44,10 +44,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v13');assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v14');assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v14');
+  assert.equal(facts.method,'advisory-measurements-v15');
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
@@ -60,7 +60,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v14');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v15');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -100,6 +100,8 @@ test('complete selected hour stores exact demand archives through live collectio
   assert.deepEqual([data.complete,data.satisfiedWindows,data.share,data.denominator,data.windows.length],[true,0,'0',6,6]);
   // A complete tradeless tape gives O23 no denominator: missing, never a measured zero.
   const o23=facts.metrics.find(m=>m.id==='O23')!;assert.deepEqual([o23.quality,o23.reasonCode,(o23.data as any).denominator,(o23.data as any).bins.every((b:any)=>b.fraction===null)],['MISSING','SYNCHRONY_DENOMINATOR_ZERO',0,true]);
+  // The same tradeless tape leaves O29 explicitly unmeasured with every value null.
+  const o29=facts.metrics.find(m=>m.id==='O29')!,reserve=o29.data as any;assert.deepEqual([o29.quality,o29.reasonCode,reserve.method,reserve.whole,reserve.hours,reserve.anomaly,reserve.depthAtDefinedImpact],['MISSING','RESERVE_PATH_NO_TRADES','complete-pool-effective-reserve-path-v1',null,null,null,null]);
   assert.deepEqual([data.storage.receipts,data.storage.storedAggregateCapBytes],[2,24_000_000]);assert.ok(data.storage.storedBytes>0&&data.storage.sourceBytes>0);
   const poolId=proof.demand.artifactIds['demand-pool'] as string,original=unpackDemandReceipt(bundle.rawArtifacts[poolId]!,demandArchiveSourceLimit('demand-pool'));
   const tamper=(change:(b:typeof bundle)=>void)=>{const b=structuredClone(bundle);change(b);rehash(b,poolId);return b;};
@@ -116,7 +118,7 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const version of [7,8,9,10,11,12,13])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
+for(const version of [7,8,9,10,11,12,13,14])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -216,6 +218,8 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     reject('origin-wire-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v11';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('self-consistent-origin-wire-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v11';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('synchrony-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v12';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('reserve-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v13';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-reserve-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v13';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('self-consistent-synchrony-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v12';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     for(const [name,id,sourceId] of [['orphan-caller-receipt','advisory-callers-caller-history:1:oembed','advisory-callers'],['orphan-caller-selection','advisory-callers-selection','advisory-collector'],['orphan-caller-semantic','advisory-callerSemantic-advisory-semantic-proposal-response','gemini']] as const)reject(name,b=>{
       const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId});b.rawArtifacts[id]='{}';rehash(b,id);

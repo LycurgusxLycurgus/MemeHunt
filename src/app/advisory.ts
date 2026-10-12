@@ -21,10 +21,11 @@ import { socialInputSchema,socialProposalSchema,socialReviewSchema } from '../do
 import { replayCallerHistory,supersedingCallerMetrics } from '../providers/advisory-caller-measures.js';
 import { CALLER_REQUEST_CAP } from '../providers/advisory-caller-history.js';
 import { deriveO23Synchrony } from '../providers/advisory-synchrony.js';
+import { deriveO29ReservePath } from '../providers/advisory-reserve-path.js';
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -38,7 +39,7 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
   const proof=advisoryProofSchema.parse(input);
   if(token.chain!==proof.token.chain||token.address!==proof.token.address||cutoff!==proof.cutoff||JSON.stringify(proof.addresses)!==JSON.stringify([token.address,...(proof.pool?[proof.pool]:[])]))throw new Error('ADVISORY_PROOF_INVALID');
-  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts.
+  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts; v14 is v13 plus O29 from one demand decode that retains per-event virtual quote reserves.
   const version=Number(proof.method.slice('advisory-provenance-v'.length));
   if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(version>=4)!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
   if((version>=7)!==!!proof.accounts||!proof.accounts&&evidence.some(e=>e.sourceId==='advisory-accounts'))throw new Error('ADVISORY_PROOF_INVALID');
@@ -115,10 +116,12 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
     if(proof.accounts){const a=resolve('accounts'),history=decodeAdvisoryWindowAccounts(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},a.raw,a.times,a.requests as Record<string,{method:string;params:unknown[]}>,cutoff),metric=deriveO26Window(history,windowData,[...w.ids,...a.ids]);if(metric)additionalMetrics.push(metric);}
     if(proof.automation){const a=resolve('automation'),receipts:AutomationReceipts={rawArtifacts:a.raw,retrievedAt:a.times,requests:a.requests};additionalMetrics.push(deriveO30Window(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},receipts,cutoff,[...w.ids,...a.ids]));}
     // Appended after the sampled A30 so a complete-tape result supersedes it; an ineligible O28 hour keeps the older value.
-    if(proof.demand){const d=resolve('demand'),history=decodeAdvisoryDemandWindows(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},d.raw,d.times,d.requests as Record<string,{method:string;params:unknown[]}>,cutoff),metric=deriveA30DemandWindows(history,[...w.ids,...d.ids]);if(metric)additionalMetrics.push(metric);
+    if(proof.demand){const d=resolve('demand'),history=decodeAdvisoryDemandWindows(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},d.raw,d.times,d.requests as Record<string,{method:string;params:unknown[]}>,cutoff,version>=14),metric=deriveA30DemandWindows(history,[...w.ids,...d.ids]);if(metric)additionalMetrics.push(metric);
       // Proof v13 adds O23 from the same window and demand receipts; earlier proofs never derive it retrospectively.
-      if(version>=13){const o23=deriveO23Synchrony(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},d.raw,d.times,d.requests as Record<string,{method:string;params:unknown[]}>,cutoff,[...w.ids,...d.ids]);if(o23)additionalMetrics.push(o23);}}
+      if(version>=13){const o23=deriveO23Synchrony(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},d.raw,d.times,d.requests as Record<string,{method:string;params:unknown[]}>,cutoff,[...w.ids,...d.ids]);if(o23)additionalMetrics.push(o23);}
+      // Proof v14 adds O29 from that same retained-V history; A30 serializes no trades and O23 keeps its own default decode.
+      if(version>=14){const o29=deriveO29ReservePath(history,[...w.ids,...d.ids]);if(o29)additionalMetrics.push(o29);}}
   }
   if(proof.topology){const t=resolve('topology'),receipts:TopologyReceipts={rawArtifacts:t.raw,retrievedAt:t.times,requests:t.requests};additionalMetrics.push(deriveAuthorityTopology(token,cutoff,evidence,rawArtifacts,receipts));}
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=13?'advisory-measurements-v14':'advisory-measurements-v13'});
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13'});
 }

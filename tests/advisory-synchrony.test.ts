@@ -210,9 +210,9 @@ const liveTransactions = (rows: Row[]) => new Map<string, unknown>([[rows[0]!.si
 const collectLive = (rows: Row[], mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, liveTransactions(rows), mutate), now: () => liveAt });
 const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => { bundle.evidence.find(e => e.id === id)!.contentHash = createHash('sha256').update(bundle.rawArtifacts[id]!).digest('hex'); };
 
-test('live collection persists and replays a known-zero O23 only under proof v13, while proof v12 reconstruction leaves it unmeasured', async () => {
+test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v13', 'advisory-measurements-v14', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v14', 'advisory-measurements-v15', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -221,7 +221,13 @@ test('live collection persists and replays a known-zero O23 only under proof v13
   const legacy = { ...proof, method: 'advisory-provenance-v12' }, replayed = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, legacy, bundle.thesis ?? null, bundle.features);
   assert.equal(replayed.method, 'advisory-measurements-v13');
   assert.deepEqual(replayed.metrics.find(m => m.id === 'O23'), { id: 'O23', quality: 'MISSING', unit: 'scoped-record', data: null, evidenceIds: [], reasonCode: 'INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED' });
-  assert.deepEqual(replayed.metrics.filter(m => m.id !== 'O23'), facts.metrics.filter(m => m.id !== 'O23'));
+  assert.deepEqual(replayed.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29'), facts.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29'));
+  // O29 dispatches only from proof v14 over the same single retained-V demand decode; every v13 metric is unchanged by that decode.
+  const o29 = facts.metrics.find(m => m.id === 'O29')!, v13 = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, { ...proof, method: 'advisory-provenance-v13' }, bundle.thesis ?? null, bundle.features);
+  assert.deepEqual([o29.quality, o29.reasonCode, (o29.data as any).method], ['MISSING', 'RESERVE_CURVE_MISMATCH', 'complete-pool-effective-reserve-path-v1']);
+  assert.equal(v13.method, 'advisory-measurements-v14');
+  assert.notEqual((v13.metrics.find(m => m.id === 'O29')!.data as any)?.method, 'complete-pool-effective-reserve-path-v1');
+  assert.deepEqual(v13.metrics.filter(m => m.id !== 'O29'), facts.metrics.filter(m => m.id !== 'O29'));
   const directory = mkdtempSync(join(tmpdir(), 'advisory-synchrony-')), file = join(directory, 'live.sqlite');
   try {
     const writer = new Service(file); let id = '';
@@ -237,7 +243,7 @@ test('live collection persists and replays a known-zero O23 only under proof v13
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v14'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v15'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

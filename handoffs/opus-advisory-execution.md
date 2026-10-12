@@ -1,3 +1,24 @@
+# Accepted execution result — reserve-path-2026-10-12
+
+O29 is newly KNOWN. Exact Claude Code `claude-opus-5-5` authored the per-event decoder option, reserve-path provider, integration and regressions. Codex applied the proposals and acquired, tested, independently reviewed and verified the evidence. The Claude CLI remained read-only.
+
+- Snapshot `7d43b65e-6b97-4d90-a851-96aa3ead3e9d`, cutoff **2026-10-12T04:15:07.124Z**, hash `967aaf0357a1038bf1958202cf3c91afeaab31ea2e3d484d88835e5a0c1e75a5`. Advisory **23/50 KNOWN,25 MISSING,2 TRUNCATED:27 unresolved**. All five groups remain UNKNOWN. O26 is restored; C10 now lacks its condition features at this cutoff. Earlier values are not grafted into this snapshot. Zero unknowns is not achieved.
+- Complete selected-pool tape **11 October16:00–12 October04:00 UTC**:246 successful references (230 fresh,16 exact reuses),43 failed references,215 decoded trades. All **215** trades reproduce the pinned SDK integer curve with their own verified signed-i128 virtual quote reserve; all **214** consecutive effective-reserve transitions are exact. Four same-slot cross-transaction pairs have verified transaction indexes. No subset or fitted reserve is used.
+- O29 reports twelve hourly and whole-tape vectors: fee-exclusive quote flow, base movements, physical/virtual/effective reserve change, observed event-pre price change and explicitly modelled curve impact/endpoints. Net core flow is **−0.260384197 WSOL**; observed event-pre effective spot changes by approximately **−0.46917%**. These are pool-scoped descriptions, not USD valuation or causal evidence.
+- Fifty-six physical-quote offsets have equal opposite virtual-reserve changes; their cause remains **UNATTRIBUTED**. A last-swap post endpoint is **MODELLED_CURVE_ENDPOINT**, not an observed vault balance or later virtual-reserve state. Event-pre endpoints retain their actual trade clocks; empty hours are not forward-filled. Fixed-size depth, cohort baseline and thin-liquidity anomaly remain null. No manipulation or boost action is inferred.
+- The provisional constant post-tape virtual-reserve prototype failed actual probes and was discarded before production/review. Per-event probes independently verified245 and228 prior trades, exact effective continuity and473 raw pre-vault balances. The accepted fresh run above is its own complete tape, not those older probes.
+- Typecheck/build,30 focused tests and **969/969 full tests PASS**, zero skipped. Native first review **PASS**, correction unused. Actual raw reconstruction, idempotence, show and disk replay PASS. Sixteen caller provenance mutations plus ten window/demand mutations at **Service.analyzeLive** are rejected. The previous accepted112ce542 snapshot retains its original hash under this code.
+- Fresh proof/facts/policy **v14/v15/v15** derives O29 only underproofv14. The decoder's per-event reserve option defaults false; old demand histories, A30/O23/O28 formulas and wirev2/v3 dispatch remain unchanged. Saved policiesv1–v14 replay frozen facts. There are no new reads, artifacts or allowances for O29; all stored artifacts total **21,800,091 bytes**, below24MB.
+- Required **24/27 known**, with **DAT-01,DAT-03,EXE-02 UNKNOWN**. Across33 rows:17 PASS,7 FAIL,9 UNKNOWN; entry remains REJECTED. All15 management checks remain NOT_RUN / NO_ACTIVE_THESIS. The private operator pacing harness spaced356 actual RPC admissions by350ms with no abandoned requests; credentials, source semantics, budgets and deadlines were unchanged. An earlier separate quota pilot had16 known/34 unresolved from current social qualification losses; it is not this accepted run.
+
+Remaining27: **O22,O24,O25,O27; A06,A12,A13,A24,A25,A26,A27,A28,A29; S11,S13,S14,S15,S16,S17,S18,S19,S20; C07,C09,C10,C12,C16**. Some ratios are mathematically undefined at zero/nonpositive denominators; other measurements require historical coverage, explicit attribution, comparison cohorts or declared methods. Missing values are not converted to zero.
+
+Continue through `agentic/analysis.md`, `agentic/architecture.md` and applicable Bridgecode specialists. Exact Opus is separately verifying public Pump creator-profile links against a signed creation transaction and designing complete creator-only inventory coverage. These proposals are not accepted S13/O24 measurements yet. Preserve other-session ownership and immutable dated snapshots; operator databases, private receipts and unrelated documentation are excluded from publication.
+
+Earlier accepted cycles follow as dated history.
+
+---
+
 # Accepted execution result — sponsored-synchrony-2026-10-12
 
 O23 is newly KNOWN. Exact Claude Code `claude-opus-5-5` authored the provider, integration and regressions; Codex applied the proposals and acquired, tested, reviewed and published the evidence. The Claude CLI remained read-only.

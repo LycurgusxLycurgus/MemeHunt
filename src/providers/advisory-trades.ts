@@ -7,7 +7,7 @@ import { decodeAdvisoryChain, type ChainHistory } from './advisory-chain.js';
 import { safeRpcCode, solanaRpc } from './solana.js';
 import { decodePinnedWindowInstruction,decodePinnedWindowEvent,reconcileWindowQuote,type QuoteAccounting } from './pumpswap-window-abi.js';
 type Request={method:string;params:unknown[]};
-export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting};
+export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting;virtualQuoteReservesAtomic?:string};
 export type TradeHistory={method:'pumpswap-decoded-sample-v1';token:TokenRef;pool:string|null;quoteMint:string;quoteDecimals:9;poolVerified:boolean;stateSlot:number|null;trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;coveredInterval:{start:string;end:string}|null;sourceUniverseComplete:false;complete:false;transactionsInspected:number;transactionsExcluded:number;excluded:Array<{signature:string;code:string}>;limitations:string[]};
 export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[];logRecovery?:LogRecovery};
 /** Opt-in only. Unresolved invocations were attempted after log truncation; none is PumpSwap flow or touches the selected pool, and their execution is not proven. */
@@ -16,11 +16,13 @@ const program=PUMP_AMM_PROGRAM_ID.toBase58();
 const obj=(x:unknown):x is Record<string,any>=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const integer=(x:unknown):x is number=>Number.isSafeInteger(x)&&Number(x)>=0;
 const atomic=(x:unknown):string=>{const s=String(x);if(!/^(0|[1-9]\d{0,19})$/.test(s)||BigInt(s)>18446744073709551615n)throw new Error('ADVISORY_TRADE_ATOMIC');return s;};
+// Opt-in only: the signed i128 virtual_quote_reserves of an event whose exact SDK prefix was already re-encoded and matched.
+const signed128=(x:unknown):string=>{const s=typeof x==='bigint'||x!==null&&typeof x==='object'?String(x):'';if(!/^(0|-?[1-9][0-9]{0,38})$/.test(s)||BigInt(s)< -(2n**127n)||BigInt(s)>2n**127n-1n)throw new Error('ADVISORY_TRADE_VIRTUAL_QUOTE');return s;};
 const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{encoding:'base64',commitment:'finalized'}]});
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
 function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false):DecodedTrade[]{
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
@@ -104,7 +106,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   if(quoteAccounting&&direction==='BUY'&&BigInt(atomic(instruction.name==='buyExactQuoteIn'?args.spendableQuoteIn:args.maxQuoteAmountIn))<BigInt(quoteAccounting.grossQuoteAtomic))throw new Error('ADVISORY_TRADE_ARGUMENT_BINDING');
   const baseAtomic=atomic(direction==='BUY'?d.baseAmountOut:d.baseAmountIn),quoteAtomic=quoteAccounting?.coreQuoteAtomic??atomic(direction==='BUY'?d.quoteAmountIn:d.quoteAmountOut);
   if(BigInt(baseAtomic)<=0n||BigInt(quoteAtomic)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
-  frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex:cursor-1,...(quoteAccounting?{instructionName,quoteAccounting}:{})});
+  frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex:cursor-1,...(quoteAccounting?{instructionName,quoteAccounting}:{}),...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(d.virtualQuoteReserves)}:{})});
  }
  if(truncatedAt>=0){
   // meta.err proves only top-level success: a nested frame still open above a closed flow frame, and every unbound invocation, stay unproven.
@@ -117,12 +119,14 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
  if(expectedSwaps!==trades.length)throw new Error('ADVISORY_TRADE_EVENT_MISSING');return trades;
 }
 /** Scoped pool-flow decoder. CPI authorization is an executed-program observation, never a person or wallet-control binding.
- * logRecovery is opt-in for fee-exclusive callers; without it receipts decode exactly as before. */
-export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false):WindowTransactionProof{
+ * logRecovery is opt-in for fee-exclusive callers; without it receipts decode exactly as before.
+ * retainVirtualQuote is opt-in for fee-exclusive callers only: each selected-pool trade also carries its own verified event virtual_quote_reserves as a signed i128 decimal string; nothing else changes. */
+export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false,retainVirtualQuote=false):WindowTransactionProof{
  if(feeExclusive&&!currentAbi)throw new Error('ADVISORY_TRADE_FEE_SCOPE');
  if(logRecovery&&!feeExclusive)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
+ if(retainVirtualQuote&&!feeExclusive)throw new Error('ADVISORY_TRADE_VIRTUAL_SCOPE');
  const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(logRecovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0}}:{})};
- proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery);return proof;
+ proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery,retainVirtualQuote);return proof;
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{

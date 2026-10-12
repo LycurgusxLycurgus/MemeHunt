@@ -224,8 +224,9 @@ function emptyHistory(token:TokenRef,window:AdvisoryWindowHistory,b:Bounds):Dema
   storage:{archiveMethod:DEMAND_ARCHIVE_METHOD,adapterVersion:DEMAND_ARCHIVE_ADAPTER,receipts:0,storedBytes:0,sourceBytes:0},complete:false,reasonCode:'SELECTED_POOL_WINDOW_INCOMPLETE'};
 }
 
-/** Rebuilds the complete [E-12h,E) selected-pool tape from retained raw receipts; any gap leaves it incomplete, never zero. */
-export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:ReceiptSet,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string):DemandHistory{
+/** Rebuilds the complete [E-12h,E) selected-pool tape from retained raw receipts; any gap leaves it incomplete, never zero.
+ * retainVirtualQuote (default false) only adds each trade's verified event virtual quote reserves for O29. */
+export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:ReceiptSet,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,retainVirtualQuote=false):DemandHistory{
  if(token.chain!=='solana'||window.token.chain!==token.chain||window.token.address!==token.address)fail('ADVISORY_DEMAND_SCOPE');
  const cut=Date.parse(cutoff),endMs=Date.parse(window.window.end);
  if(!Number.isFinite(cut)||!Number.isFinite(endMs)||endMs>cut)fail('ADVISORY_DEMAND_TIME');
@@ -263,7 +264,7 @@ export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindow
    const value=s.reused?response.value:projectCompiledTransaction(response.value);
    if(response.at>state.at||response.at<b.end||response.at<row.blockTime!*1000||!object(value)||value.slot!==row.slot||value.blockTime!==row.blockTime||value.transaction?.signatures?.[0]!==row.signature||!Array.isArray(value.transaction?.message?.accountKeys)||!value.transaction.message.accountKeys.some((k:unknown)=>object(k)&&k.pubkey===pool))fail('ADVISORY_DEMAND_TRANSACTION_BINDING');
    // Opt-in log recovery: only closed, ancestor-proven flow survives a truncated log; unresolved invocations stay disclosed as unproven.
-   const proof=decodePumpSwapWindowTransaction(value,entry,pool,state.decoded,state.slot,source.retrievedAt[s.id]!,true,true,true);
+   const proof=decodePumpSwapWindowTransaction(value,entry,pool,state.decoded,state.slot,source.retrievedAt[s.id]!,true,true,true,retainVirtualQuote);
    result.transactions.push({...entry,receipt,status:'OBSERVED',trades:proof.trades.length,...(proof.logRecovery?{logRecovery:proof.logRecovery}:{})});
    for(const trade of proof.trades)result.trades.push({...trade,transactionIndex:row.transactionIndex});
    for(const account of proof.cpiAuthorizedAccounts)programs.add(account);
