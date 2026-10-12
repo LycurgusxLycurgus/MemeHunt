@@ -103,9 +103,13 @@ const reconstruct=(b:Bundle,proof:unknown=proofOf(b))=>reconstructAdvisory(token
 const REJECTED=/ADVISORY_PROOF_INVALID|LIVE_PROVENANCE_INVALID|FUTURE_EVIDENCE|DUPLICATE_BUNDLE_ID|ARTIFACT_HASH_OR_SIZE|UNREFERENCED_ARTIFACT/;
 const metric=(facts:{metrics:Array<{id:string}>},id:string)=>facts.metrics.find(m=>m.id===id) as any;
 
-test('fresh proof v19 derives O25 from the same typed role, tape, inventory receipts and reuse as O24, persists under policy v19 and replays exactly',async()=>{
+test('fresh proof v20 derives O25 from the same typed role, tape, inventory receipts and reuse as O24, keeps S15 unready without failed-fee reads, persists under policy v20 and replays exactly',async()=>{
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!,o24=metric(facts,'O24'),o25=metric(facts,'O25'),d=o25.data,i=o24.data;
- assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v19','advisory-measurements-v20',50,null]);
+ assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v20','advisory-measurements-v21',50,null]);
+ // S15 needs a target position; this created, never-funded account has none, so the gate is unready, no failed-fee read is admitted and the descriptor stays null, never a zero.
+ const s15=metric(facts,'S15');
+ assert.deepEqual([proof.creatorFailedFees,s15.quality,s15.reasonCode,s15.data.status,s15.data.position,s15.data.networkFees,s15.data.basis.lifetimeReasonCode],[null,'MISSING','S15_NO_TARGET_POSITION','PREREQUISITE_UNRESOLVED',null,null,'CREATOR_LIFETIME_VECTOR_OBSERVED']);
+ assert.ok(!bundle.evidence.some(e=>e.sourceId==='advisory-creator-failed-fees'||e.id.startsWith('advisory-creatorFailedFees-')||e.adapterVersion==='creator-failed-fee-archive-v1'));
  assert.deepEqual([o24.quality,o25.quality,o25.reasonCode,o25.unit],['KNOWN','KNOWN','CREATOR_LIFETIME_VECTOR_OBSERVED','scoped-record']);
  // Same evidence, cohort, interval and reused receipts as O24; no new namespace, source or read.
  assert.deepEqual(o25.evidenceIds,o24.evidenceIds);
@@ -139,7 +143,7 @@ test('fresh proof v19 derives O25 from the same typed role, tape, inventory rece
    assert.throws(()=>writer.analyzeLive(claimed),REJECTED);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v19');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v20');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -147,7 +151,9 @@ test('the same O24 raw under proof v18 never derives O25, keeps every other metr
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!;
  const v18={...proof,method:'advisory-provenance-v18'},old=reconstruct(bundle,v18),o25=metric(old,'O25');
  assert.deepEqual([old.method,o25.quality,o25.reasonCode,o25.data,o25.evidenceIds],['advisory-measurements-v19','MISSING','INVENTORY_COST_AND_AGE_HISTORY_REQUIRED',null,[]]);
- const others=(metrics:typeof facts.metrics)=>metrics.filter(m=>m.id!=='O25');
+ // Fresh proof v20 also replaces the S15 registry row over this same O25 with its unready record; proof v18 keeps the registry default.
+ const others=(metrics:typeof facts.metrics)=>metrics.filter(m=>m.id!=='O25'&&m.id!=='S15');
+ assert.deepEqual([metric(old,'S15').reasonCode,metric(old,'S15').data,metric(facts,'S15').reasonCode],['TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null,'S15_NO_TARGET_POSITION']);
  assert.deepEqual([others(old.metrics),old.supplements],[others(facts.metrics),facts.supplements]);
  assert.deepEqual(metric(old,'O24'),metric(facts,'O24'));
  const adv=(f:typeof facts)=>f.groups.find(g=>g.checkId==='ADV-01')!;
@@ -157,13 +163,25 @@ test('the same O24 raw under proof v18 never derives O25, keeps every other metr
  try{const service=new Service(join(directory,'live.sqlite'));try{assert.throws(()=>service.analyzeLive(downgraded),REJECTED);}finally{service.close();}}finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-test('a v19 proof without creator-inventory receipts keeps the O25 registry default',async()=>{
+test('the same raw under saved proof v19 keeps O25, never derives S15 and is not fresh persistence',async()=>{
+ const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!;
+ const v19={...proof,method:'advisory-provenance-v19',creatorFailedFees:undefined},old=reconstruct(bundle,v19),s15=metric(old,'S15');
+ assert.deepEqual([old.method,s15.quality,s15.reasonCode,s15.data,metric(old,'O25')],['advisory-measurements-v20','MISSING','TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null,metric(facts,'O25')]);
+ const others=(metrics:typeof facts.metrics)=>metrics.filter(m=>m.id!=='S15');
+ assert.deepEqual([others(old.metrics),old.supplements],[others(facts.metrics),facts.supplements]);
+ const downgraded=structuredClone(bundle);setProof(downgraded,v19);downgraded.details!.advisory=old;
+ const directory=mkdtempSync(join(tmpdir(),'advisory-creator-lifetime-v19-frozen-'));
+ try{const service=new Service(join(directory,'live.sqlite'));try{assert.throws(()=>service.analyzeLive(downgraded),REJECTED);}finally{service.close();}}finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('a v20 proof without creator-inventory receipts keeps the O25 and S15 registry defaults',async()=>{
  const bundle=await live(),b=structuredClone(bundle),p=proofOf(b);
  p.creatorInventory=null;b.evidence=b.evidence.filter(e=>!e.id.startsWith('advisory-creatorInventory-'));
  for(const id of Object.keys(b.rawArtifacts))if(id.startsWith('advisory-creatorInventory-'))delete b.rawArtifacts[id];
  setProof(b,p);
  const facts=reconstruct(b,p),o25=metric(facts,'O25');
- assert.deepEqual([facts.method,o25.quality,o25.reasonCode,o25.data,o25.evidenceIds],['advisory-measurements-v20','MISSING','INVENTORY_COST_AND_AGE_HISTORY_REQUIRED',null,[]]);
+ const s15=metric(facts,'S15');
+ assert.deepEqual([facts.method,o25.quality,o25.reasonCode,o25.data,o25.evidenceIds,p.creatorFailedFees,s15.reasonCode,s15.data],['advisory-measurements-v21','MISSING','INVENTORY_COST_AND_AGE_HISTORY_REQUIRED',null,[],null,'TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null]);
 });
 
 test('a failed inventory read leaves O24 unpromoted and O25 at the inherited quality without any vector',async()=>{

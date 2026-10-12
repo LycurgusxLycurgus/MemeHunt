@@ -18,6 +18,8 @@ import { OFFLINE_PUMP_AMM_PROGRAM as sdk,PUMP_AMM_PROGRAM_ID,poolPda } from '@pu
 import { DEMAND_REQUEST_CAP,DEMAND_ARCHIVE_ADAPTER,archiveDemandReceipt,unpackDemandReceipt,demandArchiveSourceLimit } from '../src/providers/advisory-demand-windows.js';
 import { CALLER_REQUEST_CAP } from '../src/providers/advisory-caller-history.js';
 import { CREATOR_INVENTORY_REQUEST_CAP } from '../src/providers/advisory-creator-inventory-collector.js';
+import { CREATOR_FAILED_FEE_REQUEST_CAP } from '../src/providers/advisory-creator-performance-collector.js';
+import { archiveCreatorFailedFeeReceipt,failedFeeReceiptId,failedFeeRequest,FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../src/providers/advisory-creator-failed-fees.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { makeSocialFixture,SOCIAL_TOKEN,SOCIAL_CUTOFF } from './social-fixtures.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -46,10 +48,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v19');assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v20');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v20');
+  assert.equal(facts.method,'advisory-measurements-v21');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
@@ -67,6 +69,10 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
   // Proof v18 (inventory key, no O25) rebuilds facts v19 identically here: without a creator role there is no inventory, so O25 keeps its registry default in both.
   const inventoryOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v18'},bundle.thesis??null,bundle.features);
   assert.deepEqual([inventoryOnly.method,inventoryOnly.supplements,inventoryOnly.metrics,inventoryOnly.groups],['advisory-measurements-v19',facts.supplements,facts.metrics,facts.groups]);
+  // Proof v19 (no failed-fee key) rebuilds facts v20 identically here: without inventory S15 keeps its registry default in both; a fresh v20 proof must carry the key.
+  const lifetimeOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v19',creatorFailedFees:undefined},bundle.thesis??null,bundle.features);
+  assert.deepEqual([lifetimeOnly.method,lifetimeOnly.supplements,lifetimeOnly.metrics,lifetimeOnly.groups],['advisory-measurements-v20',facts.supplements,facts.metrics,facts.groups]);
+  assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,creatorFailedFees:undefined},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
@@ -82,7 +88,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
       for(const expected of ['Supplementary one-hour demand (not A30; not counted): NOT_ELIGIBLE / SELECTED_POOL_WINDOW_INCOMPLETE.','baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z','no zero is inferred'])assert.ok(text.includes(expected),expected);
     }finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v19');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v20');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -140,7 +146,7 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18],[18,19]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
+for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18],[18,19],[19,20]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -149,7 +155,7 @@ for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,1
       db.exec('DROP TRIGGER snapshots_no_update');
       const stored=db.prepare('SELECT payload,semantic FROM snapshots WHERE id=?').get(id) as {payload:string;semantic:string};
       const payload=JSON.parse(stored.payload),semantic=JSON.parse(stored.semantic);
-      // Saved facts before v17 never carried the supplementary report; saved short (v17), C16 (v18) and creator-inventory (v19) facts keep it under their recorded policy (v16, v17, v18).
+      // Saved facts before v17 never carried the supplementary report; saved short (v17), C16 (v18), creator-inventory (v19) and O25 (v20) facts keep it under their recorded policy (v16, v17, v18, v19).
       semantic.policyVersion=`research-screen-advisory-v${version}`;semantic.details.advisory.method=`advisory-measurements-v${measured}`;if(measured<17)delete semantic.details.advisory.supplements;
       if(payload.details?.advisory){payload.details.advisory.method=`advisory-measurements-v${measured}`;if(measured<17)delete payload.details.advisory.supplements;}
       payload.hash=relabeled=decisionHash(semantic);
@@ -168,19 +174,71 @@ test('trader-account history has its own bounded allowance and never consumes th
   assert.throws(()=>admission.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
   for(let i=0;i<CALLER_REQUEST_CAP;i++)void admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result');
   assert.throws(()=>admission.callerFetcher('https://cdn.syndication.twimg.com/tweet-result'),/COLLECTION_BUDGET/);
-  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0});
+  assert.deepEqual(admission.counts,{shared:0,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0});
   for(let i=0;i<150;i++)void admission.fetcher('https://rpc.example');
   assert.throws(()=>admission.fetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0},calls:214+DEMAND_REQUEST_CAP+CALLER_REQUEST_CAP});
+  assert.deepEqual({counts:admission.counts,limit:admission.limit,calls},{counts:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0},limit:{shared:150,accounts:64,demand:DEMAND_REQUEST_CAP,callers:CALLER_REQUEST_CAP,inventory:0,failedFees:0},calls:214+DEMAND_REQUEST_CAP+CALLER_REQUEST_CAP});
   const disabled=admittedFetchers(base,controller.signal,0);
-  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.callerFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0,callers:0,inventory:0});
+  assert.throws(()=>disabled.accountFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.demandFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.callerFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>disabled.failedFeeFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.deepEqual(disabled.counts,{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0});
   // Creator inventory has its own derived 102-request pool and never touches the shared 150.
   const inventory=admittedFetchers(base,controller.signal,0,0,0,CREATOR_INVENTORY_REQUEST_CAP);
   for(let i=0;i<CREATOR_INVENTORY_REQUEST_CAP;i++)void inventory.inventoryFetcher('https://rpc.example');
   assert.throws(()=>inventory.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
-  assert.deepEqual([inventory.counts,inventory.limit,CREATOR_INVENTORY_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:102},{shared:150,accounts:0,demand:0,callers:0,inventory:102},102]);
+  assert.deepEqual([inventory.counts,inventory.limit,CREATOR_INVENTORY_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:102,failedFees:0},{shared:150,accounts:0,demand:0,callers:0,inventory:102,failedFees:0},102]);
+  // Failed-fee receipts have their own 130-request pool; it never touches the shared 150, inventory or any other allowance.
+  const failed=admittedFetchers(base,controller.signal,0,0,0,0,CREATOR_FAILED_FEE_REQUEST_CAP);
+  for(let i=0;i<CREATOR_FAILED_FEE_REQUEST_CAP;i++)void failed.failedFeeFetcher('https://rpc.example');
+  assert.throws(()=>failed.failedFeeFetcher('https://rpc.example'),/COLLECTION_BUDGET/);assert.throws(()=>failed.inventoryFetcher('https://rpc.example'),/COLLECTION_BUDGET/);
+  assert.deepEqual([failed.counts,failed.limit,CREATOR_FAILED_FEE_REQUEST_CAP],[{shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:130},{shared:150,accounts:0,demand:0,callers:0,inventory:0,failedFees:130},130]);
   controller.abort(new Error('COLLECTION_DEADLINE'));
   const late=admittedFetchers(base,controller.signal,64,DEMAND_REQUEST_CAP);assert.throws(()=>late.accountFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.accounts,0);assert.throws(()=>late.demandFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(late.counts.demand,0);
+  const lateFailed=admittedFetchers(base,controller.signal,0,0,0,0,CREATOR_FAILED_FEE_REQUEST_CAP);assert.throws(()=>lateFailed.failedFeeFetcher('https://rpc.example'),/COLLECTION_DEADLINE/);assert.equal(lateFailed.counts.failedFees,0);
+});
+
+test('failed-fee receipts are owned only by a v20 descriptor over an ingested inventory; orphans, downgrades and misfiles are rejected and null is never a zero',async()=>{
+  const bundle=await collect(),proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),s15=bundle.details!.advisory!.metrics.find(m=>m.id==='S15')!;
+  assert.deepEqual([proof.creatorFailedFees,s15.quality,s15.reasonCode,s15.data],[null,'MISSING','TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null]);
+  assert.ok(!bundle.evidence.some(e=>e.sourceId===FAILED_FEE_SOURCE_ID||e.adapterVersion===FAILED_FEE_ADAPTER||e.id.startsWith('advisory-creatorFailedFees-')));
+  const signature=encodeSolanaAddress(Buffer.alloc(64,9)),key=failedFeeReceiptId(signature),id=`advisory-creatorFailedFees-${key}`,request=failedFeeRequest(signature);
+  const declared={requests:{[key]:request},artifactIds:{[key]:id}};
+  // A well-formed archived receipt in the live ingest shape; each case changes only ownership or proof version.
+  const add=(b:typeof bundle,recordId:string,change:(r:any)=>void=()=>{})=>{
+    const template=b.evidence.find(e=>e.sourceId==='advisory-window')!,r:any={...structuredClone(template),id:recordId,sourceId:FAILED_FEE_SOURCE_ID,adapterVersion:FAILED_FEE_ADAPTER,scope:{request}};change(r);
+    b.evidence.push(r);b.rawArtifacts[recordId]=archiveCreatorFailedFeeReceipt(JSON.stringify({jsonrpc:'2.0',id:1,error:{code:'RPC_TRANSPORT'}}));rehash(b,recordId);
+  };
+  const run=(b:typeof bundle,p:unknown)=>()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,p,b.thesis??null,b.features);
+  const cases:Array<[string,(b:typeof bundle)=>unknown]>=[
+    ['orphan-by-source',b=>{add(b,'advisory-window-misfiled-failed-fee');return proof;}],
+    ['orphan-by-prefix',b=>{add(b,id,r=>{r.sourceId='advisory-window';r.adapterVersion='live-v1';});return proof;}],
+    ['orphan-by-adapter',b=>{add(b,'loose-failed-fee',r=>{r.sourceId='advisory-window';});return proof;}],
+    ['orphan-under-null-descriptor',b=>{add(b,id);return proof;}],
+    ['descriptor-without-inventory',b=>{add(b,id);return {...proof,creatorFailedFees:declared};}],
+    ['empty-descriptor-without-inventory',()=>({...proof,creatorFailedFees:{requests:{},artifactIds:{}}})],
+    ['v19-proof-with-descriptor',b=>{add(b,id);return {...proof,method:'advisory-provenance-v19',creatorFailedFees:declared};}],
+    ['v20-proof-without-key',()=>{const p={...proof};delete p.creatorFailedFees;return p;}],
+  ];
+  for(const [name,make] of cases){const b=structuredClone(bundle),p=make(b);assert.throws(run(b,p),/ADVISORY_PROOF_INVALID/,name);}
+  const directory=mkdtempSync(join(tmpdir(),'advisory-failed-fees-'));
+  try{
+    const service=new Service(join(directory,'live.sqlite'));
+    try{
+      // The failed-fee source is a known public API, so a public orphan reaches the advisory proof and fails there; a wrong access mode fails provenance first.
+      const orphan=structuredClone(bundle);add(orphan,id);assert.throws(()=>service.analyzeLive(orphan),/ADVISORY_PROOF_INVALID/);
+      const access=structuredClone(bundle);add(access,id,r=>{r.accessMode='FREE_ACCOUNT';});assert.throws(()=>service.analyzeLive(access),/LIVE_PROVENANCE_INVALID/);
+      const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);
+    }finally{service.close();}
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('the unchanged 24 MB live artifact cap admits a bundle at the cap and rejects one byte over',async()=>{
+  const bundle=await collect(),size=(b:typeof bundle)=>b.evidence.reduce((n,e)=>n+(b.rawArtifacts[e.id]===undefined?0:Buffer.byteLength(b.rawArtifacts[e.id]!)),0);
+  const pad=(n:number)=>{const b=structuredClone(bundle);b.rawArtifacts['analysis-context']+=' '.repeat(n);rehash(b,'analysis-context');return b;};
+  const room=24_000_000-size(bundle);assert.ok(room>0);
+  const directory=mkdtempSync(join(tmpdir(),'advisory-artifact-cap-'));
+  try{
+    const service=new Service(join(directory,'live.sqlite'));
+    try{const full=pad(room);assert.equal(size(full),24_000_000);assert.ok(service.analyzeLive(full).id);assert.throws(()=>service.analyzeLive(pad(room+1)),/ARTIFACT_HASH_OR_SIZE/);}finally{service.close();}
+  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
 test('advisory rehashed metric, raw request, clock and marker tampering cannot certify a live result',async()=>{
@@ -249,6 +307,9 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     reject('reserve-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v13';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('self-consistent-reserve-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v13';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('self-consistent-synchrony-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v12';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('failed-fees-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v19';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('failed-fees-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.creatorFailedFees;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-failed-fees-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v19';delete proof.creatorFailedFees;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     for(const [name,id,sourceId] of [['orphan-caller-receipt','advisory-callers-caller-history:1:oembed','advisory-callers'],['orphan-caller-selection','advisory-callers-selection','advisory-collector'],['orphan-caller-semantic','advisory-callerSemantic-advisory-semantic-proposal-response','gemini']] as const)reject(name,b=>{
       const template=b.evidence.find(e=>e.sourceId==='advisory-window')!;b.evidence.push({...structuredClone(template),id,sourceId});b.rawArtifacts[id]='{}';rehash(b,id);
       assert.throws(()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,JSON.parse(b.rawArtifacts['advisory-derivation']!),b.thesis??null,b.features),/ADVISORY_PROOF_INVALID/);
@@ -318,6 +379,8 @@ test('facts schema binds the supplementary report to fresh facts v17 with its fi
   assert.equal(valid({...plain,method:'advisory-measurements-v18'}),false,'saved C16 facts missing the supplement');
   assert.equal(valid({...facts,method:'advisory-measurements-v19'}),true,'saved creator-inventory facts keep their supplement');
   assert.equal(valid({...plain,method:'advisory-measurements-v19'}),false,'saved creator-inventory facts missing the supplement');
+  assert.equal(valid({...facts,method:'advisory-measurements-v20'}),true,'saved O25 facts keep their supplement');
+  assert.equal(valid({...plain,method:'advisory-measurements-v20'}),false,'saved O25 facts missing the supplement');
   const report=(change:(r:any)=>void)=>{const f=structuredClone(facts) as any;change(f.supplements.shortDemand);return valid(f);};
   const cases:Array<[string,(r:any)=>void]>=[
     ['method',r=>{r.method='supplementary-short-demand-windows-v2';}],['role',r=>{r.role='CANONICAL';}],['canonical substitution',r=>{r.substitutesCanonical=true;}],['counted',r=>{r.countsTowardKnownMetrics=true;}],

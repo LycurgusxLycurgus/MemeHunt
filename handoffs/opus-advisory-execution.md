@@ -1,3 +1,13 @@
+# Implemented collector, live result pending — creator-performance-2026-10-12
+
+The S15 creator-only target-position collector is implemented and independently reviewed, but **S15 remains MISSING** on the current token. The accepted public snapshot is still `992ab7dd-5dda-464c-948d-b4007b9c5941` at 2026-10-12T09:54:13.674Z: **28/50 known, 22 unresolved**, all five advisory groups UNKNOWN. Two newer actual-token attempts failed upstream before S15 admission. The first creator-role index timed out and its latest-hour O28 pool index consumed four 32-row pages without reaching the hour start; the second had broad RPC, DEX and attention timeouts. Neither is an accepted S15 measurement or a reason to treat missing failed-fee receipts as zero.
+
+Exact local Claude Code `claude-opus-5-5` medium authored the 20-file implementation. Proof20/facts21/policy20 adds a complete creator-key failed-transaction index census and a scoped FIFO target-token quote result. The position separates fee-inclusive gross buys, fee-net sells, successful network fees, failed creator-charged target-associated overhead, account funding and own-vault creator fees. It excludes whole-wallet/other-asset PnL and does not value held units without a mark. All 130 previously acquired failed references in the portable archive corpus have other fee payers and unchanged creator balances; that is a regression fixture, **not** a new live fact. Fresh reads require the S13/O24/O25/A30 gates, every indexed failed receipt, exact archive/request/hash/clock membership and retained source budgets; gaps leave S15 unresolved. Old proof/policy replay remains frozen.
+
+Shared-checkout typecheck/build and `npm test` **1075/1075 PASS**. Root verified seven old saved show/replay pairs byte-identical, including the accepted O25 snapshot. Native first review **PASS**, correction stage unused. The current collector's source-density and RPC bottlenecks need a separate correction cycle before a fresh S15 known claim. See `agentic/analysis.md` for active work, `agentic/architecture.md` for maintained boundaries, and the private, ignored `.data/advisory-feasibility-cycle/final-integration/handoff.md` for raw evidence limits. No keys, operator database or foreign-session files are part of this handoff.
+
+---
+
 # Accepted execution result — creator-lifetime-2026-10-12
 
 O25 is newly KNOWN: complete creator-only lifetime trade history now supplies FIFO entry cost, held age/cost bands, realized units sold/acquired and current six-hour selling. Exact Claude Code `claude-opus-5-5` authored the provider, integration and correction; Codex acquired, applied, tested, independently reviewed and verified them.

@@ -22,7 +22,7 @@ import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy
 import { reconstructAdvisory } from './advisory.js';
 
 /** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
-const ADVISORY_SCREENS=Array.from({length:19},(_,i)=>`research-screen-advisory-v${i+1}`);
+const ADVISORY_SCREENS=Array.from({length:20},(_,i)=>`research-screen-advisory-v${i+1}`);
 
 /** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
 function validateAdvisoryDexBaseline(b:LiveBundle){
@@ -178,7 +178,7 @@ export class Service {
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED' };
         // Launchpad access is per receipt: only the keyed Lighthouse read is a free account; the Llama summaries are public.
         const access = e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
         if (access !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
@@ -214,7 +214,7 @@ export class Service {
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
             // Fresh persistence requires current accounting; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v19')throw new Error('ADVISORY_PROOF_INVALID');
+            if(proof.method!=='advisory-provenance-v20')throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
@@ -419,7 +419,7 @@ export class Service {
     this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,b.analysisKind==='LIVE'?b.details?.advisory:undefined);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v19':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v20':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');

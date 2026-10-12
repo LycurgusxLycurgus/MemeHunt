@@ -35,24 +35,28 @@ import { reconstructAdvisory,type AdvisoryProof } from './advisory.js';
 import { collectCreatorRole } from '../providers/advisory-creator-role-collector.js';
 import { collectLaunchpadContext } from '../providers/advisory-launchpad.js';
 import { collectCreatorInventoryRun,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
+import { collectCreatorFailedFeesRun,CREATOR_FAILED_FEE_REQUEST_CAP,type CreatorFailedFeeReceipts } from '../providers/advisory-creator-performance-collector.js';
+import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../providers/advisory-creator-failed-fees.js';
 
 
 export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
-/** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller and creator-inventory reads have their own explicit allowances. */
-export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0){
-  const limit={shared:150,accounts:accountLimit,demand:demandLimit,callers:callerLimit,inventory:inventoryLimit},counts={shared:0,accounts:0,demand:0,callers:0,inventory:0};
-  const wrap=(pool:'shared'|'accounts'|'demand'|'callers'|'inventory'):typeof fetch=>(url,init)=>{
+/** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory and creator failed-fee reads have their own explicit allowances. */
+export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0){
+  const limit={shared:150,accounts:accountLimit,demand:demandLimit,callers:callerLimit,inventory:inventoryLimit,failedFees:failedFeeLimit},counts={shared:0,accounts:0,demand:0,callers:0,inventory:0,failedFees:0};
+  const wrap=(pool:'shared'|'accounts'|'demand'|'callers'|'inventory'|'failedFees'):typeof fetch=>(url,init)=>{
     if(deadline.aborted)throw deadline.reason;
     if(counts[pool]>=limit[pool])throw new Error('COLLECTION_BUDGET');
     counts[pool]++;
     return base(url,{...init,signal:init?.signal?AbortSignal.any([deadline,init.signal]):deadline});
   };
-  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),demandFetcher:wrap('demand'),callerFetcher:wrap('callers'),inventoryFetcher:wrap('inventory'),limit,counts};
+  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),demandFetcher:wrap('demand'),callerFetcher:wrap('callers'),inventoryFetcher:wrap('inventory'),failedFeeFetcher:wrap('failedFees'),limit,counts};
 }
 const addressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 /** Caller work stops this long before the run deadline so late canonical, topology and venue capture keep their time. */
 const CALLER_RESERVE_MS=120_000;
+/** The unchanged live artifact cap; the late failed-fee stage is kept only when the projected whole bundle stays under it. The margin covers the late records' own metadata. */
+const LIVE_ARTIFACT_CAP=24_000_000,FAILED_FEE_TAIL_MARGIN=65_536;
 
 export async function collectLiveSolana(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
   if(token.chain!=='solana')throw new Error('INVALID_SOLANA_ADDRESS');
@@ -67,7 +71,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const runStartedAt=Date.now();let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
   const runBudgetMs=options.semanticEnabled?600_000:120_000;
   const deadline=AbortSignal.timeout(runBudgetMs);
-  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher}=admission;
+  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_FAILED_FEE_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher}=admission;
   const evidence: EvidenceRecord[] = [];
   const rawArtifacts: Record<string,string> = {};
   const observations: Observation[] = [];
@@ -180,6 +184,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const launchpadPending=options.advisoryEnabled&&options.solanaTrackerKey?collectLaunchpadContext(options.solanaTrackerKey,fetcher,now,deadline).catch(()=>null):null;
   // Creator inventory starts once S13 and the complete A30 tape have both finished, reads only on its own allowance and, in the 600 s mode, stops at the caller reserve so late capture keeps its time.
   const inventoryPending=advisoryPending&&creatorPending?Promise.all([advisoryPending,creatorPending]).then(([advisory,creator])=>'error' in advisory||'error' in creator?null:collectCreatorInventoryRun(token,creator,advisory.window,advisory.demand,options.rpcUrl??PUBLIC_SOLANA_RPC,inventoryFetcher,now,options.semanticEnabled?AbortSignal.any([deadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):deadline)).catch(error=>({error})):null;
+  // Failed-fee receipts start once the inventory task has finished with receipts that will be ingested; they read only on their own allowance, stop at the same reserve, and the collector admits a read only after the recomputed S13/A30/O24/O25 gate holds.
+  const failedFeesPending=inventoryPending?Promise.all([advisoryPending!,creatorPending!,inventoryPending]).then(([advisory,creator,inventory])=>'error' in advisory||'error' in creator||!inventory||'error' in inventory||!Object.keys(inventory.rawArtifacts).length?null:collectCreatorFailedFeesRun(token,creator,advisory.window,advisory.demand,inventory,options.rpcUrl??PUBLIC_SOLANA_RPC,failedFeeFetcher,now,options.semanticEnabled?AbortSignal.any([deadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):deadline)).catch(error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
   let attention:ReturnType<typeof deriveAttention>|undefined;
@@ -278,17 +284,18 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     }
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
-  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
+  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory'|'creatorFailedFees',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
       const artifactIds:Record<string,string>={};
       for(const [key,raw] of Object.entries(read.rawArtifacts)){
         const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
         if(!at||read.requests[key]===undefined)throw new Error('ADVISORY_COLLECTION_INVALID');
         const model=namespace==='semantic'||namespace==='callerSemantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
-        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:'live-v1');
+        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':namespace==='creatorFailedFees'?FAILED_FEE_SOURCE_ID:`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:namespace==='creatorFailedFees'?FAILED_FEE_ADAPTER:'live-v1');
       }
       return {requests:read.requests,artifactIds};
     };
   let advisoryProof:Omit<AdvisoryProof,'cutoff'|'socialDerivationId'|'thesisContextId'>|undefined;
+  let failedFeeRead:CreatorFailedFeeReceipts|null=null;
   if(advisoryPending){
     const result=await advisoryPending;
     if('error' in result)throw new Error('ADVISORY_COLLECTION_INVALID');
@@ -323,7 +330,9 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // The creator-inventory task already finished on its own allowance after S13 and A30; every retained receipt, including error envelopes, is ingested once.
     let creatorInventory:AdvisoryProof['creatorInventory']=null;
     if(inventoryPending){const inventory=await inventoryPending;if(inventory&&!('error' in inventory)&&Object.keys(inventory.rawArtifacts).length)creatorInventory=ingest('creatorInventory',inventory);}
-    advisoryProof={method:'advisory-provenance-v19',launchpad,creatorRole,creatorInventory,topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    // The failed-fee task settles here, before the cutoff, on its own allowance; its receipts are held for the late cap-guarded ingestion and only beside an ingested inventory.
+    if(failedFeesPending){const read=await failedFeesPending;if(creatorRole&&creatorInventory&&read&&!('error' in read))failedFeeRead=read;}
+    advisoryProof={method:'advisory-provenance-v20',launchpad,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled)await captureCanonical();
   if(advisoryProof&&!detailRead?.rawArtifacts['rpc-holder-population']){const topology=await collectAuthorityTopology(token,detailRead?.rawArtifacts['rpc-mint-raw'],options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);advisoryProof.topology=ingest('topology',topology);}
@@ -342,9 +351,17 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     };
   const baseline=deriveBaseline({sharedMode:sharedEnabled,token,cutoff,profile:options.profile,features,evidence,observations,market:dex.market,collection,semantic,research:options.research,attention,social:social?.assessments,controls:venueRead?.controls??detailRead?.controls,holders:detailRead?.holders,program:detailRead?.program,venue:venueRead?.venue,venueInspection:venueRead?.inspection,directErrors:detailRead?.errors,thesis,origins:options.origins});
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
+  // The failed-fee stage is ingested last and kept only when the projected bundle stays under the unchanged 24 MB cap: every retained byte, these archives, and the remaining thesis, derivation and shared artifacts that serialize their metadata. Otherwise every receipt is dropped and S15 stays not collected, never a known zero.
+  if(advisoryProof&&failedFeeRead){
+    const mark=evidence.length,descriptor=ingest('creatorFailedFees',failedFeeRead),bytes=(value:unknown)=>Buffer.byteLength(JSON.stringify(value));
+    const projected=Object.values(rawArtifacts).reduce((n,raw)=>n+Buffer.byteLength(raw),0)+bytes({method:'frozen-advisory-thesis-v1',token,cutoff,thesis})+bytes({...advisoryProof,creatorFailedFees:descriptor,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'})
+      +(sharedEnabled?bytes({token,cutoff,profile:options.profile,baseline,features,evidence,observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds}):0)+FAILED_FEE_TAIL_MARGIN;
+    if(projected<=LIVE_ARTIFACT_CAP)advisoryProof.creatorFailedFees=descriptor;
+    else for(const e of evidence.splice(mark))delete rawArtifacts[e.id];
+  }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v19'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v20'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
