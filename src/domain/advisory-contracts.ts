@@ -61,7 +61,7 @@ export const advisoryMetricSchema=z.object({
 }).strict();
 export type AdvisoryMetric=z.infer<typeof advisoryMetricSchema>;
 export const advisoryFactsSchema=z.object({
-  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2','advisory-measurements-v3','advisory-measurements-v4','advisory-measurements-v5','advisory-measurements-v6','advisory-measurements-v7','advisory-measurements-v8','advisory-measurements-v9','advisory-measurements-v10','advisory-measurements-v11','advisory-measurements-v12','advisory-measurements-v13','advisory-measurements-v14','advisory-measurements-v15','advisory-measurements-v16','advisory-measurements-v17']),
+  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2','advisory-measurements-v3','advisory-measurements-v4','advisory-measurements-v5','advisory-measurements-v6','advisory-measurements-v7','advisory-measurements-v8','advisory-measurements-v9','advisory-measurements-v10','advisory-measurements-v11','advisory-measurements-v12','advisory-measurements-v13','advisory-measurements-v14','advisory-measurements-v15','advisory-measurements-v16','advisory-measurements-v17','advisory-measurements-v18']),
   token:z.object({chain:z.enum(['solana','bsc','base','robinhood']),address:z.string().min(1)}).strict(),
   cutoff:z.iso.datetime({offset:true}),metrics:z.array(advisoryMetricSchema).length(advisoryIds.length),
   groups:z.array(z.object({checkId:z.string(),known:z.number().int().nonnegative(),total:z.number().int().positive(),unresolved:z.array(z.string())}).strict()).length(advisoryGroups.length),
@@ -74,7 +74,7 @@ export const advisoryFactsSchema=z.object({
     if(reported.length!==1||reported[0].total!==group.featureIds.length||reported[0].known!==group.featureIds.length-unresolved.length||JSON.stringify(reported[0].unresolved)!==JSON.stringify(unresolved))ctx.addIssue({code:'custom',message:'ADVISORY_GROUP_COVERAGE'});
   }
   // Only fresh facts v17 carry, and must carry, the supplementary report; it stays outside metrics, groups and KNOWN counts.
-  if((facts.method==='advisory-measurements-v17')!==(facts.supplements!==undefined))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_VERSION'});
+  if((facts.method==='advisory-measurements-v17'||facts.method==='advisory-measurements-v18')!==(facts.supplements!==undefined))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_VERSION'});
   const short=facts.supplements?.shortDemand;
   if(short&&(short.token.chain!==facts.token.chain||short.token.address!==facts.token.address))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_TOKEN'});
 });

@@ -215,7 +215,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v16', 'advisory-measurements-v17', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v17', 'advisory-measurements-v18', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -224,13 +224,13 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
   const legacy = { ...proof, method: 'advisory-provenance-v12' }, replayed = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, legacy, bundle.thesis ?? null, bundle.features);
   assert.equal(replayed.method, 'advisory-measurements-v13');
   assert.deepEqual(replayed.metrics.find(m => m.id === 'O23'), { id: 'O23', quality: 'MISSING', unit: 'scoped-record', data: null, evidenceIds: [], reasonCode: 'INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED' });
-  assert.deepEqual(replayed.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29'), facts.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29'));
+  assert.deepEqual(replayed.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29' && m.id !== 'C16'), facts.metrics.filter(m => m.id !== 'O23' && m.id !== 'O29' && m.id !== 'C16'));
   // O29 dispatches only from proof v14 over the same single retained-V demand decode; every v13 metric is unchanged by that decode.
   const o29 = facts.metrics.find(m => m.id === 'O29')!, v13 = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, { ...proof, method: 'advisory-provenance-v13' }, bundle.thesis ?? null, bundle.features);
   assert.deepEqual([o29.quality, o29.reasonCode, (o29.data as any).method], ['MISSING', 'RESERVE_CURVE_MISMATCH', 'complete-pool-effective-reserve-path-v1']);
   assert.equal(v13.method, 'advisory-measurements-v14');
   assert.notEqual((v13.metrics.find(m => m.id === 'O29')!.data as any)?.method, 'complete-pool-effective-reserve-path-v1');
-  assert.deepEqual(v13.metrics.filter(m => m.id !== 'O29'), facts.metrics.filter(m => m.id !== 'O29'));
+  assert.deepEqual(v13.metrics.filter(m => m.id !== 'O29' && m.id !== 'C16'), facts.metrics.filter(m => m.id !== 'O29' && m.id !== 'C16'));
   const directory = mkdtempSync(join(tmpdir(), 'advisory-synchrony-')), file = join(directory, 'live.sqlite');
   try {
     const writer = new Service(file); let id = '';
@@ -246,7 +246,7 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v16'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v17'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -266,7 +266,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   const transactions = new Map<string, unknown>([...liveTransactions(old), [inScope[0]!.signature, swaps(inScope[0]!, [b58(U4)], [U4])], [inScope[1]!.signature, routed(inScope[1]!, K, P)], [inScope[2]!.signature, swaps(inScope[2]!, [b58(U1)], [U1])], [inScope[3]!.signature, swaps(inScope[3]!, [b58(U1)], [U1])]]);
   const live = (mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, transactions, mutate), now: () => liveAt });
   const bundle = await live(), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!, s = facts.supplements!.shortDemand;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v16', 'advisory-measurements-v17', 50, 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v17', 'advisory-measurements-v18', 50, 'KNOWN']);
   assert.deepEqual([s.status, s.reportEnd, s.baseline.start, s.baseline.end, s.measured.start], ['COMPLETE', '2026-10-10T12:00:00.000Z', '2026-10-10T10:00:00.000Z', '2026-10-10T11:00:00.000Z', '2026-10-10T11:00:00.000Z']);
   assert.deepEqual(s.windows.map(w => w.condition), [false, false, false, false, false, true]);
   assert.deepEqual(s.windows.map(w => w.firstObservedBuyerCount), [0, 0, 0, 0, 0, 1]);
@@ -280,7 +280,11 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   assert.deepEqual(s, decodeAdvisoryShortDemand(token, windowData, w, d.rawArtifacts, d.retrievedAt, d.requests, liveAt, [...w.ids, ...d.ids]));
   // Canonical A30, all 50 metrics and the group counts are identical to the proof v15 reconstruction without the report.
   const prior = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, { ...proof, method: 'advisory-provenance-v15' }, bundle.thesis ?? null, bundle.features);
-  assert.deepEqual([prior.method, prior.supplements, prior.metrics, prior.groups], ['advisory-measurements-v16', undefined, facts.metrics, facts.groups]);
+  const withoutC16 = (metrics: typeof facts.metrics) => metrics.filter(m => m.id !== 'C16');
+  assert.deepEqual([prior.method, prior.supplements, withoutC16(prior.metrics), prior.groups], ['advisory-measurements-v16', undefined, withoutC16(facts.metrics), facts.groups]);
+  // The short-only proof v16 rebuilds the same supplement and facts v17 with the registry C16 default.
+  const shortOnly = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, { ...proof, method: 'advisory-provenance-v16', launchpad: undefined }, bundle.thesis ?? null, bundle.features);
+  assert.deepEqual([shortOnly.method, shortOnly.supplements, withoutC16(shortOnly.metrics), shortOnly.groups], ['advisory-measurements-v17', facts.supplements, withoutC16(facts.metrics), facts.groups]);
   const valid = (change: (r: any) => void) => { const f = structuredClone(facts) as any; change(f.supplements.shortDemand); return advisoryFactsSchema.safeParse(f).success; };
   assert.equal(valid(() => {}), true);
   const cases: Array<[string, (r: any) => void]> = [

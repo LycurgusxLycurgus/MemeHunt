@@ -45,16 +45,20 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v16');assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v17');assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v17');
+  assert.equal(facts.method,'advisory-measurements-v18');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
   assert.ok(short.windows.every(w=>w.condition===null&&w.flow===null&&w.firstObservedBuyers===null));
   const prior=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v15'},bundle.thesis??null,bundle.features);
-  assert.deepEqual([prior.method,prior.supplements,prior.metrics,prior.groups],['advisory-measurements-v16',undefined,facts.metrics,facts.groups]);
+  // C16 is the only metric proof v17 adds; proof v15 and the short-only proof v16 keep the registry C16 default and every other metric and group count.
+  const withoutC16=(metrics:typeof facts.metrics)=>metrics.filter(m=>m.id!=='C16');
+  assert.deepEqual([prior.method,prior.supplements,withoutC16(prior.metrics),prior.groups],['advisory-measurements-v16',undefined,withoutC16(facts.metrics),facts.groups]);
+  const shortOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v16',launchpad:undefined},bundle.thesis??null,bundle.features);
+  assert.deepEqual([shortOnly.method,shortOnly.supplements,withoutC16(shortOnly.metrics),shortOnly.groups,shortOnly.metrics.find(m=>m.id==='C16')?.reasonCode],['advisory-measurements-v17',facts.supplements,withoutC16(facts.metrics),facts.groups,'LAUNCH_MIGRATION_AND_COHORT_HISTORY_REQUIRED']);
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
@@ -70,7 +74,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
       for(const expected of ['Supplementary one-hour demand (not A30; not counted): NOT_ELIGIBLE / SELECTED_POOL_WINDOW_INCOMPLETE.','baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z','no zero is inferred'])assert.ok(text.includes(expected),expected);
     }finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v16');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v17');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -295,6 +299,8 @@ test('facts schema binds the supplementary report to fresh facts v17 with its fi
   assert.equal(valid({...plain,method:'advisory-measurements-v16'}),true,'saved facts without a supplement');
   assert.equal(valid({...facts,method:'advisory-measurements-v16'}),false,'old facts carrying a supplement');
   assert.equal(valid(plain),false,'fresh facts missing the supplement');
+  assert.equal(valid({...facts,method:'advisory-measurements-v17'}),true,'saved short facts keep their supplement');
+  assert.equal(valid({...plain,method:'advisory-measurements-v17'}),false,'saved short facts missing the supplement');
   const report=(change:(r:any)=>void)=>{const f=structuredClone(facts) as any;change(f.supplements.shortDemand);return valid(f);};
   const cases:Array<[string,(r:any)=>void]>=[
     ['method',r=>{r.method='supplementary-short-demand-windows-v2';}],['role',r=>{r.role='CANONICAL';}],['canonical substitution',r=>{r.substitutesCanonical=true;}],['counted',r=>{r.countsTowardKnownMetrics=true;}],
