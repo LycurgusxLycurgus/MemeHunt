@@ -21,6 +21,7 @@ import { qualifyShared } from '../providers/shared-model.js';
 import { collectAdvisoryWalletHistory } from '../providers/advisory-wallet-history.js';
 import { collectAdvisoryWindow } from '../providers/advisory-window.js';
 import { collectAdvisoryWindowAccounts, ACCOUNT_RECEIPT_CAP } from '../providers/advisory-window-accounts.js';
+import { collectAdvisoryDemandWindows, DEMAND_REQUEST_CAP, DEMAND_ARCHIVE_ADAPTER } from '../providers/advisory-demand-windows.js';
 import { decodeAdvisoryTrades, collectAdvisoryTrades } from '../providers/advisory-trades.js';
 import { collectAdvisoryContextHistory } from '../providers/advisory-context-history.js';
 import { qualifyAdvisorySemantic,advisorySemanticRequests } from '../providers/advisory-semantic.js';
@@ -33,16 +34,16 @@ import { reconstructAdvisory,type AdvisoryProof } from './advisory.js';
 
 export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
-/** Wrapped admission: ordinary collectors share 150 requests; trader-account history has its own explicit allowance. */
-export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number){
-  const limit={shared:150,accounts:accountLimit},counts={shared:0,accounts:0};
-  const wrap=(pool:'shared'|'accounts'):typeof fetch=>(url,init)=>{
+/** Wrapped admission: ordinary collectors share 150 requests; trader-account and demand-window histories have their own explicit allowances. */
+export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0){
+  const limit={shared:150,accounts:accountLimit,demand:demandLimit},counts={shared:0,accounts:0,demand:0};
+  const wrap=(pool:'shared'|'accounts'|'demand'):typeof fetch=>(url,init)=>{
     if(deadline.aborted)throw deadline.reason;
     if(counts[pool]>=limit[pool])throw new Error('COLLECTION_BUDGET');
     counts[pool]++;
     return base(url,{...init,signal:init?.signal?AbortSignal.any([deadline,init.signal]):deadline});
   };
-  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),limit,counts};
+  return {fetcher:wrap('shared'),accountFetcher:wrap('accounts'),demandFetcher:wrap('demand'),limit,counts};
 }
 const addressPattern = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -59,13 +60,13 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const runStartedAt=Date.now();let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
   const runBudgetMs=options.semanticEnabled?600_000:120_000;
   const deadline=AbortSignal.timeout(runBudgetMs);
-  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0),{fetcher,accountFetcher}=admission;
+  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher}=admission;
   const evidence: EvidenceRecord[] = [];
   const rawArtifacts: Record<string,string> = {};
   const observations: Observation[] = [];
   const features: FeatureResult[] = [];
-  const addEvidence = (id: string, raw: string, sourceId: string, sourceType: string, accessMode: EvidenceRecord['accessMode'], scope: Record<string,unknown>, at=now()): string => {
-    evidence.push({ id, sourceId, sourceType, retrievedAt: at, availableAt: at, contentHash: hash(raw), adapterVersion: 'live-v1', accessMode, scope });
+  const addEvidence = (id: string, raw: string, sourceId: string, sourceType: string, accessMode: EvidenceRecord['accessMode'], scope: Record<string,unknown>, at=now(), adapterVersion='live-v1'): string => {
+    evidence.push({ id, sourceId, sourceType, retrievedAt: at, availableAt: at, contentHash: hash(raw), adapterVersion, accessMode, scope });
     rawArtifacts[id] = raw;
     return id;
   };
@@ -159,12 +160,12 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   ]).then(async value=>{
     const [chain,,,trades]=value;
     const decoded=decodeAdvisoryTrades(token,advisoryPool,chain.data,chain.rawArtifacts,chain.retrievedAt,chain.requests,trades.rawArtifacts,trades.retrievedAt,trades.requests);
-    const [wallets,{window,accounts,automation}]=await Promise.all([
+    const [wallets,{window,accounts,automation,demand}]=await Promise.all([
       collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
       collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,advisoryWindowEnd,deadline,chain)
-        .then(async window=>{const [accounts,automation]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,deadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline)]);return {window,accounts,automation};}),
+        .then(async window=>{const [accounts,automation,demand]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,deadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),collectAdvisoryDemandWindows(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,demandFetcher,now,deadline)]);return {window,accounts,automation,demand};}),
     ]);
-    return {value,wallets,window,accounts,automation};
+    return {value,wallets,window,accounts,automation,demand};
   },error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
@@ -243,13 +244,13 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     }
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
-  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
+  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
       const artifactIds:Record<string,string>={};
       for(const [key,raw] of Object.entries(read.rawArtifacts)){
         const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
         if(!at||read.requests[key]===undefined)throw new Error('ADVISORY_COLLECTION_INVALID');
         const model=namespace==='semantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
-        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):'PUBLIC_API',{request:read.requests[key]},at);
+        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:'live-v1');
       }
       return {requests:read.requests,artifactIds};
     };
@@ -264,7 +265,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       const requests=Object.fromEntries(Object.keys(classified.rawArtifacts).map(key=>[key,{operation:key,modelRequests:advisorySemanticRequests()}]));
       if(Object.keys(classified.rawArtifacts).length)classification=ingest('semantic',{rawArtifacts:classified.rawArtifacts,retrievedAt:now(),requests});
     }
-    advisoryProof={method:'advisory-provenance-v9',topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification};
+    advisoryProof={method:'advisory-provenance-v10',topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification};
   }
   if(sharedEnabled)await captureCanonical();
   if(advisoryProof&&!detailRead?.rawArtifacts['rpc-holder-population']){const topology=await collectAuthorityTopology(token,detailRead?.rawArtifacts['rpc-mint-raw'],options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);advisoryProof.topology=ingest('topology',topology);}
@@ -285,7 +286,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v9'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v10'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};

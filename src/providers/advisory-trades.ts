@@ -9,7 +9,9 @@ import { decodePinnedWindowInstruction,decodePinnedWindowEvent,reconcileWindowQu
 type Request={method:string;params:unknown[]};
 export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting};
 export type TradeHistory={method:'pumpswap-decoded-sample-v1';token:TokenRef;pool:string|null;quoteMint:string;quoteDecimals:9;poolVerified:boolean;stateSlot:number|null;trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;coveredInterval:{start:string;end:string}|null;sourceUniverseComplete:false;complete:false;transactionsInspected:number;transactionsExcluded:number;excluded:Array<{signature:string;code:string}>;limitations:string[]};
-export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[]};
+export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[];logRecovery?:LogRecovery};
+/** Opt-in only. Unresolved invocations were attempted after log truncation; none is PumpSwap flow or touches the selected pool, and their execution is not proven. */
+export type LogRecovery={truncated:boolean;unresolvedInvocations:number;emptyForeignSweeps:number};
 const program=PUMP_AMM_PROGRAM_ID.toBase58();
 const obj=(x:unknown):x is Record<string,any>=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const integer=(x:unknown):x is number=>Number.isSafeInteger(x)&&Number(x)>=0;
@@ -18,7 +20,7 @@ const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{enc
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
 function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false):DecodedTrade[]{
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
@@ -28,7 +30,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
  }
  const pumpInstructions:any[]=[];
  const groups=new Map<number,any[]>();for(const g of value.meta.innerInstructions){if(!integer(g.index)||g.index>=message.instructions.length||groups.has(g.index)||!Array.isArray(g.instructions))throw new Error('ADVISORY_TRADE_INNER_SHAPE');groups.set(g.index,g.instructions);}
- for(const [i,ix] of message.instructions.entries()){if(ix.programId===program)pumpInstructions.push({...ix,depth:1});for(const inner of groups.get(i)??[])if(inner.programId===program){if(!integer(inner.stackHeight)||inner.stackHeight<2)throw new Error('ADVISORY_TRADE_INNER_DEPTH');pumpInstructions.push({...inner,depth:inner.stackHeight});}}
+ for(const [i,ix] of message.instructions.entries()){if(ix.programId===program)pumpInstructions.push({...ix,depth:1,top:i});for(const inner of groups.get(i)??[])if(inner.programId===program){if(!integer(inner.stackHeight)||inner.stackHeight<2)throw new Error('ADVISORY_TRADE_INNER_DEPTH');pumpInstructions.push({...inner,depth:inner.stackHeight});}}
  const decodeEvent=currentAbi?(payload:string)=>decodePinnedWindowEvent(payload,feeExclusive):(payload:string)=>OFFLINE_PUMP_AMM_PROGRAM.coder.events.decode(payload);
  const authorized=(key:string,depth:number)=>keys.some((k:any)=>k.pubkey===key&&(k.signer===true||depth>1));
  const tokenProgram=(key:string)=>key===TOKEN_PROGRAM_ID.toBase58()||key===TOKEN_2022_PROGRAM_ID.toBase58();
@@ -59,10 +61,15 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
    windowProof.nonSwapInvocations++;
   }else if(!definition.accounts.some(a=>a.name==='user'&&'signer' in a&&a.signer===true))throw new Error('ADVISORY_TRADE_SIGNER_CONTRACT');
  }
- type Frame={program:string;ix:any|null;events:DecodedTrade[];observedEvents:number;eventPayload?:string};const stack:Frame[]=[],trades:DecodedTrade[]=[];let cursor=0;
- for(const line of value.meta.logMessages){if(typeof line!=='string')throw new Error('ADVISORY_TRADE_LOG_SHAPE');let m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/);
-  if(m){const depth=Number(m[2]);if(depth!==stack.length+1)throw new Error('ADVISORY_TRADE_LOG_DEPTH');let ix=null;if(m[1]===program){ix=pumpInstructions[cursor++];if(!ix||ix.depth!==depth)throw new Error('ADVISORY_TRADE_INVOCATION_BINDING');if(windowProof&&ix.eventCpiPayload){const parent=stack.at(-1);if(parent?.program!==program||parent.eventPayload!==ix.eventCpiPayload)throw new Error('ADVISORY_TRADE_EVENT_CPI_BINDING');}}stack.push({program:m[1]!,ix,events:[],observedEvents:0});continue;}
-  m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) (success|failed:.*)$/);if(m){const f=stack.pop();if(!f||f.program!==m[1]||m[2]!=='success')throw new Error('ADVISORY_TRADE_LOG_FAILURE');if(windowProof&&f.ix&&(side(f.ix,currentAbi)||f.ix.pinned)&&f.observedEvents!==1)throw new Error('ADVISORY_TRADE_EVENT_MISSING');trades.push(...f.events);continue;}
+ type Frame={program:string;ix:any|null;events:DecodedTrade[];observedEvents:number;eventPayload?:string;children:number;emptySweep?:boolean;flowBelow?:boolean};const stack:Frame[]=[],trades:DecodedTrade[]=[];let cursor=0,truncatedAt=-1;
+ // The runtime logs 'Log truncated' in place of the first line over its byte limit and may keep shorter later lines, so nothing after it binds a frame.
+ const selectedAccounts=recovery?[poolKey,pool.poolBaseTokenAccount.toBase58(),pool.poolQuoteTokenAccount.toBase58()]:[];
+ // A foreign sweep with no CPI, no event and no selected-pool account cannot move selected-pool tokens; selected-pool sweeps still require their event.
+ const emptyForeignSweep=(f:Frame)=>recovery&&f.emptySweep===true&&f.children===0&&f.observedEvents===0&&!f.eventPayload&&(f.ix.depth>1||!groups.get(f.ix.top)?.length)&&!f.ix.accounts.some((k:string)=>selectedAccounts.includes(k));
+ for(const [n,line] of value.meta.logMessages.entries()){if(typeof line!=='string')throw new Error('ADVISORY_TRADE_LOG_SHAPE');if(recovery&&line==='Log truncated'){truncatedAt=n;break;}let m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/);
+  if(m){const depth=Number(m[2]);if(depth!==stack.length+1)throw new Error('ADVISORY_TRADE_LOG_DEPTH');let ix=null;if(m[1]===program){ix=pumpInstructions[cursor++];if(!ix||ix.depth!==depth)throw new Error('ADVISORY_TRADE_INVOCATION_BINDING');if(windowProof&&ix.eventCpiPayload){const parent=stack.at(-1);if(parent?.program!==program||parent.eventPayload!==ix.eventCpiPayload)throw new Error('ADVISORY_TRADE_EVENT_CPI_BINDING');}}if(stack.length)stack.at(-1)!.children++;stack.push({program:m[1]!,ix,events:[],observedEvents:0,children:0});continue;}
+  m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) (success|failed:.*)$/);if(m){const f=stack.pop();if(!f||f.program!==m[1]||m[2]!=='success')throw new Error('ADVISORY_TRADE_LOG_FAILURE');const flow=windowProof&&f.ix&&(side(f.ix,currentAbi)||f.ix.pinned);if(flow&&f.observedEvents!==1&&!emptyForeignSweep(f))throw new Error('ADVISORY_TRADE_EVENT_MISSING');if(f.emptySweep&&(f.observedEvents||f.children))throw new Error('ADVISORY_TRADE_SWEEP_EVENT_BINDING');if(flow){for(const a of stack)a.flowBelow=true;if(!f.observedEvents)windowProof!.logRecovery!.emptyForeignSweeps++;}trades.push(...f.events);continue;}
+  if(recovery&&line.startsWith('Program log: Nothing to sweep for fee bucket ')){const f=stack.at(-1);if(f?.program===program&&f.ix?.pinned&&!f.ix.pinned.side){if(f.emptySweep||line!==`Program log: Nothing to sweep for fee bucket ${f.ix.pinned.name==='sweep_protocol_fee'?0:1}`)throw new Error('ADVISORY_TRADE_SWEEP_EVENT_BINDING');f.emptySweep=true;}continue;}
   if(!line.startsWith('Program data: '))continue;const frame=stack.at(-1);if(!frame||frame.program!==program||!frame.ix)continue;const direction=side(frame.ix,currentAbi);if(!direction&&!windowProof)continue;
   const payload=line.slice(14);if(payload.length>4000||Buffer.from(payload,'base64').toString('base64')!==payload)throw new Error('ADVISORY_TRADE_EVENT_ENCODING');const event=decodeEvent(payload);if(windowProof&&event)frame.eventPayload=payload;
   if(currentAbi&&frame.ix.pinned&&!direction){
@@ -99,15 +106,23 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   if(BigInt(baseAtomic)<=0n||BigInt(quoteAtomic)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
   frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex:cursor-1,...(quoteAccounting?{instructionName,quoteAccounting}:{})});
  }
- if(stack.length||cursor!==pumpInstructions.length)throw new Error('ADVISORY_TRADE_LOG_INCOMPLETE');
+ if(truncatedAt>=0){
+  // meta.err proves only top-level success: a nested frame still open above a closed flow frame, and every unbound invocation, stay unproven.
+  const unresolved=[...stack.flatMap(f=>f.ix?[f.ix]:[]),...pumpInstructions.slice(cursor)];
+  if(value.meta.logMessages.indexOf('Log truncated',truncatedAt+1)>=0)throw new Error('ADVISORY_TRADE_LOG_SHAPE');
+  if(stack.slice(1).some(f=>f.flowBelow)||unresolved.some(ix=>side(ix,currentAbi)!==null||ix.pinned||ix.accounts.some((k:string)=>selectedAccounts.includes(k))))throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');
+  Object.assign(windowProof!.logRecovery!,{truncated:true,unresolvedInvocations:unresolved.length});
+ } else if(stack.length||cursor!==pumpInstructions.length)throw new Error('ADVISORY_TRADE_LOG_INCOMPLETE');
  const expectedSwaps=pumpInstructions.filter(ix=>side(ix,currentAbi)!==null&&ix.accounts?.[0]===poolKey).length;
  if(expectedSwaps!==trades.length)throw new Error('ADVISORY_TRADE_EVENT_MISSING');return trades;
 }
-/** Scoped pool-flow decoder. CPI authorization is an executed-program observation, never a person or wallet-control binding. */
-export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false):WindowTransactionProof{
+/** Scoped pool-flow decoder. CPI authorization is an executed-program observation, never a person or wallet-control binding.
+ * logRecovery is opt-in for fee-exclusive callers; without it receipts decode exactly as before. */
+export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false):WindowTransactionProof{
  if(feeExclusive&&!currentAbi)throw new Error('ADVISORY_TRADE_FEE_SCOPE');
- const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[]};
- proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive);return proof;
+ if(logRecovery&&!feeExclusive)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
+ const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(logRecovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0}}:{})};
+ proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery);return proof;
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{
