@@ -11,7 +11,10 @@ import { NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { OFFLINE_PUMP_AMM_PROGRAM as sdk, PUMP_AMM_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, userVolumeAccumulatorPda, poolPda } from '@pump-fun/pump-swap-sdk';
 import { archiveDemandReceipt, collectAdvisoryDemandWindows, decodeAdvisoryDemandWindows, demandArchiveSourceLimit, deriveA30DemandWindows, projectCompiledTransaction, unpackDemandReceipt } from '../src/providers/advisory-demand-windows.js';
 import { deriveO23Synchrony, SYNCHRONY_BINS, SYNCHRONY_PERMUTATIONS } from '../src/providers/advisory-synchrony.js';
-import type { AdvisoryWindowHistory } from '../src/providers/advisory-window.js';
+import { decodeAdvisoryWindow, type AdvisoryWindowHistory } from '../src/providers/advisory-window.js';
+import { decodeAdvisoryShortDemand } from '../src/providers/advisory-short-demand.js';
+import { renderSnapshot } from '../src/app/report.js';
+import { advisoryFactsSchema } from '../src/domain/advisory-contracts.js';
 import { encodeSolanaAddress, SOLANA_MAINNET_GENESIS } from '../src/providers/solana.js';
 import { collectLiveToken } from '../src/app/live.js';
 import { reconstructAdvisory } from '../src/app/advisory.js';
@@ -212,7 +215,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v15', 'advisory-measurements-v16', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v16', 'advisory-measurements-v17', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -255,4 +258,69 @@ test('a live tape with one unverifiable fee role persists O23 as missing with ev
   assertNull(o23, /ADVISORY_SYNCHRONY_FEE_ROLE/); assert.equal((o23.data as any).denominator, null);
   const directory = mkdtempSync(join(tmpdir(), 'advisory-synchrony-missing-')), service = new Service(join(directory, 'live.sqlite'));
   try { const saved = service.analyzeLive(bundle); assert.deepEqual(service.replay(saved.id), saved); } finally { service.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('proof v16 persists the supplementary one-hour report recomputed from the same raw receipts while A30 and coverage counts stay identical', async () => {
+  const old = liveRows(), inScope = [row(14, 9_600, liveEnd - 300), row(13, 9_500, liveEnd - 3000), row(12, 9_400, liveEnd - 3570), row(11, 9_300, liveEnd - 5400)], rows = [...inScope, ...old];
+  // U4 buys in window 5, router-authorized P in window 1, and U1 in window 0 after a baseline buy, so only window 5 qualifies.
+  const transactions = new Map<string, unknown>([...liveTransactions(old), [inScope[0]!.signature, swaps(inScope[0]!, [b58(U4)], [U4])], [inScope[1]!.signature, routed(inScope[1]!, K, P)], [inScope[2]!.signature, swaps(inScope[2]!, [b58(U1)], [U1])], [inScope[3]!.signature, swaps(inScope[3]!, [b58(U1)], [U1])]]);
+  const live = (mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, transactions, mutate), now: () => liveAt });
+  const bundle = await live(), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!, s = facts.supplements!.shortDemand;
+  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v16', 'advisory-measurements-v17', 50, 'KNOWN']);
+  assert.deepEqual([s.status, s.reportEnd, s.baseline.start, s.baseline.end, s.measured.start], ['COMPLETE', '2026-10-10T12:00:00.000Z', '2026-10-10T10:00:00.000Z', '2026-10-10T11:00:00.000Z', '2026-10-10T11:00:00.000Z']);
+  assert.deepEqual(s.windows.map(w => w.condition), [false, false, false, false, false, true]);
+  assert.deepEqual(s.windows.map(w => w.firstObservedBuyerCount), [0, 0, 0, 0, 0, 1]);
+  assert.deepEqual([s.windows[1]!.flow!.programAccountTrades, s.windows[1]!.flow!.buyQuoteAtomic, s.windows[0]!.flow!.decodedTrades], [1, '20000000', 1]);
+  assert.deepEqual([s.satisfiedWindows, s.share, s.baseline.meaningfulBuyers, s.measured.flow!.buyQuoteAtomic, s.coverage.scopeSuccessfulReferences, s.coverage.outsideScopeUnresolvedTransactions], [1, '0.16666666666666666667', 1, '60000000', 4, 0]);
+  assert.ok(s.programAccounts.accounts.includes(b58(P)));
+  // The persisted report equals the production provider over the same retained window and demand receipts.
+  const receipts = (namespace: 'window' | 'demand') => { const d = proof[namespace] as { requests: Record<string, { method: string; params: unknown[] }>; artifactIds: Record<string, string> }, keys = Object.entries(d.artifactIds);
+    return { rawArtifacts: Object.fromEntries(keys.map(([k, id]) => [k, bundle.rawArtifacts[id]!])), retrievedAt: Object.fromEntries(keys.map(([k, id]) => [k, bundle.evidence.find(e => e.id === id)!.retrievedAt])), requests: d.requests, ids: keys.map(([, id]) => id) }; };
+  const w = receipts('window'), d = receipts('demand'), windowData = decodeAdvisoryWindow(token, proof.pool, proof.window.end, w.rawArtifacts, w.retrievedAt, w.requests, liveAt, true, true);
+  assert.deepEqual(s, decodeAdvisoryShortDemand(token, windowData, w, d.rawArtifacts, d.retrievedAt, d.requests, liveAt, [...w.ids, ...d.ids]));
+  // Canonical A30, all 50 metrics and the group counts are identical to the proof v15 reconstruction without the report.
+  const prior = reconstructAdvisory(token, liveAt, bundle.details!.baseline, bundle.evidence, bundle.rawArtifacts, { ...proof, method: 'advisory-provenance-v15' }, bundle.thesis ?? null, bundle.features);
+  assert.deepEqual([prior.method, prior.supplements, prior.metrics, prior.groups], ['advisory-measurements-v16', undefined, facts.metrics, facts.groups]);
+  const valid = (change: (r: any) => void) => { const f = structuredClone(facts) as any; change(f.supplements.shortDemand); return advisoryFactsSchema.safeParse(f).success; };
+  assert.equal(valid(() => {}), true);
+  const cases: Array<[string, (r: any) => void]> = [
+    ['denominator', r => { r.denominator = 5; }], ['satisfied count', r => { r.satisfiedWindows = 2; }], ['share', r => { r.share = '0.5'; }], ['condition without buyer', r => { r.windows[0].condition = true; }],
+    ['flow arithmetic', r => { r.windows[5].flow.netQuoteAtomic = '1'; }], ['buyer outside window', r => { r.windows[5].firstObservedBuyers[0].at = r.windows[0].start; }], ['dust buyer', r => { r.windows[5].firstObservedBuyers[0].coreQuoteAtomic = '9999999'; }],
+    ['null condition on complete', r => { r.windows[2].condition = null; }], ['measured sum', r => { r.measured.flow.buyQuoteAtomic = '1'; }], ['comparison', r => { r.comparison.buyerRatio = '2'; }], ['shifted window', r => { r.windows[3].start = r.windows[2].start; }],
+  ];
+  for (const [name, change] of cases) assert.equal(valid(change), false, name);
+  const directory = mkdtempSync(join(tmpdir(), 'advisory-short-demand-')), file = join(directory, 'live.sqlite');
+  try {
+    const writer = new Service(file); let id = '';
+    try {
+      const saved = writer.analyzeLive(bundle); id = saved.id;
+      const text = renderSnapshot(saved);
+      const derivationHash = saved.evidence.find(e => e.id === 'advisory-derivation')!.contentHash;
+      assert.notEqual(derivationHash, saved.hash);
+      for (const expected of ['Supplementary one-hour demand (not A30; not counted): COMPLETE / COMPLETE_SHORT_DEMAND_SCOPE_OBSERVED.', 'baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z in six 10-minute windows', ': 1/6 (share 0.16666666666666666667); conditions false, false, false, false, false, true.', 'Advisory measurements: ',
+        'Hour basis: latest completed UTC hour at collection freeze (frozen canonical end 2026-10-10T12:00:00.000Z; report end 2026-10-10T12:00:00.000Z). Snapshot cutoff 2026-10-10T12:30:00.000Z is the later capture cutoff and does not move this hour.',
+        `Source derivation proof SHA256: ${derivationHash}.`]) assert.ok(text.includes(expected), expected);
+      // The measured hour ends at the frozen canonical end, not at the later cutoff hour.
+      assert.ok(!text.includes('measured 2026-10-10T11:00:00.000Z to 2026-10-10T13:00:00.000Z') && !text.includes('measured 2026-10-10T12:00:00.000Z to'));
+      // A missing derivation record is shown as unavailable rather than substituting any other hash.
+      const unhashed = renderSnapshot({ ...saved, evidence: saved.evidence.filter(e => e.id !== 'advisory-derivation') });
+      assert.ok(unhashed.includes('Source derivation proof SHA256: unavailable.') && !unhashed.includes(saved.hash));
+      const claimed = structuredClone(bundle); claimed.details!.advisory!.supplements!.shortDemand.windows[5]!.firstObservedBuyers![0]!.user = b58(U2);
+      const dropped = structuredClone(bundle); delete dropped.details!.advisory!.supplements;
+      const downgraded = structuredClone(bundle); downgraded.rawArtifacts['advisory-derivation'] = JSON.stringify({ ...proof, method: 'advisory-provenance-v15' }); rehash(downgraded, 'advisory-derivation'); downgraded.details!.advisory = prior;
+      assert.throws(() => writer.analyzeLive(claimed), /ADVISORY_PROOF_INVALID/);
+      assert.throws(() => writer.analyzeLive(dropped), /ADVISORY_SUPPLEMENT_VERSION/);
+      assert.throws(() => writer.analyzeLive(downgraded), /ADVISORY_PROOF_INVALID/);
+    } finally { writer.close(); }
+    const reader = new Service(file);
+    try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  // An in-scope receipt gap nulls every value; a gap before the two-hour start is excluded and disclosed while canonical A30 stays missing.
+  const failing = (signature: string) => (request: RpcRequest, body: any) => request.method === 'getTransaction' && request.params[0] === signature ? { jsonrpc: '2.0', id: 1, error: { code: -32009, message: 'unavailable' } } : body;
+  const gap = (await live(failing(inScope[1]!.signature))).details!.advisory!, earlier = (await live(failing(old[0]!.signature))).details!.advisory!;
+  const g = gap.supplements!.shortDemand, e = earlier.supplements!.shortDemand;
+  assert.deepEqual([gap.metrics.find(m => m.id === 'A30')!.quality, earlier.metrics.find(m => m.id === 'A30')!.quality], ['MISSING', 'MISSING']);
+  assert.deepEqual([g.status, g.reasonCode, g.satisfiedWindows, g.share, g.baseline.meaningfulBuyers, g.coverage.scopeUnresolvedTransactions.map(t => t.code)], ['INCOMPLETE', 'ADVISORY_SHORT_DEMAND_SCOPE_TRANSACTION_UNRESOLVED', null, null, null, ['RPC_REMOTE_-32009']]);
+  assert.ok(g.windows.every(w => w.condition === null && w.flow === null));
+  assert.deepEqual([e.status, e.coverage.outsideScopeUnresolvedTransactions, e.satisfiedWindows, e.windows.map(w => w.condition)], ['COMPLETE', 1, 1, [false, false, false, false, false, true]]);
 });

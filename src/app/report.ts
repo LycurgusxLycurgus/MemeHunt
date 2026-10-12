@@ -71,6 +71,17 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
       lines.push(`  ${group.checkId}: ${group.known}/${group.total} measured; ${group.unresolved.length} unresolved.`);
       for(const id of group.unresolved){const metric=a.metrics.find(m=>m.id===id)!;lines.push(`    ${id}: ${cleanText(metric.reasonCode)}.`);}
     }
+    // Supplementary scoped report: outside the measured metrics and coverage counts, never a canonical A30 result.
+    const s=a.supplements?.shortDemand;
+    if(s){
+      // The hour is fixed by the frozen canonical end at collection, never by the later snapshot cutoff; the proof hash is the retained derivation artifact's, not the snapshot hash.
+      const derivationHash=snapshot.evidence.find(e=>e.id==='advisory-derivation')?.contentHash;
+      lines.push(`Supplementary one-hour demand (not A30; not counted): ${s.status} / ${cleanText(s.reasonCode)}.`,`  Scope: one verified PumpSwap WSOL pool; baseline ${s.baseline.start} to ${s.baseline.end}; measured ${s.measured.start} to ${s.measured.end} in six 10-minute windows.`,`  Hour basis: latest completed UTC hour at collection freeze (frozen canonical end ${s.canonical.range.end}; report end ${s.reportEnd}). Snapshot cutoff ${snapshot.cutoff} is the later capture cutoff and does not move this hour.`,`  Source derivation proof SHA256: ${derivationHash?cleanText(derivationHash,128):'unavailable'}.`);
+      if(s.complete)lines.push(`  Windows with a first-observed meaningful buyer and nonnegative net flow: ${s.satisfiedWindows}/${s.denominator} (share ${s.share}); conditions ${s.windows.map(w=>String(w.condition)).join(', ')}.`,`  First-observed buyers per window ${s.windows.map(w=>w.firstObservedBuyerCount).join('/')}; baseline meaningful buyers ${s.baseline.meaningfulBuyers}; net ${s.measured.flow?.netQuoteAtomic} measured vs ${s.baseline.flow?.netQuoteAtomic} baseline atomic WSOL, fee-exclusive.`);
+      else lines.push('  Conditions, satisfied count and share unavailable: the two-hour source coverage is incomplete; no zero is inferred.');
+      if(s.coverage.outsideScopeUnresolvedTransactions)lines.push(`  ${s.coverage.outsideScopeUnresolvedTransactions} unresolved transactions before the two-hour start were excluded.`);
+      lines.push('  First observed within this two-hour pool tape only; not first-ever buyers, people, organic demand or new capital.');
+    }
     lines.push('Historical data became available at retrieval time. Token movements are not automatically sales; routers are not bot or common-control identities. Undefined ratios and uncalibrated regimes remain unresolved.');
   }
   if(recovered.length)lines.push(`Market recovery: free TinyFish live Fetch (${recovered.join(', ')}); original direct responses retained. Recovery does not certify market accuracy.`);

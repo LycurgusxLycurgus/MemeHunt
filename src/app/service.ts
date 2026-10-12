@@ -212,7 +212,7 @@ export class Service {
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
             // Fresh persistence requires current accounting; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v15')throw new Error('ADVISORY_PROOF_INVALID');
+            if(proof.method!=='advisory-provenance-v16')throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');

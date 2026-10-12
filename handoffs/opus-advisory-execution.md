@@ -1,3 +1,23 @@
+# Accepted execution result — supplementary-short-demand-2026-10-12
+
+The additional one-hour demand report is implemented separately from canonical A30 and the50metric/group counts. Exact Claude Code `claude-opus-5-5` authored the provider, schema/report/integration and regressions; Codex applied, acquired, tested, independently reviewed and verified them.
+
+- Fresh snapshot `3c583c1f-9f32-4837-b353-e222ed915963`, cutoff **2026-10-12T07:30:57.147Z**, hash `28cb6203aeb7196f13399adb4da96d2a796b1e1c1250bff21610e4dc5ef23b5c`: **25/50KNOWN,24MISSING,1TRUNCATED:25unresolved**. Allfive advisorygroupsremainUNKNOWN. Social/context qualification is restored at this cutoff; S13 staysKNOWN. The supplementary report adds no KNOWN metric and earlier18/50 and23/50 snapshots remain immutable dated evidence.
+- Collection froze canonical end **07:00UTC**. Supplementary scope is **05:00–07:00UTC**, baseline05:00–06:00 and measured06:00–07:00, split into six10min windows. **1/6** windows has a first-observed meaningful buyer and nonnegative fee-exclusive netflow; share0.16666666666666666667. Measured11trades net**+0.028073349WSOL**, baseline10trades net**−0.109529975WSOL**. Six program-account trades remain in measured flow and are excluded from buyers. A30's twelve-hour tape/six measuredhours and $25/six-hour profile stayunchanged.
+- First-observed means within this complete two-hour pool tape, not first-ever buying, a person, organic demand or newcapital. Baselinebuyers do not count again. The displayed frozenend and later capturecutoff are distinct. The report is explicitly labelled supplementary/notA30/notcounted and cites the retained derivation hash.
+- Complete canonical index/within480cap/verifiedpool plus every successful in-scope receipt are required. Earlier outside-two-hour transaction gaps may be excluded/disclosed; any in-scope gap leaves counts/flows/conditions/share null. Canonical index/cap early-exit cases remain incomplete because transactions were not collected. Zero baseline buyer ratios remain null.
+- Typecheck/build, **996/996fulltestsPASS** and final12focusedPASS, zero skipped. Native firstreviewPASS, correctionUNUSED; an initial capacity failure was recovered as the same pending review invocation, not another round. Actualrawreconstruction/idempotence/show/replay and5supplementtamper controlsPASS;16caller+10window/demand+5creatormetadata+4log/container+3parsedterminal controlsPASS. Allthree accepted112ce542/7d43b65e/c19e8c34 hashes and replays are unchanged.
+- Fresh **proof16/facts17/policy16**: only freshfacts17 contain strict `supplements.shortDemand`; savedproofs<=15 do not derive it. Policy16 stays because decision inputs are unchanged and replay evaluates frozen storedfacts. No new reads/namespaces/allowances/dependencies/deadlines; storedartifacts**20,163,781bytes**, below24MB. Keys/privateoperatorreceipts and foreignsessionfiles are excluded.
+- Required **27/27known**,21PASS7FAIL5UNKNOWN across33rows; entryREJECTED. All15managementchecksremainNOT_RUN/NO_ACTIVE_THESIS. Known outcomes include failures and do not constitute approval to trade.
+
+Remaining25: **O22,O24,O25,O27,A06,A12,A13,A24,A25,A26,A27,A28,A29,S11,S14,S15,S16,S17,S18,S19,S20,C07,C09,C12,C16**. C16 production integration and complete creator-only O24 historical collection remain private/inprogress. C16's prototype has actual launch/migration counts and separately dated volume/fee/revenue series; matured-cohort survival is conditional, not a baseline prerequisite. No new C16/O24 KNOWN claim is published yet. Numericall50 remainsunachieved; zero/nonpositive denominators and absent histories are not filledwithzero.
+
+Continue through `agentic/analysis.md`, `agentic/architecture.md` and applicable Bridgecode specialists; preserve dated evidence and other-session ownership.
+
+Earlier accepted cycles follow as dated history.
+
+---
+
 # Accepted execution result — creator-role-parsed-fields-2026-10-12
 
 S13 is newly KNOWN: a public Pump profile is bound to the wallet that signed and was declared creator in the original CreateV2 transaction. This is a historical public project-role relationship, not a verified person, current control or fee-beneficiary claim. Exact Claude Code `claude-opus-5-5` authored the provider, collector, integration and corrections; Codex applied, acquired, tested, independently reviewed and verified them. The preceding cycle ended UNRESOLVED; the user explicitly authorized this new parsed-fields cycle.
