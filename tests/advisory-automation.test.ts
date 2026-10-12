@@ -28,7 +28,7 @@ const discOf = (name: string) => [...abi.known].find(([, n]) => n === name)![0];
 type Trade = { side: 'BUY' | 'SELL'; quote: string };
 type Node = { ix: any; h: number; failed?: boolean; trade?: Trade };
 type Top = { ix: any; inner?: Node[]; trade?: Trade };
-type Tx = { n: number; tops: Top[]; signer?: string; mutate?: (value: any) => void };
+type Tx = { n: number; tops: Top[]; signer?: string; logRecovery?: { truncated: boolean; unresolvedInvocations: number; emptyForeignSweeps: number }; mutate?: (value: any) => void };
 const transfer = (h: number): Node => ({ h, ix: { program: 'spl-token', programId: TOKEN, parsed: { type: 'transfer', info: {} } } });
 const eventCpi: Node = { h: 2, ix: { programId: DCA_PROGRAM, accounts: [EVENT], data: data58('e445a52e51cb9a1d', Buffer.alloc(16, 1)) } };
 const opaque = (programId: string) => ({ programId, accounts: [], data: '1' });
@@ -76,7 +76,7 @@ function scenario(txs: Tx[], options: { complete?: boolean; method?: AdvisoryWin
   const rawArtifacts: Record<string, string> = {}, retrievedAt: Record<string, string> = {}, requests: Record<string, { method: string; params: any[] }> = {};
   txs.forEach((t, i) => { const id = `window-transaction-${i}`; requests[id] = { method: 'getTransaction', params: [sig(t.n), { commitment: 'finalized', encoding: 'jsonParsed', maxSupportedTransactionVersion: 1 }] }; rawArtifacts[id] = JSON.stringify({ jsonrpc: '2.0', id: 1, result: receipt(t) }); retrievedAt[id] = '2026-10-11T16:00:40.000Z'; });
   const window: AdvisoryWindowHistory = { method: options.method ?? 'pumpswap-selected-pool-window-v3', abi: { source: 'fixture', sha256: '0'.repeat(64) }, token, pool, window: { start, end }, genesisVerified: true, anchorSlot, anchorTime: '2026-10-11T16:00:30.000Z', poolVerified: true, stateSlot: anchorSlot, coverageReachedStart: true, indexComplete: true, complete: options.complete ?? true, sourceUniverseComplete: false, pages: [], successfulSignatures: txs.length, failedReferences: 0,
-    transactions: txs.map(t => ({ signature: sig(t.n), slot: 1000 + t.n, at: at(t.n), status: 'OBSERVED' as const, trades: trades(t).length })), trades: txs.flatMap(trades), buyQuoteAtomic: '0', sellQuoteAtomic: '0', netQuoteAtomic: '0', foreignSwapLegs: 0, nonSwapInvocations: 0, cpiAuthorizedAccounts: [], limitations: [], reasonCode: 'SELECTED_POOL_WINDOW_FLOW_OBSERVED' };
+    transactions: txs.map(t => ({ signature: sig(t.n), slot: 1000 + t.n, at: at(t.n), status: 'OBSERVED' as const, trades: trades(t).length, ...(t.logRecovery ? { logRecovery: t.logRecovery } : {}) })), trades: txs.flatMap(trades), buyQuoteAtomic: '0', sellQuoteAtomic: '0', netQuoteAtomic: '0', foreignSwapLegs: 0, nonSwapInvocations: 0, cpiAuthorizedAccounts: [], limitations: [], reasonCode: 'SELECTED_POOL_WINDOW_FLOW_OBSERVED' };
   return { window, windowReceipts: { rawArtifacts, retrievedAt, requests } };
 }
 
@@ -159,6 +159,28 @@ test('ordinary router flow and failed DCA branches are an honest registry-only z
     assert.deepEqual([data.knownAutomatedQuoteAtomic, data.knownAutomatedFraction, data.unattributedQuoteAtomic, data.fillsObserved, data.unknownAutomation], ['0', '0', '250', 0, 'NOT_MEASURED']);
     assert.match(data.meaning, /never total automation, bot-free, organic or manual/);
   }
+});
+
+test('O28-safe v4 truncation uses complete parsed instruction lists only to establish bounded DCA registry absence', async () => {
+  const recovered = (n: number, mutate?: (value: any) => void): Tx => ({ n, tops: [swap('BUY', '250', TRADER, key(31))], logRecovery: { truncated: true, unresolvedInvocations: 0, emptyForeignSweeps: 0 }, mutate: value => { value.meta.logMessages.push('Log truncated'); mutate?.(value); } });
+  const accepted = await measure([recovered(81)], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  const acceptedData = accepted.metric.data as any;
+  assert.equal(accepted.metric.quality, 'KNOWN');
+  assert.deepEqual([acceptedData.knownAutomatedQuoteAtomic, acceptedData.unattributedQuoteAtomic, acceptedData.trades[0].attributionBasis, acceptedData.unknownAutomation], ['0', '250', 'COMPLETE_PARSED_INSTRUCTIONS_NO_REGISTERED_DCA', 'NOT_MEASURED']);
+  assert.match(acceptedData.limitations.join(' '), /does not recover execution order or prove that unregistered automation is absent/);
+
+  const dcaPresent = await measure([{ ...recovered(82), tops: [filled(82, buy).tops[0]!, ...filled(82, buy).tops.slice(1)] }], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  assert.equal(dcaPresent.metric.quality, 'MISSING'); assert.equal(dcaPresent.metric.reasonCode, 'ADVISORY_ACCOUNTS_LOG_INCOMPLETE');
+  const missingInner = await measure([recovered(83, value => { value.meta.innerInstructions = null; })], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  assert.equal(missingInner.metric.quality, 'MISSING'); assert.equal(missingInner.metric.reasonCode, 'ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');
+  const invalidTopProgram = await measure([recovered(86, value => { value.transaction.message.instructions[0].programId = 'not-a-solana-address'; })], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  assert.equal(invalidTopProgram.metric.quality, 'MISSING'); assert.equal(invalidTopProgram.metric.reasonCode, 'ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');
+  const invalidInnerProgram = await measure([recovered(87, value => { value.meta.innerInstructions[0].instructions[0].programId = 'not-a-solana-address'; })], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  assert.equal(invalidInnerProgram.metric.quality, 'MISSING'); assert.equal(invalidInnerProgram.metric.reasonCode, 'ADVISORY_ACCOUNTS_INNER_SHAPE');
+  const legacy = await measure([recovered(84)], {}, { method: 'pumpswap-selected-pool-window-v3' });
+  assert.equal(legacy.metric.quality, 'MISSING'); assert.match(legacy.metric.reasonCode, /^ADVISORY_ACCOUNTS_LOG_/);
+  const unresolved = await measure([{ ...recovered(85), logRecovery: { truncated: true, unresolvedInvocations: 1, emptyForeignSweeps: 0 } }], {}, { method: 'pumpswap-selected-pool-window-v4' });
+  assert.equal(unresolved.metric.quality, 'MISSING'); assert.match(unresolved.metric.reasonCode, /^ADVISORY_ACCOUNTS_LOG_/);
 });
 
 test('role, orientation, mint and interval mismatches stay unattributed rather than certified', async () => {

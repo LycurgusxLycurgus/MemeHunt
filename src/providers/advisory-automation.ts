@@ -38,6 +38,7 @@ const LIMITATIONS=[
  'Attribution requires one successful top-level initiateFlashFill/fulfillFlashFill pair with identical keeper, DCA, input mint and token accounts, exact token/WSOL orientation, the keeper as Pump user and the keeper-side base account. Shared-account or multi-hop routes without these bindings stay unattributed.',
  'Executable program state is read at a finalized slot no earlier than the window anchor; upgradeable bytecode deployed during the window is not attested.',
  'One selected pool and declared hour only; other pools, venues and whole-token flow are excluded.',
+ 'For O28-safe terminally truncated v4 receipts, registry absence is based only on the complete finalized parsed top-level and inner instruction arrays; it does not recover execution order or prove that unregistered automation is absent.',
 ];
 
 const sourceRequest=(url:string)=>({method:'GET',url});
@@ -166,7 +167,21 @@ function verifyProgram(receipts:AutomationReceipts,window:AdvisoryWindowHistory)
  return {programId:DCA_PROGRAM,owner:UPGRADEABLE_LOADER,executable:code===null,contextSlot:code===null?(r as any).context.slot as number:null,retrievedAt,status:code===null?'VERIFIED':'UNVERIFIED',code};
 }
 
-type TradeProof={signature:string;slot:number;at:string;instructionIndex:number;side:'BUY'|'SELL';user:string;quoteAtomic:string;attribution:'JUPITER_LEGACY_DCA_FLASH_FILL'|'UNATTRIBUTED';fill:FlashFill|null};
+type TradeProof={signature:string;slot:number;at:string;instructionIndex:number;side:'BUY'|'SELL';user:string;quoteAtomic:string;attribution:'JUPITER_LEGACY_DCA_FLASH_FILL'|'UNATTRIBUTED';attributionBasis:'STRICT_EXECUTION_LOGS'|'COMPLETE_PARSED_INSTRUCTIONS_NO_REGISTERED_DCA';fill:FlashFill|null};
+/** A truncated v4 runtime trace may still prove registry absence from the complete finalized transaction instruction arrays. */
+function completeInstructionsWithoutDca(value:unknown):boolean{
+ const message=(value as any)?.transaction?.message,meta=(value as any)?.meta,instructions=message?.instructions,inner=meta?.innerInstructions;
+ if(!Array.isArray(instructions)||!instructions.length||!Array.isArray(inner))fail('ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');
+ const validProgramId=(id:unknown)=>{if(typeof id!=='string')return false;try{return new PublicKey(id).toBase58()===id;}catch{return false;}};
+ if(instructions.some((ix:unknown)=>!object(ix)||!validProgramId(ix.programId)))fail('ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');
+ const seen=new Set<number>();
+ for(const group of inner){
+  if(!object(group)||!integer(group.index)||group.index>=instructions.length||seen.has(group.index)||!Array.isArray(group.instructions))fail('ADVISORY_ACCOUNTS_INNER_SHAPE');
+  seen.add(group.index);
+  for(const ix of group.instructions){if(!object(ix)||!validProgramId(ix.programId)||!integer(ix.stackHeight)||ix.stackHeight<2)fail('ADVISORY_ACCOUNTS_INNER_SHAPE');}
+ }
+ return !instructions.some((ix:any)=>ix.programId===DCA_PROGRAM)&&!inner.some((group:any)=>group.instructions.some((ix:any)=>ix.programId===DCA_PROGRAM));
+}
 /** O30 over one complete selected-pool hour; incomplete sources, programs, windows or fill evidence leave it unresolved. */
 export function deriveO30Window(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,receipts:AutomationReceipts,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
  if(token.chain!=='solana'||window.token.chain!==token.chain||window.token.address!==token.address)fail('ADVISORY_AUTOMATION_SCOPE');
@@ -191,9 +206,14 @@ export function deriveO30Window(token:TokenRef,window:AdvisoryWindowHistory,wind
  const proofs:TradeProof[]=[],fills:FlashFill[]=[];
  try{
   for(const signature of [...new Set(window.trades.map(t=>t.signature))]){
-   const own=window.trades.filter(t=>t.signature===signature),bound=bindFlashFills(windowValue(signature,windowReceipts),token.address,window.pool!,own,abi);
-   fills.push(...bound.fills);
-   own.forEach((t,i)=>{const fill=bound.attributions[i]??null;proofs.push({signature:t.signature,slot:t.slot,at:t.at,instructionIndex:t.instructionIndex,side:t.side,user:t.user,quoteAtomic:t.quoteAtomic,attribution:fill?'JUPITER_LEGACY_DCA_FLASH_FILL':'UNATTRIBUTED',fill});});
+   const own=window.trades.filter(t=>t.signature===signature),value=windowValue(signature,windowReceipts),windowTransaction=window.transactions.filter(t=>t.signature===signature);
+   if(windowTransaction.length!==1||windowTransaction[0]!.status!=='OBSERVED'||windowTransaction[0]!.trades!==own.length)fail('ADVISORY_AUTOMATION_WINDOW_RECEIPT');
+   const recovery=windowTransaction[0]!.logRecovery;
+   const recovered=window.method==='pumpswap-selected-pool-window-v4'&&recovery?.truncated===true&&recovery.unresolvedInvocations===0&&recovery.emptyForeignSweeps===0;
+   if(recovered&&!completeInstructionsWithoutDca(value))fail('ADVISORY_ACCOUNTS_LOG_INCOMPLETE');
+   const bound=recovered?null:bindFlashFills(value,token.address,window.pool!,own,abi);
+   if(bound)fills.push(...bound.fills);
+   own.forEach((t,i)=>{const fill=bound?.attributions[i]??null;proofs.push({signature:t.signature,slot:t.slot,at:t.at,instructionIndex:t.instructionIndex,side:t.side,user:t.user,quoteAtomic:t.quoteAtomic,attribution:fill?'JUPITER_LEGACY_DCA_FLASH_FILL':'UNATTRIBUTED',attributionBasis:recovered?'COMPLETE_PARSED_INSTRUCTIONS_NO_REGISTERED_DCA':'STRICT_EXECUTION_LOGS',fill});});
   }
  }catch(error){return unresolved(errorCode(error),{registry,coveredQuoteAtomic:String(covered)});}
  const attributed=proofs.filter(p=>p.fill!==null),known=attributed.reduce((n,p)=>n+BigInt(p.quoteAtomic),0n);
