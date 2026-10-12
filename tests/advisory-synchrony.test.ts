@@ -212,7 +212,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v14', 'advisory-measurements-v15', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v15', 'advisory-measurements-v16', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -243,7 +243,7 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v15'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v16'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

@@ -1,3 +1,22 @@
+# Accepted execution result — creator-role-parsed-fields-2026-10-12
+
+S13 is newly KNOWN: a public Pump profile is bound to the wallet that signed and was declared creator in the original CreateV2 transaction. This is a historical public project-role relationship, not a verified person, current control or fee-beneficiary claim. Exact Claude Code `claude-opus-5-5` authored the provider, collector, integration and corrections; Codex applied, acquired, tested, independently reviewed and verified them. The preceding cycle ended UNRESOLVED; the user explicitly authorized this new parsed-fields cycle.
+
+- Fresh snapshot `c19e8c34-842e-4792-8306-4afa088517ae`, cutoff **2026-10-12T07:01:16.478Z**, hash `78f36eca8c75fadac6be0af01a481bca4db771fb478a86c308a054f5f5329a5f`: **18/50 KNOWN,31 MISSING,1 TRUNCATED:32 unresolved**. All five advisory groups remain UNKNOWN. Seven previously qualified social/context measurements are unavailable in this cutoff: Gemini's social proposal lacked required integrity citations (`SOC_MODEL_INVALID`); no earlier values are grafted into this report. C10 is restored. The prior accepted23/50 snapshot remains unchanged.
+- Eight retained receipts bind the official mint page, finalized198-reference wallet index, and six selected successful candidate transactions. Five are definite NON_CREATE; exactly one verifies signed CreateV2 creation at **2026-09-29T00:57:47Z**, slot451486744, wallet `8RXNzg9QEheV1SZyTLisckJRwziVoZFzGWA3tajj1yJg`. Platform publication time is only a discovery hint. The complete executed frame trace, pinned IDL prefixes/event, mint allocation/initialization and signer roles establish the relationship.
+- Before NON_CREATE, every critical System/Token instruction must be an explicitly supported parsed System transfer or Token transferChecked with exact required fields and resolved account roles. Unsupported, absent or invalid fields, allocation/initialization entries and incomplete/truncated logs remain UNVERIFIED/TRUNCATED with no public binding. Actual transfer/fee/sell candidates and separate co-sign edges are preserved. The original three terminal mutations now fail closed on real retained receipts.
+- Typecheck/build and **986/986 tests PASS**, zero skipped. Fresh native first review **PASS**, correction unused. Actual raw reconstruction, idempotence, show and disk replay PASS;5creator metadata mutations,4malformed/log controls,3terminal cases,16caller provenance mutations and10window/demand mutations are rejected. Both prior112ce542 and7d43b65e snapshots retain their hashes and replay unchanged. The earlier d424 capture is also reconstructed/replayed identically under the repaired code; its25known reflects its earlier cutoff, not today's fresh coverage.
+- Fresh proof/facts/policy **v15/v16/v16** adds the exact creator descriptor and freezes older policy replay. The collector's page1/index1/up-to8candidate cap stays within the existing150shared-read allowance; deadlines/account/demand/caller limits stay unchanged. Aggregate artifacts **21,165,523 bytes**, below24MB. Keys/private receipts are excluded from publication.
+- Required **20/27 known**, with ATT-02,DAT-01,DAT-02,DAT-03,SOC-01,SOC-02,SOC-03 UNKNOWN. Across33 rows:18PASS,3FAIL,12UNKNOWN; entry remains REJECTED. All15 management checks are NOT_RUN / NO_ACTIVE_THESIS.
+
+Remaining32: **O22,O24,O25,O27,A06,A07,A08,A12,A13,A19,A20,A22,A24,A25,A26,A27,A28,A29,S08,S11,S12,S14,S15,S16,S17,S18,S19,S20,C07,C09,C12,C16**. Numeric results for all50 remain the user's goal; undefined ratios are not filled with zero. Independently, exact Opus is preparing creator-only O24 history integration and the additional one-hour/six-ten-minute demand report. A locally stored free SolanaTracker key now passes a read-only HTTP200 probe; current250-trade and first-buyer/trader pages are explicitly incomplete and are not treated as complete history. These works remain unaccepted until their contracts, tests, native review and actual evidence pass.
+
+Continue through `agentic/analysis.md`, `agentic/architecture.md` and applicable Bridgecode specialists. Preserve dated snapshots and other-session ownership.
+
+Earlier accepted cycles follow as dated history.
+
+---
+
 # Accepted execution result — reserve-path-2026-10-12
 
 O29 is newly KNOWN. Exact Claude Code `claude-opus-5-5` authored the per-event decoder option, reserve-path provider, integration and regressions. Codex applied the proposals and acquired, tested, independently reviewed and verified the evidence. The Claude CLI remained read-only.

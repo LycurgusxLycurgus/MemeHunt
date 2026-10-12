@@ -44,10 +44,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v14');assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v15');assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v15');
+  assert.equal(facts.method,'advisory-measurements-v16');
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
@@ -60,7 +60,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v15');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v16');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 

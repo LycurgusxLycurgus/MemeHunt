@@ -32,6 +32,7 @@ import { collectAdvisoryMarket } from '../providers/advisory-market.js';
 import { collectAdvisorySocial } from '../providers/advisory-social.js';
 import { PUBLIC_SOLANA_RPC } from '../providers/solana.js';
 import { reconstructAdvisory,type AdvisoryProof } from './advisory.js';
+import { collectCreatorRole } from '../providers/advisory-creator-role-collector.js';
 
 
 export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
@@ -171,6 +172,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     ]);
     return {value,wallets,window,accounts,automation,demand};
   },error=>({error})):null;
+  // Creator-role reads start with the other historical collectors on the shared pool; a mint already read under another token program is skipped.
+  const creatorPending=options.advisoryEnabled&&options.tinyfishKey&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?collectCreatorRole(token,options.tinyfishKey,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline).catch(error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
   let attention:ReturnType<typeof deriveAttention>|undefined;
@@ -269,13 +272,13 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     }
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
-  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
+  const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
       const artifactIds:Record<string,string>={};
       for(const [key,raw] of Object.entries(read.rawArtifacts)){
         const id=`advisory-${namespace}-${key}`,at=typeof read.retrievedAt==='string'?read.retrievedAt:read.retrievedAt[key];
         if(!at||read.requests[key]===undefined)throw new Error('ADVISORY_COLLECTION_INVALID');
         const model=namespace==='semantic'||namespace==='callerSemantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
-        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:'live-v1');
+        artifactIds[key]=addEvidence(id,raw,model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':`advisory-${namespace}`,'HISTORICAL_RECEIPT',model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):'PUBLIC_API',{request:read.requests[key]},at,namespace==='demand'?DEMAND_ARCHIVE_ADAPTER:'live-v1');
       }
       return {requests:read.requests,artifactIds};
     };
@@ -304,7 +307,10 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
         callerSemantic=ingest('callerSemantic',{rawArtifacts:classified.rawArtifacts,retrievedAt:classifiedAt,requests});
       }
     }
-    advisoryProof={method:'advisory-provenance-v14',topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    // The creator-role task already finished its bounded reads; every retained receipt, including error envelopes, is ingested once.
+    let creatorRole:AdvisoryProof['creatorRole']=null;
+    if(creatorPending){const creator=await creatorPending;if(!('error' in creator)&&Object.keys(creator.rawArtifacts).length)creatorRole=ingest('creatorRole',creator);}
+    advisoryProof={method:'advisory-provenance-v15',creatorRole,topology:{requests:{},artifactIds:{}},window:{...ingest('window',result.window),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled)await captureCanonical();
   if(advisoryProof&&!detailRead?.rawArtifacts['rpc-holder-population']){const topology=await collectAuthorityTopology(token,detailRead?.rawArtifacts['rpc-mint-raw'],options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);advisoryProof.topology=ingest('topology',topology);}
@@ -325,7 +331,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v14'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v15'},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
     const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
