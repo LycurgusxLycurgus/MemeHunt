@@ -25,11 +25,12 @@ import { deriveO29ReservePath } from '../providers/advisory-reserve-path.js';
 import { deriveShortDemandReport,type ShortDemandReport } from '../providers/advisory-short-demand.js';
 import { decodeCreatorRole,creatorRoleS13,CREATOR_RECEIPT_CAP } from '../providers/advisory-creator-role-collector.js';
 import { decodeLaunchpadContext,deriveC16Launchpad,uncollectedC16,type LaunchpadRequest } from '../providers/advisory-launchpad.js';
-import { creatorInventoryReuse,creatorInventoryTape,replayCreatorInventory,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
+import { creatorInventoryReuse,creatorInventoryRole,creatorInventoryTape,replayCreatorInventory,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
+import { deriveO25CreatorLifetime } from '../providers/advisory-creator-lifetime.js';
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -46,7 +47,7 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
   const proof=advisoryProofSchema.parse(input);
   if(token.chain!==proof.token.chain||token.address!==proof.token.address||cutoff!==proof.cutoff||JSON.stringify(proof.addresses)!==JSON.stringify([token.address,...(proof.pool?[proof.pool]:[])]))throw new Error('ADVISORY_PROOF_INVALID');
-  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts; v14 is v13 plus O29 from one demand decode that retains per-event virtual quote reserves; v16 is v15 plus the supplementary one-hour report from that same decode, kept outside metrics and groups; v18 is v17 plus the creator-inventory O24 over the recomputed S13 role and the complete A30 tape.
+  // Descriptors and decoders join at their proof version; v13 is v12 plus O23 over the same window and demand receipts; v14 is v13 plus O29 from one demand decode that retains per-event virtual quote reserves; v16 is v15 plus the supplementary one-hour report from that same decode, kept outside metrics and groups; v18 is v17 plus the creator-inventory O24 over the recomputed S13 role and the complete A30 tape; v19 is v18 plus O25 from that same role, tape, inventory receipts and reuse.
   const version=Number(proof.method.slice('advisory-provenance-v'.length));
   if((proof.method!=='advisory-provenance-v2')!==!!proof.wallets||!proof.wallets&&evidence.some(e=>e.sourceId==='advisory-wallets')||(version>=4)!==!!proof.window||!proof.window&&evidence.some(e=>e.sourceId==='advisory-window'))throw new Error('ADVISORY_PROOF_INVALID');
   if((version>=7)!==!!proof.accounts||!proof.accounts&&evidence.some(e=>e.sourceId==='advisory-accounts'))throw new Error('ADVISORY_PROOF_INVALID');
@@ -147,8 +148,12 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
       if(version>=16)shortDemand=deriveShortDemandReport(history,[...w.ids,...d.ids]);
       // Proof v18 adds O24 for the recomputed S13 creation signer over A30's measured hours from this complete tape and the inventory namespace; only a KNOWN result supersedes the sampled O24, and earlier proofs never derive it.
       if(version>=18&&proof.creatorInventory){const i=resolve('creatorInventory'),windowSet={rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests};inventoryReplayed=true;
-        const o24=replayCreatorInventory(token,roleDecode,creatorInventoryTape(windowData,windowSet,history),{rawArtifacts:i.raw,retrievedAt:i.times,requests:i.requests as Record<string,{method:string;params:unknown[]}>},creatorInventoryReuse([['advisory-creatorRole-',roleReceipts!],['advisory-window-',windowSet]]),cutoff,[...w.ids,...d.ids,...roleReceipts!.ids,...i.ids]);
-        if(o24.quality==='KNOWN'&&!additionalMetrics.some(m=>m.id==='O24'&&m.quality==='KNOWN'))additionalMetrics.push(o24);}}
+        const tape=creatorInventoryTape(windowData,windowSet,history),inventory={rawArtifacts:i.raw,retrievedAt:i.times,requests:i.requests as Record<string,{method:string;params:unknown[]}>},reuse=creatorInventoryReuse([['advisory-creatorRole-',roleReceipts!],['advisory-window-',windowSet]]),inventoryIds=[...w.ids,...d.ids,...roleReceipts!.ids,...i.ids];
+        const o24=replayCreatorInventory(token,roleDecode,tape,inventory,reuse,cutoff,inventoryIds);
+        if(o24.quality==='KNOWN'&&!additionalMetrics.some(m=>m.id==='O24'&&m.quality==='KNOWN'))additionalMetrics.push(o24);
+        // Proof v19 adds O25 from these same typed role, tape, inventory receipts and reuse with no further read; its quality follows O24's verified gates, and earlier proofs never derive it.
+        const cohort=roleDecode?creatorInventoryRole(token,roleDecode):null;
+        if(version>=19&&cohort&&tape)additionalMetrics.push(deriveO25CreatorLifetime(token,cohort,tape,inventory,reuse,cutoff,inventoryIds));}}
   }
   if(proof.topology){const t=resolve('topology'),receipts:TopologyReceipts={rawArtifacts:t.raw,retrievedAt:t.times,requests:t.requests};additionalMetrics.push(deriveAuthorityTopology(token,cutoff,evidence,rawArtifacts,receipts));}
   // Proof v17 is v16 plus C16 decoded only from the four retained launchpad receipts; an uncollected run discloses that state instead of the registry default. The v16 supplement is unchanged.
@@ -157,5 +162,5 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if(proof.creatorInventory&&!inventoryReplayed)throw new Error('ADVISORY_PROOF_INVALID');
   let supplements:{shortDemand:ShortDemandReport}|undefined;
   if(version>=16){if(!shortDemand)throw new Error('ADVISORY_PROOF_INVALID');supplements={shortDemand};}
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
 }

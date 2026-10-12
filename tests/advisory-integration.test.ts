@@ -46,10 +46,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v18');assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v19');assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v19');
+  assert.equal(facts.method,'advisory-measurements-v20');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
@@ -64,6 +64,9 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
   const c16Only=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v17',creatorInventory:undefined},bundle.thesis??null,bundle.features);
   assert.deepEqual([c16Only.method,c16Only.supplements,c16Only.metrics,c16Only.groups],['advisory-measurements-v18',facts.supplements,facts.metrics,facts.groups]);
   assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,creatorInventory:undefined},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
+  // Proof v18 (inventory key, no O25) rebuilds facts v19 identically here: without a creator role there is no inventory, so O25 keeps its registry default in both.
+  const inventoryOnly=reconstructAdvisory(token,at,bundle.details.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v18'},bundle.thesis??null,bundle.features);
+  assert.deepEqual([inventoryOnly.method,inventoryOnly.supplements,inventoryOnly.metrics,inventoryOnly.groups],['advisory-measurements-v19',facts.supplements,facts.metrics,facts.groups]);
   // Without a complete selected hour O23 keeps its registry row; nothing is inferred from absent receipts.
   assert.deepEqual([facts.metrics.find(m=>m.id==='O23')?.quality,facts.metrics.find(m=>m.id==='O23')?.reasonCode],['MISSING','INDEPENDENT_INDICATORS_AND_NULL_BASELINE_REQUIRED']);
   // An incomplete selected hour collects no demand receipts and keeps the sampled A30 unresolved.
@@ -79,7 +82,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
       for(const expected of ['Supplementary one-hour demand (not A30; not counted): NOT_ELIGIBLE / SELECTED_POOL_WINDOW_INCOMPLETE.','baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z','no zero is inferred'])assert.ok(text.includes(expected),expected);
     }finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v18');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v19');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -137,7 +140,7 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
+for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,13],[14,14],[15,15],[16,16],[16,17],[17,18],[18,19]] as const)test(`a saved research-screen-advisory-v${version} snapshot with facts v${measured} still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -146,7 +149,7 @@ for(const [version,measured] of [[7,7],[8,8],[9,9],[10,10],[11,11],[12,12],[13,1
       db.exec('DROP TRIGGER snapshots_no_update');
       const stored=db.prepare('SELECT payload,semantic FROM snapshots WHERE id=?').get(id) as {payload:string;semantic:string};
       const payload=JSON.parse(stored.payload),semantic=JSON.parse(stored.semantic);
-      // Saved facts before v17 never carried the supplementary report; saved short (v17) and C16 (v18) facts keep it under their recorded policy (v16, v17).
+      // Saved facts before v17 never carried the supplementary report; saved short (v17), C16 (v18) and creator-inventory (v19) facts keep it under their recorded policy (v16, v17, v18).
       semantic.policyVersion=`research-screen-advisory-v${version}`;semantic.details.advisory.method=`advisory-measurements-v${measured}`;if(measured<17)delete semantic.details.advisory.supplements;
       if(payload.details?.advisory){payload.details.advisory.method=`advisory-measurements-v${measured}`;if(measured<17)delete payload.details.advisory.supplements;}
       payload.hash=relabeled=decisionHash(semantic);
@@ -313,6 +316,8 @@ test('facts schema binds the supplementary report to fresh facts v17 with its fi
   assert.equal(valid({...plain,method:'advisory-measurements-v17'}),false,'saved short facts missing the supplement');
   assert.equal(valid({...facts,method:'advisory-measurements-v18'}),true,'saved C16 facts keep their supplement');
   assert.equal(valid({...plain,method:'advisory-measurements-v18'}),false,'saved C16 facts missing the supplement');
+  assert.equal(valid({...facts,method:'advisory-measurements-v19'}),true,'saved creator-inventory facts keep their supplement');
+  assert.equal(valid({...plain,method:'advisory-measurements-v19'}),false,'saved creator-inventory facts missing the supplement');
   const report=(change:(r:any)=>void)=>{const f=structuredClone(facts) as any;change(f.supplements.shortDemand);return valid(f);};
   const cases:Array<[string,(r:any)=>void]>=[
     ['method',r=>{r.method='supplementary-short-demand-windows-v2';}],['role',r=>{r.role='CANONICAL';}],['canonical substitution',r=>{r.substitutesCanonical=true;}],['counted',r=>{r.countsTowardKnownMetrics=true;}],
