@@ -1,3 +1,31 @@
+# Accepted execution result — o21-provenance-repair-2026-10-12
+
+O21 now has complete, source-bound SPL authority-association evidence for the supplied token. Claude Code `claude-opus-5-5` authored the collector/decoder and unit-test slice; Codex integrated it, verified Token-2022 extension support, consolidated the full account population into the existing RPC artifact, and executed tests, token collection and replay. This cycle resolves one measurement without changing its definition.
+
+## Accepted evidence
+
+- Fresh snapshot `bbea98c7-35a8-4b2b-94a2-5295b0a23942`, cutoff **2026-10-11T23:59:58.247Z UTC**, hash `2fa682c4176885e08d2c5439fdc45e624a4b073f684839d34b52efda8b260be3`. Approved $25/six-hour profile and original token address are unchanged. Retained raw reconstruction, idempotent persistence, show and disk replay pass.
+- Advisory **18/50 KNOWN, 30 MISSING, 2 TRUNCATED: 32 unresolved**, down from 33 in the previous accepted run. O21 is the only advisory quality transition; O26, O28 and O30 remain KNOWN. All five advisory groups remain UNKNOWN.
+- O21 reconciles **26,716 token accounts**, including **6,690 positive-balance owners**, exactly to raw mint supply `958289536741208` at finalized mint/population slots **455840980/455840981**. It observes **51 active transfer-delegation grants to 49 authority keys**, with effective approved exposure `6013575021932` atomic units (**0.627532%** of supply). Each grant is capped at the smaller of balance and allowance; this is separate from candidate group holder shares.
+- **2,047 positive-balance accounts** name four distinct close-authority keys. These are weak account-maintenance associations, not spending authority. Removing observed weak edges changes the largest candidate component share from **2.596417%** to **0.698167%**. Groups associate public keys; they do not establish people, beneficial ownership or control of the entire associated balance. Funding, trading-behavior and social-identity edges are NOT_COLLECTED.
+- Required coverage **27/27 known**, zero required UNKNOWN. Across all 33 entry rows: **21 PASS, 7 FAIL, 5 UNKNOWN**; entry remains **REJECTED**. All 15 management checks remain **NOT_RUN / NO_ACTIVE_THESIS**. This is evidence acquisition, not trading certification or zero-unknown completion.
+- Typecheck/build and **916/916 tests PASS**, zero skipped. The preceding acquisition cycle ended UNRESOLVED after one mint-size correction because fallback adapter/scope forgery remained accepted. The user explicitly began this new cycle. Opus authored strict `live-v1` and exact `{request}` scope guards with five production mutation regressions. Fresh native first review **PASS**, root acceptance verified; no correction stage was needed in this new cycle. Current raw reconstruction, idempotent persistence, show and disk replay pass. Previous accepted `27954bfa-f17a-4a32-820a-f272db6e3b7b` retains original hash `09f9ac9b25c0e3a6fa25da49d6c39849586fb906b522149e336c289783ee1423`; prior provisional `5f4a43d9-7b2b-482b-a219-d1dde4848184` also replays identically.
+
+
+## Maintained boundaries and limits
+
+`src/providers/advisory-topology.ts` owns `collectAuthorityTopology` / `deriveAuthorityTopology`, strict receipt binding, allow-listed binary validation, capped grant exposure and strong/weak candidate graphs under `spl-authority-association-v1`. `src/providers/solana.ts` now acquires full Token-2022 holder bytes once; `live.ts` marks that canonical artifact `fullAccountData:true` and O21 reuses it. Legacy 165-byte reads and old saved prefixes remain supported. A separate bounded full-population fallback is planned only when the canonical population artifact is absent. Existing 150/64 request allowances, 20MB response, 24MB aggregate artifact and 2MB details caps remain unchanged.
+
+Token-2022 mint support is limited to MetadataPointer/TokenMetadata; account support is limited to ImmutableOwner and valid bare/zero-padded layouts. Unknown extensions, invalid account types, multisig-size/cropped data, incomplete reads or unreconciled supply remain unresolved. Metadata, hash, scope, request and clock forgery is rejected. Fresh proof/facts/policy labels are **v9/v10/v10**; saved policies v1–v9 retain frozen replay. O20/OWN-02 and other hard gates retain their definitions. Durable unit/integration protection lives in `tests/advisory-topology.test.ts`, `advisory-integration.test.ts` and `solana-details.test.ts`; `agentic/architecture.md` maps ownership and entry points.
+
+The first diagnostic snapshot `d1a5a2cb-164e-4e12-8f8a-612199922ea0` retained an unavailable full population and social-source losses (39 unresolved); root repaired collection ordering. A subsequent attempt failed artifact validation because duplicate sliced/full populations exceeded the unchanged aggregate cap; it produced no accepted snapshot. Reusing one full canonical population solved that boundary rather than increasing caps. Failed attempts and actual source probes remain private recovery evidence. Neither older known metrics nor source corpora were grafted into the accepted cutoff.
+
+A06 and S09 probes still lacked sufficient qualified evidence; O24 endpoints returned 404/403 and current fee recipients do not establish original creators; O29 lacks matched historical pool-state/cohort calibration and virtual reserves prevent a naive raw-reserve price shortcut. These probes did not relabel missing measurements. The next acquisition cycle should re-rank the remaining prerequisites using current retained evidence. Load applicable agent instructions, `bridgecode/best-agent.md`, architecture and the active checklist before execution; use the exact requested Opus model where available. The repaired slice is complete; remaining evidence acquisition continues in the active checklist, with unrelated concurrent work preserved. Credentials, operator data, private receipts and other-session notes are excluded from the commit.
+
+Previous accepted cycles follow as dated history.
+
+---
+
 # Accepted acquisition result — feasible-advisory-next-2026-10-11
 
 O30 is newly KNOWN on the user's token. Advisory coverage increases from 16/50 to **17/50 KNOWN**, with **31 MISSING and 2 TRUNCATED: 33 unresolved**, down from 34. All five advisory groups remain UNKNOWN; zero unknowns is not achieved.

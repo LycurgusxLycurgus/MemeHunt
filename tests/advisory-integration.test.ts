@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { admittedFetchers,collectLiveToken } from '../src/app/live.js';
 import { Service,decisionHash } from '../src/app/service.js';
 import { starterProfile } from '../src/app/config.js';
-import { SOLANA_MAINNET_GENESIS } from '../src/providers/solana.js';
+import { SOLANA_MAINNET_GENESIS,TOKEN_2022_PROGRAM,decodeSolanaAddress,encodeSolanaAddress } from '../src/providers/solana.js';
 import { advisoryFactsSchema } from '../src/domain/advisory-contracts.js';
 import { reconstructAdvisory } from '../src/app/advisory.js';
 import { deriveSocial } from '../src/domain/social.js';
@@ -38,10 +38,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v8');assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v9');assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v9');
+  assert.equal(facts.method,'advisory-measurements-v10');
   assert.equal(facts.metrics.length,50);assert.equal(facts.metrics.find(m=>m.id==='C08')?.quality,'KNOWN');
   assert.equal(facts.metrics.find(m=>m.id==='C11')?.quality,'KNOWN');assert.equal(facts.metrics.find(m=>m.id==='C15')?.quality,'KNOWN');
   assert.equal(facts.metrics.find(m=>m.id==='A22')?.quality,'MISSING');assert.equal(facts.metrics.find(m=>m.id==='O26')?.quality,'MISSING');
@@ -50,11 +50,11 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
     const writer=new Service(file);let id='';
     try{const saved=writer.analyzeLive(bundle);id=saved.id;assert.ok(saved.result.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='UNKNOWN'&&c.reasonCode==='ADVISORY_METRICS_INCOMPLETE'));}finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v9');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v10');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-for(const version of [7,8])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
+for(const version of [7,8,9])test(`a saved research-screen-advisory-v${version} snapshot still replays from its stored facts`,async()=>{
   const bundle=await collect(),directory=mkdtempSync(join(tmpdir(),'advisory-v7-replay-')),file=join(directory,'live.sqlite');
   try{
     const writer=new Service(file);let id='',relabeled='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
@@ -102,13 +102,16 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
     reject('window-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v3';delete proof.window;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-abi-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v4';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
     reject('window-fee-basis-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';delete proof.accounts;delete proof.automation;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('self-consistent-unsafe-window-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v5';delete proof.accounts;delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('accounts-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('accounts-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.accounts;delete proof.automation;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-accounts-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';delete proof.accounts;delete proof.automation;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('accounts-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.accounts;delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-accounts-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v6';delete proof.accounts;delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
     reject('automation-proof-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('automation-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.automation;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
-    reject('self-consistent-automation-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';delete proof.automation;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('automation-proof-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('self-consistent-automation-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v7';delete proof.automation;delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('topology-version-downgrade',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);proof.method='advisory-provenance-v8';delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');b.details!.advisory=reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);});
+    reject('topology-descriptor-removal',b=>{const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);delete proof.topology;b.rawArtifacts['advisory-derivation']=JSON.stringify(proof);rehash(b,'advisory-derivation');});
+    reject('claimed-topology-measurement',b=>{b.details!.advisory!.metrics.find(m=>m.id==='O21')!.data={largestProvenControlFraction:'1',inventedOwners:true};});
     reject('claimed-automation-measurement',b=>{b.details!.advisory!.metrics.find(m=>m.id==='O30')!.quality='KNOWN';b.details!.advisory!.metrics.find(m=>m.id==='O30')!.data={knownAutomatedFraction:'0',claim:'bot-free'};for(const group of b.details!.advisory!.groups)if(group.unresolved.includes('O30')){group.known++;group.unresolved=group.unresolved.filter(id=>id!=='O30');}});
     reject('forged-automation-receipt',b=>{
       const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),key='automation-program',id=`advisory-automation-${key}`;
@@ -215,4 +218,32 @@ test('C10 evaluates frozen typed entry conditions and binds their retained confi
  }finally{service.close();rmSync(directory,{recursive:true,force:true});}
  const unavailable=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher,now:()=>at,thesis:{...thesis,support:[{op:'eq',feature:'S01',value:true,unit:'bool'}]}});
  assert.equal(unavailable.details!.advisory!.metrics.find(m=>m.id==='C10')!.quality,'MISSING');
+});
+
+test('full Token-2022 topology waits for late canonical mint capture and persists reconstructed grants',async()=>{
+  const owner=encodeSolanaAddress(Buffer.alloc(32,31)),delegate=encodeSolanaAddress(Buffer.alloc(32,32)),account=encodeSolanaAddress(Buffer.alloc(32,33));
+  const mint=Buffer.alloc(82);mint.writeBigUInt64LE(100n,36);mint[44]=6;mint[45]=1;
+  const full=Buffer.alloc(170);decodeSolanaAddress(token.address).copy(full);decodeSolanaAddress(owner).copy(full,32);full.writeBigUInt64LE(100n,64);full.writeUInt32LE(1,72);decodeSolanaAddress(delegate).copy(full,76);full[108]=1;full.writeBigUInt64LE(30n,121);full[165]=2;full.writeUInt16LE(7,166);
+  const calls:string[]=[];
+  const liveFetcher:typeof fetch=async(input,init)=>{
+    if(init?.method==='POST'){
+      const req=JSON.parse(String(init.body));
+      if(req.method==='getAccountInfo'&&req.params[0]===token.address){
+        calls.push(req.params[1].encoding==='jsonParsed'?'mint-parsed':'mint-raw');
+        const value=req.params[1].encoding==='jsonParsed'?{owner:TOKEN_2022_PROGRAM,executable:false,data:{program:'spl-token-2022',parsed:{type:'mint',info:{decimals:6,supply:'100',isInitialized:true,mintAuthority:null,freezeAuthority:null}}}}:{owner:TOKEN_2022_PROGRAM,executable:false,space:82,data:[mint.toString('base64'),'base64']};
+        return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{context:{slot:1},value}}));
+      }
+      if(req.method==='getProgramAccounts'&&req.params[0]===TOKEN_2022_PROGRAM){
+        const sliced=!!req.params[1].dataSlice;calls.push(sliced?'population-sliced':'population-full');
+        return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:{context:{slot:2},value:[{pubkey:account,account:{owner:TOKEN_2022_PROGRAM,executable:false,space:170,data:[(sliced?full.subarray(0,165):full).toString('base64'),'base64']}}]}}));
+      }
+    }
+    return fetcher(input,init);
+  };
+  const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:true,advisoryEnabled:true,fetcher:liveFetcher,now:()=>at});
+  assert.ok(calls.indexOf('population-full')>calls.indexOf('mint-raw'));assert.equal(calls.filter(x=>x==='population-full').length,1);
+  const m=bundle.details!.advisory!.metrics.find(m=>m.id==='O21')!;assert.equal(m.quality,'KNOWN');assert.equal((m.data as any).approvedExposure.effectiveAtomic,'30');
+  const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(Object.keys(proof.topology.artifactIds).length,0);assert.ok(m.evidenceIds.includes('rpc-holder-population'));
+  const directory=mkdtempSync(join(tmpdir(),'advisory-topology-live-')),service=new Service(join(directory,'live.sqlite'));
+  try{const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);const forged=structuredClone(bundle);(forged.details!.advisory!.metrics.find(m=>m.id==='O21')!.data as any).approvedExposure.effectiveAtomic='100';assert.throws(()=>service.analyzeLive(forged),/ADVISORY_PROOF/);}finally{service.close();rmSync(directory,{recursive:true,force:true});}
 });

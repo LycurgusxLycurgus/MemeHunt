@@ -127,7 +127,7 @@ export function decodeHolderPopulation(result:unknown,address:string,programId:s
   const accounts=result.value.map(item=>{
     if(!object(item)||typeof item.pubkey!=='string'||seen.has(item.pubkey))throw new Error('RPC_SHAPE');decodeSolanaAddress(item.pubkey);seen.add(item.pubkey);
     const a=rawAccount({context:result.context,value:item.account});
-    if(a.owner!==programId||a.executable||a.bytes.length!==165||!a.bytes.subarray(0,32).equals(mintBytes)||![1,2].includes(a.bytes[108]))throw new Error('RPC_SHAPE');
+    if(a.owner!==programId||a.executable||(a.bytes.length!==165&&(programId!==TOKEN_2022_PROGRAM||a.bytes.length<166||a.bytes.length===355||a.bytes[165]!==2))||!a.bytes.subarray(0,32).equals(mintBytes)||![1,2].includes(a.bytes[108]))throw new Error('RPC_SHAPE');
     return {address:item.pubkey,owner:encodeAddress(a.bytes.subarray(32,64)),amount:a.bytes.readBigUInt64LE(64).toString()};
   });
   const sum=accounts.reduce((s,a)=>s+BigInt(a.amount),0n);if(sum!==BigInt(supplyAtomic))throw new Error('HOLDER_SUPPLY_UNRECONCILED');
@@ -141,7 +141,7 @@ export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PU
   try {const read=await rpc(url,'getAccountInfo',[address,{encoding:'base64',commitment:'finalized',minContextSlot:mint.slot}],fetcher);result.rawArtifacts['rpc-mint-raw']=read.raw;if(now)result.retrievedAt!['rpc-mint-raw']=now();const raw=rawAccount(read.value);if(raw.slot<mint.slot||raw.owner!==mint.programId||raw.bytes.length<82||raw.bytes[44]!==mint.decimals)throw new Error('RPC_SHAPE');result.controls=decodeRawMintControls(read.value,['rpc-genesis','rpc-mint-raw']);holderSupply=raw.bytes.readBigUInt64LE(36).toString();}
   catch(error){result.errors.controls=safeCode(error);}
   if(result.controls?.complete&&result.controls.currentFeeBps==='0'&&result.controls.feeImmutable)try {
-    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:mint.slot,withContext:true,dataSlice:{offset:0,length:165},filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,20_000_000);
+    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:mint.slot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,20_000_000);
     result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,mint.slot);
   }catch(error){result.errors.holderPopulation=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED'?error.message:safeCode(error);}
   if(!result.holders)
