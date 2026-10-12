@@ -11,6 +11,55 @@ async function flushMicrotasks() {
   for (let index = 0; index < 12; index++) await Promise.resolve();
 }
 
+test('RPC read timeout override is bounded and leaves other methods at their established limits', async t => {
+  const bounds: number[] = [];
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => { bounds.push(ms); return new AbortController().signal; });
+  for (const method of ['getGenesisHash', 'getSignaturesForAddress', 'getTransaction', 'getAccountInfo', 'getProgramAccounts', 'sendTransaction']) {
+    await solanaRpc(URL, method, [], async () => SUCCESS());
+  }
+  assert.deepEqual(bounds, [8000, 8000, 8000, 8000, 15_000, 8000]);
+  await solanaRpc(URL, 'getSignaturesForAddress', [], async () => SUCCESS(), undefined, undefined, undefined, 16_000);
+  assert.equal(bounds.at(-1), 16_000);
+  let calls = 0;
+  for (const invalid of [7999, 20_001, NaN, 1.5]) {
+    await assert.rejects(solanaRpc(URL, 'getSignaturesForAddress', [], async () => { calls++; return SUCCESS(); }, undefined, undefined, undefined, invalid), /RPC_TIMEOUT_CONFIG/);
+  }
+  assert.equal(calls, 0, 'invalid caller configuration never reaches the transport');
+});
+
+test('a page read can finish after eight seconds, but its caller cancellation still wins', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const bounds: number[] = [];
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    bounds.push(ms);
+    const timeout = new AbortController();
+    setTimeout(() => timeout.abort(new DOMException('read timed out', 'TimeoutError')), ms);
+    return timeout.signal;
+  });
+  let calls = 0;
+  const slow: typeof fetch = (_url, init) => new Promise((resolve, reject) => {
+    calls++;
+    const timer = setTimeout(() => resolve(SUCCESS()), 8500);
+    init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal!.reason); }, { once: true });
+  });
+  const pending = solanaRpc(URL, 'getSignaturesForAddress', [], slow, undefined, undefined, undefined, 16_000);
+  await flushMicrotasks();
+  t.mock.timers.tick(8000);
+  await flushMicrotasks();
+  assert.equal(calls, 1);
+  t.mock.timers.tick(500);
+  await flushMicrotasks();
+  assert.equal((await pending).value, 'ok');
+  assert.deepEqual(bounds, [16_000]);
+
+  const controller = new AbortController(), reason = new DOMException('run stopped', 'AbortError');
+  const cancelled = solanaRpc(URL, 'getSignaturesForAddress', [], slow, undefined, controller.signal, undefined, 16_000);
+  await flushMicrotasks();
+  controller.abort(reason);
+  await assert.rejects(cancelled, error => error === reason);
+  assert.equal(calls, 2, 'caller cancellation cannot trigger retry or an extra request');
+});
+
 test('read recovery retries only bounded transient HTTP statuses and returns the final response', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const calls: Array<{ url: string; init: RequestInit }> = [];

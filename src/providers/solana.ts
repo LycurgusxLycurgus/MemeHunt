@@ -37,7 +37,8 @@ export type SolanaRead = {
   mint?: SolanaMint;
 };
 
-export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void): Promise<{raw: string; value: unknown}> {
+export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void, readTimeoutMs?:number): Promise<{raw: string; value: unknown}> {
+  if(readTimeoutMs!==undefined&&(!Number.isSafeInteger(readTimeoutMs)||readTimeoutMs<8000||readTimeoutMs>20_000))throw new RangeError('RPC_TIMEOUT_CONFIG');
   const init:RequestInit = {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -46,7 +47,7 @@ export async function solanaRpc(url: string, method: string, params: unknown[], 
   };
   const reads = new Set(['getGenesisHash','getSignaturesForAddress','getTransaction','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
   const response = reads.has(method)
-    ? await fetchReadResponse(url, init, fetcher, method==='getProgramAccounts'?15_000:8000, true)
+    ? await fetchReadResponse(url, init, fetcher, readTimeoutMs??(method==='getProgramAccounts'?15_000:8000), true)
     : await fetcher(url,{...init,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
   if (!response.ok) throw new Error(`RPC_HTTP_${response.status}`);
   const raw = await readLimitedText(response, maxBytes);

@@ -7,7 +7,7 @@ import { NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { OFFLINE_PUMP_AMM_PROGRAM as sdk, PUMP_AMM_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, userVolumeAccumulatorPda, poolPda } from '@pump-fun/pump-swap-sdk';
 import { createHash } from 'node:crypto';
 import { deflateRawSync } from 'node:zlib';
-import { collectAdvisoryDemandWindows, decodeAdvisoryDemandWindows, deriveA30DemandWindows, projectCompiledTransaction, archiveDemandReceipt, unpackDemandReceipt, demandArchiveSourceLimit, DEMAND_TRANSACTION_CAP, type DemandHistory, type DemandTrade } from '../src/providers/advisory-demand-windows.js';
+import { collectAdvisoryDemandWindows, decodeAdvisoryDemandWindows, deriveA30DemandWindows, projectCompiledTransaction, archiveDemandReceipt, unpackDemandReceipt, demandArchiveSourceLimit, DEMAND_TRANSACTION_CAP, DEMAND_PAGE_TIMEOUT_MS, type DemandHistory, type DemandTrade } from '../src/providers/advisory-demand-windows.js';
 import type { AdvisoryWindowHistory } from '../src/providers/advisory-window.js';
 import { encodeSolanaAddress } from '../src/providers/solana.js';
 
@@ -97,6 +97,34 @@ function assertUnresolved(history: DemandHistory, code: RegExp) {
   assert.equal(data.satisfiedWindows, null); assert.equal(data.share, null); assert.equal(data.windows.length, 6);
   assert.ok(data.windows.every((w: any) => w.condition === null && w.newMeaningfulBuyers === null));
 }
+
+test('only demand index pages use the longer timeout, preserving transaction and pool defaults', async t => {
+  const bounds: number[] = [];
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => { bounds.push(ms); return new AbortController().signal; });
+  const rows = tape([{ blockTime: at(9) }, { blockTime: START - 5 }]);
+  const x = await run([rows]);
+  assert.equal(x.decode().complete, true);
+  assert.deepEqual(x.calls.map(call => call.method), ['getSignaturesForAddress', 'getTransaction', 'getAccountInfo']);
+  assert.deepEqual(bounds, [DEMAND_PAGE_TIMEOUT_MS, 8000, 8000]);
+});
+
+test('a page timeout during response reading retains a sanitized receipt and leaves A30 unresolved', async t => {
+  const bounds: number[] = [];
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => { bounds.push(ms); return new AbortController().signal; });
+  const window = windowFixture();
+  let calls = 0;
+  const fetcher: typeof fetch = async () => {
+    calls++;
+    return new Response(new ReadableStream({ start(controller) { controller.error(new DOMException('timed out', 'TimeoutError')); } }));
+  };
+  const collected = await collectAdvisoryDemandWindows(token, window, 'https://rpc.example', fetcher, () => clock);
+  const raw = unpackDemandReceipt(collected.rawArtifacts['demand-page-0']!, demandArchiveSourceLimit('demand-page-0'));
+  assert.deepEqual(JSON.parse(raw), { jsonrpc: '2.0', id: 1, error: { code: 'RPC_TIMEOUT' } });
+  assert.deepEqual(Object.keys(collected.requests), ['demand-page-0']);
+  assert.equal(calls, 1, 'a timed-out body is not retried after response headers');
+  assert.deepEqual(bounds, [DEMAND_PAGE_TIMEOUT_MS]);
+  assertUnresolved(decodeAdvisoryDemandWindows(token, window.data, window, collected.rawArtifacts, collected.retrievedAt, collected.requests, cutoff), /RPC_TIMEOUT/);
+});
 
 test('complete 12h compiled-json tape with exact O28 jsonParsed reuse certifies baseline-excluded first-observed buyers', async () => {
   // The only baseline activity is a sell, so the hour-8 meaningful buy is first observed there.

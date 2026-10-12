@@ -30,6 +30,7 @@ export type DemandHistory={
 export type DemandStorage={archiveMethod:typeof DEMAND_ARCHIVE_METHOD;adapterVersion:typeof DEMAND_ARCHIVE_ADAPTER;receipts:number;storedBytes:number;sourceBytes:number};
 // Dedicated budget: two 1000-row finalized index pages, 480 fresh transactions and one post-tape pool state.
 export const DEMAND_PAGE_LIMIT=1000,DEMAND_MAX_PAGES=2,DEMAND_TRANSACTION_CAP=480,DEMAND_REQUEST_CAP=DEMAND_MAX_PAGES+DEMAND_TRANSACTION_CAP+1;
+export const DEMAND_PAGE_TIMEOUT_MS=16_000;
 export const MEANINGFUL_CORE_QUOTE_ATOMIC='10000000';
 // Fresh demand receipts are stored as exact reversible archives; the uncompressed RPC bodies stay recoverable byte for byte.
 export const DEMAND_ARCHIVE_METHOD='advisory-demand-rpc-archive-v1' as const,DEMAND_ARCHIVE_ENCODING='DEFLATE_RAW_BASE64' as const,DEMAND_ARCHIVE_ADAPTER='demand-archive-v1' as const;
@@ -284,14 +285,14 @@ async function collectPlainDemandWindows(token:TokenRef,window:ReceiptSet&{data:
  const receipts:ReceiptSet={rawArtifacts:{},retrievedAt:{},requests:{}},w=window.data,anchorRetrieved=Date.parse(window.retrievedAt['window-anchor-time']??'');
  if(!eligible(w)||!Number.isFinite(anchorRetrieved))return receipts;
  const b=bounds(w),pool=w.pool!,anchorSlot=w.anchorSlot!;
- const run=async(id:string,request:Request,maxBytes:number)=>{
+ const run=async(id:string,request:Request,maxBytes:number,readTimeoutMs?:number)=>{
   receipts.requests[id]=request;
-  try{await solanaRpc(rpcUrl,request.method,request.params,fetcher,maxBytes,signal,raw=>{receipts.rawArtifacts[id]=raw;receipts.retrievedAt[id]=now();});}
+  try{await solanaRpc(rpcUrl,request.method,request.params,fetcher,maxBytes,signal,raw=>{receipts.rawArtifacts[id]=raw;receipts.retrievedAt[id]=now();},readTimeoutMs);}
   catch(error){if(!receipts.rawArtifacts[id]){receipts.rawArtifacts[id]=JSON.stringify({jsonrpc:'2.0',id:1,error:{code:safeRpcCode(error)}});receipts.retrievedAt[id]=now();}}
  };
  let before:string|undefined;
  for(let i=0;i<DEMAND_MAX_PAGES;i++){
-  await run(`demand-page-${i}`,demandPageRequest(pool,anchorSlot,before),PAGE_RESPONSE_BYTES);
+  await run(`demand-page-${i}`,demandPageRequest(pool,anchorSlot,before),PAGE_RESPONSE_BYTES,DEMAND_PAGE_TIMEOUT_MS);
   const current=index(pool,anchorSlot,anchorRetrieved,b,receipts,now()),last=current.pages.at(-1);
   if(current.reached||!last||last.id!==`demand-page-${i}`||last.status==='INVALID'||last.status==='UNAVAILABLE')break;
   before=current.rows.at(-1)?.signature;if(!before)break;
