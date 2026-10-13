@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { qualifyAdvisorySemantic, decodeAdvisorySemantic, validateAdvisorySemanticWire, deriveAdvisorySemantic, advisorySemanticRules, type AdvisorySemantic } from '../src/providers/advisory-semantic.js';
+import { z } from 'zod';
+import { qualifyAdvisorySemantic, decodeAdvisorySemantic, validateAdvisorySemanticWire, deriveAdvisorySemantic, advisorySemanticRules, advisorySemanticRulesV3, type AdvisorySemantic } from '../src/providers/advisory-semantic.js';
+import { requestSourceJson } from '../src/providers/source-model.js';
 import { socialCopyPairs } from '../src/domain/social.js';
 import type { SocialInput, SocialProposal, SocialReview } from '../src/domain/social.js';
 import type { TokenRef } from '../src/domain/contracts.js';
@@ -156,4 +158,83 @@ test('an UNKNOWN origin category keeps current A21 missing and is never counted 
  const semantic=decodeAdvisorySemantic(f.read,envelope(f.p),envelope(f.r),token),m=deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],semantic,f.paid).find(m=>m.id==='A21')!;
  assert.equal(m.quality,'MISSING');assert.equal(m.reasonCode,'CLASSIFIED_FRACTION_INCOMPLETE');
  assert.deepEqual([(m.data as any).eligible,(m.data as any).classified,(m.data as any).fraction],[1,0,null]);
+});
+
+// Wire v4 failure isolation. renewalNone mirrors the archived real proposal hypothesis (renewal 'none' violates minLength 8);
+// every reviewer response below is a synthetic fixture and never evidence of a real-token run.
+const renewalNone={style:'SPARK',mechanism:'FLASH',horizonHours:350,renewal:'none',expiry:'project closed on October 13, 2026',citations:[{sourceId:'p',spanId:'p:span:0'}],rationale:'The token experienced a brief, intense promotional wave in late September 2026 before abruptly shutting down operations by mid-October 2026.'};
+const validHypothesis={...renewalNone,renewal:'Recurring cited community renewal.'};
+const modelText=(raw:string)=>JSON.parse(JSON.parse(raw).candidates[0].content.parts[0].text);
+test('source-model local validation schema relaxes only the local parse; the hosted schema stays the strict requested schema',async()=>{
+ const strict=z.object({value:z.string().min(8)}).strict(),local=z.object({value:z.literal('none')}).strict(),hosted:any[]=[];
+ const fetcher:typeof fetch=async(_url,init)=>{hosted.push(JSON.parse(String(init?.body)).generationConfig.responseJsonSchema);return new Response(envelope({value:'none'}),{status:200});};
+ const relaxed=await requestSourceJson('packet',strict,'test-only',fetcher,()=>{},async()=>{},undefined,'ADV_SEMANTIC',local);
+ assert.deepEqual(relaxed.value,{value:'none'});
+ await assert.rejects(requestSourceJson('packet',strict,'test-only',fetcher,()=>{},async()=>{},undefined,'ADV_SEMANTIC'),(error:unknown)=>Array.isArray((error as {issues?:unknown}).issues));
+ assert.deepEqual(hosted[0],hosted[1]);assert.equal(hosted[0].properties.value.enum,undefined,'the local literal never reaches the hosted schema');
+});
+test('v4 isolates the archived malformed renewal: a second full-corpus review keeps source-derived measures known and A06 explicitly rejected',async()=>{
+ const f=artifactFixture(true,false),p={...f.p,persistence:renewalNone},r={...f.r,persistence:true},packets:any[]=[],hosted:unknown[]=[],strictHosted:unknown[]=[];let n=0;
+ const fetcher:typeof fetch=async(_url,init)=>{const payload=JSON.parse(String(init?.body));hosted.push(payload.generationConfig.responseJsonSchema);packets.push(JSON.parse(payload.contents[0].parts[0].text));return new Response(envelope(n++===0?p:r),{status:200});};
+ const result=await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',fetcher,async()=>{},undefined,'v4');
+ assert.equal(result.code,null);assert.equal(n,2,'the independent reviewer is a second inspected HTTP response');
+ assert.equal(result.rawArtifacts['advisory-semantic-proposal-response'],envelope(p),'raw model envelope bytes stay untouched');
+ assert.equal(JSON.parse(result.rawArtifacts['advisory-semantic-selection']!).method,'advisory-source-selection-v4');
+ assert.deepEqual(packets[1].sources,packets[0].sources);for(const packet of packets)assert.equal(packet.rules,advisorySemanticRulesV3);
+ assert.deepEqual(packets[1].proposal,{sources:modelText(envelope(p)).sources,persistence:null});
+ assert.deepEqual(packets[1].persistenceDiagnostic,{status:'REJECTED',code:'ADV_SEMANTIC_PERSISTENCE_SCHEMA',issues:[{code:'too_small',path:'renewal'}]});
+ assert.match(packets[1].instruction,/cannot be accepted/);
+ let k=0;await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',async(_url,init)=>{strictHosted.push(JSON.parse(String(init?.body)).generationConfig.responseJsonSchema);return new Response(envelope(k++===0?f.p:f.r),{status:200});},async()=>{});
+ assert.deepEqual(hosted,strictHosted,'v4 sends the unchanged strict hosted schemas');
+ const data=result.data!;assert.equal(data.method,'advisory-source-classification-v4');assert.equal(data.persistence,null);assert.equal(data.persistenceAccepted,false,'a reviewer persistence true cannot accept a rejected hypothesis');
+ assert.deepEqual(validateAdvisorySemanticWire(f.read,result.rawArtifacts,token,'v4'),data);
+ const metrics=deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],data,f.paid);
+ for(const id of ['A07','A08','A22','S08','S12'])assert.equal(metrics.find(m=>m.id===id)!.quality,'KNOWN',id);
+ const a06=metrics.find(m=>m.id==='A06')!;assert.deepEqual([a06.quality,a06.reasonCode,(a06.data as any).persistenceDiagnostic.code],['MISSING','PERSISTENCE_HYPOTHESIS_REJECTED','ADV_SEMANTIC_PERSISTENCE_SCHEMA']);
+ assert.equal((metrics.find(m=>m.id==='A21')!.data as any).categoryRubric,'reviewed-public-origin-v1');
+});
+test('v3 keeps the strict hypothesis contract: the malformed renewal fails before any review',async()=>{
+ const f=fixture(),p={...f.p,persistence:renewalNone};let n=0;
+ const result=await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',async()=>{n++;return new Response(envelope(p),{status:200});},async()=>{});
+ assert.deepEqual([result.data,result.code,n,result.rawArtifacts['advisory-semantic-review-prompt']],[null,'ADV_SEMANTIC_QUALIFICATION_FAILED',1,undefined]);
+ for(const wire of ['v2','v3'] as const)assert.throws(()=>decodeAdvisorySemantic(f.read,envelope(p),envelope(f.r),token,wire));
+});
+test('v4 still requires the exact envelope, a present persistence key, strict source rows and valid source citations',async()=>{
+ const f=fixture(),claim=f.p.sources.p;
+ const cases={missingPersistence:{sources:f.p.sources},extraKey:{...f.p,persistence:renewalNone,extra:true},malformedSource:{persistence:renewalNone,sources:{p:{...claim,event:'BOGUS'}}},invalidSourceCitation:{persistence:renewalNone,sources:{p:{...claim,citations:[{sourceId:'p',spanId:'missing'}]}}}};
+ for(const [name,p] of Object.entries(cases)){
+  let n=0;const result=await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',async()=>new Response(envelope(n++===0?p:f.r),{status:200}),async()=>{},undefined,'v4');
+  assert.equal(result.data,null,name);
+  if(name==='invalidSourceCitation'){assert.equal(result.code,'ADV_SEMANTIC_CITATION_INVALID');assert.throws(()=>decodeAdvisorySemantic(f.read,envelope(p),envelope(f.r),token,'v4'),/CITATION_INVALID/);}
+  else{assert.equal(n,1,`${name} fails before review`);assert.throws(()=>decodeAdvisorySemantic(f.read,envelope(p),envelope(f.r),token,'v4'));}
+ }
+});
+test('an invalid optional citation or unbound optional hypothesis is isolated only under v4',()=>{
+ const f=fixture(false,`${body}\n${'No contract appears in this renewal context line. '.repeat(30)}`);
+ for(const [spanId,code,pattern] of [['missing','ADV_SEMANTIC_CITATION_INVALID',/CITATION_INVALID/],['p:span:1','ADV_SEMANTIC_PERSISTENCE_BINDING',/PERSISTENCE_BINDING/]] as const){
+  const p={...f.p,persistence:{...validHypothesis,citations:[{sourceId:'p',spanId}]}},r={...f.r,persistence:true};
+  for(const wire of ['v2','v3'] as const)assert.throws(()=>decodeAdvisorySemantic(f.read,envelope(p),envelope(r),token,wire),pattern);
+  const semantic=decodeAdvisorySemantic(f.read,envelope(p),envelope(r),token,'v4');
+  assert.deepEqual([semantic.persistence,semantic.persistenceAccepted,semantic.persistenceDiagnostic],[null,false,{status:'REJECTED',code,issues:[]}]);
+  assert.ok(semantic.sources.every(source=>source.complete&&source.accepted&&source.citations.length===1));
+ }
+ const valid=decodeAdvisorySemantic(f.read,envelope({...f.p,persistence:validHypothesis}),envelope({...f.r,persistence:true}),token,'v4');
+ assert.deepEqual([valid.persistenceAccepted,valid.persistenceDiagnostic],[true,{status:'VALID',code:null,issues:[]}]);
+});
+test('v4 rejected, incomplete or absent independent review keeps every source measure missing',async()=>{
+ const f=artifactFixture(true,false),p={...f.p,persistence:renewalNone};
+ for(const flag of ['accepted','complete'] as const){const r=structuredClone(f.r);r.sources.p[flag]=false;const semantic=decodeAdvisorySemantic(f.read,envelope(p),envelope(r),token,'v4');assert.ok(deriveAdvisorySemantic(f.read,f.proposal,f.review,token,cutoff,[],semantic,f.paid).every(m=>m.quality==='MISSING'),flag);}
+ let n=0;const absent=await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',async()=>n++===0?new Response(envelope(p),{status:200}):new Response('{}',{status:500}),async()=>{},undefined,'v4');
+ assert.deepEqual([absent.data,absent.code],[null,'ADV_SEMANTIC_HTTP_500']);assert.ok(absent.rawArtifacts['advisory-semantic-review-prompt']);
+ assert.throws(()=>validateAdvisorySemanticWire(f.read,absent.rawArtifacts,token,'v4'));
+});
+test('v4 prompt or diagnostic tampering and cross-version replay are invalid',async()=>{
+ const f=fixture(),p={...f.p,persistence:renewalNone};let n=0;
+ const result=await qualifyAdvisorySemantic(f.read,f.proposal,f.review,token,'test-only',async()=>new Response(envelope(n++===0?p:f.r),{status:200}),async()=>{},undefined,'v4');
+ assert.equal(result.code,null);
+ const prompt=JSON.parse(result.rawArtifacts['advisory-semantic-review-prompt']!);
+ const tampered:Record<string,string>[]=[{...prompt,persistenceDiagnostic:{status:'ABSENT',code:null,issues:[]}},{...prompt,proposal:{...prompt.proposal,persistence:renewalNone}},{...prompt,sources:[]}].map(value=>({...result.rawArtifacts,'advisory-semantic-review-prompt':JSON.stringify(value)}));
+ tampered.push({...result.rawArtifacts,'advisory-semantic-selection':result.rawArtifacts['advisory-semantic-selection']!.replace('selection-v4','selection-v3')});
+ for(const raw of tampered)assert.throws(()=>validateAdvisorySemanticWire(f.read,raw,token,'v4'),/PROMPT_BINDING/);
+ for(const wire of ['v2','v3'] as const)assert.throws(()=>validateAdvisorySemanticWire(f.read,result.rawArtifacts,token,wire));
 });

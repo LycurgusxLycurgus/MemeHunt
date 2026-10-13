@@ -4,7 +4,9 @@ import BN from 'bn.js';
 import { PublicKey } from '@solana/web3.js';
 import { NATIVE_MINT, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { OFFLINE_PUMP_AMM_PROGRAM as sdk, PUMP_AMM_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, userVolumeAccumulatorPda, coinCreatorVaultAuthorityPda, poolPda } from '@pump-fun/pump-swap-sdk';
+import { readFileSync } from 'node:fs';
 import { decodePumpSwapWindowTransaction } from '../src/providers/advisory-trades.js';
+import { projectCompiledTransaction } from '../src/providers/advisory-demand-windows.js';
 import { encodeSolanaAddress } from '../src/providers/solana.js';
 
 // Builders mirror tests/advisory-window.test.ts; recovery is exercised on the transaction decoder directly.
@@ -158,4 +160,84 @@ test('a foreign fee sweep with no CPI and no event is a bounded non-flow invocat
   assert.throws(() => decode(emptySweep(true, '')), /ADVISORY_TRADE_EVENT_MISSING/);
   assert.throws(() => decode(emptySweep(true, undefined, true)), /ADVISORY_TRADE_EVENT_MISSING/);
   assert.throws(() => decode(emptySweep(true, 'Program log: Nothing to sweep for fee bucket 0')), /ADVISORY_TRADE_SWEEP_EVENT_BINDING/);
+});
+
+// Actual finalized receipt 3muLefdz...: a Titan route closes a selected-pool legacy Sell, then the runtime truncates logs inside a foreign-pool Buy whose emit_cpi event stays in the instruction trace.
+const ACTUAL = JSON.parse(readFileSync('tests/fixtures/demand-truncated/actual-foreign-buy.json', 'utf8')).result;
+const actualPool = '4zLRGHwKdXyaTovP8UkV66CskWgo9E7kAaGYcw1vFh7E', foreignPool = '9d6fbbtAGjM6eFHo4NpsPrDgnwhZNdetgewHmupZTVjV';
+// The selected vaults are the executed Sell's accounts 7/8; the transaction decoder reads only these decoded pool fields.
+const actualState = { baseMint: new PublicKey(token.address), quoteMint: NATIVE_MINT, poolBaseTokenAccount: new PublicKey('ALnzFihp12pxn12qZDgwRqEnTF8RGzpXyWWTP6yDQHEy'), poolQuoteTokenAccount: new PublicKey('3cV5NQHA8AoPtZMps8aYsqNngp1AUUFrC8Pm8Gdethd7') } as any;
+const actualExpected = { signature: ACTUAL.transaction.signatures[0], slot: ACTUAL.slot, at: new Date(ACTUAL.blockTime * 1000).toISOString() };
+const decodeActual = (tx: any, foreign = true, recovery = true) => decodePumpSwapWindowTransaction(tx, actualExpected, actualPool, actualState, ACTUAL.slot, '2026-10-13T07:30:00.000Z', true, true, recovery, false, foreign);
+/** The projected actual receipt, its route trace and the foreign Buy, its witness and the selected Sell witness positions. */
+function actual() {
+  const tx = projectCompiledTransaction(structuredClone(ACTUAL)), group: any[] = tx.meta.innerInstructions[0].instructions;
+  const buy = group.findIndex(ix => ix.programId === program && ix.accounts[0] === foreignPool), witness = group.findIndex((ix, i) => i > buy && ix.programId === program);
+  const sellWitness = group.findIndex(ix => ix.programId === program && ix.accounts.length === 1);
+  return { tx, group, buy, witness, sellWitness };
+}
+
+test('actual truncated route recovers only its closed selected Sell under foreign-flow recovery', () => {
+  const x = actual();
+  assert.ok(x.buy > 0 && x.witness > x.buy && x.sellWitness < x.buy);
+  assert.throws(() => decodeActual(actual().tx, false), /ADVISORY_TRADE_LOG_TRUNCATED/);
+  assert.throws(() => decodeActual(actual().tx, true, false), /ADVISORY_TRADE_RECOVERY_SCOPE/);
+  const proof = decodeActual(x.tx);
+  assert.deepEqual(proof.trades.map(t => [t.side, t.user, t.instructionIndex, t.instructionName]), [['SELL', 'sxfoypViYmwSTi84pw854zcPp2iCG6vN4aGzPNLUezp', 0, 'sell']]);
+  const sold = proof.trades[0]!;
+  assert.deepEqual([sold.baseAtomic, sold.quoteAtomic, sold.quoteAccounting?.coreQuoteAtomic, sold.quoteAccounting?.userQuoteAtomic, 'virtualQuoteReservesAtomic' in sold], ['2126379272047', '730832542', '730832542', '721697134', false]);
+  const retained = decodePumpSwapWindowTransaction(actual().tx, actualExpected, actualPool, actualState, ACTUAL.slot, '2026-10-13T07:30:00.000Z', true, true, true, true, true);
+  assert.deepEqual([retained.trades.length, retained.trades[0]!.baseAtomic, retained.trades[0]!.virtualQuoteReservesAtomic], [1, '2126379272047', '17583532133']);
+  assert.deepEqual([proof.foreignSwapLegs, proof.nonSwapInvocations, proof.cpiAuthorizedAccounts], [0, 0, []]);
+  assert.deepEqual(proof.logRecovery, { truncated: true, unresolvedInvocations: 2, emptyForeignSweeps: 0, unresolvedForeignSwaps: 1 });
+  // Without truncation the opt-in only adds its zero counter; the default shape is unchanged.
+  assert.deepEqual(decodePumpSwapWindowTransaction(sellV2(reference), expected, pool, state, 10_001, cutoff, true, true, true, false, true).logRecovery, { truncated: false, unresolvedInvocations: 0, emptyForeignSweeps: 0, unresolvedForeignSwaps: 0 });
+  assert.deepEqual(decode(sellV2(reference)).logRecovery, { truncated: false, unresolvedInvocations: 0, emptyForeignSweeps: 0 });
+});
+
+test('actual foreign-flow recovery rejects selected overlap, non-canonical tails, unknown swaps and unbound witnesses', () => {
+  const quote = actualState.poolQuoteTokenAccount.toBase58(), base = actualState.poolBaseTokenAccount.toBase58(), tokenkeg = TOKEN_PROGRAM_ID.toBase58(), system = '11111111111111111111111111111111';
+  const legacyBuy = (bytes: number) => encodeSolanaAddress(Buffer.concat([Buffer.from(sdk.idl.instructions.find(i => i.name === 'buy')!.discriminator), Buffer.alloc(bytes)]));
+  const cases: Array<[string, (x: ReturnType<typeof actual>) => void, RegExp]> = [
+    ['late route Token CPI on the selected quote vault', x => { x.group.push({ programId: tokenkeg, accounts: [quote, x.group[x.buy].accounts[6]], data: 'A', stackHeight: 2 }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['late route System CPI on the selected pool', x => { x.group.push({ programId: system, accounts: [actualPool], data: '', stackHeight: 2 }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['late unknown-program CPI on the selected base vault', x => { x.group.push({ programId: memo, accounts: [base], data: '', stackHeight: 2 }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['later top-level instruction on the selected pool', x => { x.tx.transaction.message.instructions.push({ programId: system, accounts: [actualPool], data: '', stackHeight: null }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['later top-level selected-pool Sell', x => { x.tx.transaction.message.instructions.push({ ...x.group.find(ix => ix.programId === program && ix.accounts[0] === actualPool), stackHeight: null }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail account outside the transaction keys', x => { x.group.push({ programId: tokenkeg, accounts: [otherPool], data: 'A', stackHeight: 2 }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail instruction without accounts', x => { delete x.group[x.group.length - 1].accounts; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail program outside the transaction keys', x => { x.group[x.group.length - 1].programId = otherPool; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail instruction without a stack height', x => { x.group[x.group.length - 1].stackHeight = null; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail inner instruction at stack height 0', x => { x.group[x.group.length - 1].stackHeight = 0; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['tail inner instruction at stack height 1', x => { x.group[x.group.length - 1].stackHeight = 1; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy missing role accounts', x => { x.group[x.buy].accounts = x.group[x.buy].accounts.slice(0, 16); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy below its IDL account count', x => { x.group[x.buy].accounts = x.group[x.buy].accounts.slice(0, 20); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a substituted event authority', x => { x.group[x.buy].accounts[15] = system; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a substituted user role', x => { x.group[x.buy].accounts[1] = foreignPool; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a non-token base token program', x => { x.group[x.buy].accounts[11] = system; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a non-token quote token program', x => { x.group[x.buy].accounts[12] = system; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a substituted System program', x => { x.group[x.buy].accounts[13] = tokenkeg; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with a substituted Associated Token program', x => { x.group[x.buy].accounts[14] = system; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy touching the selected quote vault', x => { x.group[x.buy].accounts[20] = quote; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['foreign Buy with malformed legacy arguments', x => { x.group[x.buy].data = legacyBuy(30); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['unknown foreign instruction', x => { x.group[x.buy].data = encodeSolanaAddress(Buffer.alloc(24, 7)); }, /ADVISORY_TRADE_UNSUPPORTED_INSTRUCTION/],
+    ['missing event witness', x => { x.group.splice(x.witness, 1); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['witness carrying the selected Sell event', x => { x.group[x.witness].data = x.group[x.sellWitness].data; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['malformed witness payload', x => { x.group[x.witness].data = encodeSolanaAddress(Buffer.concat([Buffer.from('e445a52e51cb9a1d', 'hex'), Buffer.alloc(40)])); }, /ADVISORY_TRADE_/],
+    ['witness at the wrong depth', x => { x.group[x.witness].stackHeight = 4; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['witness outside the Buy subtree', x => { x.group.splice(x.witness, 0, { programId: tokenkeg, accounts: [x.group[x.buy].accounts[6]], data: 'A', stackHeight: 2 }); }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+    ['witness for another user base account', x => { x.group[x.buy].accounts[5] = x.group[x.buy].accounts[6]; }, /ADVISORY_TRADE_LOG_TRUNCATED/],
+  ];
+  for (const [name, mutate, code] of cases) { const x = actual(); mutate(x); assert.throws(() => decodeActual(x.tx), code, name); }
+});
+
+test('foreign-flow recovery keeps every selected-pool truncation guard', () => {
+  const foreign = (tx: any) => decodePumpSwapWindowTransaction(tx, expected, pool, state, 10_001, cutoff, true, true, true, false, true);
+  assert.throws(() => foreign(nested(false)), /ADVISORY_TRADE_LOG_TRUNCATED/);
+  assert.equal(foreign(nested(true)).trades.length, 1);
+  const open = sellV2(reference); open.meta.logMessages = [open.meta.logMessages[0], open.meta.logMessages[1], 'Log truncated', `Program ${program} success`];
+  assert.throws(() => foreign(open), /ADVISORY_TRADE_LOG_TRUNCATED/);
+  const sweep = sellV2(reference); sweep.transaction.message.instructions.push(feeSweep(reference, 'sweep_protocol_fee').transaction.message.instructions[0]); bindKeys(sweep); sweep.meta.logMessages.push('Log truncated');
+  assert.throws(() => foreign(sweep), /ADVISORY_TRADE_LOG_TRUNCATED/);
+  assert.deepEqual(foreign(truncateAfter(sellV2(reference), [`Program ${program} invoke [1]`])).logRecovery, { truncated: true, unresolvedInvocations: 0, emptyForeignSweeps: 0, unresolvedForeignSwaps: 0 });
 });

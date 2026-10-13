@@ -14,7 +14,7 @@ const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
  */
 export function legacyWindowBundle<B extends LiveBundle>(fresh: B): { bundle: B; proof: any } {
   const bundle = structuredClone(fresh), raw = bundle.rawArtifacts as Record<string, string>, proof = JSON.parse(raw['advisory-derivation']!);
-  if (proof.method !== 'advisory-provenance-v21' && proof.method !== 'advisory-provenance-v22' && proof.method !== 'advisory-provenance-v23') throw new Error('LEGACY_WINDOW_SOURCE');
+  if (proof.method !== 'advisory-provenance-v21' && proof.method !== 'advisory-provenance-v22' && proof.method !== 'advisory-provenance-v23' && proof.method !== 'advisory-provenance-v24') throw new Error('LEGACY_WINDOW_SOURCE');
   const ids = proof.window.artifactIds as Record<string, string>, requests = structuredClone(proof.window.requests) as Record<string, Request>;
   const record = (id: string) => bundle.evidence.find(e => e.id === id)!, keys = Object.keys(ids);
   const plain = unpackAdvisoryWindowReceipts({ rawArtifacts: Object.fromEntries(keys.map(k => [k, raw[ids[k]!]!])), retrievedAt: Object.fromEntries(keys.map(k => [k, record(ids[k]!).retrievedAt])), requests }).rawArtifacts;

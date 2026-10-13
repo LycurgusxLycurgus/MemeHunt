@@ -26,6 +26,8 @@ export type DemandHistory={
  poolVerified:boolean;stateSlot:number|null;pages:Page[];indexReached:boolean;indexComplete:boolean;
  successfulReferences:number;failedReferences:number;freshTransactions:number;reusedTransactions:number;transactionCap:number;capExceeded:boolean;
  transactions:DemandTransaction[];hours:Hour[];trades:DemandTrade[];programAccounts:string[];storage:DemandStorage;complete:boolean;reasonCode:string;
+ /** Present only when decoded with foreign-flow recovery. */
+ foreignFlowRecovery?:true;
 };
 export type DemandStorage={archiveMethod:typeof DEMAND_ARCHIVE_METHOD;adapterVersion:typeof DEMAND_ARCHIVE_ADAPTER;receipts:number;storedBytes:number;sourceBytes:number};
 // Dedicated budget: two 1000-row finalized index pages, 480 fresh transactions and one post-tape pool state.
@@ -83,6 +85,8 @@ const LIMITATIONS=[
  'Fresh demand receipts are stored as exact deflate-raw archives with the original byte length and SHA-256; stored bytes count against the unchanged 24 MB live cap, while uncompressed source bytes are reported separately and not claimed to fit it.',
  'Upgradeable program bytecode during the tape is not independently attested; runtime account, event and argument bindings are verified.',
 ];
+const FOREIGN_RECOVERY_RULE='truncated logs certify only selected-pool flow closed before the marker; unresolved later invocations are not selected-pool flow, foreign swaps among them are bound to their own trace event witness and disjoint from the selected pool, and none is proven executed';
+const FOREIGN_RECOVERY_LIMITATION='Foreign-flow recovery admits a truncated receipt only when every unresolved swap is a canonical foreign-pool swap bound to its own emit_cpi event in the instruction trace and every instruction after the last log-bound PumpSwap invocation is canonical and excludes the selected pool and vaults. Those swaps are counted as unresolved, never as executed legs or flow.';
 function fail(code:string):never{throw new Error(code);}
 const object=(v:unknown):v is Record<string,any>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const integer=(v:unknown):v is number=>Number.isSafeInteger(v)&&Number(v)>=0;
@@ -226,8 +230,9 @@ function emptyHistory(token:TokenRef,window:AdvisoryWindowHistory,b:Bounds):Dema
 }
 
 /** Rebuilds the complete [E-12h,E) selected-pool tape from retained raw receipts; any gap leaves it incomplete, never zero.
- * retainVirtualQuote (default false) only adds each trade's verified event virtual quote reserves for O29. */
-export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:ReceiptSet,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,retainVirtualQuote=false):DemandHistory{
+ * retainVirtualQuote (default false) only adds each trade's verified event virtual quote reserves for O29.
+ * foreignFlowRecovery (default false) opts the pinned decoder into witnessed foreign-swap truncation recovery and marks the history for its separate disclosure. */
+export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:ReceiptSet,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,retainVirtualQuote=false,foreignFlowRecovery=false):DemandHistory{
  if(token.chain!=='solana'||window.token.chain!==token.chain||window.token.address!==token.address)fail('ADVISORY_DEMAND_SCOPE');
  const cut=Date.parse(cutoff),endMs=Date.parse(window.window.end);
  if(!Number.isFinite(cut)||!Number.isFinite(endMs)||endMs>cut)fail('ADVISORY_DEMAND_TIME');
@@ -238,6 +243,7 @@ export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindow
  const plain:Record<string,string>={};let storedBytes=0,sourceBytes=0;
  for(const k of rawKeys){const text=unpackDemandReceipt(rawArtifacts[k]!,demandArchiveSourceLimit(k));plain[k]=text;storedBytes+=Buffer.byteLength(rawArtifacts[k]!);sourceBytes+=Buffer.byteLength(text);}
  const b=bounds(window),result=emptyHistory(token,window,b),receipts:ReceiptSet={rawArtifacts:plain,retrievedAt,requests},used=new Set<string>();
+ if(foreignFlowRecovery)result.foreignFlowRecovery=true;
  result.storage={...result.storage,receipts:rawKeys.length,storedBytes,sourceBytes};
  const finish=()=>{if(rawKeys.some(k=>!used.has(k)))fail('ADVISORY_DEMAND_RECEIPT_MEMBERSHIP');return result;};
  if(!eligible(window))return finish();
@@ -265,7 +271,7 @@ export function decodeAdvisoryDemandWindows(token:TokenRef,window:AdvisoryWindow
    const value=s.reused?response.value:projectCompiledTransaction(response.value);
    if(response.at>state.at||response.at<b.end||response.at<row.blockTime!*1000||!object(value)||value.slot!==row.slot||value.blockTime!==row.blockTime||value.transaction?.signatures?.[0]!==row.signature||!Array.isArray(value.transaction?.message?.accountKeys)||!value.transaction.message.accountKeys.some((k:unknown)=>object(k)&&k.pubkey===pool))fail('ADVISORY_DEMAND_TRANSACTION_BINDING');
    // Opt-in log recovery: only closed, ancestor-proven flow survives a truncated log; unresolved invocations stay disclosed as unproven.
-   const proof=decodePumpSwapWindowTransaction(value,entry,pool,state.decoded,state.slot,source.retrievedAt[s.id]!,true,true,true,retainVirtualQuote);
+   const proof=decodePumpSwapWindowTransaction(value,entry,pool,state.decoded,state.slot,source.retrievedAt[s.id]!,true,true,true,retainVirtualQuote,foreignFlowRecovery);
    result.transactions.push({...entry,receipt,status:'OBSERVED',trades:proof.trades.length,...(proof.logRecovery?{logRecovery:proof.logRecovery}:{})});
    for(const trade of proof.trades)result.trades.push({...trade,transactionIndex:row.transactionIndex});
    for(const account of proof.cpiAuthorizedAccounts)programs.add(account);
@@ -338,13 +344,14 @@ export function deriveA30DemandWindows(history:DemandHistory,evidenceIds:string[
   transactionCap:history.transactionCap,capExceeded:history.capExceeded,successfulReferences:history.successfulReferences,failedReferences:history.failedReferences,freshTransactions:history.freshTransactions,reusedTransactions:history.reusedTransactions,
   unresolvedTransactions:history.transactions.filter(t=>t.status!=='OBSERVED').slice(0,20).map(t=>({signature:t.signature,receipt:t.receipt,status:t.status,code:t.code??null})),
   storage:{...history.storage,encoding:DEMAND_ARCHIVE_ENCODING,storedAggregateCapBytes:24_000_000,meaning:'storedBytes are encoded archives counted against the unchanged 24 MB live artifact cap; sourceBytes are the exact uncompressed RPC bodies, reported only and not claimed to fit that cap'},
-  logRecovery:{truncatedTransactions:observed.filter(t=>t.logRecovery?.truncated).length,unresolvedNonFlowInvocations:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedInvocations??0),0),emptyForeignSweeps:observed.reduce((n,t)=>n+(t.logRecovery?.emptyForeignSweeps??0),0),
-   rule:'truncated logs certify only selected-pool flow closed before the marker; unresolved later invocations are non-flow and not proven executed'},
+  logRecovery:{truncatedTransactions:observed.filter(t=>t.logRecovery?.truncated).length,unresolvedNonFlowInvocations:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedInvocations??0)-(t.logRecovery?.unresolvedForeignSwaps??0),0),emptyForeignSweeps:observed.reduce((n,t)=>n+(t.logRecovery?.emptyForeignSweeps??0),0),
+   ...(history.foreignFlowRecovery?{unresolvedForeignSwaps:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedForeignSwaps??0),0)}:{}),
+   rule:history.foreignFlowRecovery?FOREIGN_RECOVERY_RULE:'truncated logs certify only selected-pool flow closed before the marker; unresolved later invocations are non-flow and not proven executed'},
   quoteMint:WSOL,quoteDecimals:9,quoteBasis:'fee-exclusive core quote atomic units',meaningfulThreshold:{coreQuoteAtomic:MEANINGFUL_CORE_QUOTE_ATOMIC,quoteUnits:'0.01',meaning:'existing descriptive research threshold, not profitability or organic demand'},
   identityUnit:'decoded PumpSwap trade user account; never merged and not a person',newBuyerRule:NEW_BUYER_RULE,
   programAccounts:{rule:'CPI-authorized decoded users anywhere in the tape; excluded from buyer sets, retained in flow',accounts:history.programAccounts},
   baseline:{start:history.range.start,end:history.range.baselineEnd,complete:flows.slice(0,BASELINE_HOURS).every(f=>f.complete),meaningfulBuyers:known?[...first.values()].filter(t=>hourOf(t)<BASELINE_HOURS).length:null,hours:flows.slice(0,BASELINE_HOURS)},
   windows,denominator:windows.length,satisfiedWindows:satisfied,share:satisfied===null?null:new Decimal(satisfied).div(windows.length).toFixed(),complete:known,
-  sourceUniverseComplete:false,wholeTokenFlow:null,newCapital:null,limitations:LIMITATIONS,
+  sourceUniverseComplete:false,wholeTokenFlow:null,newCapital:null,limitations:history.foreignFlowRecovery?[...LIMITATIONS,FOREIGN_RECOVERY_LIMITATION]:LIMITATIONS,
  }};
 }

@@ -24,18 +24,21 @@ export type ShortDemandReport={
  coverage:{indexReached:boolean;indexComplete:boolean;indexReachesScopeStart:boolean;indexPages:DemandHistory['pages'];capExceeded:boolean;poolVerified:boolean;transactionsCollected:boolean;
   scopeSuccessfulReferences:number|null;scopeObservedTransactions:number|null;scopeReceipts:{window:number;demand:number}|null;
   scopeUnresolvedTransactions:Array<{signature:string;at:string;receipt:'WINDOW'|'DEMAND';status:string;code:string|null}>;outsideScopeUnresolvedTransactions:number|null;
-  logRecovery:{truncatedTransactions:number;unresolvedNonFlowInvocations:number;emptyForeignSweeps:number}|null};
+  logRecovery:{truncatedTransactions:number;unresolvedNonFlowInvocations:number;emptyForeignSweeps:number;unresolvedForeignSwaps?:number}|null};
  quoteMint:string;quoteDecimals:9;quoteBasis:string;meaningfulThreshold:{coreQuoteAtomic:string;quoteUnits:'0.01'};identityUnit:string;newBuyerRule:string;
  programAccounts:{rule:string;accounts:string[]};evidenceIds:string[];limitations:string[];
 };
 const NEW_BUYER_RULE='A decoded non-program user account whose first fee-exclusive core BUY of at least 0.01 WSOL in the complete two-hour tape falls in that ten-minute window. Accounts with such a buy in the one-hour baseline are excluded and each account counts once.';
+const RECOVERY_LIMITATION='Truncated logs pass only through the pinned decoder opt-in recovery; unresolved later invocations are disclosed as non-flow and not proven executed.';
+// Replaces RECOVERY_LIMITATION only for histories decoded with foreign-flow recovery.
+const FOREIGN_RECOVERY_LIMITATION='Truncated logs pass only through the pinned decoder opt-in recovery. Unresolved foreign-pool swaps are disclosed separately: each is bound to its own instruction-trace event witness and disjoint from the selected pool and vaults, is not proven executed and is never counted in selected-pool flow. Other unresolved later invocations are disclosed as non-flow and not proven executed.';
 const LIMITATIONS=[
  'Supplementary scoped report only: the latest completed UTC hour at or before the frozen canonical A30 end, after the preceding one-hour baseline, in one verified PumpSwap WSOL pool. It never replaces canonical A30, its twelve-hour tape and six measured hours, or the 25 USD six-hour risk profile, and it never counts toward the KNOWN metric total.',
  'New means first observed as a meaningful buyer within the declared complete two-hour pool tape; an account that bought earlier in the canonical tape can count here. It is not first-ever buying, a new wallet, a person, organic demand or new capital.',
  'Completeness requires the canonical pool index to be complete and within its 480-transaction cap, the pool state verified, and every successful in-scope reference decoded from its own validated receipt. Unresolved transactions before the two-hour start are excluded and counted; any unresolved in-scope transaction leaves every condition, the satisfied count and the share null.',
  'Collection is unchanged: when the canonical index does not reach the twelve-hour start or exceeds the transaction cap, no transaction receipts exist, so this report stays incomplete even when the index pages reach the two-hour start.',
  'CPI-authorized program accounts observed in any decoded transaction of the canonical tape are excluded from buyer sets and kept in net flow; every in-scope transaction is decoded, and unresolved outside-scope transactions cannot add classifications.',
- 'Truncated logs pass only through the pinned decoder opt-in recovery; unresolved later invocations are disclosed as non-flow and not proven executed.',
+ RECOVERY_LIMITATION,
  'Comparison fields are integer differences between the measured and baseline hours; the buyer ratio is null when the baseline has no meaningful buyer.',
 ];
 const iso=(ms:number)=>new Date(ms).toISOString();
@@ -108,15 +111,17 @@ export function deriveShortDemandReport(history:DemandHistory,evidenceIds:string
    scopeReceipts:collected?{window:observed.filter(t=>t.receipt==='WINDOW').length,demand:observed.filter(t=>t.receipt==='DEMAND').length}:null,
    scopeUnresolvedTransactions:unresolved.slice(0,20).map(t=>({signature:t.signature,at:t.at,receipt:t.receipt,status:t.status,code:t.code??null})),
    outsideScopeUnresolvedTransactions:collected?history.transactions.filter(t=>!inside(t.at)&&t.status!=='OBSERVED').length:null,
-   logRecovery:collected?{truncatedTransactions:observed.filter(t=>t.logRecovery?.truncated).length,unresolvedNonFlowInvocations:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedInvocations??0),0),emptyForeignSweeps:observed.reduce((n,t)=>n+(t.logRecovery?.emptyForeignSweeps??0),0)}:null},
+   // Witnessed foreign swaps are disclosed separately and only under foreign-flow recovery, matching canonical A30.
+   logRecovery:collected?{truncatedTransactions:observed.filter(t=>t.logRecovery?.truncated).length,unresolvedNonFlowInvocations:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedInvocations??0)-(t.logRecovery?.unresolvedForeignSwaps??0),0),emptyForeignSweeps:observed.reduce((n,t)=>n+(t.logRecovery?.emptyForeignSweeps??0),0),
+    ...(history.foreignFlowRecovery?{unresolvedForeignSwaps:observed.reduce((n,t)=>n+(t.logRecovery?.unresolvedForeignSwaps??0),0)}:{})}:null},
   quoteMint:WSOL,quoteDecimals:9,quoteBasis:'fee-exclusive core quote atomic units',meaningfulThreshold:{coreQuoteAtomic:MEANINGFUL_CORE_QUOTE_ATOMIC,quoteUnits:'0.01'},
   identityUnit:'decoded PumpSwap trade user account; never merged and not a person',newBuyerRule:NEW_BUYER_RULE,
   programAccounts:{rule:'CPI-authorized decoded users in the canonical tape; excluded from buyer sets, retained in flow',accounts:[...history.programAccounts]},
-  evidenceIds:[...new Set(evidenceIds)],limitations:[...LIMITATIONS],
+  evidenceIds:[...new Set(evidenceIds)],limitations:history.foreignFlowRecovery?LIMITATIONS.map(l=>l===RECOVERY_LIMITATION?FOREIGN_RECOVERY_LIMITATION:l):[...LIMITATIONS],
  };
 }
 
 /** Rebuilds the canonical demand history from its retained raw receipts, then derives the supplementary report; derived flags are never accepted as input. */
-export function decodeAdvisoryShortDemand(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[]=[]):ShortDemandReport{
- return deriveShortDemandReport(decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff),evidenceIds);
+export function decodeAdvisoryShortDemand(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[]=[],foreignFlowRecovery=false):ShortDemandReport{
+ return deriveShortDemandReport(decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff,false,foreignFlowRecovery),evidenceIds);
 }

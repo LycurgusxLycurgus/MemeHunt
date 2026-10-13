@@ -197,6 +197,28 @@ test('program users stay out of buyer sets but in flow, and E floors a later can
   assert.deepEqual([shifted.windows[2]!.firstObservedBuyerCount, shifted.measured.flow!.decodedTrades], [1, 1]);
 });
 
+test('scoped log recovery keeps its default shape and discloses witnessed foreign swaps only under foreign-flow recovery', () => {
+  const [U, P] = [51, 52].map(addr) as [string, string];
+  const rows: Array<[number, string, 'BUY' | 'SELL', string]> = [[at(10, 100), P, 'BUY', '50000000'], [at(11, 1400), U, 'BUY', '20000000']];
+  const legacy = synthetic(rows, [P]);
+  legacy.transactions[1]!.logRecovery = { truncated: true, unresolvedInvocations: 2, emptyForeignSweeps: 1 };
+  const plain = deriveShortDemandReport(legacy, []);
+  shortDemandReportSchema.parse(plain);
+  assert.deepEqual(plain.coverage.logRecovery, { truncatedTransactions: 1, unresolvedNonFlowInvocations: 2, emptyForeignSweeps: 1 });
+  const opted = synthetic(rows, [P]);
+  opted.foreignFlowRecovery = true;
+  opted.transactions[0]!.logRecovery = { truncated: false, unresolvedInvocations: 0, emptyForeignSweeps: 0, unresolvedForeignSwaps: 0 };
+  opted.transactions[1]!.logRecovery = { truncated: true, unresolvedInvocations: 2, emptyForeignSweeps: 0, unresolvedForeignSwaps: 1 };
+  const disclosed = deriveShortDemandReport(opted, []);
+  shortDemandReportSchema.parse(disclosed);
+  assert.deepEqual([disclosed.status, disclosed.coverage.logRecovery], ['COMPLETE', { truncatedTransactions: 1, unresolvedNonFlowInvocations: 1, emptyForeignSweeps: 0, unresolvedForeignSwaps: 1 }]);
+  const original = 'Truncated logs pass only through the pinned decoder opt-in recovery; unresolved later invocations are disclosed as non-flow and not proven executed.';
+  assert.ok(plain.limitations.includes(original)); assert.equal(disclosed.limitations.includes(original), false);
+  assert.equal(disclosed.limitations.length, plain.limitations.length);
+  const foreign = disclosed.limitations.find(l => /foreign-pool swaps/.test(l))!;
+  assert.match(foreign, /not proven executed/); assert.match(foreign, /never counted in selected-pool flow/); assert.match(foreign, /event witness/);
+});
+
 test('reports come from genuine receipt decoding; forged flags, inconsistent trades and tampered receipts never certify the scope', async () => {
   const A = owner(41);
   const rows = tape([{ blockTime: at(11, 30) }, { blockTime: at(10, 0) }, { blockTime: START - 10 }]);

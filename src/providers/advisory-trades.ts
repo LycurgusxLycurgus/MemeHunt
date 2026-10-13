@@ -10,8 +10,9 @@ type Request={method:string;params:unknown[]};
 export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting;virtualQuoteReservesAtomic?:string};
 export type TradeHistory={method:'pumpswap-decoded-sample-v1';token:TokenRef;pool:string|null;quoteMint:string;quoteDecimals:9;poolVerified:boolean;stateSlot:number|null;trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;coveredInterval:{start:string;end:string}|null;sourceUniverseComplete:false;complete:false;transactionsInspected:number;transactionsExcluded:number;excluded:Array<{signature:string;code:string}>;limitations:string[]};
 export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[];logRecovery?:LogRecovery};
-/** Opt-in only. Unresolved invocations were attempted after log truncation; none is PumpSwap flow or touches the selected pool, and their execution is not proven. */
-export type LogRecovery={truncated:boolean;unresolvedInvocations:number;emptyForeignSweeps:number};
+/** Opt-in only. Unresolved invocations were attempted after log truncation; none is selected-pool flow or touches the selected pool, and their execution is not proven.
+ * unresolvedForeignSwaps exists only under foreign-flow recovery: unresolved foreign-pool swaps bound to their own trace event witness, counted inside unresolvedInvocations and never as executed legs or flow. */
+export type LogRecovery={truncated:boolean;unresolvedInvocations:number;emptyForeignSweeps:number;unresolvedForeignSwaps?:number};
 const program=PUMP_AMM_PROGRAM_ID.toBase58();
 const obj=(x:unknown):x is Record<string,any>=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const integer=(x:unknown):x is number=>Number.isSafeInteger(x)&&Number(x)>=0;
@@ -22,7 +23,7 @@ const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{enc
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
 function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false):DecodedTrade[]{
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false,foreignRecovery=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
@@ -32,7 +33,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
  }
  const pumpInstructions:any[]=[];
  const groups=new Map<number,any[]>();for(const g of value.meta.innerInstructions){if(!integer(g.index)||g.index>=message.instructions.length||groups.has(g.index)||!Array.isArray(g.instructions))throw new Error('ADVISORY_TRADE_INNER_SHAPE');groups.set(g.index,g.instructions);}
- for(const [i,ix] of message.instructions.entries()){if(ix.programId===program)pumpInstructions.push({...ix,depth:1,top:i});for(const inner of groups.get(i)??[])if(inner.programId===program){if(!integer(inner.stackHeight)||inner.stackHeight<2)throw new Error('ADVISORY_TRADE_INNER_DEPTH');pumpInstructions.push({...inner,depth:inner.stackHeight});}}
+ for(const [i,ix] of message.instructions.entries()){if(ix.programId===program)pumpInstructions.push({...ix,depth:1,top:i,position:-1});for(const [k,inner] of (groups.get(i)??[]).entries())if(inner.programId===program){if(!integer(inner.stackHeight)||inner.stackHeight<2)throw new Error('ADVISORY_TRADE_INNER_DEPTH');pumpInstructions.push({...inner,depth:inner.stackHeight,top:i,position:k});}}
  const decodeEvent=currentAbi?(payload:string)=>decodePinnedWindowEvent(payload,feeExclusive):(payload:string)=>OFFLINE_PUMP_AMM_PROGRAM.coder.events.decode(payload);
  const authorized=(key:string,depth:number)=>keys.some((k:any)=>k.pubkey===key&&(k.signer===true||depth>1));
  const tokenProgram=(key:string)=>key===TOKEN_PROGRAM_ID.toBase58()||key===TOKEN_2022_PROGRAM_ID.toBase58();
@@ -112,21 +113,51 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   // meta.err proves only top-level success: a nested frame still open above a closed flow frame, and every unbound invocation, stay unproven.
   const unresolved=[...stack.flatMap(f=>f.ix?[f.ix]:[]),...pumpInstructions.slice(cursor)];
   if(value.meta.logMessages.indexOf('Log truncated',truncatedAt+1)>=0)throw new Error('ADVISORY_TRADE_LOG_SHAPE');
-  if(stack.slice(1).some(f=>f.flowBelow)||unresolved.some(ix=>side(ix,currentAbi)!==null||ix.pinned||ix.accounts.some((k:string)=>selectedAccounts.includes(k))))throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');
-  Object.assign(windowProof!.logRecovery!,{truncated:true,unresolvedInvocations:unresolved.length});
+  const foreign=new Set<any>();
+  if(foreignRecovery){
+   // Opt-in: an unresolved swap is admitted only as a canonical foreign-pool leg bound to its own emit_cpi event in the instruction trace; it adds no flow and its execution stays unproven.
+   const reject=():never=>{throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');};
+   const member=(k:unknown)=>typeof k==='string'&&keys.some((x:any)=>x.pubkey===k),touches=(k:unknown)=>selectedAccounts.includes(k as string);
+   const trace:Array<{ix:any;top:number;position:number;depth:unknown}>=[];
+   for(const [t,ix] of message.instructions.entries()){trace.push({ix,top:t,position:-1,depth:1});for(const [k,inner] of (groups.get(t)??[]).entries())trace.push({ix:inner,top:t,position:k,depth:obj(inner)?inner.stackHeight:null});}
+   const at=(ix:any)=>trace.findIndex(e=>e.top===ix.top&&e.position===ix.position);
+   const eventAuthority=PublicKey.findProgramAddressSync([Buffer.from('__event_authority')],PUMP_AMM_PROGRAM_ID)[0].toBase58(),claimed=new Set<any>();
+   for(const ix of unresolved){
+    const direction=side(ix,currentAbi);if(direction===null)continue;
+    const a=ix.accounts,witness=pumpInstructions[pumpInstructions.indexOf(ix)+1],start=at(ix),stop=witness?at(witness):-1;
+    if(start<0||a.length<17||a[0]===poolKey||a.some(touches)||a[2]!==GLOBAL_CONFIG_PDA.toBase58()||a[15]!==eventAuthority||a[16]!==program)reject();
+    // Legacy IDL swaps also bind their user authority and canonical base/quote token, System and Associated Token program roles; current v2 roles were bound in the pre-pass.
+    if(!ix.pinned){const b=bytes58(ix.data),def=definitions.find(x=>Buffer.from(x.discriminator).equals(b.subarray(0,8)));if(!def||a.length<def.accounts.length||(b.length!==24&&b.length!==25)||def.name==='sell'&&b.length!==24||b.length===25&&b[24]!>1||!authorized(a[1],ix.depth)||!tokenProgram(a[11])||!tokenProgram(a[12])||a[13]!=='11111111111111111111111111111111'||a[14]!==ASSOCIATED_TOKEN_PROGRAM_ID.toBase58())reject();}
+    if(!witness?.eventCpiPayload||!unresolved.includes(witness)||claimed.has(witness)||witness.top!==ix.top||witness.depth!==ix.depth+1||stop<=start)reject();
+    // The witness must be the only PumpSwap invocation in the swap's subtree, reached only through strict descendants.
+    let end=start+1;while(end<trace.length&&integer(trace[end]!.depth)&&(trace[end]!.depth as number)>ix.depth)end++;
+    if(stop>=end||trace.slice(start+1,end).filter(e=>obj(e.ix)&&e.ix.programId===program).length!==1)reject();
+    const event=decodeEvent(witness.eventCpiPayload),d=event?.data as any;
+    if(event?.name!==(direction==='BUY'?'buyEvent':'sellEvent')||d.pool?.toBase58()!==a[0]||d.user?.toBase58()!==a[1]||d.userBaseTokenAccount?.toBase58()!==a[5]||d.userQuoteTokenAccount?.toBase58()!==a[6]||String(d.timestamp)!==String(value.blockTime))reject();
+    claimed.add(witness);foreign.add(ix);
+   }
+   for(const ix of unresolved)if(ix.eventCpiPayload&&!claimed.has(ix)&&['buyEvent','sellEvent'].includes(decodeEvent(ix.eventCpiPayload)?.name??''))reject();
+   // The route stays open, so every instruction after the last log-bound PumpSwap invocation (same-top tail and later tops) must be canonical and exclude the selected pool and vaults.
+   const from=cursor?at(pumpInstructions[cursor-1]):-1;
+   if(foreign.size&&(cursor&&from<0||trace.slice(from+1).some(e=>!obj(e.ix)||!member(e.ix.programId)||!Array.isArray(e.ix.accounts)||e.ix.accounts.some((k:unknown)=>!member(k)||touches(k))||touches(e.ix.programId)||e.position>=0&&(!integer(e.depth)||(e.depth as number)<2))))reject();
+  }
+  if(stack.slice(1).some(f=>f.flowBelow)||unresolved.some(ix=>!foreign.has(ix)&&(side(ix,currentAbi)!==null||ix.pinned)||ix.accounts.some((k:string)=>selectedAccounts.includes(k))))throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');
+  Object.assign(windowProof!.logRecovery!,{truncated:true,unresolvedInvocations:unresolved.length},foreignRecovery?{unresolvedForeignSwaps:foreign.size}:{});
  } else if(stack.length||cursor!==pumpInstructions.length)throw new Error('ADVISORY_TRADE_LOG_INCOMPLETE');
  const expectedSwaps=pumpInstructions.filter(ix=>side(ix,currentAbi)!==null&&ix.accounts?.[0]===poolKey).length;
  if(expectedSwaps!==trades.length)throw new Error('ADVISORY_TRADE_EVENT_MISSING');return trades;
 }
 /** Scoped pool-flow decoder. CPI authorization is an executed-program observation, never a person or wallet-control binding.
  * logRecovery is opt-in for fee-exclusive callers; without it receipts decode exactly as before.
- * retainVirtualQuote is opt-in for fee-exclusive callers only: each selected-pool trade also carries its own verified event virtual_quote_reserves as a signed i128 decimal string; nothing else changes. */
-export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false,retainVirtualQuote=false):WindowTransactionProof{
+ * retainVirtualQuote is opt-in for fee-exclusive callers only: each selected-pool trade also carries its own verified event virtual_quote_reserves as a signed i128 decimal string; nothing else changes.
+ * foreignFlowRecovery (requires logRecovery) also admits a truncated receipt whose unresolved swaps are canonical foreign-pool legs bound to their own trace event witness, with a canonical selected-disjoint tail; they are counted in logRecovery.unresolvedForeignSwaps, never as executed legs. */
+export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false,retainVirtualQuote=false,foreignFlowRecovery=false):WindowTransactionProof{
  if(feeExclusive&&!currentAbi)throw new Error('ADVISORY_TRADE_FEE_SCOPE');
  if(logRecovery&&!feeExclusive)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
+ if(foreignFlowRecovery&&!logRecovery)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
  if(retainVirtualQuote&&!feeExclusive)throw new Error('ADVISORY_TRADE_VIRTUAL_SCOPE');
- const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(logRecovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0}}:{})};
- proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery,retainVirtualQuote);return proof;
+ const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(logRecovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0,...(foreignFlowRecovery?{unresolvedForeignSwaps:0}:{})}}:{})};
+ proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery,retainVirtualQuote,foreignFlowRecovery);return proof;
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{

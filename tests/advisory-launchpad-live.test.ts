@@ -65,7 +65,7 @@ const persist = (b: Bundle, policy: string) => {
 
 test('a keyed advisory run captures one Lighthouse and three public Llama receipts and persists a replayable C16', async () => {
   const calls: Call[] = [], bundle = await collect(tracker(calls), KEY), proof = proofOf(bundle), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v23', 'advisory-measurements-v22']);
+  assert.deepEqual([proof.method, facts.method], ['advisory-provenance-v24', 'advisory-measurements-v23']);
   assert.deepEqual(Object.keys(proof.launchpad.artifactIds).sort(), ['lighthouse', 'llama-fees', 'llama-revenue', 'llama-volume']);
   for (const [key, id] of Object.entries(proof.launchpad.artifactIds as Record<LaunchpadKey, string>) as Array<[LaunchpadKey, string]>) {
     const record = bundle.evidence.find(e => e.id === id)!, envelope = JSON.parse(bundle.rawArtifacts[id]!);
@@ -84,7 +84,7 @@ test('a keyed advisory run captures one Lighthouse and three public Llama receip
   assert.deepEqual([data.money.day.start, data.money.volumeUsd, data.money.feesUsd, data.money.revenueUsd], ['2026-10-09T00:00:00.000Z', '200', '20', '2']);
   assert.equal(data.survival.fraction, null);
   assert.deepEqual(diagnostics(bundle), { method: 'launchpad-run-v1', availability: 'COLLECTED', receipts: 4 });
-  persist(bundle, 'research-screen-advisory-v20');
+  persist(bundle, 'research-screen-advisory-v21');
 });
 
 test('C16 is rebuilt only from captured launchpad receipts; forged, orphaned, downgraded, misattributed or reclocked receipts fail closed', async () => {
@@ -134,13 +134,13 @@ test('without a key no launchpad request is made; errored receipts are retained 
   assert.deepEqual(diagnostics(bundle), { method: 'launchpad-run-v1', availability: 'SOLANA_TRACKER_API_KEY_MISSING', receipts: 0 });
   const missing = c16(bundle.details!.advisory!);
   assert.deepEqual([missing.quality, missing.reasonCode, missing.evidenceIds], ['MISSING', 'LAUNCHPAD_RECEIPTS_NOT_COLLECTED', []]);
-  persist(bundle, 'research-screen-advisory-v20');
+  persist(bundle, 'research-screen-advisory-v21');
   const errored = await collect(tracker([], url => url === LAUNCHPAD_REQUESTS['llama-fees'].url ? new Response('unavailable', { status: 503, headers: { date: HTTP_DATE } }) : undefined), KEY);
   const metric = c16(errored.details!.advisory!), data = metric.data as any;
   assert.deepEqual([metric.quality, metric.reasonCode, data.causes['llama-fees'], data.counts.launches[0].total], ['MISSING', 'COMPLETED_DAY_MONEY_SERIES_UNAVAILABLE', 'LAUNCHPAD_HTTP_UNAVAILABLE', 148]);
   assert.equal(JSON.parse(errored.rawArtifacts['advisory-launchpad-llama-fees']!).httpStatus, 503);
   assert.deepEqual(diagnostics(errored), { method: 'launchpad-run-v1', availability: 'COLLECTED', receipts: 4 });
-  persist(errored, 'research-screen-advisory-v20');
+  persist(errored, 'research-screen-advisory-v21');
   const echoed = await collect(tracker([], url => url === LIGHTHOUSE ? new Response(JSON.stringify({ echo: KEY }), { status: 200 }) : undefined), KEY);
   assert.ok(!JSON.stringify(echoed).includes(KEY));
   assert.equal(proofOf(echoed).launchpad, null);

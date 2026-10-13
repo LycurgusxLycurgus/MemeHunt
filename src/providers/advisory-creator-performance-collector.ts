@@ -57,11 +57,11 @@ export async function collectCreatorFailedFees(token:TokenRef,role:CreatorRole,t
 }
 
 /** Live entry after the inventory task: recomputes cohort, tape and reuse exactly as replay will, then collects. Never throws. */
-export async function collectCreatorFailedFeesRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,inventory:CreatorInventoryReceipts,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<CreatorFailedFeeReceipts|null>{
+export async function collectCreatorFailedFeesRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,inventory:CreatorInventoryReceipts,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,foreignFlowRecovery=false):Promise<CreatorFailedFeeReceipts|null>{
  try{
   const cutoff=now(),cohort=creatorInventoryRole(token,decodeCreatorRole(token,role,cutoff));
   if(!cohort)return null;
-  const tape=creatorInventoryTape(window.data,window,decodeAdvisoryDemandWindows(token,window.data,window,demand.rawArtifacts,demand.retrievedAt,demand.requests,cutoff,true));
+  const tape=creatorInventoryTape(window.data,window,decodeAdvisoryDemandWindows(token,window.data,window,demand.rawArtifacts,demand.retrievedAt,demand.requests,cutoff,true,foreignFlowRecovery));
   if(!tape)return null;
   return await collectCreatorFailedFees(token,cohort,tape,inventory,creatorInventoryReuse([['advisory-creatorRole-',role],['advisory-window-',window]]),new Map(),rpcUrl,fetcher,now,signal);
  }catch{return null;}

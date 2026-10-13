@@ -23,7 +23,7 @@ export const shortDemandReportSchema=z.object({
     indexPages:z.array(z.object({id:z.string().min(1),returned:count,oldestAt:instant.nullable(),newestAt:instant.nullable(),exhausted:z.boolean(),status:z.enum(['OBSERVED','UNAVAILABLE','INVALID','TRUNCATED']),code:z.string().min(1).optional()}).strict()).max(2),
     capExceeded:z.boolean(),poolVerified:z.boolean(),transactionsCollected:z.boolean(),scopeSuccessfulReferences:count.nullable(),scopeObservedTransactions:count.nullable(),scopeReceipts:z.object({window:count,demand:count}).strict().nullable(),
     scopeUnresolvedTransactions:z.array(z.object({signature:z.string().min(1),at:instant,receipt:z.enum(['WINDOW','DEMAND']),status:z.enum(['UNAVAILABLE','INVALID','TRUNCATED']),code:z.string().min(1).nullable()}).strict()).max(20),
-    outsideScopeUnresolvedTransactions:count.nullable(),logRecovery:z.object({truncatedTransactions:count,unresolvedNonFlowInvocations:count,emptyForeignSweeps:count}).strict().nullable()}).strict(),
+    outsideScopeUnresolvedTransactions:count.nullable(),logRecovery:z.object({truncatedTransactions:count,unresolvedNonFlowInvocations:count,unresolvedForeignSwaps:count.optional(),emptyForeignSweeps:count}).strict().nullable()}).strict(),
   quoteMint:z.literal('So11111111111111111111111111111111111111112'),quoteDecimals:z.literal(9),quoteBasis:z.string().min(1),meaningfulThreshold:z.object({coreQuoteAtomic:z.literal('10000000'),quoteUnits:z.literal('0.01')}).strict(),
   identityUnit:z.string().min(1),newBuyerRule:z.string().min(1),programAccounts:z.object({rule:z.string().min(1),accounts:z.array(z.string().min(1))}).strict(),evidenceIds:z.array(z.string().min(1)),limitations:z.array(z.string().min(1)).min(1),
 }).strict().superRefine((r,ctx)=>{
@@ -61,7 +61,7 @@ export const advisoryMetricSchema=z.object({
 }).strict();
 export type AdvisoryMetric=z.infer<typeof advisoryMetricSchema>;
 export const advisoryFactsSchema=z.object({
-  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2','advisory-measurements-v3','advisory-measurements-v4','advisory-measurements-v5','advisory-measurements-v6','advisory-measurements-v7','advisory-measurements-v8','advisory-measurements-v9','advisory-measurements-v10','advisory-measurements-v11','advisory-measurements-v12','advisory-measurements-v13','advisory-measurements-v14','advisory-measurements-v15','advisory-measurements-v16','advisory-measurements-v17','advisory-measurements-v18','advisory-measurements-v19','advisory-measurements-v20','advisory-measurements-v21','advisory-measurements-v22']),
+  method:z.enum(['advisory-measurements-v1','advisory-measurements-v2','advisory-measurements-v3','advisory-measurements-v4','advisory-measurements-v5','advisory-measurements-v6','advisory-measurements-v7','advisory-measurements-v8','advisory-measurements-v9','advisory-measurements-v10','advisory-measurements-v11','advisory-measurements-v12','advisory-measurements-v13','advisory-measurements-v14','advisory-measurements-v15','advisory-measurements-v16','advisory-measurements-v17','advisory-measurements-v18','advisory-measurements-v19','advisory-measurements-v20','advisory-measurements-v21','advisory-measurements-v22','advisory-measurements-v23']),
   token:z.object({chain:z.enum(['solana','bsc','base','robinhood']),address:z.string().min(1)}).strict(),
   cutoff:z.iso.datetime({offset:true}),metrics:z.array(advisoryMetricSchema).length(advisoryIds.length),
   groups:z.array(z.object({checkId:z.string(),known:z.number().int().nonnegative(),total:z.number().int().positive(),unresolved:z.array(z.string())}).strict()).length(advisoryGroups.length),
@@ -74,8 +74,9 @@ export const advisoryFactsSchema=z.object({
     if(reported.length!==1||reported[0].total!==group.featureIds.length||reported[0].known!==group.featureIds.length-unresolved.length||JSON.stringify(reported[0].unresolved)!==JSON.stringify(unresolved))ctx.addIssue({code:'custom',message:'ADVISORY_GROUP_COVERAGE'});
   }
   // Only facts v17 and later carry, and must carry, the supplementary report; it stays outside metrics, groups and KNOWN counts.
-  if((facts.method==='advisory-measurements-v17'||facts.method==='advisory-measurements-v18'||facts.method==='advisory-measurements-v19'||facts.method==='advisory-measurements-v20'||facts.method==='advisory-measurements-v21'||facts.method==='advisory-measurements-v22')!==(facts.supplements!==undefined))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_VERSION'});
+  if((facts.method==='advisory-measurements-v17'||facts.method==='advisory-measurements-v18'||facts.method==='advisory-measurements-v19'||facts.method==='advisory-measurements-v20'||facts.method==='advisory-measurements-v21'||facts.method==='advisory-measurements-v22'||facts.method==='advisory-measurements-v23')!==(facts.supplements!==undefined))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_VERSION'});
   const short=facts.supplements?.shortDemand;
+  if(short?.coverage.logRecovery?.unresolvedForeignSwaps!==undefined&&facts.method!=='advisory-measurements-v23')ctx.addIssue({code:'custom',message:'ADVISORY_RECOVERY_VERSION'});
   if(short&&(short.token.chain!==facts.token.chain||short.token.address!==facts.token.address))ctx.addIssue({code:'custom',message:'ADVISORY_SUPPLEMENT_TOKEN'});
 });
 export type AdvisoryFacts=z.infer<typeof advisoryFactsSchema>;

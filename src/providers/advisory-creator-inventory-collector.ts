@@ -108,11 +108,11 @@ export async function collectCreatorInventory(token:TokenRef,role:CreatorRole,ta
 }
 
 /** Live entry once S13 and A30 finished: recomputes the role and tape exactly as replay will, then collects. Never throws. */
-export async function collectCreatorInventoryRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<CreatorInventoryReceipts>{
+export async function collectCreatorInventoryRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,foreignFlowRecovery=false):Promise<CreatorInventoryReceipts>{
  try{
   const cutoff=now(),cohort=creatorInventoryRole(token,decodeCreatorRole(token,role,cutoff));
   if(!cohort)return empty();
-  const tape=creatorInventoryTape(window.data,window,decodeAdvisoryDemandWindows(token,window.data,window,demand.rawArtifacts,demand.retrievedAt,demand.requests,cutoff,true));
+  const tape=creatorInventoryTape(window.data,window,decodeAdvisoryDemandWindows(token,window.data,window,demand.rawArtifacts,demand.retrievedAt,demand.requests,cutoff,true,foreignFlowRecovery));
   if(!tape)return empty();
   return await collectCreatorInventory(token,cohort,tape,creatorInventoryReuse([['advisory-creatorRole-',role],['advisory-window-',window]]),rpcUrl,fetcher,now,signal);
  }catch{return empty();}

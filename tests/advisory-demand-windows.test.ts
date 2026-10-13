@@ -183,6 +183,37 @@ test('first-observed meaningful buyers count once, exclude program users and dus
   assert.equal(missing.windows[0].buyQuoteAtomic, '50000000'); assert.equal(missing.baseline.hours[4].coverage, 'INCOMPLETE');
 });
 
+/** A selected-pool sell closes, then logs truncate inside a later foreign-pool buy_v2 whose emit_cpi event witness stays in the inner trace. */
+function foreignTruncated(reference: Row): any {
+  const tx = swapTx(reference, 'sell_v2', 5_000_000n), keys: string[] = tx.transaction.message.accountKeys;
+  const key = (k: string) => { if (!keys.includes(k)) keys.push(k); return keys.indexOf(k); };
+  const [otherPool, otherBase, userBase, userQuote, otherBaseVault, otherQuoteVault] = [20, 21, 22, 23, 24, 25].map(addr) as [string, string, string, string, string, string];
+  const accounts = [otherPool, user.toBase58(), GLOBAL_CONFIG_PDA.toBase58(), otherBase, NATIVE_MINT.toBase58(), userBase, userQuote, otherBaseVault, otherQuoteVault, TOKEN_PROGRAM_ID.toBase58(), TOKEN_PROGRAM_ID.toBase58(), system, userVolumeAccumulatorPda(user).toBase58(), PUMP_AMM_FEE_CONFIG_PDA.toBase58(), user.toBase58(), eventAuthority, program];
+  const data = Buffer.alloc(24); Buffer.from(discriminators.buy_v2).copy(data); data.writeBigUInt64LE(500n, 8); data.writeBigUInt64LE(1_000_000n, 16);
+  const event = { ...defaults('buyEvent'), timestamp: new BN(reference.blockTime!), pool: new PublicKey(otherPool), user, userBaseTokenAccount: new PublicKey(userBase), userQuoteTokenAccount: new PublicKey(userQuote) };
+  const payload = Buffer.concat([Buffer.from(sdk.idl.events!.find(e => e.name === 'buyEvent')!.discriminator), sdk.coder.types.encode('buyEvent', event)]);
+  tx.transaction.message.instructions.push({ programIdIndex: key(program), accounts: accounts.map(key), data: encodeSolanaAddress(data), stackHeight: null });
+  tx.meta.innerInstructions = [{ index: 1, instructions: [{ programIdIndex: key(program), accounts: [key(eventAuthority)], data: encodeSolanaAddress(Buffer.concat([Buffer.from('e445a52e51cb9a1d', 'hex'), payload])), stackHeight: 2 }] }];
+  tx.meta.logMessages.push(`Program ${program} invoke [1]`, 'Log truncated');
+  return tx;
+}
+
+test('foreign-flow recovery is opt-in, admits only a witnessed foreign swap after truncation and discloses it separately', async () => {
+  const rows = tape([{ blockTime: at(9) }, { blockTime: START - 5 }]);
+  const x = await run([rows], new Map([[rows[0]!.signature, foreignTruncated(rows[0]!)]]));
+  const strict = x.decode(), legacy = deriveA30DemandWindows(strict, [])!.data as any;
+  assert.equal(strict.complete, false); assert.deepEqual([strict.transactions[0]!.status, strict.transactions[0]!.code], ['INVALID', 'ADVISORY_TRADE_LOG_TRUNCATED']);
+  assert.equal('foreignFlowRecovery' in strict, false); assert.equal('unresolvedForeignSwaps' in legacy.logRecovery, false);
+  const recovered = decodeAdvisoryDemandWindows(token, x.window.data, x.window, x.collected.rawArtifacts, x.collected.retrievedAt, x.collected.requests, cutoff, false, true);
+  assert.equal(recovered.complete, true); assert.equal(recovered.foreignFlowRecovery, true);
+  assert.deepEqual(recovered.transactions[0]!.logRecovery, { truncated: true, unresolvedInvocations: 2, emptyForeignSweeps: 0, unresolvedForeignSwaps: 1 });
+  assert.deepEqual(recovered.trades.map(t => [t.side, t.user, t.quoteAtomic]), [['SELL', user.toBase58(), '5000000']]);
+  const metric = deriveA30DemandWindows(recovered, [])!, data = metric.data as any;
+  assert.equal(metric.quality, 'KNOWN');
+  assert.deepEqual([data.logRecovery.truncatedTransactions, data.logRecovery.unresolvedNonFlowInvocations, data.logRecovery.emptyForeignSweeps, data.logRecovery.unresolvedForeignSwaps], [1, 1, 0, 1]);
+  assert.match(data.logRecovery.rule, /foreign swaps/); assert.equal(data.limitations.length, legacy.limitations.length + 1);
+});
+
 test('index, clock, cap, transaction and unsupported-proof gaps leave every A30 condition null', async () => {
   const older = { blockTime: START - 5 };
   const flood = tape(Array.from({ length: 2000 }, (_, i) => ({ blockTime: E - 1 - i })));

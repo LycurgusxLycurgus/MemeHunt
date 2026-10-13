@@ -102,8 +102,8 @@ function draws(seed:string):(n:number)=>number{
 }
 
 /** O23 from the same receipts A30 decodes; null keeps the existing missing row when the tape is not eligible. */
-export function deriveO23Synchrony(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[]):AdvisoryMetric|null{
- const history=decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff);
+export function deriveO23Synchrony(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[],foreignFlowRecovery=false):AdvisoryMetric|null{
+ const history=decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff,false,foreignFlowRecovery);
  if(!history.eligible)return null;
  const ids=[...new Set(evidenceIds)];
  const scope={method:SYNCHRONY_METHOD,tapeMethod:history.method,scope:'VERIFIED_PUMPSWAP_WSOL_POOL',pool:history.pool,range:history.range,anchorSlot:history.anchorSlot,stateSlot:history.stateSlot,tapeComplete:history.complete,

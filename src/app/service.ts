@@ -23,7 +23,7 @@ import { reconstructAdvisory } from './advisory.js';
 import { HOLDER_ARCHIVE_ADAPTER } from '../providers/advisory-topology.js';
 
 /** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
-const ADVISORY_SCREENS=Array.from({length:20},(_,i)=>`research-screen-advisory-v${i+1}`);
+const ADVISORY_SCREENS=Array.from({length:21},(_,i)=>`research-screen-advisory-v${i+1}`);
 
 /** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
 function validateAdvisoryDexBaseline(b:LiveBundle){
@@ -215,8 +215,8 @@ export class Service {
           if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
-            // Fresh persistence requires current accounting, the archived dense window, the archived holder population, and the v23 guarded log-recovery dispatch; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v22'&&proof.method!=='advisory-provenance-v23')throw new Error('ADVISORY_PROOF_INVALID');
+            // Fresh persistence requires proof v24 source-review isolation and demand-only foreign capability recovery; historical snapshots replay their recorded facts.
+            if(proof.method!=='advisory-provenance-v24')throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
@@ -421,7 +421,7 @@ export class Service {
     this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,b.analysisKind==='LIVE'?b.details?.advisory:undefined);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v20':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v21':b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
