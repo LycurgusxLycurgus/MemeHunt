@@ -182,6 +182,50 @@ const liveFetcher:typeof fetch=async(input,init)=>{
  else throw new Error('Unexpected fixture request');
  return new Response(JSON.stringify(value));
 };
+/** The live fixture with every request logged in start order as creator-role or other, optionally holding or rate-limiting the signed creation receipt. */
+function scheduledFetcher(o:{hold?:Promise<void>;onHeld?:()=>void;createStatus?:number}={}){
+ const log:Array<'creator'|'other'|'create'>=[];
+ const fetcher:typeof fetch=async(input,init)=>{
+  const url=String(input),request=init?.method==='POST'&&url!=='https://api.fetch.tinyfish.ai/'?JSON.parse(String(init.body)):null;
+  const create=request?.method==='getTransaction'&&request.params[0]===createSig;
+  log.push(create?'create':url==='https://api.fetch.tinyfish.ai/'||request?.method==='getSignaturesForAddress'&&request.params[0]===wallet||request?.method==='getTransaction'&&request.params[0]===transferSig?'creator':'other');
+  if(create&&o.hold){o.onHeld?.();await o.hold;}
+  if(create&&o.createStatus)return new Response('',{status:o.createStatus});
+  return liveFetcher(input,init);
+ };
+ return{fetcher,log};
+}
+
+test('bulk advisory reads wait for creator-role collection, and a retained creator failure still releases them',async()=>{
+ let release!:()=>void,held!:()=>void;
+ const hold=new Promise<void>(r=>{release=r;}),reached=new Promise<void>(r=>{held=r;});
+ const s=scheduledFetcher({hold,onHeld:held});
+ const pending=collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'tinyfish-live-key',fetcher:s.fetcher,now:()=>at});
+ await reached;await new Promise(r=>setTimeout(r,100));
+ // Canonical discovery precedes the creator page; from the page on, only creator-role requests run while the creation receipt is held.
+ const start=s.log.findIndex(k=>k!=='other'),whileHeld=s.log.length;
+ assert.ok(start>0&&s.log.slice(start).every(k=>k!=='other'),s.log.join());
+ release();
+ const bundle=await pending,s13=bundle.details!.advisory!.metrics.find(m=>m.id==='S13')!;
+ assert.ok(s.log.slice(whileHeld).includes('other'));
+ assert.deepEqual([s13.quality,s13.reasonCode],['KNOWN','PUBLIC_CREATOR_ROLE_BINDING_VERIFIED']);
+
+ // HTTP 429 on the creation receipt is retained after its bounded attempts; bulk reads start only after the last attempt and S13 stays unresolved.
+ const f=scheduledFetcher({createStatus:429});
+ const failed=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'tinyfish-live-key',fetcher:f.fetcher,now:()=>at});
+ const first=f.log.findIndex(k=>k!=='other'),lastCreate=f.log.lastIndexOf('create'),firstBulk=f.log.indexOf('other',first);
+ assert.ok(f.log.filter(k=>k==='create').length===3&&firstBulk>lastCreate,f.log.join());
+ assert.equal(failed.rawArtifacts['advisory-creatorRole-transaction-1'],JSON.stringify({jsonrpc:'2.0',id:1,error:{code:'RPC_HTTP_429'}}));
+ const unresolved=failed.details!.advisory!.metrics.find(m=>m.id==='S13')!;
+ assert.ok(unresolved.quality!=='KNOWN');
+ assert.deepEqual([(unresolved.data as any).creatorRole.quality,(unresolved.data as any).creatorRole.reasonCode],['TRUNCATED','CREATOR_CANDIDATE_UNVERIFIED']);
+
+ // Without a TinyFish key no creator task exists and advisory reads proceed unchanged.
+ const n=scheduledFetcher();
+ const plain=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:n.fetcher,now:()=>at});
+ assert.ok(n.log.every(k=>k==='other')&&plain.details!.advisory!.metrics.some(m=>m.id==='S13'));
+});
+
 const rehash=(bundle:{evidence:Array<{id:string;contentHash:string}>;rawArtifacts?:Record<string,string>},id:string)=>{bundle.evidence.find(e=>e.id===id)!.contentHash=createHash('sha256').update(bundle.rawArtifacts![id]!).digest('hex');};
 
 test('live collection persists one verified S13 creator role through Service and rejects forged, downgraded, orphaned and claimed receipts',async()=>{

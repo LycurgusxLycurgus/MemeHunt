@@ -162,14 +162,16 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const advisoryAddresses=[token.address,...(advisoryPool?[advisoryPool]:[])];
   // Preregister one completed UTC hour; this is separate from the holding horizon.
   const advisoryWindowEnd=new Date(Math.floor(Date.parse(now())/3_600_000)*3_600_000).toISOString();
-  // Historical reads overlap semantic review; canonical execution state is still captured late.
-  const advisoryPending=options.advisoryEnabled?Promise.all([
+  // Creator-role reads run first on the shared pool, so its few candidate receipts are not rate-limited by the bulk historical reads; a mint already read under another token program is skipped.
+  const creatorPending=options.advisoryEnabled&&options.tinyfishKey&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?collectCreatorRole(token,options.tinyfishKey,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline).catch(error=>({error})):null;
+  // Historical reads overlap semantic review but start only once creator-role collection has settled, whatever its outcome; canonical execution state is still captured late.
+  const advisoryPending=options.advisoryEnabled?Promise.resolve(creatorPending).then(()=>Promise.all([
     collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline,true),
     collectAdvisoryMarket(token,advisoryPool,fetcher,now,deadline),
     collectAdvisorySocial(token,fetcher,now,deadline),
     collectAdvisoryTrades(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
     collectAdvisoryContextHistory(token,fetcher,now,deadline),
-  ]).then(async value=>{
+  ])).then(async value=>{
     const [chain,,,trades]=value;
     const decoded=decodeAdvisoryTrades(token,advisoryPool,chain.data,chain.rawArtifacts,chain.retrievedAt,chain.requests,trades.rawArtifacts,trades.retrievedAt,trades.requests);
     const [wallets,{window,accounts,automation,demand}]=await Promise.all([
@@ -180,8 +182,6 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     ]);
     return {value,wallets,window,accounts,automation,demand};
   },error=>({error})):null;
-  // Creator-role reads start with the other historical collectors on the shared pool; a mint already read under another token program is skipped.
-  const creatorPending=options.advisoryEnabled&&options.tinyfishKey&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?collectCreatorRole(token,options.tinyfishKey,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline).catch(error=>({error})):null;
   // Launchpad reads (one keyed Lighthouse, three public Llama) run independently on the shared pool and deadline; without a key nothing is requested, and a failed collector retains nothing.
   const launchpadPending=options.advisoryEnabled&&options.solanaTrackerKey?collectLaunchpadContext(options.solanaTrackerKey,fetcher,now,deadline).catch(()=>null):null;
   // Creator inventory starts once S13 and the complete A30 tape have both finished, reads only on its own allowance and, in the 600 s mode, stops at the caller reserve so late capture keeps its time.
