@@ -329,7 +329,7 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
   const population = requestLog.find(request => request.method === 'getProgramAccounts');
   assert.deepEqual(population?.params, [TOKEN_2022_PROGRAM, {
     encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, withContext: true,
-    dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
+    filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
   const rawRead = requestLog.find(request => request.method === 'getAccountInfo' && request.params[0] === MINT);
   assert.deepEqual(rawRead?.params[1], { encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT });
@@ -383,7 +383,7 @@ test('complete holder scan is attempted before the top-account fallback and reco
   const population = requestLog.find(request => request.method === 'getProgramAccounts');
   assert.deepEqual(population?.params, [TOKEN_2022_PROGRAM, {
     encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, withContext: true,
-    dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
+    filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
 });
 

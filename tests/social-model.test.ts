@@ -245,6 +245,8 @@ test('full Shared repairs only a rejected supported identity screen and preserve
     assert.deepEqual(repairProposalPacket.selectedAssessmentIds, ['assessment:identity']);
     assert.deepEqual(repairProposalPacket.sources, mock.calls[0]!.packet.sources);
     assert.equal(repairReviewPacket.repair, true);
+    assert.equal(repairReviewPacket.initialProposal, undefined, 'independent candidate review is blind to the rejected proposal');
+    assert.equal(repairReviewPacket.initialReview, undefined, 'independent candidate review is blind to the prior rejection');
     assert.deepEqual(repairReviewPacket.sources, mock.calls[0]!.packet.sources);
     assert.equal(repairProposalPacket.initialProposal !== undefined, true);
     assert.equal(repairProposalPacket.initialReview !== undefined, true);
@@ -612,4 +614,85 @@ test('caller cancellation during social model retry wait stays unresolved withou
   assert.equal(result.proposal, null);
   assert.equal(result.review, null);
   assert.equal(JSON.stringify(result).includes(KEY), false);
+});
+
+test('historical-only integrity recovery corrects a rejected current-post premise with independent review', async t => {
+  const run = async (options: { accepted?: boolean; complete?: boolean; current?: boolean } = {}) => {
+    const socialInput = input();
+    if (!options.current) socialInput.sources[0]!.publishedAt = '2026-10-02T23:59:00.000Z';
+    const model = mockModel({ responder: (packet, call) => {
+      if (call === 1) return proposalWire(packet, 'valid', 'complete', 'CONTRADICTED');
+      if (call === 3) {
+        const span = packet.sources[0]!.spans[0]!;
+        return { integrityAssessment: {
+          verdict: 'CONTRADICTED',
+          rationale: 'Every inspected publication precedes the declared current window. This bounded public sample cannot establish current visibility; it does not prove global inactivity or fraud.',
+          citations: [{ sourceId: span.sourceId, spanId: span.id }],
+        } };
+      }
+      const wire = reviewWire(packet, 'valid', options.complete !== false);
+      const decisions = Object.fromEntries(wire.decisions.map(({ id, ...decision }) => [id, decision]));
+      decisions['assessment:integrity']!.accepted = call === 4 && options.accepted !== false;
+      return { ...wire, decisions };
+    } });
+    const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, model.fetcher, async () => {}, undefined, { screeningRepair: true });
+    return { socialInput, model, result };
+  };
+  await t.test('accepted correction preserves corpus, other judgments, and replay proof', async () => {
+    const { socialInput, model, result } = await run();
+    assert.equal(model.calls.length, 4);
+    assert.ok(result.proposal && result.review);
+    assert.equal(Object.hasOwn(model.calls[3]!.packet, 'initialProposal'), false);
+    assert.equal(Object.hasOwn(model.calls[3]!.packet, 'initialReview'), false);
+    assert.match(JSON.parse(result.rawArtifacts['social-repair-review-prompt']!).instruction, /Review ONLY the proposal supplied in this request/);
+    const original = normalizeSocialProposal(parseSourceResponse(result.rawArtifacts['social-proposal-response']!), socialInput, SOCIAL_TOKEN).proposal;
+    assert.deepEqual(result.proposal.posts, original.posts);
+    assert.deepEqual(result.proposal.accounts, original.accounts);
+    assert.deepEqual(result.proposal.identities, original.identities);
+    assert.deepEqual(result.proposal.identityAssessment, original.identityAssessment);
+    assert.deepEqual(result.submittedSources, socialInput.sources);
+    assert.deepEqual(JSON.parse(result.rawArtifacts['social-repair-selection']!), { method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:integrity'], applied: true });
+    validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+    const facts = deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']).facts;
+    assert.equal(facts.qualifiedOriginalCount, 0);
+    assert.equal(facts.integrityReview?.verdict, 'CONTRADICTED');
+    const tampered = structuredClone(result.proposal);
+    tampered.identityAssessment!.rationale += ' tampered';
+    assert.throws(() => validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, tampered, result.review), /SOCIAL_PROOF_INVALID/);
+    const markerTamper = { ...result.rawArtifacts, 'social-repair-selection': JSON.stringify({ method: 'social-screening-repair-v1', selectedAssessmentIds: ['assessment:identity'], applied: true }) };
+    assert.throws(() => validateSocialWire(markerTamper, socialInput, SOCIAL_TOKEN, result.proposal, result.review), /SOCIAL_PROOF_INVALID/);
+  });
+  await t.test('fresh review rejection retains unknown instead of retrying to a known result', async () => {
+    const { socialInput, model, result } = await run({ accepted: false });
+    assert.equal(model.calls.length, 4);
+    assert.ok(result.proposal && result.review);
+    assert.equal(result.review.decisions.find(row => row.id === 'assessment:integrity')?.accepted, false);
+    assert.equal(deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, []).facts.integrityReview?.verdict, 'UNRESOLVED');
+    validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+  });
+  for (const [name, options] of [['incomplete source inspection', { complete: false }], ['a current publication', { current: true }]] as const) await t.test(name, async () => {
+    const { model, result } = await run(options);
+    assert.equal(model.calls.length, 2);
+    assert.equal(result.rawArtifacts['social-repair-selection'], undefined);
+  });
+});
+
+test('source model distinguishes official identity scope and an empty dated current sample', async () => {
+  const socialInput = input();
+  socialInput.sources[0]!.publishedAt = '2026-10-02T23:59:00.000Z';
+  socialInput.sources.push({ id: 'primary', kind: 'PAGE', url: 'https://project.example/about', text: `Official project account @alice, contract ${SOCIAL_TOKEN.address}`, publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE });
+  socialInput.sources.push({ id: 'account', kind: 'PAGE', url: 'https://x.com/alice', text: `Official account @alice, contract ${SOCIAL_TOKEN.address}`, publishedAt: null, authorId: 'x.com:alice', availableAt: SOCIAL_AVAILABLE });
+  socialInput.identitySourceIds = ['primary', 'account'];
+  socialInput.identityComplete = true;
+  const mock = mockModel();
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {});
+  assert.ok(result.proposal && result.review);
+  for (const call of mock.calls) {
+    const packet = call.packet as ModelPacket & { identityScopeInventory: unknown; currentWindowFacts: { currentTargetPostIds: string[]; undatedTargetPostIds: string[] } };
+    assert.deepEqual(packet.identityScopeInventory, [{ accountId: 'x.com:alice', accountContractSourceIds: ['account'], independentPrimaryCandidateSourceIds: ['primary'] }]);
+    assert.deepEqual(packet.currentWindowFacts.currentTargetPostIds, []);
+    assert.deepEqual(packet.currentWindowFacts.undatedTargetPostIds, []);
+  }
+  assert.match(result.rawArtifacts['social-proposal-prompt']!, /Do not invent official claims for exchange listings or token commentators/);
+  assert.match(result.rawArtifacts['social-review-prompt']!, /reject ANY rationale claiming metadata shortfalls across qualified current posts/);
 });

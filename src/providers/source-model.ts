@@ -34,7 +34,8 @@ export function sourceSpans(sourceId:string,text:string,prefix='ATT_MODEL'):Sour
   return spans;
 }
 
-export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL'):Promise<{raw:string;value:z.output<S>}>{
+/** An optional local schema may relax only the local parse; responseJsonSchema is always generated from the strict requested schema. */
+export async function requestSourceJson<S extends z.ZodType,L extends z.ZodType=S>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL',localSchema?:L):Promise<{raw:string;value:z.output<L>}>{
   if(packet.length>300000)throw new Error(`${prefix}_PACKET_LIMIT`);
   const body={...buildGeminiSemanticRequest('attention-source-review'),contents:[{role:'user',parts:[{text:packet}]}]};
   // Gemini's supported subset omits dialect and string-length keywords; Zod still enforces them locally.
@@ -77,5 +78,6 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
     checkRun();
   }
   if(!response.ok)throw new Error(`${prefix}_HTTP_${response.status}`);
-  return {raw,value:schema.parse(parseSourceResponse(raw,prefix))};
+  const local:z.ZodType=localSchema??schema,value:unknown=local.parse(parseSourceResponse(raw,prefix));
+  return {raw,value:value as z.output<L>};
 }

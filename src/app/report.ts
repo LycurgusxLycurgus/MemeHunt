@@ -52,11 +52,38 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   else lines.push('Legacy snapshot: detailed settings/diagnostics were not stored in this envelope. Use explain to inspect its frozen checks.');
   if(snapshot.checklistKind==='ENTRY')lines.push(`Required coverage: ${snapshot.result.coverage.known}/${snapshot.result.coverage.total}. Unknown is missing evidence, not a detected-rug finding.`);
   else lines.push(`Baseline: ${snapshot.baselineSnapshotId} / episode ${snapshot.episodeId}`,`Proposal: ${snapshot.result.proposal}${snapshot.result.proposedQuantityAtomic?` (${snapshot.result.proposedQuantityAtomic} token atoms)`:'; no execution'}`);
+
+  if(snapshot.checklistKind==='MANAGEMENT'){
+    const position=snapshot.result.position;
+    if(position?.status==='KNOWN')lines.push(`Position: ${position.mode}; remaining ${position.remainingQuantityAtomic} token atoms; decimals ${position.decimals}`);
+    else if(position)lines.push('Position: missing; no quantity is invented.');
+    for(const quote of snapshot.result.exitQuotes??[])lines.push(`Exit quote ${quote.request.purpose}: ${quote.status} / ${quote.reasonCode}; quantity ${quote.request.quantityAtomic} token atoms; leg ${quote.request.legId??'all remaining'}; basis ${quote.request.executionBasis.fingerprint}${quote.label?`; ${cleanText(quote.label)}`:''}`);
+  }
   if(snapshot.checklistKind==='ENTRY')for(const pillar of ['ONCHAIN','ATTENTION','SOCIAL','SHARED'] as const){const checks=snapshot.result.checks.filter(c=>c.pillar===pillar&&c.required);lines.push(`${pillar.toLowerCase()} pillar: ${checks.filter(c=>c.status==='PASS').length} supported, ${checks.filter(c=>c.status==='FAIL').length} contradicted, ${checks.filter(c=>c.status==='UNKNOWN').length} unknown.`);}
   const market=snapshot.market?.pairs.find(p=>p.mintSide==='base'&&p.priceUsd!==null);
   if(market)lines.push(`Market observation: $${market.priceUsd}/token; displayed liquidity $${market.liquidityUsd??'unknown'}; rolling 24h volume $${market.volume24hUsd??'unknown'}. This is not executable depth.`);
   if(snapshot.collection)lines.push(`Sources: RPC ${snapshot.collection.rpc.state}${snapshot.collection.rpc.code?`/${snapshot.collection.rpc.code}`:''}; DEX ${snapshot.collection.dex.state}; web ${snapshot.collection.web.state}${snapshot.collection.web.code?`/${snapshot.collection.web.code}`:''}.`);
   const recovered=snapshot.evidence.filter(e=>e.scope.method==='tinyfish-live-dex-json-v1').map(e=>e.id);
+  if(details?.advisory){
+    const a=details.advisory;
+    lines.push(`Advisory measurements: ${a.metrics.filter(m=>m.quality==='KNOWN').length}/${a.metrics.length} measured. Coverage is descriptive, not an investment verdict.`);
+    for(const group of a.groups){
+      lines.push(`  ${group.checkId}: ${group.known}/${group.total} measured; ${group.unresolved.length} unresolved.`);
+      for(const id of group.unresolved){const metric=a.metrics.find(m=>m.id===id)!;lines.push(`    ${id}: ${cleanText(metric.reasonCode)}.`);}
+    }
+    // Supplementary scoped report: outside the measured metrics and coverage counts, never a canonical A30 result.
+    const s=a.supplements?.shortDemand;
+    if(s){
+      // The hour is fixed by the frozen canonical end at collection, never by the later snapshot cutoff; the proof hash is the retained derivation artifact's, not the snapshot hash.
+      const derivationHash=snapshot.evidence.find(e=>e.id==='advisory-derivation')?.contentHash;
+      lines.push(`Supplementary one-hour demand (not A30; not counted): ${s.status} / ${cleanText(s.reasonCode)}.`,`  Scope: one verified PumpSwap WSOL pool; baseline ${s.baseline.start} to ${s.baseline.end}; measured ${s.measured.start} to ${s.measured.end} in six 10-minute windows.`,`  Hour basis: latest completed UTC hour at collection freeze (frozen canonical end ${s.canonical.range.end}; report end ${s.reportEnd}). Snapshot cutoff ${snapshot.cutoff} is the later capture cutoff and does not move this hour.`,`  Source derivation proof SHA256: ${derivationHash?cleanText(derivationHash,128):'unavailable'}.`);
+      if(s.complete)lines.push(`  Windows with a first-observed meaningful buyer and nonnegative net flow: ${s.satisfiedWindows}/${s.denominator} (share ${s.share}); conditions ${s.windows.map(w=>String(w.condition)).join(', ')}.`,`  First-observed buyers per window ${s.windows.map(w=>w.firstObservedBuyerCount).join('/')}; baseline meaningful buyers ${s.baseline.meaningfulBuyers}; net ${s.measured.flow?.netQuoteAtomic} measured vs ${s.baseline.flow?.netQuoteAtomic} baseline atomic WSOL, fee-exclusive.`);
+      else lines.push('  Conditions, satisfied count and share unavailable: the two-hour source coverage is incomplete; no zero is inferred.');
+      if(s.coverage.outsideScopeUnresolvedTransactions)lines.push(`  ${s.coverage.outsideScopeUnresolvedTransactions} unresolved transactions before the two-hour start were excluded.`);
+      lines.push('  First observed within this two-hour pool tape only; not first-ever buyers, people, organic demand or new capital.');
+    }
+    lines.push('Historical data became available at retrieval time. Token movements are not automatically sales; routers are not bot or common-control identities. Undefined ratios and uncalibrated regimes remain unresolved.');
+  }
   if(recovered.length)lines.push(`Market recovery: free TinyFish live Fetch (${recovered.join(', ')}); original direct responses retained. Recovery does not certify market accuracy.`);
   const feeRetries=snapshot.evidence.filter(e=>e.id.endsWith('-min-context-recovery'));
   if(feeRetries.length)lines.push(`Fee recovery: ${feeRetries.length} bounded retries while the RPC caught up to the required finalized slot; the slot requirement and quote expiry were preserved.`);

@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -1617,7 +1618,7 @@ test('live CLI reassessment selects the frozen thesis episode applicable at its 
       service.successor(caseId, {
         ...illustrativeFixtureThesis,
         invalidation: [{ op: 'eq', feature: 'O03', value: false, unit: 'bool' }],
-      }, '2026-09-30T00:00:00.000Z');
+      }, '2026-09-30T00:00:00.000Z', 'CONTINUE');
     } finally {
       service.close();
     }
@@ -1638,7 +1639,13 @@ test('live CLI reassessment selects the frozen thesis episode applicable at its 
     assert.equal(second.checklistKind, 'MANAGEMENT');
     assert.notEqual(second.episodeId, first.episodeId);
     const reopened = new Service(dbPath);
-    try { assert.equal(reopened.showCase(caseId!).episodeId, second.episodeId); } finally { reopened.close(); }
+    try {
+      assert.equal(reopened.showCase(caseId!).episodeId, second.episodeId);
+      const saved=JSON.parse(afterSuccessor.stdout);
+      assert.deepEqual(reopened.replay(saved.id),saved);
+      const db=new DatabaseSync(dbPath);
+      try { const row=db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id) as {semantic:string};assert.equal(JSON.parse(row.semantic).policyVersion,'thesis-management-v8'); } finally {db.close();}
+    } finally { reopened.close(); }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
