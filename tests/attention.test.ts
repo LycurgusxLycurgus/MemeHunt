@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { deriveAttention } from '../src/domain/attention.js';
+import { deriveAttention, originSourceScope } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import { collectAttentionSources, normalizeAttentionSearchUrl, recoverComparisonSources } from '../src/providers/attention.js';
 import { qualifyAttention } from '../src/providers/attention-model.js';
@@ -30,7 +30,8 @@ const fetchResult = (url: string, text: string, published_date?: string) => ({
 
 const comparisonReviewFields = (packet: Record<string, unknown>) => ({
   sourceDecisions: Object.fromEntries(((packet.sources ?? []) as Array<{ id: string }>).map(source => [source.id, {
-    disposition: 'RELEVANT', rationale: 'The retained source establishes this exact project representation.',
+    disposition: 'RELEVANT', insufficiencyKind: 'NONE',
+    rationale: 'The retained source establishes this exact project representation.',
   }])),
   missingRepresentations: [],
 });
@@ -41,6 +42,16 @@ const indexedSpanId = (packet: Record<string, unknown>, sourceId: string) => {
   assert.ok(source, `the lead packet includes descriptor ${sourceId}`);
   assert.ok(source.spans[0], `descriptor ${sourceId} contains a citable title or snippet`);
   return source.spans[0]!.id;
+};
+
+const comparisonObservationId = (packet: Record<string, unknown>, token: { chain: string; address: string }, sourceId: string) => {
+  const observations = packet.exactContractObservations as Array<{
+    observationId: string; token: { chain: string; address: string }; sourceId: string;
+  }>;
+  const observation = observations.find(item => item.token.chain === token.chain
+    && item.token.address === token.address && item.sourceId === sourceId);
+  assert.ok(observation, `the packet includes a code-owned ${token.chain}:${token.address} observation in ${sourceId}`);
+  return observation.observationId;
 };
 
 test('collector runs bounded mint and name searches, binds public pages, and derives post metadata from provider fields', async () => {
@@ -121,7 +132,8 @@ test('collector runs bounded mint and name searches, binds public pages, and der
   const commonQuery = commonRequest.searchParams.get('query') ?? '';
   const commonIntent = commonRequest.searchParams.get('intent') ?? '';
   assert.ok(searchCalls[2]!.url.length < 2000, 'the named comparison request stays within TinyFish URL limits');
-  assert.match(commonQuery, /"Dove RedCoin" solana token contract meme narrative/);
+  assert.equal(commonQuery, '"Dove RedCoin" solana crypto token contract');
+  assert.equal(commonQuery.includes('meme narrative'), false, 'the common query remains specific and crypto-qualified without broad narrative expansion');
   assert.equal(commonQuery.includes(token.address), false, 'the common-name query does not anchor candidate selection on the target contract');
   assert.match(commonIntent, /Find public sources identifying distinct token contract addresses/);
   assert.match(commonIntent, /Same name alone does not establish association; do not rank by price/);
@@ -140,6 +152,224 @@ test('collector runs bounded mint and name searches, binds public pages, and der
     'comparison-lead-1-metadata', 'comparison-lead-2-metadata', 'comparison-lead-3-metadata', 'comparison-lead-4-metadata',
   ]);
   assert.deepEqual(read.sources.filter(source => source.kind === 'POST' && read.comparisonSourceIds?.includes(source.id)).map(source => source.id), ['attention-page-5']);
+});
+
+test('an empty crypto-qualified comparison query gets one broader retry and stays unknown when that retry is empty', async () => {
+  const primary = { results: [] };
+  const searchQueries: string[] = [];
+  const fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      searchQueries.push(query);
+      return json(primary);
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(item => fetchResult(item, `River Lantern represents ${token.address}.`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+  assert.equal(searchQueries.length, 4, 'only the successful empty primary gets one broader retry');
+  assert.deepEqual(searchQueries, [
+    `"${token.address}" solana narrative origin catalyst`,
+    `"${token.address}" (site:x.com OR site:twitter.com)`,
+    '"River Lantern" solana crypto token contract',
+    '"River Lantern" solana',
+  ]);
+  assert.equal(read.queries[2], '"River Lantern" solana');
+  assert.equal(read.rawArtifacts['attention-search-3-primary-query'], '"River Lantern" solana crypto token contract');
+  assert.equal(read.rawArtifacts['attention-search-3-empty-response'], JSON.stringify(primary), 'the primary empty response is retained separately');
+  assert.equal(read.rawArtifacts['attention-search-3'], JSON.stringify(primary), 'the selected fallback response remains the canonical search result');
+  assert.deepEqual(fetched, []);
+  assert.equal(read.sources.length, 0);
+  assert.equal(read.comparisonAcquisition?.leadCount, 0);
+  assert.equal(read.comparisonAcquisition?.originalComplete, false);
+  assert.equal(read.comparisonComplete, false, 'an empty sample remains unknown rather than proving no representation exists');
+});
+
+test('failed crypto-qualified comparison searches remain unknown without fallback', async t => {
+  await t.test('a successful empty primary response with provider errors does not trigger fallback', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (url.includes('api.search.tinyfish.ai')) {
+        searchCount++;
+        return json(searchCount === 3 ? { results: [], errors: [{ error: 'provider_error' }] } : { results: [] });
+      }
+      return json({ results: [], errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.comparisonComplete, false);
+    assert.equal(read.comparisonAcquisition?.originalComplete, false);
+  });
+
+  await t.test('an embedded primary error does not trigger fallback even with an empty results array', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      return json(searchCount === 3 ? { results: [], error: 'provider_error' } : { results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.comparisonComplete, false);
+  });
+
+  await t.test('HTTP failure on the exact-name query is not retried as a fallback', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      if (searchCount === 3) return new Response('rejected', { status: 400 });
+      return json({ results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.rawArtifacts['attention-search-3'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.sources.length, 0);
+    assert.equal(read.comparisonComplete, false);
+    assert.ok(read.codes.includes('ATT_SEARCH_HTTP_400'));
+  });
+
+  await t.test('a malformed successful primary response is not retried', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      return json(searchCount === 3 ? { results: 'not-an-array' } : { results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.ok(read.codes.includes('ATT_SEARCH_SHAPE'));
+    assert.equal(read.comparisonComplete, false);
+  });
+
+  await t.test('a thrown primary transport failure does not trigger the broader fallback', async () => {
+    const searchQueries: string[] = [];
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      const query = new URL(url).searchParams.get('query') ?? '';
+      searchQueries.push(query);
+      if (query === '"River Lantern" solana crypto token contract') {
+        return Promise.reject(Object.assign(new Error('simulated search timeout'), { name: 'TimeoutError' }));
+      }
+      return json({ results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.ok(searchQueries.length > 3, 'the failed primary may use its existing bounded transport retries');
+    assert.equal(searchQueries.includes('"River Lantern" solana'), false, 'a transport failure never triggers the empty-result fallback');
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.ok(read.codes.includes('ATT_SEARCH_UNAVAILABLE'));
+    assert.equal(read.comparisonComplete, false);
+  });
+});
+
+test('original origin scope keeps failed and omitted exact-token acquisitions visible', async t => {
+  await t.test('a missing launch result is recorded as omitted', async () => {
+    const seed = 'https://public.example/context';
+    const launch = 'https://public.example/launch';
+    let searchIndex = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search(searchIndex++ === 0 ? [seed] : [launch]);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      return json({ results: requested.filter(item => item === seed).map(item => fetchResult(item, `Token ${token.address}. Original project context.`)), errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+    const scope = originSourceScope(read, token);
+
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === launch)?.state, 'OMITTED');
+  });
+
+  await t.test('an eligible metadata seed link that fails remains in the scope', async () => {
+    const seed = 'https://metadata.example/token.json';
+    const launch = 'https://metadata.example/launch';
+    let fetchIndex = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search([]);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetchIndex++;
+      if (fetchIndex === 1) return json({
+        results: requested.map(item => ({ ...fetchResult(item, JSON.stringify({ mint: token.address })), links: item === seed ? [launch] : [] })),
+        errors: [],
+      });
+      return json({ results: [], errors: [{ url: launch, error: 'bot_blocked', status: 403 }] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+    const scope = originSourceScope(read, token);
+
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === launch)?.state, 'UNAVAILABLE');
+  });
+
+  await t.test('a URL omitted by the first-two-search page cap stays in the scope ledger', async () => {
+    const urls = Array.from({ length: 33 }, (_, index) => `https://public.example/origin-${index + 1}`);
+    let searchIndex = 0;
+    const fetched: string[] = [];
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search(searchIndex++ === 0 ? urls : []);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetched.push(...requested);
+      return json({ results: requested.map(item => fetchResult(item, `Token ${token.address}. Original source.`)), errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z');
+    const scope = originSourceScope(read, token);
+
+    assert.equal(fetched.length, 32);
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === urls[32])?.state, 'OMITTED');
+  });
+});
+
+test('a third common-query fetch failure does not make a fully acquired original origin scope incomplete', async () => {
+  const origin = 'https://public.example/origin';
+  const common = 'https://public.example/common-name';
+  let searchIndex = 0;
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const current = searchIndex++;
+      return search(current === 0 ? [origin] : current === 2 ? [common] : []);
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    return json({
+      results: requested.filter(item => item === origin).map(item => fetchResult(item, `Token ${token.address}. Project context, with no dated origin or catalyst.`)),
+      errors: requested.filter(item => item === common).map(item => ({ url: item, error: 'bot_blocked', status: 403 })),
+    });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern', [origin]);
+  const scope = originSourceScope(read, token);
+  read.originScope = scope;
+  assert.equal(read.complete, false, 'the common-query fetch failure remains visible on the overall collection');
+  assert.equal(scope.complete, true, 'origin scope depends on the two exact-token searches and their required pages');
+  assert.deepEqual(scope.acquisition.sourceIds, ['attention-page-1']);
+
+  const quote = `Token ${token.address}.`;
+  const rows = deriveAttention(read, {
+    claims: [{ id: 'screen', feature: 'A03', value: false, summary: 'The reviewed sample lacks public origin proof.',
+      originBasis: 'PUBLIC_EVIDENCE_INADEQUATE', citations: [{ sourceId: 'attention-page-1', quote }] }],
+    posts: [], competitors: [],
+  }, {
+    decisions: [{ id: 'screen', accepted: true, rationale: 'The complete original sample supports this scoped screening grade.' }],
+    candidateSet: { complete: false, rationale: 'The independent common-name comparison scope is incomplete.' },
+    originRelationship: { status: 'UNKNOWN', citations: [], rationale: 'The retained pages do not resolve primary origin.' },
+    originScopeReview: { complete: true, sourceIds: [...scope.sourceIds], rationale: 'Every acquired original source was reviewed in full.' },
+  }, token, '2026-10-01T12:00:00.000Z', []);
+
+  assert.equal(rows.find(row => row.id === 'A03')?.quality, 'KNOWN', JSON.stringify({
+    origin: rows.find(row => row.id === 'A03'), scope, readQueries: read.queries,
+  }));
+  assert.equal(rows.find(row => row.id === 'A03')?.projection?.value, false);
 });
 
 test('TinyFish search redirects normalize only the observed public wrapper and retain original evidence', async t => {
@@ -586,6 +816,78 @@ test('safe discovery seeds lead the fetch queue and only approved one-level link
   assert.ok(fetchBatches.flat().length <= 20);
 });
 
+test('five eligible project posts linked from an original profile complete the origin ledger within the shared page cap', async () => {
+  const profile = 'https://x.com/river_lantern';
+  const linkedPosts = Array.from({ length: 5 }, (_, index) => `https://x.com/river_lantern/status/${810 + index}`);
+  const fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({
+      results: requested.map(requestedUrl => ({
+        ...fetchResult(requestedUrl, `River Lantern's original project update names ${token.address} and explains its token-bound mechanism.`, '2026-10-01T10:00:00Z'),
+        ...(requestedUrl === profile ? { links: linkedPosts } : {}),
+      })),
+      errors: [],
+    });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [profile]);
+  const scope = originSourceScope(read, token);
+  const originalFetches = Object.entries(read.rawArtifacts)
+    .filter(([id]) => /^attention-fetch-\d+$/.test(id))
+    .map(([, raw]) => JSON.parse(raw) as { results: Array<{ url: string; links?: string[] }>; errors: unknown[] });
+
+  assert.deepEqual(fetched, [profile, ...linkedPosts], 'all five original posts are fetched after the profile seed');
+  assert.equal(read.sources.length, 6);
+  assert.equal(read.sources.filter(source => source.kind === 'POST').length, 5);
+  assert.equal(read.sources.length < 32, true, 'all required original pages fit within the shared page cap');
+  assert.equal(read.complete, true);
+  assert.deepEqual(read.codes, [], 'successful collection does not carry an outage or omission code');
+  assert.deepEqual(Object.keys(read.rawArtifacts).sort(), ['attention-fetch-1', 'attention-fetch-2', 'attention-search-1', 'attention-search-2']);
+  assert.deepEqual(originalFetches.flatMap(response => response.results.map(source => source.url)), [profile, ...linkedPosts]);
+  assert.deepEqual(originalFetches[0]?.results[0]?.links, linkedPosts, 'the fetched profile link list remains in the original raw receipt');
+  assert.ok(originalFetches.every(response => response.errors.length === 0), 'both retained Fetch receipts show successful acquisition');
+  assert.equal(scope.complete, true);
+  assert.equal(scope.acquisition.complete, true);
+  assert.equal(scope.acquisition.urls.length, 6);
+  assert.ok(scope.acquisition.urls.every(item => item.state === 'ACQUIRED'));
+  assert.deepEqual(scope.sourceIds, read.sources.map(source => source.id));
+});
+
+test('a metadata JSON seed follows safe public links within the shared page cap and retains parent lineage', async () => {
+  const seed = 'https://metadata.example/token.json';
+  const linked = [
+    'https://narrative.example/one',
+    'https://project.example/two',
+    'https://images.example/hero.png',
+    'http://127.0.0.1/private',
+    'https://narrative.example/three',
+    'https://narrative.example/four',
+    'https://narrative.example/five',
+  ];
+  const nested = 'https://elsewhere.example/deeper.json';
+  let fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(requestedUrl => fetchResult(requestedUrl,
+      requestedUrl === seed ? JSON.stringify({ mint: token.address, references: linked }) : `A linked public reference. ${nested}`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+
+  const retainedChildren = [linked[0]!, linked[1]!, linked[4]!, linked[5]!, linked[6]!];
+  assert.deepEqual(fetched, [seed, ...retainedChildren], 'every safe non-image link is fetched while it fits the shared 32-source cap');
+  assert.equal(read.sources.length, 6);
+  for (const url of retainedChildren) assert.equal(read.sources.find(source => source.url === url)?.discoveredFrom, seed);
+  assert.equal(read.sources.some(source => source.url === nested), false, 'a child JSON page cannot trigger a second hop');
+  assert.equal(read.sources.some(source => source.url === linked[2]), false, 'image links are not narrative sources');
+  assert.equal(read.sources.some(source => source.url === linked[3]), false, 'private and non-HTTPS targets are rejected');
+});
+
 test('a direct status seed is retained as a POST but cannot expand into other posts', async () => {
   const statusSeed = 'https://twitter.com/community/status/701';
   const linkedStatus = 'https://x.com/community/status/702';
@@ -907,8 +1209,8 @@ test('collector to complete comparison batches derives the rival beyond the pref
       assert.ok(source, 'the full-text batch contains the target representation');
       return modelResponse({
         competitors: [
-          { id: 'target-fulltext', token: target, sourceId: source.id, spanId: sourceSpan(source.id, target.address) },
-          { id: 'rival-tail', token: { chain: 'base', address: rival }, sourceId: source.id, spanId: sourceSpan(source.id, rival) },
+          { id: 'target-fulltext', observationId: comparisonObservationId(packet, target, source.id) },
+          { id: 'rival-tail', observationId: comparisonObservationId(packet, { chain: 'base', address: rival }, source.id) },
         ],
         posts: Object.fromEntries((requiredPostIds ?? []).map(id => [id, { spanId: sourceSpan(id, target.address), role: 'NEWS' }])),
       });
@@ -1037,13 +1339,19 @@ test('comparison completeness requires a named successful nonempty common result
     assert.equal(read.comparisonComplete, false);
   });
 
-  await t.test('empty common result set', async () => {
+  await t.test('an empty crypto-qualified query uses the broader result as its selected comparison sample', async () => {
     let searchIndex = 0;
     const mock = mockFetch(url => url.includes('api.search.tinyfish.ai')
       ? search(searchIndex++ === 2 ? [] : ['https://public.example/origin'])
       : json({ results: [fetchResult('https://public.example/origin', 'Origin page')], errors: [] }));
     const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
-    assert.equal(read.comparisonComplete, false);
+    assert.equal(searchIndex, 4, 'the successful empty primary is followed by one broader search');
+    assert.equal(read.queries[2], '"River Lantern" solana');
+    assert.equal(read.rawArtifacts['attention-search-3-primary-query'], '"River Lantern" solana crypto token contract');
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], JSON.stringify({ results: [] }));
+    assert.equal(read.rawArtifacts['attention-search-3'], JSON.stringify({ results: [{ url: 'https://public.example/origin' }] }),
+      'the selected search artifact is the fallback response, while the primary empty response remains retained');
+    assert.equal(read.comparisonAcquisition?.leadCount, 1);
   });
 
   await t.test('common search failure', async () => {

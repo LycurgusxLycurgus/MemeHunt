@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PublicKey } from '@solana/web3.js';
+import { AccountType, ExtensionType, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { MPL_TOKEN_METADATA_PROGRAM_ID, metadataPda } from '@pump-fun/pump-swap-sdk';
 import { collectLiveSolana, collectLiveToken } from '../src/app/live.js';
+import { renderSnapshot } from '../src/app/report.js';
 import { Service } from '../src/app/service.js';
 import { parseGeminiSemantic } from '../src/providers/gemini.js';
 import { fetchDexPairs, parseDexPairs } from '../src/providers/dexscreener.js';
@@ -20,8 +24,10 @@ import {
   UPGRADEABLE_LOADER,
 } from '../src/providers/solana.js';
 import { inspectPumpSwap } from '../src/providers/pumpswap.js';
+import { decodeTokenMetadataUri, discoverTokenMetadata } from '../src/providers/token-discovery.js';
+import { originSourceScope } from '../src/domain/attention.js';
 import { deriveShared, expireSharedWitnesses, sharedClaims, type SharedInputs } from '../src/domain/shared.js';
-import { decodeSharedAudit, validSharedReassessment } from '../src/providers/shared-model.js';
+import { decodeSharedAudit, decodeSharedAuditProof, sharedAuditPrompt, sharedReassessmentIds, validSharedReassessment } from '../src/providers/shared-model.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 import { sharedFixture } from './shared-fixtures.js';
 import type { Profile, TokenRef } from '../src/domain/contracts.js';
@@ -31,19 +37,103 @@ const OTHER_MINT = 'So11111111111111111111111111111111111111112';
 const RPC_URL = 'https://rpc.example/?api-key=rpc-secret';
 const TINYFISH_KEY = 'tinyfish-test-secret';
 const GEMINI_KEY = 'gemini-test-secret';
+let geminiKeySequence = 0;
+const nextGeminiKey = () => `${GEMINI_KEY}-${++geminiKeySequence}`;
 const AT = '2026-09-29T12:00:00.000Z';
 const PROGRAM_DATA = new PublicKey(Buffer.alloc(32, 8)).toBase58();
 const token: TokenRef = { chain: 'solana', address: MINT };
 const profile: Profile = { id: 'unconfigured-live', risk: {}, stage: { ageBands: [] } };
 
+function comparisonGradeIdFields(packet: Record<string, unknown>): Record<string, unknown> {
+  const qualification = packet.leadQualification as { globalScopeWireMethod?: string } | undefined;
+  return qualification?.globalScopeWireMethod === 'code-owned-comparison-ids-v1' ? {} : {
+    leadIds: packet.requiredLeadIds, sourceIds: packet.requiredSourceIds, batchIds: packet.requiredBatchIds,
+  };
+}
+
 test('mainnet RPC pin matches the complete documented Solana genesis hash', () => {
   assert.equal(SOLANA_MAINNET_GENESIS, '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d');
+});
+
+test('mint metadata discovery decodes embedded Token-2022 and Metaplex URIs without fetching them', async t => {
+  await t.test('Token-2022 reads only its already-fetched mint account and preserves raw RPC evidence', async () => {
+    const raw = metadataRpcRaw([rpcAccount(TOKEN_2022_PROGRAM_ID.toBase58(), token2022MetadataAccount('https://project.example/token.json?utm_source=fixture&v=1')), null]);
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const result = await discoverTokenMetadata(MINT, RPC_URL, async (input, init) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return jsonResponse(JSON.parse(raw));
+    }, () => AT);
+
+    assert.equal(result.uri, 'https://project.example/token.json?v=1');
+    assert.equal(result.code, undefined);
+    assert.equal(calls.length, 1, 'metadata parsing makes no hidden follow-up request to the URI');
+    assert.equal(calls[0]?.url, RPC_URL);
+    assert.equal(calls[0]?.body.method, 'getMultipleAccounts');
+    assert.deepEqual((calls[0]?.body.params as unknown[][])[0], [MINT, metadataPda(new PublicKey(MINT)).toBase58()]);
+    assert.equal(result.rawArtifacts['discovery-token-metadata'], raw);
+    assert.equal(result.retrievedAt['discovery-token-metadata'], AT);
+  });
+
+  await t.test('legacy Metaplex URI is public-HTTPS filtered; mismatched mint bindings fail closed', () => {
+    const raw = metadataRpcRaw([null, rpcAccount(MPL_TOKEN_METADATA_PROGRAM_ID.toBase58(), legacyMetadataAccount('http://127.0.0.1/private'))]);
+    const unsafe = decodeTokenMetadataUri(raw, MINT);
+    assert.equal(unsafe.uri, undefined);
+    assert.equal(unsafe.code, 'TOKEN_METADATA_URL_UNSAFE');
+
+    const forged = metadataRpcRaw([null, rpcAccount(MPL_TOKEN_METADATA_PROGRAM_ID.toBase58(), legacyMetadataAccount('https://project.example/token.json', new PublicKey(OTHER_MINT)))]);
+    assert.throws(() => decodeTokenMetadataUri(forged, MINT), /TOKEN_METADATA_BINDING/);
+  });
+
+  await t.test('Token-2022 metadata must declare the exact requested mint', () => {
+    const raw = metadataRpcRaw([rpcAccount(TOKEN_2022_PROGRAM_ID.toBase58(), token2022MetadataAccount('https://project.example/token.json', new PublicKey(OTHER_MINT))), null]);
+    assert.throws(() => decodeTokenMetadataUri(raw, MINT), /TOKEN_METADATA_BINDING/);
+  });
 });
 
 const jsonResponse = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { 'content-type': 'application/json' },
 });
+
+function token2022MetadataAccount(uri: string, mint = new PublicKey(MINT)): Buffer {
+  const metadataString = (value: string) => {
+    const bytes = Buffer.from(value);
+    const size = Buffer.alloc(4);
+    size.writeUInt32LE(bytes.length);
+    return Buffer.concat([size, bytes]);
+  };
+  const extension = Buffer.concat([
+    Buffer.alloc(32), mint.toBuffer(), metadataString('River Lantern'), metadataString('LANT'), metadataString(uri), Buffer.alloc(4),
+  ]);
+  const length = 170 + extension.length;
+  const data = Buffer.alloc(length);
+  data.writeBigUInt64LE(1_000_000_000_000n, 36);
+  data[44] = 6;
+  data[45] = 1;
+  data[165] = AccountType.Mint;
+  data.writeUInt16LE(ExtensionType.TokenMetadata, 166);
+  data.writeUInt16LE(extension.length, 168);
+  extension.copy(data, 170);
+  return data;
+}
+
+function metadataRpcRaw(accounts: Array<unknown | null>): string {
+  return JSON.stringify({ jsonrpc: '2.0', id: 1, result: { context: { slot: 900 }, value: accounts } });
+}
+
+function rpcAccount(owner: string, data: Buffer) {
+  return { owner, executable: false, lamports: 1_000_000, data: [data.toString('base64'), 'base64'] };
+}
+
+function legacyMetadataAccount(uri: string, mint = new PublicKey(MINT)): Buffer {
+  const metadataString = (value: string) => {
+    const bytes = Buffer.from(value);
+    const size = Buffer.alloc(4);
+    size.writeUInt32LE(bytes.length);
+    return Buffer.concat([size, bytes]);
+  };
+  return Buffer.concat([Buffer.from([4]), Buffer.alloc(32), mint.toBuffer(), metadataString('River Lantern'), metadataString('LANT'), metadataString(uri)]);
+}
 const sourceModelRaw = (value: unknown) => JSON.stringify({
   candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }],
 });
@@ -165,12 +255,13 @@ function mockedFetch(config: MockConfig = {}) {
       return jsonResponse(value);
     }
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+      if (url.endsWith(':countTokens')) return jsonResponse({ totalTokens: 100 });
       if (config.geminiStatus) return jsonResponse({ error: 'simulated' }, config.geminiStatus);
       if (config.geminiBody !== undefined) return new Response(config.geminiBody, { headers: { 'content-type': 'application/json' } });
       const request = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
       const packet = JSON.parse(request.contents[0]?.parts[0]?.text ?? '{}') as Record<string, unknown>;
       geminiPackets.push(packet);
-      if (config.attentionResponse) return jsonResponse(config.attentionResponse(packet, geminiPackets.length));
+      if (config.attentionResponse) return jsonResponse(comparisonRowsForV3(packet, config.attentionResponse(packet, geminiPackets.length)));
       return jsonResponse({ candidates: [] });
     }
     throw new Error('UNEXPECTED_MOCK_REQUEST');
@@ -864,6 +955,52 @@ type AttentionPacket = {
   requiredDecisionIds?: string[];
 };
 
+function publicLeadScopes(packet: Record<string, unknown>) {
+  const qualification = packet.leadQualification as {
+    leads?: Array<{ id: string; metadataEvidenceId: string; sourceIds?: string[]; recoverySourceIds?: string[] }>;
+    decisions?: Array<{ leadId: string; accounted: boolean; accounting: { role: string } }>;
+  } | undefined;
+  const facts = packet.publicScopeFacts as Array<{
+    leadId: string; originalComplete: boolean; recoveryComplete: boolean; queryReady: boolean; queryCount: number;
+    effectiveAccounted: boolean; descriptorComplete: boolean; descriptorFresh: boolean;
+    collectionBlocked: boolean; leadReviewsComplete: boolean; reviewedIndexedRole?: string;
+  }> | undefined;
+  const catalog = packet.sources as Array<{ sourceId: string; spans: Array<{ id: string; text: string }> }> | undefined;
+  assert.ok(qualification?.leads && facts && catalog, 'the v2 grade packet supplies exact lead and collection facts');
+  return Object.fromEntries(qualification.leads.map(lead => {
+    const fact = facts.find(row => row.leadId === lead.id);
+    const decision = qualification.decisions?.find(row => row.leadId === lead.id);
+    const descriptor = catalog.find(source => source.sourceId === lead.metadataEvidenceId);
+    assert.ok(fact && decision && descriptor?.spans[0], `the v2 packet has the full scope inputs for ${lead.id}`);
+    const citations: Array<{ sourceId: string; spanId: string }> = [{ sourceId: descriptor.sourceId, spanId: descriptor.spans[0]!.id }];
+    const bodyIds = fact.originalComplete ? lead.sourceIds ?? [] : lead.recoverySourceIds ?? [];
+    const body = catalog.find(source => bodyIds.includes(source.sourceId) && source.spans.length > 0);
+    if (body?.spans[0]) citations.push({ sourceId: body.sourceId, spanId: body.spans[0].id });
+    const reviewed = fact.descriptorComplete && fact.descriptorFresh && !fact.collectionBlocked
+      && fact.queryReady && fact.recoveryComplete && fact.leadReviewsComplete;
+    const role = fact.reviewedIndexedRole ?? decision.accounting.role;
+    const basis = fact.originalComplete ? 'ORIGINAL_COMPLETE'
+      : fact.effectiveAccounted && fact.queryCount > 0 ? 'MATCHED_ENTITY_RECOVERY'
+        : role === 'MARKET_OR_INDEX_RECORD' && fact.queryCount > 0 ? 'REVIEWED_MARKET_RECOVERY' : 'NONE';
+    const complete = reviewed && basis !== 'NONE' && role !== 'UNRESOLVED';
+    return [lead.id, {
+      status: complete ? 'REVIEWED' : 'UNRESOLVED', basis: complete ? basis : 'NONE', role,
+      blocker: complete ? 'NONE' : role === 'PROJECT_OR_PUBLICATION' ? 'MISSING_NECESSARY_CONTEXT' : 'INCOMPLETE_COLLECTION_OR_REVIEW',
+      rationale: complete
+        ? 'The independent review verifies this lead public-support scope against its own descriptor and retained source evidence.'
+        : 'The lead public-review scope remains unresolved because a necessary own collection or review condition is incomplete.',
+      citations,
+    }];
+  }));
+}
+
+function publicLeadScopeReviews(packet: Record<string, unknown>) {
+  const scopes = (packet.supportProposal as { leadScopes?: Record<string, unknown> } | undefined)?.leadScopes;
+  return scopes ? Object.fromEntries(Object.keys(scopes).map(id => [id, {
+    accepted: true, rationale: 'The independent review checks this lead scope against its own original and recovery evidence.',
+  }])) : undefined;
+}
+
 function isSocialModelPacket(packet: Record<string, unknown>): boolean {
   return Array.isArray(packet.requiredPostIds) && 'rubric' in packet;
 }
@@ -919,6 +1056,16 @@ function attentionSourceId(packet: Record<string, unknown>, includes: string): s
   return source.id;
 }
 
+function attentionObservationId(packet: Record<string, unknown>, token: TokenRef, sourceId: string): string {
+  const observations = packet.exactContractObservations as Array<{
+    observationId: string; token: TokenRef; sourceId: string; spanId: string;
+  }>;
+  const observation = observations.find(item => item.token.chain === token.chain && item.token.address === token.address
+    && item.sourceId === sourceId);
+  assert.ok(observation, `no code-owned literal observation for ${token.chain}:${token.address} in ${sourceId}`);
+  return observation.observationId;
+}
+
 function attentionMetadataSpanId(packet: Record<string, unknown>, sourceId: string, includes?: string): string {
   const source = (packet.sources as AttentionPacket['sources']).find(item => item.id === sourceId);
   assert.ok(source, `indexed lead packet omitted ${sourceId}`);
@@ -931,17 +1078,314 @@ function attentionEnvelope(value: unknown) {
   return { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] };
 }
 
+function comparisonRowsForV3(packet: Record<string, unknown>, value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const envelope = structuredClone(value) as Record<string, unknown>;
+  const candidate = (envelope.candidates as Array<{ content?: { parts?: Array<{ text?: string }> } }> | undefined)?.[0];
+  const part = candidate?.content?.parts?.[0];
+  const response = (part?.text ? JSON.parse(part.text) : envelope) as Record<string, unknown>;
+  const rowFormat = `${String(packet.rowFormat ?? '')}\n${String(packet.instruction ?? '')}`;
+  const rows = (source: unknown, key: string) => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
+    return Object.entries(source as Record<string, unknown>).map(([id, item]) => ({ [key]: id, ...(item as Record<string, unknown>) }));
+  };
+  const coherentRows = (source: unknown) => {
+    const decisions = Array.isArray(source) ? source : rows(source, 'leadId');
+    return Array.isArray(decisions) ? decisions.map(value => {
+      const row = value as Record<string, unknown>;
+      const accounting = row.accounting as Record<string, unknown> | undefined;
+      if (!accounting || ('descriptorRef' in accounting && !('status' in accounting))) return row;
+      const descriptorRefs = accounting.descriptorRefs;
+      const corroboratingRefs = accounting.corroboratingRefs;
+      if (!Array.isArray(descriptorRefs) || descriptorRefs.length !== 1 || !Array.isArray(corroboratingRefs)) return row;
+      if (accounting.status === 'UNRESOLVED' && accounting.basis === 'NONE') {
+        const { status: _status, descriptorRefs: _descriptorRefs, ...rest } = accounting;
+        return { ...row, accounting: { ...rest, descriptorRef: descriptorRefs[0] } };
+      }
+      if (accounting.status === 'ACCOUNTED' && accounting.basis !== 'NONE' && accounting.role !== 'UNRESOLVED'
+        && corroboratingRefs.length > 0 && corroboratingRefs.length <= 5) {
+        const { status: _status, descriptorRefs: _descriptorRefs, corroboratingRefs: _corroboratingRefs, ...rest } = accounting;
+        return { ...row, accounting: { ...rest, descriptorRef: descriptorRefs[0], corroboratingRef: corroboratingRefs[0], additionalCorroboratingRefs: corroboratingRefs.slice(1) } };
+      }
+      return row;
+    }) : decisions;
+  };
+  if (Array.isArray(packet.operands) && packet.requiredLeadDecisionGroups && !('proposal' in packet)
+    && response.decisions && !('withOriginalBodies' in (response.decisions as Record<string, unknown>))) {
+    const groups = packet.requiredLeadDecisionGroups as { withOriginalBodies: string[]; withoutOriginalBodies: string[] };
+    const decisions = coherentRows(response.decisions) as Array<Record<string, unknown>>;
+    const byId = new Map(decisions.map(row => [String(row.leadId), row]));
+    response.decisions = {
+      withOriginalBodies: groups.withOriginalBodies.flatMap(id => byId.has(id) ? [byId.get(id)] : []),
+      withoutOriginalBodies: groups.withoutOriginalBodies.flatMap(id => byId.has(id) ? [byId.get(id)] : []),
+    };
+  } else if (Array.isArray(packet.operands) && rowFormat.includes('Accounting has one authoritative basis and no status field.')
+    && !('proposal' in packet) && response.decisions) {
+    response.decisions = coherentRows(response.decisions);
+  } else if (Array.isArray(packet.selectedLeadIds) && Array.isArray(packet.leads) && response.leads && !Array.isArray(response.leads)) {
+    response.leads = rows(response.leads, 'leadId');
+  } else if (packet.requiredSourceDecisionGroups && response.sourceDecisions
+    && !('withLiteralObservations' in (response.sourceDecisions as Record<string, unknown>))) {
+    const decisions = response.sourceDecisions as Record<string, unknown>;
+    const groups = packet.requiredSourceDecisionGroups as { withLiteralObservations: string[]; withoutLiteralObservations: string[] };
+    response.decisions = rows(response.decisions, 'id');
+    response.bodyDecisions = rows(response.bodyDecisions, 'sourceId');
+    response.sourceDecisions = {
+      withLiteralObservations: groups.withLiteralObservations.flatMap(id => id in decisions ? [{ sourceId: id, ...(decisions[id] as Record<string, unknown>) }] : []),
+      withoutLiteralObservations: groups.withoutLiteralObservations.flatMap(id => id in decisions ? [{ sourceId: id, ...(decisions[id] as Record<string, unknown>) }] : []),
+    };
+  } else if (Array.isArray(packet.operands) && rowFormat.includes('Return decisions as one array row for EVERY operand')) {
+    response.decisions = rows(response.decisions, 'leadId');
+  } else if (Array.isArray(packet.operands) && rowFormat.includes('Return decisions as an array with exactly one leadId row')) {
+    response.decisions = rows(response.decisions, 'leadId');
+  } else if (rowFormat.includes('Return bodyObservations and posts as arrays')) {
+    response.bodyObservations = rows(response.bodyObservations, 'sourceId');
+    const postRows = rows(response.posts, 'sourceId');
+    const omitNoPosts = String(packet.rowFormat ?? '').includes('There are no POST sources: posts field does not exist');
+    if (omitNoPosts && Array.isArray(postRows) && postRows.length === 0) delete response.posts;
+    else response.posts = postRows;
+    const omitNoObservations = String(packet.rowFormat ?? '').includes('There are no literal contract observations: competitors field does not exist');
+    if (omitNoObservations && Array.isArray(response.competitors) && response.competitors.length === 0) delete response.competitors;
+  } else if (rowFormat.includes('Return decisions, sourceDecisions and bodyDecisions as arrays')) {
+    response.decisions = rows(response.decisions, 'id');
+    response.sourceDecisions = rows(response.sourceDecisions, 'sourceId');
+    response.bodyDecisions = rows(response.bodyDecisions, 'sourceId');
+  } else if (rowFormat.includes('Return leadRoles, sourceSupport and leadBlockers as arrays')) {
+    const leadRoles = rows(response.leadRoles, 'leadId');
+    response.leadRoles = Array.isArray(leadRoles) && rowFormat.includes('descriptorRef is a single object, not an array')
+      ? leadRoles.map(value => {
+        const row = value as Record<string, unknown>;
+        if ('descriptorRef' in row) return row;
+        const { descriptorRefs, ...rest } = row;
+        return Array.isArray(descriptorRefs) && descriptorRefs.length > 0
+          ? { ...rest, descriptorRef: descriptorRefs[0] }
+          : rest;
+      })
+      : leadRoles;
+    response.sourceSupport = rows(response.sourceSupport, 'sourceId');
+    const blockers = rows(response.leadBlockers, 'leadId');
+    response.leadBlockers = Array.isArray(blockers) ? blockers.map((row: Record<string, unknown>) => ({
+      ...row, blockerProof: row.blockerProof ?? null,
+    })) : blockers;
+  } else if (rowFormat.includes('Return entryReview.leadRoles, sourceSupport and leadBlockers as exact ID arrays')) {
+    const entryReview = response.entryReview as Record<string, unknown> | undefined;
+    if (entryReview) response.entryReview = {
+      ...entryReview,
+      leadRoles: rows(entryReview.leadRoles, 'leadId'),
+      sourceSupport: rows(entryReview.sourceSupport, 'sourceId'),
+      leadBlockers: rows(entryReview.leadBlockers, 'leadId'),
+    };
+    response.decisions = rows(response.decisions, 'id');
+  }
+  if (part) part.text = JSON.stringify(response);
+  return part ? envelope : response;
+}
+
 function comparisonLeadArray(decisions: Record<string, unknown>) {
   return Object.entries(decisions).map(([leadId, decision]) => ({ leadId, ...(decision as Record<string, unknown>) }));
 }
 
 function comparisonReviewFields(packet: Record<string, unknown>) {
+  const sources = (packet.sources ?? []) as Array<{ id: string }>;
   return {
-    sourceDecisions: Object.fromEntries(((packet.sources ?? []) as Array<{ id: string }>).map(source => [source.id, {
-      disposition: 'RELEVANT', rationale: 'The retained source establishes this exact project representation.',
+    sourceDecisions: Object.fromEntries(sources.map(source => [source.id, {
+      disposition: 'RELEVANT', insufficiencyKind: 'NONE',
+      rationale: 'The retained source establishes this exact project representation.',
+      inspectionComplete: true,
+    }])),
+    supportDecisions: Object.fromEntries(sources.map(source => [source.id, {
+      accepted: true, rationale: 'The independent review accepts the selected source-support classification.',
     }])),
     missingRepresentations: [],
   };
+}
+
+function freshComparisonResponse(packet: Record<string, unknown>, target: TokenRef, additionalCandidates: TokenRef[] = []) {
+  const sources = (packet.sources ?? []) as AttentionPacket['sources'];
+  if (packet.entryTask && packet.mergeTask) {
+    const entry = packet.entryTask as { proposal?: Record<string, unknown>; sources?: Array<{ id: string; spans: Array<{ id: string }> }> };
+    const merge = packet.mergeTask as { candidates?: Array<{ id: string }>; manifest?: { qualificationMethod?: string; entryDecisionMethod?: string } };
+    const proposal = entry.proposal;
+    assert.ok(proposal, 'the fresh final review receives the exact entry proposal');
+    const leadRoles = proposal.leadRoles as Record<string, unknown>;
+    const sourceSupport = proposal.sourceSupport as Record<string, unknown>;
+    const leadBlockers = proposal.leadBlockers as Record<string, unknown>;
+    const entryCitation = entry.sources?.flatMap(source => source.spans.map(span => ({ sourceId: source.id, spanId: span.id })))
+      .find(ref => ref.sourceId && ref.spanId);
+    if (merge.manifest?.entryDecisionMethod === 'binary-public-support-v1') {
+      assert.ok(entryCitation, 'the direct entry decision cites a supplied comparison-body span');
+    }
+    return attentionEnvelope({
+      ...(merge.manifest?.entryDecisionMethod === 'binary-public-support-v1' ? { entryDecision: {
+        verdict: 'FAIL', rationale: 'The bounded comparison sample does not meet the independent public-support standard.', citations: [entryCitation!],
+      } } : {}),
+      entryReview: {
+        leadRoles: Object.fromEntries(Object.keys(leadRoles).map(id => [id, { accepted: true, rationale: 'The own indexed role is supported by its descriptor and retained body.' } ])),
+        sourceSupport: Object.fromEntries(Object.keys(sourceSupport).map(id => [id, { accepted: true, rationale: 'The body classification is supported by its own inspected literal text.' } ])),
+        leadBlockers: Object.fromEntries(Object.keys(leadBlockers).map(id => [id, { accepted: true, rationale: 'No unsupported semantic blocker is asserted.' } ])),
+        grade: { accepted: true, rationale: 'The unresolved public-support judgment is appropriate for the selected evidence.' },
+      },
+      decisions: Object.fromEntries((merge.candidates ?? []).map(({ id }) => [id, { accepted: true, rationale: 'The candidate is checked against its retained literal observation.' } ])),
+      candidateSet: { complete: true, rationale: 'The target and every relevant representation in these full source batches are accounted for.' },
+    });
+  }
+
+  if (packet.method === 'binary-public-support-v1' && Array.isArray(packet.sources)) {
+    const catalog = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+    const sourceIds = catalog.map(source => source.id);
+    const cited = catalog.flatMap(source => source.spans.map(span => ({ sourceId: source.id, ...span })))
+      .find(span => span.text.includes(target.address));
+    assert.ok(cited, 'the binary origin pair cites literal target text in its original source scope');
+    const decision = (verdict: 'PASS' | 'FAIL') => ({ verdict,
+      rationale: 'The criterion is judged independently from the complete retained sample.', citations: [{ sourceId: cited.sourceId, spanId: cited.id }] });
+    if ('screening' in packet) return attentionEnvelope({
+      originTraceability: decision('FAIL'), leadership: decision('FAIL'), inspectionComplete: true, sourceIds,
+    });
+    return attentionEnvelope({
+      originTraceability: { verdict: 'UNRESOLVED', rationale: 'The draft leaves the criterion for independent review.', citations: [{ sourceId: cited.sourceId, spanId: cited.id }] },
+      leadership: { verdict: 'UNRESOLVED', rationale: 'The draft leaves the separate criterion for independent review.', citations: [{ sourceId: cited.sourceId, spanId: cited.id }] },
+      sourceIds,
+    });
+  }
+
+  if (Array.isArray(packet.operands)) {
+    const operands = packet.operands as Array<{
+      leadId: string; indexedDescriptorId: string; originalBodyIds: string[]; recoveryBodyIds: string[];
+      literalOptions: Array<{ id: string; token: TokenRef; sourceId: string; spanId: string }>;
+    }>;
+    if (packet.proposal) {
+      const decisions = packet.proposal as { decisions: Record<string, unknown> };
+      return attentionEnvelope({ decisions: Object.fromEntries(Object.keys(decisions.decisions).map(id => [id, {
+        accounting: { accepted: true, rationale: 'The indexed item identity is reviewed separately from public support.' },
+        representation: { accepted: true, rationale: 'The proposed relation is checked against its own descriptor and retained sources.' },
+        subjectComparison: { accepted: true, rationale: 'The original-body comparison is reviewed as a separate factual axis.' },
+        evidenceAdequacy: { accepted: true, rationale: 'The proposal does not infer inadequacy from a missing original body.' },
+      }])) });
+    }
+    const catalog = sources;
+    return attentionEnvelope({ decisions: Object.fromEntries(operands.map(operand => {
+      const descriptor = catalog.find(source => source.id === operand.indexedDescriptorId);
+      assert.ok(descriptor?.spans[0], `the task packet retains ${operand.indexedDescriptorId}`);
+      const descriptorRef = { sourceId: descriptor.id, spanId: descriptor.spans[0]!.id };
+      const ownIds = [...operand.originalBodyIds, ...operand.recoveryBodyIds];
+      const body = catalog.find(source => ownIds.includes(source.id) && source.spans.length > 0
+        && source.spans.some(span => span.text.includes(target.address)));
+      const ownBody = body ?? catalog.find(source => ownIds.includes(source.id) && source.spans.length > 0);
+      const bodyRef = ownBody?.spans[0] ? { sourceId: ownBody.id, spanId: ownBody.spans[0].id } : undefined;
+      const literal = operand.literalOptions.find(option => option.token.chain === target.chain
+        && option.token.address === target.address && ownIds.includes(option.sourceId));
+      const isTarget = !!literal && operand.originalBodyIds.length > 0;
+      const decision: Record<string, unknown> = {
+        accounting: {
+          status: ownBody ? 'ACCOUNTED' : 'UNRESOLVED', basis: ownBody ? operand.originalBodyIds.includes(ownBody.id) ? 'ORIGINAL_TEXT' : 'RECOVERED_ENTITY' : 'NONE',
+          role: /market|pool|pair|dexscreener/i.test(operand.leadId) ? 'MARKET_OR_INDEX_RECORD' : 'PROJECT_OR_PUBLICATION',
+          rationale: ownBody ? 'This lead is supported by its own acquired or positively recovered source.' : 'The own item remains unresolved without acquired corroboration.',
+          descriptorRefs: [descriptorRef], corroboratingRefs: bodyRef ? [bodyRef] : [],
+        },
+        representation: isTarget && literal
+          ? { status: 'BOUND', literalObservationId: literal.id, rationale: 'The target mint is bound by its own original project text.', associationRefs: bodyRef ? [bodyRef] : [] }
+          : ownBody
+            ? { status: 'UNRELATED', rationale: 'The own source describes a distinct indexed project, not the target narrative.', citations: [descriptorRef, bodyRef] }
+            : { status: 'UNRESOLVED', rationale: 'The available item evidence does not establish a target association.', citations: [descriptorRef] },
+      };
+      if (operand.originalBodyIds.length) {
+        decision.subjectComparison = isTarget && bodyRef
+          ? { status: 'CONSISTENT', indexedSubject: 'The indexed target project', currentSubject: 'The acquired target project', rationale: 'The original body describes its own indexed target project.', descriptorRefs: [descriptorRef], fetchedRefs: [bodyRef] }
+          : { status: 'UNRESOLVED', indexedSubject: 'The indexed project', currentSubject: null, rationale: 'The original body does not establish a current subject match.', descriptorRefs: [descriptorRef], fetchedRefs: [] };
+        decision.evidenceAdequacy = { verdict: 'UNRESOLVED', rationale: 'This lead does not establish an original-source public-support deficiency.', citations: [] };
+      }
+      return [operand.leadId, decision];
+    })) });
+  }
+
+  const scope = packet.scope as { batch?: number } | undefined;
+  if (typeof scope?.batch === 'number' && packet.targetContext && Array.isArray(packet.exactContractObservations)) {
+    const observationSources = packet.exactContractObservations as Array<{ observationId: string; token: TokenRef; sourceId: string }>;
+    if (!packet.proposal) {
+      const bodyObservations = Object.fromEntries(sources.map(source => {
+        const span = source.spans[0];
+        assert.ok(span, `batch source ${source.id} has a selected literal span`);
+        const text = source.spans.map(item => item.text).join('\n');
+        const footer = /About Press Copyright Contact us Creators (?:Advertisers )?Developers Terms Privacy Policy/i.test(text);
+        const isTarget = text.includes(target.address);
+        const bodyRole = footer ? 'OTHER_CONTEXT'
+          : /market index|market pair|liquidity|trading data/i.test(text) ? 'MARKET_OR_INDEX_RECORD' : 'PROJECT_OR_PUBLICATION';
+        const description = footer ? 'NO_SUBSTANTIVE_CONTENT'
+          : /Lunar Cat|feline art|digital-parasite project|AVA AI/i.test(text) && !isTarget ? 'DISTINCT_OTHER_SUBJECT'
+            : /market index|market pair|liquidity|trading data/i.test(text) ? 'MARKET_FIELDS_OR_BOILERPLATE' : 'SPECIFIC_PROJECT_OR_MECHANISM';
+        const ref = { sourceId: source.id, spanId: span.id };
+        return [source.id, {
+          bodyRole: { kind: bodyRole, rationale: 'The source role follows its own full retained body.', citations: [ref] },
+          description: { kind: description, rationale: 'The description follows the inspected text rather than the indexed name alone.', citations: [ref] },
+        }];
+      }));
+      const candidateTokens = [target, ...additionalCandidates];
+      const competitors = candidateTokens.flatMap((token, index) => {
+        const observation = observationSources.find(item => item.token.chain === token.chain && item.token.address === token.address
+          && sources.some(source => source.id === item.sourceId && source.spans.some(span => span.text.includes(token.address))));
+        return observation ? [{ id: index === 0 ? 'target-retained-text' : `competing-retained-text-${index}`, observationId: observation.observationId }] : [];
+      });
+      return attentionEnvelope({ bodyObservations, competitors,
+        posts: Object.fromEntries(((packet.requiredPostSourceIds ?? []) as string[]).map(id => [id, {
+          spanId: attentionSpanId(packet, id, target.address), role: 'OTHER',
+        }])) });
+    }
+    const proposal = packet.proposal as { competitors?: Array<{ observationId?: string; sourceId?: string }> };
+    const selectedSourceIds = new Set((proposal.competitors ?? []).flatMap(item => {
+      if (item.sourceId) return [item.sourceId];
+      const observation = observationSources.find(candidate => candidate.observationId === item.observationId);
+      return observation ? [observation.sourceId] : [];
+    }));
+    const noContent = (source: AttentionPacket['sources'][number]) => source.spans.some(span => /About Press Copyright Contact us Creators (?:Advertisers )?Developers Terms Privacy Policy/i.test(span.text));
+    const decisions = Object.fromEntries(((packet.requiredDecisionIds ?? []) as string[]).map(id => [id, {
+      accepted: true, rationale: 'The exact batch item is reviewed against every retained source span.' } ]));
+    const omitNoItemDecisions = String(packet.rowFormat ?? '').includes('There are no required item decisions. The decisions field does not exist');
+    return attentionEnvelope({
+      ...(omitNoItemDecisions ? {} : { decisions }),
+      candidateSet: { complete: true, rationale: 'Every relevant exact-contract observation in the acquired full-text batch is included.' },
+      sourceDecisions: Object.fromEntries(sources.map(source => [source.id, {
+        disposition: noContent(source) ? 'INSUFFICIENT' : selectedSourceIds.has(source.id) ? 'RELEVANT' : 'CONTEXT',
+        insufficiencyKind: noContent(source) ? 'NO_SUBSTANTIVE_CONTENT' : 'NONE',
+        rationale: 'The source is classified from its full retained text and selected observations.', inspectionComplete: true,
+      } ])),
+      bodyDecisions: Object.fromEntries(sources.map(source => [source.id, {
+        bodyRole: { accepted: true, rationale: 'The retained full body supports this role.' },
+        description: { accepted: true, rationale: 'The retained full body supports this description.' },
+      } ])),
+      ...(observationSources.length ? { missingRepresentations: [] } : {}),
+    });
+  }
+
+  if (Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) {
+    const observations = packet.bodyObservations as Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string } }>;
+    const contexts = packet.leadContexts as Array<{ leadId: string; indexedMetadataSourceId: string; originalSourceIds: string[]; recoverySourceIds: string[] }>;
+    const refFor = (sourceId: string) => {
+      const source = sources.find(item => item.id === sourceId);
+      assert.ok(source?.spans[0], `the entry packet supplies a selected span for ${sourceId}`);
+      return { sourceId, spanId: source.spans[0]!.id };
+    };
+    const leadRoles = Object.fromEntries(contexts.map(context => {
+      const descriptor = sources.find(source => source.id === context.indexedMetadataSourceId);
+      assert.ok(descriptor?.spans[0], `the entry packet includes ${context.indexedMetadataSourceId}`);
+      const own = [...context.originalSourceIds, ...context.recoverySourceIds].find(id => sources.some(source => source.id === id && source.spans.length));
+      return [context.leadId, {
+        role: /market|pool|pair|dexscreener/i.test(descriptor.spans.map(span => span.text).join(' ')) ? 'MARKET_OR_INDEX_RECORD' : 'PROJECT_OR_PUBLICATION',
+        rationale: 'The original indexed descriptor identifies the source role.', descriptorRefs: [refFor(descriptor.id)],
+        ownContextRefs: own ? [refFor(own)] : [],
+      }];
+    }));
+    const sourceSupport = Object.fromEntries(observations.map(observation => {
+      const status = observation.description.kind === 'SPECIFIC_PROJECT_OR_MECHANISM' ? 'BINDING_EVIDENCE' : 'CONTEXT_ONLY';
+      return [observation.sourceId, { status, rationale: 'The fully inspected body is either specific narrative evidence or context.', citations: [refFor(observation.sourceId)], blockerProof: null }];
+    }));
+    const gradeSourceId = observations.find(item => item.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE')?.sourceId
+      ?? observations[0]?.sourceId ?? sources[0]?.id;
+    assert.ok(gradeSourceId, 'the entry packet contains a literal grade witness');
+    const proposal = { leadRoles, sourceSupport, leadBlockers: Object.fromEntries(contexts.map(context => [context.leadId, null])),
+      grade: { verdict: 'UNRESOLVED', rationale: 'The retained bodies do not establish a reviewed public-support gap.', citations: [refFor(gradeSourceId)] } };
+    if (!packet.entryTask) return attentionEnvelope(proposal);
+  }
+  return undefined;
 }
 
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -1204,7 +1648,7 @@ test('full Solana discovery seeds only exact-base DEX links and qualifies linked
   });
 
   const result = await collectLiveSolana(token, liveOptions(mock.fetcher, {
-    tinyfishKey: TINYFISH_KEY, geminiKey: GEMINI_KEY, semanticEnabled: true,
+    tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
   }));
   const providerCalls = assertSocialProviderCallsAreSeparated(mock, result.rawArtifacts);
   assert.deepEqual(providerCalls, { attentionSearchCount: 2, socialSearchCount: 1, attentionFetchCount: 2, socialFetchCount: 1 }, 'social Search uses only the required query when the bounded context plan is already full');
@@ -1290,7 +1734,7 @@ test('A18 excludes a clipped old post but requires retained full text for in-win
     });
 
     const bundle = await collectLiveSolana(token, liveOptions(mock.fetcher, {
-      tinyfishKey: TINYFISH_KEY, geminiKey: GEMINI_KEY, semanticEnabled: true,
+      tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
     }));
     const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
       read: { sources: Array<{ id: string; text: string }>; growthSample: { complete: boolean } };
@@ -1389,18 +1833,30 @@ test('live qualification retains full comparison batches and emits a locally der
       }
       const attentionCall = ++attentionModelCalls;
       const typed = packet as AttentionPacket;
-      const scope = packet.scope as { batch?: number } | undefined;
+      const scope = packet.scope as { mode?: string; batch?: number } | undefined;
+      const freshResponse = freshComparisonResponse(packet, target, [{ chain: 'base', address: rival }]);
+      if (freshResponse) return freshResponse;
       if (packet.manifest) {
-        assert.equal(attentionCall, 7);
+        const leadScopeReviews = publicLeadScopeReviews(packet);
         return attentionEnvelope({
+          ...(packet.supportProposal ? { supportReview: { accepted: true, rationale: 'The global review independently checks the scoped support assessment and all inspected sources.' } } : {}),
+          ...(leadScopeReviews ? { leadScopeReviews } : {}),
           decisions: Object.fromEntries((typed.requiredDecisionIds as string[]).map(id => [id, {
             accepted: true, rationale: 'The retained batch citations support this merged exact-contract candidate.',
           }])),
           candidateSet: { complete: true, rationale: 'Every full-text batch includes its supported exact-contract representations in the global merge.' },
         });
       }
+      if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) {
+        const catalog = packet.sources as Array<{ sourceId: string; spans: Array<{ id: string; text: string }> }>;
+        const cited = catalog.flatMap(source => source.spans.map(span => ({ sourceId: source.sourceId, ...span })))[0];
+        assert.ok(cited, 'the public-support review receives a selected literal source citation');
+        return attentionEnvelope({ verdict: 'UNRESOLVED', rationale: 'This fixture does not claim a reviewed public-support deficiency.',
+          citations: [{ sourceId: cited.sourceId, spanId: cited.id }], ...comparisonGradeIdFields(packet),
+          ...((packet.leadQualification as { supportScopeMethod?: string } | undefined)?.supportScopeMethod === 'comparison-lead-support-scope-v2'
+            ? { leadScopes: publicLeadScopes(packet) } : {}) });
+      }
       if (typeof scope?.batch === 'number' && packet.proposal) {
-        assert.equal(attentionCall, 6);
         return attentionEnvelope({
           decisions: Object.fromEntries((typed.requiredDecisionIds as string[]).map(id => [id, {
             accepted: true, rationale: 'The complete original spans support this batch item.',
@@ -1410,50 +1866,61 @@ test('live qualification retains full comparison batches and emits a locally der
         });
       }
       if (typeof scope?.batch === 'number') {
-        assert.equal(attentionCall, 5);
         const source = typed.sources.find(item => item.spans.some(span => span.text.includes(target.address)));
         const rivalSource = typed.sources.find(item => item.spans.some(span => span.text.includes(rival)));
         assert.ok(source, 'the full-text batch contains the target representation');
         assert.ok(rivalSource, 'the full-text batch contains the tail rival');
+        const leadScope = (scope as { leadQualification?: { leads?: Array<{ id?: string; leadId?: string; sourceIds?: string[]; recoverySourceIds?: string[] }> } }).leadQualification?.leads ?? [];
+        const sourceSupport = Object.fromEntries(typed.sources.map(item => {
+          const supporting = item.spans.find(span => span.text.includes(target.address))
+            ?? item.spans.find(span => span.text.includes(rival));
+          const leadIds = leadScope.filter(lead => [...(lead.sourceIds ?? []), ...(lead.recoverySourceIds ?? [])].includes(item.id))
+            .map(lead => lead.id ?? lead.leadId).filter((id): id is string => typeof id === 'string');
+          return [item.id, supporting
+            ? { status: 'BINDING_EVIDENCE', rationale: 'The retained text ties a literal competing representation to the neighborhood-art narrative.', citations: [{ sourceId: item.id, spanId: supporting.id }], leadIds }
+            : { status: 'CONTEXT_ONLY', rationale: 'This retained source is contextual and does not establish a distinct token representation.', citations: [], leadIds }];
+        }));
         return attentionEnvelope({
           competitors: [
-            { id: 'target-fulltext', token: target, sourceId: source.id, spanId: attentionSpanId(packet, source.id, target.address) },
-            { id: 'rival-tail', token: { chain: 'base', address: rival }, sourceId: rivalSource.id, spanId: attentionSpanId(packet, rivalSource.id, rival) },
+            { id: 'target-fulltext', observationId: attentionObservationId(packet, target, source.id) },
+            { id: 'rival-tail', observationId: attentionObservationId(packet, { chain: 'base', address: rival }, rivalSource.id) },
           ],
           posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => [id, { spanId: attentionSpanId(packet, id, target.address), role: 'NEWS' }])),
+          sourceSupport,
         });
       }
-      if ((scope as { mode?: string } | undefined)?.mode === 'qualified-identified-leads-v2' && packet.proposal) {
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
         const proposed = packet.proposal as { decisions: Record<string, unknown> };
-        const decisions = Object.fromEntries(Object.keys(proposed.decisions).map(id => [id, {
-          accepted: true, rationale: 'The independent review accepts the disposition from its exact indexed and fetched source spans.',
+        const decisions = Object.keys(proposed.decisions).map(leadId => ({ leadId,
+          accounting: { accepted: true, rationale: 'The original indexed lead is checked separately from its relation to the target.' },
+          representation: { accepted: true, rationale: 'The cited exact mint and neighborhood-art narrative support the proposed representation.' },
           subjectComparison: { accepted: true, rationale: 'The indexed project and retained page describe the same River Lantern mechanism.' },
           evidenceAdequacy: { accepted: true, rationale: 'No source mismatch establishes inadequate public representation for this lead.' },
-        }]));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
+        }));
+        return attentionEnvelope({ decisions });
       }
-      if ((scope as { mode?: string } | undefined)?.mode === 'qualified-identified-leads-v2') {
-        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
-        const decisions = Object.fromEntries(leads.map(lead => {
+      if (scope?.mode === 'qualified-identified-leads-v3') {
+        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[]; acquisitionStatus: string }>;
+        const decisions = leads.map(lead => {
           const sourceId = lead.sourceIds[0];
           const source = typed.sources.find(item => item.id === sourceId);
           assert.ok(source, `the acquired named lead ${lead.id} retains its source`);
           const span = source.spans.find(item => item.text.includes(target.address));
           assert.ok(span, `the indexed source ${lead.id} contains the exact target contract`);
-          return [lead.id, {
-            disposition: 'ACQUIRED', rationale: 'The retained project post is consistent with its indexed exact-contract description.',
-            descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId) }],
-            corroboratingRefs: [{ sourceId, spanId: span.id }], token: null,
-            subjectComparison: {
-              status: 'CONSISTENT', indexedSubject: 'River Lantern neighborhood-art project', currentSubject: 'River Lantern neighborhood-art project',
-              rationale: 'The indexed project descriptor and the fetched original project post describe the same River Lantern project.',
-              descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId) }],
-              fetchedRefs: [{ sourceId, spanId: span.id }],
-            },
-            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The retained profile and project post do not show a current subject mismatch.', citations: [] },
-          }];
-        }));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
+          const descriptor = { sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId) };
+          const fetched = { sourceId, spanId: span.id };
+          return { leadId: lead.id,
+            accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The original project publication was fetched and its own indexed subject is retained.',
+              descriptorRefs: [descriptor], corroboratingRefs: [fetched] },
+            representation: { status: 'BOUND', unresolvedKind: 'NONE', token: target,
+              rationale: 'The original project publication connects the exact token to the neighborhood-art narrative.', citations: [fetched] },
+            subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern neighborhood-art project', currentSubject: 'River Lantern neighborhood-art project',
+              rationale: 'The indexed descriptor and fetched original page describe the same project.', descriptorRefs: [descriptor], fetchedRefs: [fetched] },
+            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'This project page does not establish a factual public-support deficiency.', citations: [descriptor] },
+          };
+        });
+        return attentionEnvelope({ decisions });
       }
       if (packet.proposal) {
         assert.equal(attentionCall, 2);
@@ -1479,15 +1946,15 @@ test('live qualification retains full comparison batches and emits a locally der
   });
 
   const result = await collectLiveToken(target, liveOptions(mock.fetcher, {
-    tinyfishKey: TINYFISH_KEY, geminiKey: GEMINI_KEY, semanticEnabled: true,
+    tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
   }));
 
   const providerCalls = assertSocialProviderCallsAreSeparated(mock, result.rawArtifacts);
   assert.deepEqual(providerCalls, { attentionSearchCount: 3, socialSearchCount: 2, attentionFetchCount: 1, socialFetchCount: 1 });
   const attentionPackets = mock.geminiPackets.filter(packet => !isSocialModelPacket(packet));
   const socialPackets = mock.geminiPackets.filter(isSocialModelPacket);
-  assert.equal(attentionModelCalls, 7, JSON.stringify(result.semantic));
-  assert.equal(attentionPackets.length, 7, 'base and full comparison passes retain their prior seven attention calls');
+  assert.equal(attentionModelCalls, 8, JSON.stringify(result.semantic));
+  assert.equal(attentionPackets.length, 8, 'base, v3 lead accounting, full comparison and support review calls are retained');
   assert.equal(socialPackets.length, 1);
   assert.equal(invalidSocialModelCalls, 1);
   assertInvalidSocialProposal(result.rawArtifacts);
@@ -1512,7 +1979,7 @@ test('live qualification retains full comparison batches and emits a locally der
   const retainedScope = JSON.parse(result.rawArtifacts['attention-scope']!) as {
     comparisonComplete: boolean; comparisonSourceIds: string[]; codes: string[];
   };
-  assert.equal(retainedScope.comparisonComplete, true);
+  assert.equal(retainedScope.comparisonComplete, true, result.rawArtifacts['attention-comparison-coverage']);
   assert.deepEqual(retainedScope.comparisonSourceIds, [comparisonSourceId]);
   assert.equal(retainedScope.codes.includes('ATT_MODEL_COMPARISON_TEXT_CAP'), false);
   const scopeRecord = result.evidence.find(item => item.id === 'attention-scope');
@@ -1540,9 +2007,14 @@ test('live lead recovery preserves both scopes and source lineage through isolat
   const alternate = { chain: 'solana', address: OTHER_MINT } as const;
   const targetUrl = 'https://public.example/river-lantern';
   const failedUrl = 'https://index.example/ava';
+  const unrelatedUrl = 'https://index.example/lunar-cat';
   const alternateUrl = 'https://projects.example/avaai-contract';
+  const unrelatedEvidenceUrl = 'https://encyclopedia.example/lunar-cat';
+  const footerUrl = 'https://www.youtube.com/about';
   const targetText = `The River Lantern project represents exact contract ${target.address}. Its community shares a neighborhood story.`;
   const alternateText = `AVAAI represents the indexed digital-parasite project under exact contract ${alternate.address}; this is a separate Solana representation.`;
+  const unrelatedEvidenceText = 'Lunar Cat is an illustrated pink-eyed feline art collective on Solana, centered on pink-eyed cat collectibles and community illustration rather than a digital-parasite mechanism.';
+  const footerText = 'About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy.';
   let clockMs = Date.parse('2026-10-06T12:00:00.000Z');
   const fakeNow = () => new Date(clockMs).toISOString();
   let attentionModelCalls = 0;
@@ -1554,52 +2026,117 @@ test('live lead recovery preserves both scopes and source lineage through isolat
       if (query.includes('"River Lantern"')) return { results: [
         { url: targetUrl, title: 'River Lantern exact target project', snippet: `Project contract ${target.address}.` },
         { url: failedUrl, title: 'AVA AI digital parasite project', snippet: 'The indexed project describes a digital-parasite mechanism.' },
+        { url: unrelatedUrl, title: 'Lunar Cat pink-eyed feline art project', snippet: 'A Solana art project centered on illustrated pink-eyed cats and collectible artwork.' },
       ] };
       if (query.includes(`"${target.address}"`)) return { results: [{ url: targetUrl }] };
+      if (query.includes('Lunar Cat')) return { results: [
+        { url: unrelatedEvidenceUrl, title: 'Lunar Cat is a feline art collective', snippet: 'A Solana art project centered on pink-eyed cat collectibles, not a digital-parasite mechanism.' },
+        { url: footerUrl, title: 'YouTube About', snippet: 'About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy' },
+      ] };
       return { results: [{
         url: alternateUrl, title: 'AVAAI exact contract project page',
         snippet: 'This page connects the indexed AVAAI digital-parasite project to its deployed contract.',
       }] };
     },
-    fetchValue: (urls: string[]) => urls.includes(failedUrl)
-      ? { results: [{ url: targetUrl, final_url: targetUrl, text: targetText }], errors: [{ url: failedUrl, status: 404, error: 'not_found' }] }
-      : { results: urls.map((url: string) => ({ url, final_url: url, text: url === alternateUrl ? alternateText : 'A retained public project page.' })), errors: [] },
+    fetchValue: (urls: string[]) => urls.some(url => url === failedUrl || url === unrelatedUrl)
+      ? {
+        results: urls.filter(url => url === targetUrl).map(url => ({ url, final_url: url, text: targetText })),
+        errors: urls.filter(url => url === failedUrl || url === unrelatedUrl).map(url => ({ url, status: 404, error: 'not_found' })),
+      }
+      : { results: urls.map((url: string) => ({ url, final_url: url,
+        text: url === alternateUrl ? alternateText : url === unrelatedEvidenceUrl ? unrelatedEvidenceText : url === footerUrl ? footerText : 'A retained public project page.' })), errors: [] },
     attentionResponse: packet => {
       const attentionCall = ++attentionModelCalls;
       clockMs += 61_000;
       const typed = packet as AttentionPacket;
       const scope = packet.scope as Record<string, unknown> | undefined;
+      const freshResponse = freshComparisonResponse(packet, target);
+      if (freshResponse) return freshResponse;
       if (packet.manifest) {
-        assert.equal(attentionCall, 8);
+        const leadScopeReviews = publicLeadScopeReviews(packet);
         return attentionEnvelope({
+          ...(packet.supportProposal ? { supportReview: { accepted: true, rationale: 'The final review checks the scoped public-support proposal and its exact source citations.' } } : {}),
+          ...(leadScopeReviews ? { leadScopeReviews } : {}),
           decisions: Object.fromEntries((packet.requiredDecisionIds as string[]).map(id => [id, {
             accepted: true, rationale: 'The chain-qualified contracts remain bound to reviewed source observations.',
           }])),
           candidateSet: { complete: true, rationale: 'The target and every positively recovered representation are present in the reviewed merge.' },
         });
       }
+      if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) {
+        const catalog = packet.sources as Array<{ sourceId: string; spans: Array<{ id: string; text: string }> }>;
+        const cited = catalog.flatMap(source => source.spans.map(span => ({ sourceId: source.sourceId, ...span })))[0];
+        assert.ok(cited, 'the global grade can cite one exact retained source span');
+        return attentionEnvelope({ verdict: 'UNRESOLVED', rationale: 'This fixture does not assert a complete public-support deficiency.',
+          citations: [{ sourceId: cited.sourceId, spanId: cited.id },], ...comparisonGradeIdFields(packet),
+          ...((packet.leadQualification as { supportScopeMethod?: string } | undefined)?.supportScopeMethod === 'comparison-lead-support-scope-v2'
+            ? { leadScopes: publicLeadScopes(packet) } : {}) });
+      }
       if (typeof scope?.batch === 'number') {
         if (packet.proposal) {
-          assert.equal(attentionCall, 7);
+          const comparisonReview = comparisonReviewFields(packet);
+          const sourceDecisions = comparisonReview.sourceDecisions as Record<string, { disposition: string; insufficiencyKind: string; rationale: string }>;
+          for (const source of typed.sources) {
+            if (source.spans.some(span => span.text.includes('About Press Copyright'))) {
+              sourceDecisions[source.id] = {
+                disposition: 'INSUFFICIENT', insufficiencyKind: 'NO_SUBSTANTIVE_CONTENT',
+                rationale: 'The retained YouTube footer contains no substantive project evidence.',
+              };
+            } else if (source.spans.some(span => span.text.includes('pink-eyed cat collectibles'))) {
+              sourceDecisions[source.id] = {
+                disposition: 'CONTEXT', insufficiencyKind: 'NONE',
+                rationale: 'This retained page positively describes the independently indexed feline art subject.',
+              };
+            }
+          }
+          const supportDecisions = comparisonReview.supportDecisions as Record<string, { accepted: boolean; rationale: string }>;
+          for (const source of typed.sources) {
+            if (source.spans.some(span => span.text.includes('About Press Copyright'))) {
+              comparisonReview.sourceDecisions[source.id] = {
+                disposition: 'INSUFFICIENT', insufficiencyKind: 'NO_SUBSTANTIVE_CONTENT', inspectionComplete: true,
+                rationale: 'The retained YouTube footer contains no substantive project evidence.',
+              };
+              supportDecisions[source.id] = { accepted: true, rationale: 'The full footer is correctly treated as non-substantive context.' };
+            } else if (source.spans.some(span => span.text.includes('pink-eyed cat collectibles'))) {
+              comparisonReview.sourceDecisions[source.id] = {
+                disposition: 'CONTEXT', insufficiencyKind: 'NONE', inspectionComplete: true,
+                rationale: 'This retained page positively describes a distinct indexed feline art subject.',
+              };
+              supportDecisions[source.id] = { accepted: true, rationale: 'The independent review accepts this unrelated context classification.' };
+            } else if (!source.spans.some(span => span.text.includes(target.address) && span.text.includes('River Lantern'))) {
+              comparisonReview.sourceDecisions[source.id] = {
+                disposition: 'CONTEXT', insufficiencyKind: 'NONE', inspectionComplete: true,
+                rationale: 'This full source describes a different indexed project, so it is audited as context rather than a target representation.',
+              };
+              supportDecisions[source.id] = { accepted: true, rationale: 'The independent review accepts this distinct-project context classification.' };
+            }
+          }
           return attentionEnvelope({
           decisions: Object.fromEntries((packet.requiredDecisionIds as string[]).map(id => [id, {
             accepted: true, rationale: 'The exact source span supports this reviewed comparison item.',
           }])),
           candidateSet: { complete: true, rationale: 'Every relevant exact-contract observation in the retained batch is included.' },
-          ...comparisonReviewFields(packet),
+          ...comparisonReview,
           });
         }
-        assert.equal(attentionCall, 6);
-        const competitors = [] as Array<{ id: string; token: TokenRef; sourceId: string; spanId: string }>;
+        const competitors = [] as Array<{ id: string; observationId: string }>;
         if (typed.sources.some(source => source.spans.some(span => span.text.includes(target.address)))) {
           const sourceId = attentionSourceId(packet, target.address);
-          competitors.push({ id: 'target-recovered-review', token: target, sourceId, spanId: attentionSpanId(packet, sourceId, target.address) });
+          competitors.push({ id: 'target-recovered-review', observationId: attentionObservationId(packet, target, sourceId) });
         }
-        if (typed.sources.some(source => source.spans.some(span => span.text.includes(alternate.address)))) {
-          const sourceId = attentionSourceId(packet, alternate.address);
-          competitors.push({ id: 'alternate-recovered-review', token: alternate, sourceId, spanId: attentionSpanId(packet, sourceId, alternate.address) });
-        }
-        return attentionEnvelope({ competitors, posts: {} });
+        const leadScope = scope.leadQualification as { leads?: Array<{ id?: string; leadId?: string; sourceIds?: string[]; recoverySourceIds?: string[] }> } | undefined;
+        const sourceSupport = Object.fromEntries(typed.sources.map(source => {
+          const targetSpan = source.spans.find(span => span.text.includes(target.address) && span.text.includes('River Lantern'));
+          const leadIds = (leadScope?.leads ?? []).filter(lead => [...(lead.sourceIds ?? []), ...(lead.recoverySourceIds ?? [])].includes(source.id))
+            .map(lead => lead.id ?? lead.leadId).filter((id): id is string => typeof id === 'string');
+          return [source.id, targetSpan
+            ? { status: 'BINDING_EVIDENCE', rationale: 'This retained page connects the River Lantern narrative with its literal token.', citations: [{ sourceId: source.id, spanId: targetSpan.id }], leadIds }
+            : { status: 'CONTEXT_ONLY', rationale: 'This retained page documents a distinct indexed subject or non-narrative context.', citations: [], leadIds }];
+        }));
+        return attentionEnvelope({ competitors, posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => {
+          const span = attentionSpanId(packet, id, target.address);
+          return [id, { spanId: span, role: 'NEWS' }];
+        })), sourceSupport });
       }
       if (packet.selectedLeadIds) {
         const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
@@ -1607,51 +2144,77 @@ test('live lead recovery preserves both scopes and source lineage through isolat
         return attentionEnvelope({ leads: Object.fromEntries(selected.map(lead => {
           const source = metadata.find(item => item.id === lead.metadataEvidenceId);
           assert.ok(source, `V2 recovery plan includes own descriptor ${lead.metadataEvidenceId}`);
-          const descriptor = source.spans.find(span => span.text.includes('digital parasite'));
-          assert.ok(descriptor, 'V2 recovery plan receives the failed lead descriptor');
+          const descriptorTerm = lead.id === 'comparison-lead-3' ? 'pink-eyed feline art' : 'digital parasite';
+          const descriptor = source.spans.find(span => span.text.includes(descriptorTerm));
+          assert.ok(descriptor, `V2 recovery plan receives the ${lead.id} lead descriptor`);
+          const isUnrelated = lead.id === 'comparison-lead-3';
           return [lead.id, {
-            queries: ['Find AVAAI digital parasite project original sources and exact contract on Solana'],
-            rationale: 'Find independent sources identifying the indexed AVAAI mechanism and its contract.',
+            queries: [isUnrelated
+              ? 'Find Lunar Cat pink-eyed feline art subject and its distinctive Solana project description'
+              : 'Find AVAAI digital parasite project original sources and exact contract on Solana'],
+            rationale: isUnrelated
+              ? 'Find an independent descriptive source for the indexed Lunar Cat art subject.'
+              : 'Find independent sources identifying the indexed AVAAI mechanism and its contract.',
             metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: descriptor.id }],
           }];
         })) });
       }
-      if (scope?.mode === 'qualified-identified-leads-v2' && packet.proposal) {
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
         const proposed = packet.proposal as { decisions: Record<string, unknown> };
-        const decisions = Object.fromEntries(Object.keys(proposed.decisions).map(id => [id, {
-          accepted: true, rationale: 'Independent review accepts the source-bound subject and its evidence route.',
-          subjectComparison: { accepted: true, rationale: 'The indexed and fetched subject spans are independently compared.' },
-          evidenceAdequacy: { accepted: true, rationale: 'No inadequate public representation finding is proposed for this lead.' },
-        }]));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
+        return attentionEnvelope({ decisions: Object.keys(proposed.decisions).map(leadId => ({ leadId,
+          accounting: { accepted: true, rationale: 'The review checks each original indexed entity and acquisition outcome.' },
+          representation: { accepted: true, rationale: 'The proposed binding or unrelated subject is supported by its own cited evidence.' },
+          subjectComparison: { accepted: true, rationale: 'An unread original stays unresolved while recovered subject evidence is reviewed separately.' },
+          evidenceAdequacy: { accepted: true, rationale: 'No failed fetch is used as a negative factual adequacy finding.' },
+        })) });
       }
-      if (scope?.mode === 'qualified-identified-leads-v2') {
-        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[]; recoverySourceIds: string[] }>;
-        const decisions = Object.fromEntries(leads.map(lead => {
-          const descriptorRefs = [{ sourceId: lead.metadataEvidenceId, spanId: attentionSpanId(packet, lead.metadataEvidenceId, '') }];
-          if (lead.id === 'comparison-lead-1') return [lead.id, {
-            disposition: 'ACQUIRED', rationale: 'The original target lead is bound to its fetched project page.', descriptorRefs,
-            corroboratingRefs: [{ sourceId: 'attention-page-1', spanId: attentionSpanId(packet, 'attention-page-1', target.address) }], token: null,
-            subjectComparison: {
-              status: 'CONSISTENT', indexedSubject: 'River Lantern exact target project', currentSubject: 'River Lantern exact target project',
-              rationale: 'The indexed target descriptor and original fetched project page identify the same subject.', descriptorRefs,
-              fetchedRefs: [{ sourceId: 'attention-page-1', spanId: attentionSpanId(packet, 'attention-page-1', target.address) }],
-            },
-            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target project sources show no indexed-to-current subject mismatch.', citations: [] },
-          }];
-          const sourceId = attentionSourceId(packet, alternate.address);
-          return [lead.id, {
-            disposition: 'ALTERNATIVE_BOUND', rationale: 'The fetched exact contract is linked to the independently indexed AVAAI mechanism.', descriptorRefs,
-            corroboratingRefs: [{ sourceId, spanId: attentionSpanId(packet, sourceId, alternate.address) }], token: alternate,
-            subjectComparison: {
-              status: 'CONSISTENT', indexedSubject: 'AVAAI digital-parasite project', currentSubject: 'AVAAI digital-parasite project',
-              rationale: 'The indexed AVAAI mechanism and recovered project page identify the same subject.', descriptorRefs,
-              fetchedRefs: [{ sourceId, spanId: attentionSpanId(packet, sourceId, alternate.address) }],
-            },
-            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The recovered AVAAI page resolves the indexed subject without an inadequacy finding.', citations: [] },
-          }];
-        }));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
+      if (scope?.mode === 'qualified-identified-leads-v3') {
+        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[]; recoverySourceIds: string[]; acquisitionStatus: string }>;
+        const decisions = leads.map(lead => {
+          const descriptor = { sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId) };
+          const original = typed.sources.find(source => lead.sourceIds.includes(source.id));
+          const originalSpan = original?.spans.find(span => span.text.includes(lead.id === 'comparison-lead-3' ? 'pink-eyed' : 'project'));
+          if (lead.id === 'comparison-lead-1' && original && originalSpan) {
+            const fetched = { sourceId: original.id, spanId: originalSpan.id };
+            return { leadId: lead.id,
+              accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+                rationale: 'The original target project page was fetched and its own indexed entity is retained.', descriptorRefs: [descriptor], corroboratingRefs: [fetched] },
+              representation: { status: 'BOUND', unresolvedKind: 'NONE', token: target, rationale: 'The original target page binds its literal mint to the River Lantern neighborhood project.', citations: [fetched] },
+              subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern exact target project', currentSubject: 'River Lantern exact target project',
+                rationale: 'The original indexed descriptor and fetched target page describe the same subject.', descriptorRefs: [descriptor], fetchedRefs: [fetched] },
+              evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target page does not establish a factual public-support deficiency.', citations: [descriptor] },
+            };
+          }
+          if (lead.id === 'comparison-lead-2') {
+            const recovered = typed.sources.find(source => source.url === alternateUrl && lead.recoverySourceIds.includes(source.id));
+            assert.ok(recovered, 'the AVAAI proof is an actually fetched source in this lead recovery lineage');
+            const fetched = { sourceId: recovered.id, spanId: attentionSpanId(packet, recovered.id, alternate.address) };
+            return { leadId: lead.id,
+              accounting: { status: 'ACCOUNTED', basis: 'RECOVERED_ENTITY', role: 'PROJECT_OR_PUBLICATION',
+                rationale: 'The indexed AVAAI subject is positively identified by its own different-host recovered project description.',
+                descriptorRefs: [descriptor], corroboratingRefs: [fetched] },
+              representation: { status: 'UNRELATED', unresolvedKind: 'NONE', token: null,
+                rationale: 'The recovered digital-parasite project is distinct from the target neighborhood-art narrative.', citations: [descriptor, fetched] },
+              subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'AVAAI digital-parasite project', currentSubject: null,
+                rationale: 'The failed original page remains unread; recovery identifies the indexed entity without replacing its original body.', descriptorRefs: [descriptor], fetchedRefs: [] },
+              evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The failed original page does not establish a factual public-support deficiency.', citations: [descriptor] },
+            };
+          }
+          const independent = typed.sources.find(source => source.url === unrelatedEvidenceUrl && lead.recoverySourceIds.includes(source.id));
+          assert.ok(independent, 'the different-host Lunar Cat description is retained in its own lead recovery lineage');
+          const fetched = { sourceId: independent.id, spanId: attentionSpanId(packet, independent.id, 'pink-eyed cat collectibles') };
+          const indexed = { sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'pink-eyed feline art') };
+          return { leadId: lead.id,
+            accounting: { status: 'ACCOUNTED', basis: 'RECOVERED_ENTITY', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The lead-specific different-host description corroborates this indexed feline-art entity.', descriptorRefs: [indexed], corroboratingRefs: [fetched] },
+            representation: { status: 'UNRELATED', unresolvedKind: 'NONE', token: null,
+              rationale: 'The positively described feline-art project is distinct from the neighborhood target narrative.', citations: [indexed, fetched] },
+            subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'Lunar Cat pink-eyed feline art project', currentSubject: null,
+              rationale: 'The original indexed page was not fetched; the corroborating recovery does not replace its body.', descriptorRefs: [indexed], fetchedRefs: [] },
+            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'An unread original page does not establish a factual adequacy mismatch.', citations: [indexed] },
+          };
+        });
+        return attentionEnvelope({ decisions });
       }
       if (packet.proposal) return attentionEnvelope({
         decisions: Object.fromEntries((typed.requiredDecisionIds as string[]).map(id => [id, {
@@ -1672,14 +2235,15 @@ test('live lead recovery preserves both scopes and source lineage through isolat
   const service = new Service(join(directory, 'proof.sqlite'));
   try {
     const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
-      tinyfishKey: TINYFISH_KEY, geminiKey: GEMINI_KEY, semanticEnabled: true, now: fakeNow,
+      tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true, now: fakeNow,
     }));
     const original = JSON.parse(bundle.rawArtifacts['attention-acquisition-scope']!) as {
       comparisonComplete: boolean; comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string }> };
     };
     const effective = JSON.parse(bundle.rawArtifacts['attention-scope']!) as {
       comparisonComplete: boolean; comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string; recoverySourceIds: string[] }> };
-        comparisonQualification: { mode: string; complete: boolean; decisions: Array<{ leadId: string; disposition: string; qualified: boolean }> };
+        comparisonQualification: { mode: string; accountingComplete: boolean; decisions: Array<{ leadId: string; accounted: boolean; qualified: boolean;
+          accounting: { status: string; basis: string }; representation: { status: string } }> };
     };
     const recoveryMetadataId = 'attention-recovery-comparison-lead-1-metadata';
     const transportReceiptId = 'attention-proposal-transport-attempt-1';
@@ -1701,17 +2265,34 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     const finalDex = evidence.get('dex-pairs')!;
     const dexCalls = mock.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.url.startsWith('https://api.dexscreener.com/'));
     const geminiCallIndexes = mock.calls.flatMap((call, index) => call.url.startsWith('https://generativelanguage.googleapis.com/') ? [index] : []);
-    const firstCanonicalRequestIndex = mock.calls.findIndex(call =>
-      call.url.startsWith('https://rpc.example/') || call.url.startsWith('https://api.mainnet.solana.com'));
+    const firstCanonicalRequestIndex = mock.calls.findIndex(call => {
+      if (!call.url.startsWith('https://rpc.example/') && !call.url.startsWith('https://api.mainnet.solana.com')) return false;
+      return JSON.parse(String(call.init?.body)).method !== 'getMultipleAccounts';
+    });
 
     assert.equal(bundle.analysisKind, 'LIVE');
     assert.equal(original.comparisonComplete, false);
     assert.equal(original.comparisonAcquisition.originalComplete, false);
     assert.equal(original.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-2')?.acquisitionStatus, 'FAILED');
-    assert.equal(effective.comparisonComplete, true);
+    assert.equal(original.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.acquisitionStatus, 'FAILED');
+    assert.equal(effective.comparisonComplete, true, JSON.stringify({
+      qualification: effective.comparisonQualification.decisions.map(decision => [decision.leadId, decision.accounting.status, decision.accounted, decision.representation.status, decision.qualified]),
+      coverage: bundle.rawArtifacts['attention-comparison-coverage'],
+    }));
     assert.equal(effective.comparisonAcquisition.originalComplete, false, 'effective qualification preserves the failed original acquisition state');
     assert.equal(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-2')?.acquisitionStatus, 'FAILED');
-    assert.deepEqual(effective.comparisonQualification.decisions.map(decision => [decision.disposition, decision.qualified]), [['ACQUIRED', true], ['ALTERNATIVE_BOUND', true]]);
+    assert.equal(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.acquisitionStatus, 'FAILED');
+    assert.equal(effective.comparisonQualification.mode, 'qualified-identified-leads-v3');
+    assert.equal(effective.comparisonQualification.accountingComplete, true);
+    assert.deepEqual(effective.comparisonQualification.decisions.map(decision => [decision.accounting.status, decision.accounted, decision.representation.status, decision.qualified]), [
+      ['ACCOUNTED', true, 'BOUND', true], ['ACCOUNTED', true, 'UNRELATED', true], ['ACCOUNTED', true, 'UNRELATED', true],
+    ]);
+    assert.equal(effective.comparisonQualification.decisions[1]?.accounting.basis, 'RECOVERED_ENTITY');
+    assert.equal(effective.comparisonQualification.decisions[2]?.accounting.basis, 'RECOVERED_ENTITY',
+      'different-host recovery accounts the indexed feline-art entity, not its unread original page');
+    assert.deepEqual(effective.comparisonQualification.decisions.slice(1).map(decision => decision.representation.status), ['UNRELATED', 'UNRELATED']);
+    assert.ok(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.recoverySourceIds.length,
+      'the unrelated lead is backed by recovered, retained sources');
     assert.equal(metadataEvidence.sourceId, 'attention-collector');
     assert.equal(metadataEvidence.sourceType, 'INDEXED_LEAD');
     assert.equal(metadataEvidence.accessMode, 'LOCAL_DERIVED');
@@ -1731,6 +2312,17 @@ test('live lead recovery preserves both scopes and source lineage through isolat
       'the isolated Service database retains the derived transport receipt by content hash');
     assert.equal(readFileSync(join(directory, 'artifacts', recoveryPageEvidence.contentHash), 'utf8'), alternateText,
       'Service stores recovered page content under its verified evidence hash');
+    const comparisonCoverage = JSON.parse(bundle.rawArtifacts['attention-comparison-coverage']!) as {
+      complete: boolean; sourceRequirements: Array<{ sourceId: string; obligation: string }>;
+    };
+    const retainedFooterId = Object.entries(bundle.rawArtifacts).find(([, raw]) => raw === footerText)?.[0];
+    assert.ok(retainedFooterId, 'the actual fetched footer is retained as a source artifact');
+    assert.equal(comparisonCoverage.complete, true);
+    assert.equal(comparisonCoverage.sourceRequirements.find(item => item.sourceId === retainedFooterId)?.obligation,
+      'OPTIONAL_UNUSABLE_SUPPLEMENT');
+    const sharedProof = JSON.parse(bundle.rawArtifacts['shared-derivation']!) as { sources: Array<{ id: string; text: string }> };
+    assert.ok(sharedProof.sources.some(source => source.id === retainedFooterId && source.text.includes(footerText)),
+      'the optional footer remains in the full audited Shared source catalog');
     assert.deepEqual(replayed, snapshot, 'the temporary proof database reopens the live snapshot unchanged');
     assert.equal(capture.method, 'late-state-capture-v1');
     assert.equal(capture.discoveryId, 'dex-discovery');
@@ -1766,6 +2358,59 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     assert.equal(JSON.stringify(bundle).includes(TINYFISH_KEY), false);
     assert.equal(JSON.stringify(bundle).includes(GEMINI_KEY), false);
     assert.equal(JSON.stringify(transportReceipt).includes('generativelanguage.googleapis.com'), false);
+
+    const forgedCoverage = structuredClone(bundle);
+    const coverageEvidence = forgedCoverage.evidence.find(item => item.id === 'attention-comparison-coverage');
+    assert.ok(coverageEvidence, 'locally derived coverage has a retained provenance record');
+    const forgedLocalCoverage = JSON.parse(forgedCoverage.rawArtifacts[coverageEvidence.id]!) as { complete: boolean };
+    forgedLocalCoverage.complete = false;
+    forgedCoverage.rawArtifacts[coverageEvidence.id] = JSON.stringify(forgedLocalCoverage);
+    coverageEvidence.contentHash = sha256(forgedCoverage.rawArtifacts[coverageEvidence.id]!);
+    assert.equal(forgedCoverage.rawArtifacts['attention-comparison-final-review-response'],
+      bundle.rawArtifacts['attention-comparison-final-review-response'], 'the tamper leaves Gemini review bytes unchanged');
+    const comparisonResponseIds = Object.keys(bundle.rawArtifacts).filter(id => /^attention-comparison-.*-response$/.test(id));
+    assert.ok(comparisonResponseIds.length > 0);
+    for (const id of comparisonResponseIds) assert.equal(forgedCoverage.rawArtifacts[id], bundle.rawArtifacts[id],
+      `the local coverage tamper leaves ${id} unchanged`);
+    const verifier = new Service(join(directory, 'forged-coverage.sqlite'));
+    try {
+      assert.throws(() => verifier.analyzeLive(forgedCoverage), /SHARED_PROOF_INVALID/,
+        'rehashed locally derived coverage cannot contradict the raw model proof and replayed source requirements');
+    } finally {
+      verifier.close();
+    }
+
+    type LocalComparisonReceipt = {
+      read: {
+        comparisonAcquisition: { leads: Array<{ id: string; sourceIds: string[]; recoverySourceIds: string[] }> };
+        comparisonQualification: { decisions: Array<{ leadId: string; qualified: boolean }> };
+        sources: Array<{ id: string }>;
+      };
+    };
+    const rejectRehashedReceipt = (name: string, mutate: (receipt: LocalComparisonReceipt) => void) => {
+      const forged = structuredClone(bundle);
+      const receiptRecord = forged.evidence.find(item => item.id === 'attention-qualified-receipt');
+      assert.ok(receiptRecord);
+      const receipt = JSON.parse(forged.rawArtifacts[receiptRecord.id]!) as LocalComparisonReceipt;
+      mutate(receipt);
+      forged.rawArtifacts[receiptRecord.id] = JSON.stringify(receipt);
+      receiptRecord.contentHash = sha256(forged.rawArtifacts[receiptRecord.id]!);
+      const receiptVerifier = new Service(join(directory, `${name}.sqlite`));
+      try {
+        assert.throws(() => receiptVerifier.analyzeLive(forged), /SHARED_(?:PROOF|SOURCE)_(?:INVALID|REQUIRED)/, name);
+      } finally {
+        receiptVerifier.close();
+      }
+    };
+    rejectRehashedReceipt('locally-forged-qualified-unrelated-lead', receipt => {
+      receipt.read.comparisonQualification.decisions.find(item => item.leadId === 'comparison-lead-3')!.qualified = false;
+    });
+    rejectRehashedReceipt('locally-forged-recovery-parent-lineage', receipt => {
+      receipt.read.comparisonAcquisition.leads.find(item => item.id === 'comparison-lead-3')!.recoverySourceIds = [];
+    });
+    rejectRehashedReceipt('locally-deleted-original-comparison-source', receipt => {
+      receipt.read.sources = receipt.read.sources.filter(source => source.id !== 'attention-page-1');
+    });
   } finally {
     service.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1820,241 +2465,532 @@ test('shared late capture preserves discovery but never uses it when final RPC a
   }
 });
 
-test('accepted representation inadequacy persists with bound metadata and rejects rehashed proof tampering', async () => {
+test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, and rejects rehashed semantic tampering', async () => {
   const target = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
-  const profileUrl = 'https://x.com/river_lantern';
-  const wrappedProfileUrl = `/url?opi=79508299&q=${encodeURIComponent(profileUrl)}&sa=U&ved=2ahUKEwi-test&usg=AOvVaw-public`;
+  const marketUrl = 'https://dexscreener.com/base/river-lantern-usdc-pair';
+  const wrappedMarketUrl = `/url?opi=79508299&q=${encodeURIComponent(marketUrl)}&sa=U&ved=2ahUKEwi-test&usg=AOvVaw-public`;
+  const recoveredMarketUrl = 'https://index.example/river-lantern-market-record';
   const targetUrl = 'https://public.example/river-lantern-project';
-  const title = 'River Lantern neighborhood art project';
-  const snippet = 'The indexed project describes a community art token and shared public murals.';
-  const currentProfile = 'The current account now publishes OUSD reserve backing and stablecoin lending updates; these fetched publications do not reflect the indexed River Lantern neighborhood art project.';
-  const targetText = `Token ${target.address}. The River Lantern community shares a neighborhood art project.`;
+  const postUrls = [
+    'https://x.com/first_writer/status/7101',
+    'https://x.com/second_writer/status/7102',
+  ];
+  const postText = new Map(postUrls.map((url, index) => [url, `Unrelated gardening note ${index + 1}; this post does not discuss a token or project.`]));
+  const title = 'River Lantern / USDC pair on DexScreener';
+  const snippet = 'DexScreener lists a River Lantern market pair on Base with pair and liquidity data only, without project narrative or origin context.';
+  const marketText = `Token ${target.address}. A market index lists a River Lantern pair and trading data only; it contains no project narrative or origin description.`;
+  const targetText = `Token ${target.address}. River Lantern token metadata lists a deployment index and a Base contract. No project description, narrative, mechanism, or explanation is provided.`;
   const mock = mockedFetch({
     dexValue: [pair(0, { chainId: 'base', baseToken: { address: target.address, name: 'River Lantern' }, quoteToken: { address: '0x3333333333333333333333333333333333333333' } })],
     searchValue: (requestUrl, call) => call === 0
-      ? { results: [{ url: targetUrl, title: 'River Lantern project', snippet: `Token ${target.address}` }] }
+      ? { results: [
+        { url: targetUrl, title: 'River Lantern project', snippet: `Token ${target.address}` },
+        ...postUrls.map(url => ({ url, title: 'Unrelated gardening note', snippet: 'A general gardening update.' })),
+      ] }
       : call === 2
-        ? { results: [{ url: wrappedProfileUrl, title, snippet }] }
+        ? { results: [{ url: wrappedMarketUrl, title, snippet }] }
         : call > 2 && new URL(requestUrl).searchParams.get('query')?.includes('River Lantern')
-          ? { results: [{ url: profileUrl, title, snippet }] }
-        : { results: [] },
+          ? { results: [{ url: recoveredMarketUrl, title: 'River Lantern market index record', snippet: 'The index repeats pair and liquidity details without project narrative.' }] }
+          : { results: [] },
     fetchValue: (urls: string[]) => ({
-      results: urls.map(url => ({ url, final_url: url, text: url === profileUrl ? currentProfile : targetText })),
-      errors: [],
+      results: urls.filter(url => url !== marketUrl).map(url => ({
+        url, final_url: url,
+        text: url === recoveredMarketUrl ? marketText : postText.get(url) ?? targetText,
+        ...(postText.has(url) ? { published_date: '2026-09-29T11:00:00.000Z' } : {}),
+      })),
+      errors: urls.includes(marketUrl) ? [{ url: marketUrl, status: 404, error: 'not_found' }] : [],
     }),
     attentionResponse: packet => {
       if (isSocialModelPacket(packet)) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'This fixture leaves optional social judgments unresolved.' } });
-      const scope = packet.scope as { mode?: string; batch?: number } | undefined;
+      const scope = packet.scope as { mode?: string; batch?: number; meaning?: string; leadQualification?: { leads?: Array<{ id?: string; leadId?: string; sourceIds?: string[]; recoverySourceIds?: string[] }> } } | undefined;
       const typed = packet as AttentionPacket;
-      if (packet.selectedLeadIds) {
-        const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
-        const metadata = (packet.metadata ?? []) as AttentionPacket['sources'];
-        return attentionEnvelope({ leads: Object.fromEntries(selected.map(lead => {
-          const source = metadata.find(item => item.id === lead.metadataEvidenceId);
-          assert.ok(source, `recovery planner omitted indexed source ${lead.metadataEvidenceId}`);
-          const span = source.spans.find(item => item.text.includes('community art token'));
-          assert.ok(span, 'recovery planner did not receive the original indexed descriptor text');
-          return [lead.id, {
-            queries: [`Compare River Lantern neighborhood art project with independent original publications for ${lead.id}`],
-            rationale: 'Check whether the indexed project subject remains represented in independent public sources.',
-            metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: span.id }],
-          }];
+      if ('originalProposal' in packet) {
+        const sources = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+        const cited = sources.flatMap(source => source.spans.map(span => ({ source, span })))
+          .find(({ span }) => span.text.includes(target.address));
+        assert.ok(cited, 'the complete retained origin scope contains an own exact-token metadata span');
+        if ('proposal' in packet) return attentionEnvelope({
+          sourceDecisions: Object.fromEntries(sources.map(source => [source.id, {
+            accepted: true, rationale: 'The independent pass inspected every retained original source span.', inspectionComplete: true,
+          }])),
+          decisions: {
+            NARRATIVE_DESCRIPTION: { accepted: true, rationale: 'The full scope supports the bounded narrative-support gap.' },
+            EXPLAINABLE_THESIS: { accepted: true, rationale: 'The full scope supports the bounded explanation-support gap.' },
+          },
+        });
+        return attentionEnvelope({
+          sourceSupport: Object.fromEntries(sources.map(source => {
+            const own = source.spans.find(span => span.text.includes(target.address));
+            return [source.id, own
+              ? { status: 'PUBLIC_SUPPORT_GAP', criteria: ['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'],
+                rationale: 'This exact-token metadata identifies deployment but supplies no project narrative or explanation.',
+                citations: [{ sourceId: source.id, spanId: own.id }] }
+              : { status: 'CONTEXT_ONLY', criteria: [], rationale: 'This original source is contextual and does not provide a token-bound narrative.', citations: [] }];
+          })),
+          judgments: Object.fromEntries(['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'].map(criterion => [criterion, {
+            verdict: 'INADEQUATE', rationale: `The complete reviewed scope does not establish ${criterion}.`,
+            citations: [{ sourceId: cited.source.id, spanId: cited.span.id }],
+          }])),
+        });
+      }
+      if (packet.method === 'binary-public-support-v1' && packet.originEvidenceScope && Array.isArray(packet.sources)) {
+        const sources = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+        const sourceIds = sources.map(source => source.id);
+        const codeOwnedOriginScope = typeof packet.instruction === 'string'
+          && packet.instruction.includes('The originEvidenceScope source catalog is code-owned; do not repeat sourceIds.');
+        const singleRequiredCitation = codeOwnedOriginScope && typeof packet.instruction === 'string'
+          && packet.instruction.includes('MUST supply one citation object per criterion');
+        const echoedScope = codeOwnedOriginScope ? {} : { sourceIds };
+        const cited = sources.flatMap(source => source.spans.map(span => ({ sourceId: source.id, ...span })))
+          .find(span => span.text.includes(target.address));
+        assert.ok(cited, 'the binary entry pair receives a literal target span from the original origin scope');
+        const decision = (verdict: 'PASS' | 'FAIL') => ({ verdict,
+          rationale: 'The independent entry review decides this criterion separately using the complete bounded evidence.',
+          citations: [{ sourceId: cited.sourceId, spanId: cited.id }] });
+        if ('screening' in packet) {
+          const finalDecision = (verdict: 'PASS' | 'FAIL') => {
+            const value = decision(verdict);
+            if (!singleRequiredCitation) return value;
+            const { citations, ...grade } = value;
+            return { ...grade, citation: citations[0] };
+          };
+          return attentionEnvelope({
+            originTraceability: finalDecision('FAIL'), leadership: finalDecision('PASS'), inspectionComplete: true, ...echoedScope,
+          });
+        }
+        return attentionEnvelope({
+          originTraceability: { verdict: 'UNRESOLVED', rationale: 'The draft keeps factual uncertainty separate from the final entry judgment.', citations: [{ sourceId: cited.sourceId, spanId: cited.id }] },
+          leadership: { verdict: 'UNRESOLVED', rationale: 'The draft does not stand in for the independent criterion judgments.', citations: [{ sourceId: cited.sourceId, spanId: cited.id }] },
+          ...echoedScope,
+        });
+      }
+      if (packet.originEvidenceScope && (packet.comparisonQualification as { wireMethod?: string } | undefined)?.wireMethod === 'comparison-lead-tasks-v5') {
+        const sources = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+        const sourceIds = sources.map(source => source.id);
+        const cited = sources.flatMap(source => source.spans.map(span => ({ sourceId: source.id, ...span })))
+          .find(span => span.text.includes(target.address));
+        assert.ok(cited, 'the independent public-origin pair receives a literal target span');
+        const originTraceability = { verdict: 'INADEQUATE',
+          rationale: 'The fully inspected original scope has no adequately supported primary-origin traceability.',
+          citations: [{ sourceId: cited.sourceId, spanId: cited.id }] };
+        const leadership = { verdict: 'UNRESOLVED',
+          rationale: 'The same original scope does not establish a measured leadership result.',
+          citations: [{ sourceId: cited.sourceId, spanId: cited.id }] };
+        if ('screening' in packet) return attentionEnvelope({
+          originTraceability: { accepted: true, rationale: 'The independent review checks origin traceability separately.' },
+          leadership: { accepted: true, rationale: 'The independent review checks entry leadership separately.' },
+          inspectionComplete: true, sourceIds,
+        });
+        return attentionEnvelope({ originTraceability, leadership, sourceIds });
+      }
+      if (packet.entryTask && packet.mergeTask) {
+        const entryTask = packet.entryTask as { proposal: { leadRoles: Record<string, unknown>; sourceSupport: Record<string, unknown>; leadBlockers: Record<string, unknown> } };
+        const proposal = entryTask.proposal;
+        const mergeTask = packet.mergeTask as { candidates?: Array<{ id: string }>; manifest?: { qualificationMethod?: string } };
+        const binaryEntryDecision = (mergeTask.manifest as { entryDecisionMethod?: string } | undefined)?.entryDecisionMethod === 'binary-public-support-v1';
+        const entrySources = (entryTask as unknown as { sources?: Array<{ id: string; spans: Array<{ id: string }> }> }).sources ?? [];
+        const entryCitation = entrySources.flatMap(source => source.spans.map(span => ({ sourceId: source.id, spanId: span.id }))).find(ref => ref.sourceId && ref.spanId);
+        if (binaryEntryDecision) assert.ok(entryCitation, 'the binary final decision cites an actual supplied comparison-body span');
+        const accepted = (rationale: string) => ({ accepted: true, rationale });
+        return attentionEnvelope({
+          ...(binaryEntryDecision ? { entryDecision: { verdict: 'FAIL',
+            rationale: 'The independent final judgment finds the bounded comparison evidence insufficient for entry.', citations: [entryCitation!] } } : {}),
+          entryReview: {
+            leadRoles: Object.fromEntries(Object.keys(proposal.leadRoles).map(id => [id, accepted('The indexed market role matches its own descriptor and recovered source.')])),
+            sourceSupport: Object.fromEntries(Object.keys(proposal.sourceSupport).map(id => [id, accepted('The source classification matches its complete retained body.')])),
+            leadBlockers: Object.fromEntries(Object.keys(proposal.leadBlockers).map(id => [id, accepted('No semantic blocker is supported by the inspected evidence.')])),
+            grade: accepted('The independently reviewed public-support grade follows the required market-only evidence.'),
+          },
+          decisions: Object.fromEntries((mergeTask.candidates ?? []).map(candidate => [candidate.id, accepted('The merge selection is checked against the literal source evidence.')])) ,
+          candidateSet: { complete: false, rationale: 'The acquired comparison sample does not establish complete representation coverage.' },
+        });
+      }
+      if (Array.isArray(packet.operands)) {
+        const operands = packet.operands as Array<{ leadId: string; indexedDescriptorId: string; originalBodyIds: string[] }>;
+        const sources = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+        if (packet.proposal) {
+          const proposal = packet.proposal as { decisions: Record<string, unknown> };
+          const accepted = { accepted: true, rationale: 'The independent review accepts only the factual axis actually supported by its cited source.' };
+          return attentionEnvelope({ decisions: Object.fromEntries(Object.keys(proposal.decisions).map(id => [id, {
+            accounting: accepted, representation: accepted, subjectComparison: accepted, evidenceAdequacy: accepted,
+          }])) });
+        }
+        return attentionEnvelope({ decisions: Object.fromEntries(operands.map(operand => {
+          const descriptor = sources.find(source => source.id === operand.indexedDescriptorId);
+          assert.ok(descriptor?.spans[0], `the task packet contains ${operand.indexedDescriptorId}`);
+          const descriptorRef = { sourceId: descriptor.id, spanId: descriptor.spans[0]!.id };
+          const decision: Record<string, unknown> = {
+            accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+              rationale: 'The recovered market item supports public review but does not establish exact original-item identity.',
+              descriptorRefs: [descriptorRef], corroboratingRefs: [] },
+            representation: { status: 'UNRESOLVED',
+              rationale: 'The separate public-support review does not establish a factual token relation.', citations: [descriptorRef] },
+          };
+          if (operand.originalBodyIds.length) {
+            decision.subjectComparison = { status: 'UNRESOLVED', indexedSubject: 'The indexed market item', currentSubject: null,
+              rationale: 'The original item body is not available for an identity comparison.', descriptorRefs: [descriptorRef], fetchedRefs: [] };
+            decision.evidenceAdequacy = { verdict: 'UNRESOLVED', rationale: 'No factual adequacy conclusion is made about the unread original body.', citations: [descriptorRef] };
+          }
+          return [operand.leadId, decision];
         })) });
       }
-      if (scope?.mode === 'qualified-identified-leads-v2' && packet.initialInvalidProposal) {
-        const initial = packet.initialInvalidProposal as { decisions: Array<{
-          leadId: string;
-          descriptorRefs: Array<{ sourceId: string; spanId: string }>;
-          subjectComparison: Record<string, unknown>;
-          evidenceAdequacy: Record<string, unknown>;
-        }> };
-        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
-        const sources = packet.sources as AttentionPacket['sources'];
-        return attentionEnvelope({ decisions: initial.decisions.map(decision => {
-          const lead = leads.find(item => item.id === decision.leadId);
-          assert.ok(lead, `local repair retains original lead ${decision.leadId}`);
-          const currentSourceId = lead.sourceIds.find(id =>
-            sources.some(source => source.id === id && source.spans.some(span => span.text.includes('OUSD'))));
-          assert.ok(currentSourceId, 'local repair receives the lead own actually fetched current profile');
-          const descriptorRef = decision.descriptorRefs.find(ref => ref.sourceId === lead.metadataEvidenceId);
-          assert.ok(descriptorRef, 'local repair retains the lead own indexed descriptor citation');
-          const fetchedRef = {
-            sourceId: currentSourceId,
-            spanId: attentionSpanId(packet, currentSourceId, 'OUSD reserve backing'),
-          };
-          return {
-            ...decision,
-            corroboratingRefs: [],
-            subjectComparison: { ...decision.subjectComparison, fetchedRefs: [fetchedRef] },
-            evidenceAdequacy: { ...decision.evidenceAdequacy, citations: [descriptorRef, fetchedRef] },
-          };
-        }) });
-      }
-      if (scope?.mode === 'qualified-identified-leads-v2' && packet.proposal) {
-        const proposed = packet.proposal as { decisions: Record<string, unknown> };
-        const decisions = Object.fromEntries(Object.keys(proposed.decisions).map(id => [id, {
-            accepted: true, rationale: 'The proposed unresolved disposition follows the indexed and current profile sources.',
-            subjectComparison: { accepted: true, rationale: 'The indexed project and current account subjects are compared independently.' },
-            evidenceAdequacy: { accepted: true, rationale: 'The indexed descriptor and positively different current profile support the bounded screening.' },
-          }]));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
-      }
-      if (scope?.mode === 'qualified-identified-leads-v2') {
-        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
-        const decisions = Object.fromEntries(leads.map(lead => {
-          const currentSourceId = lead.sourceIds.find(id =>
-            (packet.sources as AttentionPacket['sources']).some(source => source.id === id && source.spans.some(span => span.text.includes('OUSD'))));
-          assert.ok(currentSourceId, 'V2 comparison receives the current account subject from fetched profile text');
-          return [lead.id, {
-          disposition: 'UNRESOLVED', rationale: 'The indexed project cannot be associated with the current account subject from the acquired source trail.',
-          descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'community art token') }],
-          corroboratingRefs: [], token: null,
-          subjectComparison: {
-            status: 'MISMATCH', indexedSubject: 'River Lantern neighborhood art project', currentSubject: 'OUSD reserve backing account',
-            rationale: 'The indexed River Lantern community-art subject differs positively from the current account reserve-lending subject.',
-            descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'community art token') }],
-            fetchedRefs: [{ sourceId: lead.metadataEvidenceId,
-              spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'community art token') }],
-          },
-          evidenceAdequacy: {
-            verdict: 'INADEQUATE',
-            rationale: 'The indexed project descriptor and positively different current profile leave the public representation unbound after bounded recovery searches.',
-            citations: [
-              { sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'community art token') },
-            ],
-          },
+      if (typeof scope?.batch === 'number' && scope.meaning === 'Every retained source span in this batch; original-record collection is outside this body-reading task.') {
+        const sources = typed.sources as Array<(typeof typed.sources)[number] & { kind?: string }>;
+        if (packet.proposal) {
+          const requiredIds = packet.requiredDecisionIds as string[];
+          const observations = packet.proposal as { bodyObservations: Record<string, unknown> };
+          const exact = (packet.exactContractObservations as unknown[] | undefined)?.length ?? 0;
+          const omitNoItemDecisions = String(packet.rowFormat ?? '').includes('There are no required item decisions. The decisions field does not exist');
+          return attentionEnvelope({
+            ...(omitNoItemDecisions ? {} : { decisions: Object.fromEntries(requiredIds.map(id => [id, { accepted: true, rationale: 'The full body decision is checked against the retained source.' }])) }),
+            candidateSet: { complete: false, rationale: 'The sample does not establish exhaustive contract representation coverage.' },
+            sourceDecisions: Object.fromEntries(sources.map(source => {
+              const unknownAssociation = source.spans.some(span => span.text.includes('market index lists'));
+              return [source.id, { disposition: unknownAssociation ? 'INSUFFICIENT' : 'CONTEXT',
+                insufficiencyKind: unknownAssociation ? 'UNRESOLVED_MEANING_OR_ASSOCIATION' : 'NONE',
+                rationale: 'The full body is readable as a market record, while its exact token association remains unresolved.', inspectionComplete: true }];
+            })),
+            bodyDecisions: Object.fromEntries(sources.map(source => [source.id, {
+              bodyRole: { accepted: true, rationale: 'The source role matches its actual full text.' },
+              description: { accepted: true, rationale: 'The body description matches its actual full text.' },
+            }])),
+            ...(exact ? { missingRepresentations: [] } : {}),
+          });
+        }
+        const bodyObservations = Object.fromEntries(sources.map(source => {
+          const first = source.spans[0];
+          assert.ok(first, `the body request contains an inspectable span for ${source.id}`);
+          const text = source.spans.map(span => span.text).join('\n');
+          const market = /market index lists|market pair|pair and liquidity|trading data/i.test(text);
+          const deploymentOnly = /deployment metadata lists the contract but provides no project description/i.test(text);
+          const unrelatedPost = source.kind === 'POST' || /gardening note/i.test(text);
+          return [source.id, {
+            bodyRole: { kind: market ? 'MARKET_OR_INDEX_RECORD' : 'OTHER_CONTEXT', rationale: 'The actual retained source text establishes this role.', citations: [{ sourceId: source.id, spanId: first.id }] },
+            description: { kind: market ? 'MARKET_FIELDS_OR_BOILERPLATE' : deploymentOnly ? 'NO_SUBSTANTIVE_CONTENT' : unrelatedPost ? 'DISTINCT_OTHER_SUBJECT' : 'NO_SUBSTANTIVE_CONTENT',
+              rationale: 'The cited full body contains only the described support or contextual content.', citations: [{ sourceId: source.id, spanId: first.id }] },
           }];
         }));
-        return attentionEnvelope({ decisions: comparisonLeadArray(decisions) });
+        return attentionEnvelope({
+          bodyObservations,
+          competitors: [],
+          posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => {
+            const source = sources.find(item => item.id === id);
+            assert.ok(source?.spans[0], `the body request contains an original POST span for ${id}`);
+            return [id, { spanId: source.spans[0]!.id, role: 'OTHER' }];
+          })),
+        });
       }
-      if (packet.manifest) return attentionEnvelope({
+      if (Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) {
+        const catalog = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
+        const contexts = packet.leadContexts as Array<{ leadId: string; indexedMetadataSourceId: string; originalSourceIds: string[]; recoverySourceIds: string[] }>;
+        const observations = packet.bodyObservations as Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string } }>;
+        const sourceRequirements = packet.sourceRequirements as Array<{ sourceId: string; obligation: string }>;
+        const leadRoles = Object.fromEntries(contexts.map(context => {
+          const descriptor = catalog.find(source => source.id === context.indexedMetadataSourceId);
+          assert.ok(descriptor?.spans[0]);
+          const ownIds = [...context.originalSourceIds, ...context.recoverySourceIds];
+          const ownBody = catalog.find(source => ownIds.includes(source.id) && source.spans[0]);
+          return [context.leadId, { role: 'MARKET_OR_INDEX_RECORD', rationale: 'The original indexed descriptor identifies a market listing.',
+            descriptorRefs: [{ sourceId: descriptor.id, spanId: descriptor.spans[0]!.id }],
+            ownContextRefs: ownBody?.spans[0] ? [{ sourceId: ownBody.id, spanId: ownBody.spans[0].id }] : [] }];
+        }));
+        const sourceSupport = Object.fromEntries(observations.map(observation => {
+          const source = catalog.find(item => item.id === observation.sourceId);
+          assert.ok(source?.spans[0]);
+          const gap = observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE';
+          const bindingMarket = gap && source.spans.some(span => span.text.includes(target.address));
+          const binding = observation.description.kind === 'SPECIFIC_PROJECT_OR_MECHANISM';
+          return [observation.sourceId, {
+            status: bindingMarket ? 'BINDING_EVIDENCE' : gap ? 'PUBLIC_SUPPORT_GAP' : binding ? 'BINDING_EVIDENCE' : 'CONTEXT_ONLY',
+            rationale: bindingMarket ? 'The retained market record names the target project and exact token while containing only market fields.'
+              : gap ? 'The inspected market record supplies pair data without project or narrative support.'
+              : binding ? 'The source supports a specific project or mechanism.' : 'The source is contextual and does not establish target representation.',
+            citations: gap || binding ? [{ sourceId: source.id, spanId: source.spans[0]!.id }] : [], blockerProof: null,
+          }];
+        }));
+        const gap = Object.entries(sourceSupport).find(([id, decision]) => decision.status === 'PUBLIC_SUPPORT_GAP'
+          && sourceRequirements.some(requirement => requirement.sourceId === id && requirement.obligation === 'REQUIRED'));
+        const bindingMarket = Object.entries(sourceSupport).find(([id, decision]) => decision.status === 'BINDING_EVIDENCE'
+          && observations.some(observation => observation.sourceId === id && observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD'
+            && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE')
+          && sourceRequirements.some(requirement => requirement.sourceId === id && requirement.obligation === 'REQUIRED'));
+        const witness = gap ?? bindingMarket;
+        const citationSourceId = witness?.[0] ?? observations[0]?.sourceId;
+        const citationSource = catalog.find(source => source.id === citationSourceId);
+        assert.ok(citationSource?.spans[0]);
+        return attentionEnvelope({ leadRoles: leadRoles,
+          sourceSupport, leadBlockers: Object.fromEntries(contexts.map(context => [context.leadId, null])),
+          grade: { verdict: witness ? 'INADEQUATE' : 'UNRESOLVED',
+            rationale: witness ? 'The fully inspected own market body provides the reviewed inadequate-support witness.' : 'No independently reviewed positive support gap is established.',
+            citations: [{ sourceId: citationSource.id, spanId: citationSource.spans[0]!.id }] },
+        });
+      }
+      if (Array.isArray(packet.selectedLeadIds)) {
+        const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+        return attentionEnvelope({ leads: Object.fromEntries(selected.map(lead => {
+          const descriptor = (packet.metadata as AttentionPacket['sources']).find(item => item.id === lead.metadataEvidenceId);
+          assert.ok(descriptor, `the planner receives the original descriptor for ${lead.id}`);
+          const span = descriptor.spans.find(item => item.text.includes('market pair'));
+          assert.ok(span);
+          return [lead.id, { queries: [`River Lantern indexed project independent public sources for ${lead.id}`],
+            rationale: 'Check this indexed project with one bounded independent query.', metadataRefs: [{ sourceId: descriptor.id, spanId: span.id }] }];
+        })) });
+      }
+      if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) {
+        const selected = (packet.sources as Array<{ sourceId: string; spans: Array<{ id: string; text: string }> }>).flatMap(item => item.spans.map(span => ({ ...span, sourceId: item.sourceId }))).find(span => span.text.includes('market index lists'));
+        assert.ok(selected, 'the support proposal cites the successfully fetched own indexed market recovery');
+        return attentionEnvelope({ verdict: 'INADEQUATE',
+          rationale: 'The fully inspected indexed market recovery provides pair data but no project or narrative support in this bounded sample.',
+          citations: [{ sourceId: selected.sourceId, spanId: selected.id }],
+          ...comparisonGradeIdFields(packet),
+          ...((packet.leadQualification as { supportScopeMethod?: string } | undefined)?.supportScopeMethod === 'comparison-lead-support-scope-v2'
+            ? { leadScopes: publicLeadScopes(packet) } : {}) });
+      }
+      if (packet.supportProposal) return attentionEnvelope({
         decisions: Object.fromEntries(((packet.requiredDecisionIds ?? []) as string[]).map(id => [id, {
-          accepted: true, rationale: 'No exact representation was proposed for this incomplete comparison batch.',
-        }])) ,
+          accepted: true, rationale: 'Every merged exact-contract candidate is independently checked against the retained source text.',
+        }])),
+        supportReview: { accepted: true, rationale: 'The independent review accepts the cited gap after inspecting every required source and batch.' },
+        ...(publicLeadScopeReviews(packet) ? { leadScopeReviews: publicLeadScopeReviews(packet) } : {}),
         candidateSet: { complete: false, rationale: 'The acquired comparison sample does not establish a complete representation set.' },
       });
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
+        const proposed = packet.proposal as { decisions: Record<string, unknown> };
+        return attentionEnvelope({ decisions: Object.keys(proposed.decisions).map(id => ({ leadId: id,
+          accounting: { accepted: true, rationale: 'The failed original market page remains factually unresolved after successful bounded own recovery.' },
+          representation: { accepted: true, rationale: 'The indexed market record is correctly classified as inadequate public project support.' },
+          subjectComparison: { accepted: true, rationale: 'The unread original market page is left unresolved rather than replaced by recovery text.' },
+          evidenceAdequacy: { accepted: true, rationale: 'No factual adequacy claim is made about the unavailable original page.' },
+        })) });
+      }
+      if (scope?.mode === 'qualified-identified-leads-v3') {
+        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
+        assert.equal(leads.length, 1, 'the collector fixture retains one original comparison lead');
+        const lead = leads[0]!;
+        const descriptor = { sourceId: lead.metadataEvidenceId, spanId: attentionMetadataSpanId(packet, lead.metadataEvidenceId, 'market pair') };
+        return attentionEnvelope({ decisions: [{ leadId: lead.id,
+          accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+            rationale: 'The original market page failed and the indexed recovery does not settle its exact factual identity.', descriptorRefs: [descriptor], corroboratingRefs: [] },
+          representation: { status: 'INADEQUATE', unresolvedKind: 'NONE', token: null,
+            rationale: 'The indexed descriptor identifies market data but supplies no project or narrative support.', citations: [descriptor] },
+          subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'River Lantern market listing', currentSubject: null,
+            rationale: 'The original market page was unavailable, so its body remains unknown.', descriptorRefs: [descriptor], fetchedRefs: [] },
+          evidenceAdequacy: { verdict: 'UNRESOLVED',
+            rationale: 'The unavailable original body cannot establish a factual adequacy mismatch.', citations: [descriptor] },
+        }] });
+      }
       if (typeof scope?.batch === 'number') {
-        if (!packet.proposal) return attentionEnvelope({ competitors: [], posts: {} });
+        const sources = typed.sources;
+        if (!packet.proposal) {
+          const leadScope = scope.leadQualification?.leads ?? [];
+          const sourceSupport = Object.fromEntries(sources.map(source => {
+            const parentIds = leadScope.filter(lead => [...(lead.sourceIds ?? []), ...(lead.recoverySourceIds ?? [])].includes(source.id))
+              .map(lead => lead.id ?? lead.leadId).filter((id): id is string => typeof id === 'string');
+            const binding = source.spans.find(span => span.text.includes(target.address) && span.text.includes('River Lantern'));
+            const gap = source.spans.find(span => span.text.includes('market index lists'));
+            if (binding && gap) return [source.id, { status: 'BINDING_EVIDENCE', rationale: 'The retained source names the target project and exact token in a market-only record.', citations: [{ sourceId: source.id, spanId: binding.id }], leadIds: parentIds }];
+            if (gap) return [source.id, { status: 'PUBLIC_SUPPORT_GAP', rationale: 'The successfully fetched indexed market record contains pair data but no project narrative.', citations: [{ sourceId: source.id, spanId: gap.id }], leadIds: parentIds }];
+            if (binding) return [source.id, { status: 'BINDING_EVIDENCE', rationale: 'The retained source names the target project and exact token together.', citations: [{ sourceId: source.id, spanId: binding.id }], leadIds: parentIds }];
+            return [source.id, { status: 'CONTEXT_ONLY', rationale: 'This full source is contextual and does not establish another exact-token representation.', citations: [], leadIds: parentIds }];
+          }));
+          return attentionEnvelope({ competitors: [], posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => [id, { spanId: attentionSpanId(packet, id, target.address), role: 'NEWS' }])), sourceSupport });
+        }
+        const emptyCatalog = ((packet.exactContractObservations as unknown[] | undefined)?.length ?? 0) === 0;
         return attentionEnvelope({
-          decisions: Object.fromEntries(((packet.requiredDecisionIds ?? []) as string[]).map(id => [id, {
-            accepted: true, rationale: 'Every proposed item is accounted for in this bounded comparison batch.',
-          }])) ,
-          candidateSet: { complete: false, rationale: 'This batch does not establish a complete comparison set.' },
-          sourceDecisions: Object.fromEntries(typed.sources.map(source => [source.id, {
-            disposition: 'CONTEXT', rationale: 'The fetched subject context does not establish a complete token-representation set.',
-          }])) ,
-          missingRepresentations: [],
+          decisions: Object.fromEntries(((packet.requiredDecisionIds ?? []) as string[]).map(id => [id, { accepted: true, rationale: 'The batch proposal is checked against the full retained source.' }])),
+          candidateSet: { complete: false, rationale: 'The acquired comparison sample does not establish a complete representation set.' },
+          sourceDecisions: Object.fromEntries(sources.map(source => {
+            const gap = source.spans.some(span => span.text.includes('market index lists'));
+            return [source.id, { disposition: gap ? 'INSUFFICIENT' : 'CONTEXT', insufficiencyKind: gap ? 'PUBLIC_SUPPORT_GAP' : 'NONE', inspectionComplete: true,
+              rationale: 'The full source was inspected and its public-support gap or contextual role is independently reviewed.' }];
+          })),
+          supportDecisions: Object.fromEntries(sources.map(source => [source.id, { accepted: true, rationale: 'The independent review checks each full source support decision.' }])),
+          ...(emptyCatalog ? {} : { missingRepresentations: [] }),
         });
       }
       if (packet.proposal) return attentionEnvelope({
-        decisions: Object.fromEntries(((packet.requiredDecisionIds ?? []) as string[]).map(id => [id, {
-          accepted: true, rationale: 'The exact token-bound project source supports this bounded narrative judgment.',
-        }])) ,
+        decisions: Object.fromEntries([...(typed.requiredDecisionIds ?? [])].reverse().map(id => [id, {
+          accepted: id !== 'claim-topic', rationale: id === 'claim-topic'
+            ? 'The exact-token deployment metadata does not support the proposed community-project narrative.'
+            : 'The source supports this bounded attention item.',
+        }])),
         candidateSet: { complete: false, rationale: 'The original comparison acquisition remains incomplete.' },
         originRelationship: { status: 'UNKNOWN', citations: [], rationale: 'No primary origin relationship is established in this fixture.' },
       });
       const targetSourceId = attentionSourceId(packet, target.address);
+      const span = attentionSpanId(packet, targetSourceId, target.address);
+      // Deliberately vary raw JSON key order; Service must reconstruct the canonical parsed claim.
       return attentionEnvelope({
-        claims: [{ id: 'claim-topic', feature: 'A01', value: true, summary: 'A neighborhood art project narrative.',
-          citations: [{ sourceId: targetSourceId, spanId: attentionSpanId(packet, targetSourceId, target.address) }] }],
-        posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => [id, { spanId: attentionSpanId(packet, id, target.address), role: 'NEWS' }])),
+        claims: [{ citations: [{ sourceId: targetSourceId, spanId: span }], value: true, id: 'claim-topic', feature: 'A01', summary: 'A neighborhood art project narrative.' }],
+        posts: Object.fromEntries([...(typed.requiredPostSourceIds ?? [])].reverse().map(id => [id, { spanId: attentionSpanId(packet, id, 'Unrelated gardening note'), role: 'OTHER' }])),
         competitors: [],
       });
     },
   });
 
   const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
-    tinyfishKey: TINYFISH_KEY, geminiKey: GEMINI_KEY, semanticEnabled: true,
+    tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
   }));
-  const attentionReceipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
-    evidenceIds: string[];
-      read: { comparisonQualification: { mode: string; proposalResponseId?: string; decisions: Array<{
-        leadId: string; subjectComparison: { status: string }; evidenceAdequacy: { verdict: string };
-        review: { subjectComparison: { accepted: boolean }; evidenceAdequacy: { accepted: boolean } };
-      }>;
-      recoveryQueries: Array<{ queryId: string; parentLeadId: string; state: string; descriptorComplete: boolean; resultCount: number }>;
-      adequacySourceLengths: Array<{ id: string; retainedLength: number }> };
-      comparisonAcquisition: { leads: Array<{
-        id: string; metadataEvidenceId: string; searchArtifactId: string; resultIndex: number; url: string | null; recoveryQueryIds: string[];
-      }> } };
+  const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
+    read: { sources: Array<{ id: string; url: string; text: string; kind: 'POST' | 'PAGE' }>; narrativePublicSupport?: { method: string; judgments: Record<string, { verdict: string; review: { accepted: boolean } }> };
+      comparisonAcquisition: { originalComplete: boolean }; comparisonQualification: { mode: string; wireMethod: string; accountingComplete: boolean;
+      entryDecisionMethod?: string; entryScopeMethod?: string; entryCitationMethod?: string;
+      decisions: Array<{ leadId: string; accounted: boolean; accounting: { status: string; role: string }; representation: { status: string } }>;
+    }; comparisonCoverage?: { complete: boolean }; comparisonPublicSupport?: {
+      method: string; verdict: string; review: { accepted: boolean }; decision?: { verdict: string; rationale: string }; researchComplete?: boolean;
+      leadScopes: Array<{ status: string; basis: string; role: string; review: { accepted: boolean } }>;
+      sourceSupport: Array<{ status: string; accepted: boolean; inspectionComplete: boolean }>;
+      bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string; citations: unknown } }>;
+      entry?: { sourceSupport: Record<string, { status: string }>; grade: { citations: unknown } };
+    } };
+    proposal: { claims: Array<{ id: string; feature: string; value: boolean; summary: string }>; posts: Array<{ id: string; sourceId: string; role: string }>; competitors: Array<{ id: string }> };
+    review: { candidateSet: { complete: boolean }; decisions: Array<{ id: string; accepted: boolean }>;
+      entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string } };
+      leadershipScreening?: { method: string; verdict: string; review: { accepted: boolean };
+        originTraceability: { verdict: string; review: { accepted: boolean } } } };
   };
-  const adequacyDecision = attentionReceipt.read.comparisonQualification.decisions.find(decision => decision.evidenceAdequacy.verdict === 'INADEQUATE')!;
-  const adequacy = adequacyDecision.evidenceAdequacy;
-  assert.equal(attentionReceipt.read.comparisonQualification.mode, 'qualified-identified-leads-v2');
-  assert.ok(adequacy, 'the collected per-lead V2 record retains the accepted inadequacy assessment');
-  const selectedLead = attentionReceipt.read.comparisonAcquisition.leads.find(lead => lead.id === adequacyDecision.leadId)!;
-  assert.ok(selectedLead.recoveryQueryIds.length > 0, 'the accepted negative is backed by a retained recovery search');
-  const wrapperMetadata = JSON.parse(bundle.rawArtifacts[selectedLead.metadataEvidenceId]!) as {
-    url: string; normalizedUrl: string; urlMethod: string; searchArtifactId: string; resultIndex: number;
-  };
-  const wrapperRow = JSON.parse(bundle.rawArtifacts[selectedLead.searchArtifactId]!).results[selectedLead.resultIndex] as { url: string };
-  assert.equal(wrapperRow.url, wrappedProfileUrl, 'the source row keeps the original relative Search wrapper');
-  assert.equal(wrapperMetadata.url, wrappedProfileUrl);
-  assert.equal(wrapperMetadata.normalizedUrl, profileUrl);
-  assert.equal(wrapperMetadata.urlMethod, 'tinyfish-search-redirect-v1');
-  assert.equal(selectedLead.url, profileUrl, 'the comparison ledger carries the validated direct public target');
-  assert.equal(adequacyDecision.subjectComparison.status, 'MISMATCH');
-  assert.equal(adequacyDecision.review.subjectComparison.accepted, true, 'the independent reviewer sees the repaired own fetched subject comparison');
-  assert.equal(adequacyDecision.review.evidenceAdequacy.accepted, true);
-  assert.ok(attentionReceipt.read.comparisonQualification.recoveryQueries.some(query => query.parentLeadId === adequacyDecision.leadId
-    && ['OBSERVED', 'NO_RESULTS'].includes(query.state) && query.descriptorComplete), 'the own bounded recovery query has a retained successful receipt');
-  assert.ok(attentionReceipt.evidenceIds.includes('attention-comparison-lead-proposal-response'));
-  assert.ok(attentionReceipt.evidenceIds.includes('attention-comparison-lead-repair-proposal-response'));
-  assert.ok(attentionReceipt.evidenceIds.includes('attention-comparison-lead-review-response'));
-  assert.equal(attentionReceipt.read.comparisonQualification.proposalResponseId, 'attention-comparison-lead-repair-proposal-response');
-  const v2ModelPackets = mock.geminiPackets.filter(packet =>
-    (packet.scope as { mode?: string } | undefined)?.mode === 'qualified-identified-leads-v2');
-  assert.deepEqual(v2ModelPackets.map(packet => packet.initialInvalidProposal ? 'repair' : packet.proposal ? 'review' : 'proposal'), [
-    'proposal', 'repair', 'review',
-  ]);
-  const rawLeadWire = (id: string) => {
+  assert.equal(receipt.read.comparisonQualification.mode, 'qualified-identified-leads-v3', JSON.stringify({
+    qualification: bundle.rawArtifacts['comparison-lead-qualification'],
+    rawProposal: bundle.rawArtifacts['attention-comparison-lead-proposal-response'],
+    artifacts: Object.keys(bundle.rawArtifacts).filter(key => key.includes('comparison-lead')),
+  }));
+    assert.equal(receipt.read.comparisonQualification.wireMethod, 'comparison-lead-tasks-v5',
+    'the fresh Service proof reconstructs the authoritative-basis task wire');
+  assert.equal(receipt.read.comparisonQualification.entryDecisionMethod, 'binary-public-support-v1');
+  assert.equal(receipt.read.comparisonQualification.entryCitationMethod, 'single-required-citation-v1');
+  assert.equal(receipt.review.entryDecisions?.method, 'binary-public-support-v1');
+  assert.deepEqual([receipt.review.entryDecisions?.originTraceability.verdict,
+    receipt.review.entryDecisions?.leadership.verdict], ['FAIL', 'PASS'],
+  'the fresh Service proof preserves distinct independently reviewed origin and leadership outcomes');
+  assert.equal(receipt.read.comparisonQualification.entryScopeMethod, 'code-owned-origin-scope-v1');
+  for (const id of ['attention-leadership-proposal-response', 'attention-leadership-review-response']) {
     const envelope = JSON.parse(bundle.rawArtifacts[id]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
-    return JSON.parse(envelope.candidates[0]!.content.parts[0]!.text) as { decisions: Array<{
-      leadId: string;
-      descriptorRefs: Array<{ sourceId: string; spanId: string }>;
-      subjectComparison: { fetchedRefs: Array<{ sourceId: string; spanId: string }> };
-      evidenceAdequacy: { citations: Array<{ sourceId: string; spanId: string }> };
-    }> };
+    const rawDecision = JSON.parse(envelope.candidates[0]!.content.parts[0]!.text) as Record<string, unknown>;
+    assert.equal('sourceIds' in rawDecision, false, `${id} relies on the supplied code-owned origin catalog`);
+    if (id === 'attention-leadership-review-response') {
+      const origin = rawDecision.originTraceability as Record<string, unknown>;
+      const leadership = rawDecision.leadership as Record<string, unknown>;
+      assert.ok(origin.citation && typeof origin.citation === 'object', 'the fresh final wire requires one citation object for origin traceability');
+      assert.ok(leadership.citation && typeof leadership.citation === 'object', 'the fresh final wire requires one citation object for leadership');
+      assert.equal('citations' in origin, false, 'the final wire does not use the legacy citation array');
+      assert.equal('citations' in leadership, false, 'the final wire does not use the legacy citation array');
+    }
+  }
+  const publicProposalEnvelope = JSON.parse(bundle.rawArtifacts['attention-comparison-support-proposal-response']!) as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
   };
-  const initialWire = rawLeadWire('attention-comparison-lead-proposal-response');
-  const repairedWire = rawLeadWire('attention-comparison-lead-repair-proposal-response');
-  const initialPacket = v2ModelPackets[0]!;
-  const repairedPacket = v2ModelPackets.find(packet => packet.initialInvalidProposal)!;
-  const lead = (initialPacket.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>).find(item => item.id === adequacyDecision.leadId)!;
-  const initialDecision = initialWire.decisions.find(item => item.leadId === lead.id)!;
-  const repairedDecision = repairedWire.decisions.find(item => item.leadId === lead.id)!;
-  const descriptorRef = initialDecision.descriptorRefs.find(ref => ref.sourceId === lead.metadataEvidenceId)!;
-  const currentSourceId = lead.sourceIds.find(id =>
-    (initialPacket.sources as AttentionPacket['sources']).some(source => source.id === id && source.spans.some(span => span.text.includes('OUSD'))));
-  assert.ok(currentSourceId, 'the original lead has a retained own fetched profile');
-  const currentRef = { sourceId: currentSourceId, spanId: attentionSpanId(initialPacket, currentSourceId, 'OUSD reserve backing') };
-  assert.deepEqual(initialDecision.subjectComparison.fetchedRefs, [descriptorRef], 'the retained first response incorrectly treats its indexed descriptor as fetched current text');
-  assert.deepEqual(initialDecision.evidenceAdequacy.citations, [descriptorRef], 'the retained first response omits the own fetched-current span');
-  assert.deepEqual(repairedPacket.initialInvalidProposal, initialWire, 'the single repair receives the original invalid proposal unchanged');
-  const localFailure = repairedPacket.localReferenceFailure as {
-    leadId: string; requiredOwnFetchedSourceIds: string[];
-    selectedSubjectFetchedRefs: Array<{ sourceId: string; spanId: string }>;
-    selectedAdequacyCitations: Array<{ sourceId: string; spanId: string }>;
+  const publicProposalWire = JSON.parse(publicProposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+    leadRoles: Array<{ leadId: string; descriptorRef?: { sourceId: string; spanId: string }; descriptorRefs?: unknown }>;
   };
-  assert.equal(localFailure.leadId, lead.id);
-  assert.ok(localFailure.requiredOwnFetchedSourceIds.includes(currentSourceId));
-  assert.deepEqual(localFailure.selectedSubjectFetchedRefs, [descriptorRef]);
-  assert.deepEqual(localFailure.selectedAdequacyCitations, [descriptorRef]);
-  assert.deepEqual(repairedDecision.subjectComparison.fetchedRefs, [currentRef], 'repair replaces the indexed-as-current reference with the lead own fetched profile');
-  assert.deepEqual(repairedDecision.evidenceAdequacy.citations, [descriptorRef, currentRef], 'adequacy cites the identical own descriptor and current spans');
-  const independentReviewPacket = v2ModelPackets.find(packet => packet.proposal)!;
-  const reviewedProposal = independentReviewPacket.proposal as { decisions: Record<string, {
-    subjectComparison: { fetchedRefs: Array<{ sourceId: string; spanId: string }> };
-    evidenceAdequacy: { citations: Array<{ sourceId: string; spanId: string }> };
-  }> };
-  assert.deepEqual(reviewedProposal.decisions[lead.id]!.subjectComparison.fetchedRefs, [currentRef]);
-  assert.deepEqual(reviewedProposal.decisions[lead.id]!.evidenceAdequacy.citations, [descriptorRef, currentRef]);
-  const a09 = bundle.details?.baseline.find(row => row.id === 'A09');
-  assert.equal(a09?.quality, 'KNOWN');
-  assert.equal(a09?.projection?.value, false);
+  assert.equal(publicProposalWire.leadRoles.length, 1);
+  assert.equal(publicProposalWire.leadRoles[0]!.descriptorRef?.sourceId, receipt.read.comparisonQualification.decisions[0]!.leadId + '-metadata',
+    'the Service fixture retains the exact v4 singular selector against its own indexed descriptor');
+  assert.ok(publicProposalWire.leadRoles[0]!.descriptorRef?.spanId);
+  assert.equal(publicProposalWire.leadRoles[0]!.descriptorRefs, undefined,
+    'the original v4 Service proof does not rewrite the singular wire field to an array');
+  assert.equal(receipt.read.comparisonAcquisition.originalComplete, false, 'the original DexScreener body remains failed');
+  assert.equal(receipt.read.comparisonQualification.accountingComplete, false, 'the index recovery does not manufacture factual accounting');
+  assert.deepEqual(receipt.read.comparisonQualification.decisions.map(item => [item.accounted, item.accounting.status, item.accounting.role, item.representation.status]),
+    [[false, 'UNRESOLVED', 'MARKET_OR_INDEX_RECORD', 'UNRESOLVED']],
+    'entry public-support grading must not promote the independent factual representation axis');
+  assert.equal(receipt.read.comparisonPublicSupport?.verdict, 'INADEQUATE');
+  assert.equal(receipt.read.comparisonPublicSupport?.review.accepted, true);
+  assert.equal(receipt.read.comparisonPublicSupport?.method, 'comparison-public-support-v6');
+  assert.equal(receipt.read.comparisonPublicSupport?.decision?.verdict, 'FAIL');
+  assert.equal(receipt.read.comparisonPublicSupport?.researchComplete, true);
+  assert.deepEqual(receipt.read.comparisonPublicSupport?.leadScopes.map(scope => [scope.status, scope.basis, scope.role, scope.review.accepted]),
+    [['REVIEWED', 'REVIEWED_MARKET_RECOVERY', 'MARKET_OR_INDEX_RECORD', true]],
+    'the accepted negative grade records a reviewed own market scope without changing factual acquisition');
+  assert.equal(receipt.read.comparisonPublicSupport?.sourceSupport.some(source => source.status === 'PUBLIC_SUPPORT_GAP'), false,
+    'the actual required source does not use the separate public-support-gap status');
+  const unresolvedMarketSource = receipt.read.sources.find(source => source.text.includes('market index lists'));
+  assert.ok(unresolvedMarketSource);
+  const publicSupport = receipt.read.comparisonPublicSupport;
+  assert.ok(publicSupport?.bodyObservations && publicSupport.entry);
+  const marketBodyObservation = publicSupport.bodyObservations.find(observation => observation.sourceId === unresolvedMarketSource.id
+    && observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE');
+  assert.ok(marketBodyObservation);
+  assert.equal(publicSupport.entry.sourceSupport[unresolvedMarketSource.id]?.status, 'BINDING_EVIDENCE');
+  assert.deepEqual(publicSupport.entry.grade.citations, marketBodyObservation.description.citations,
+    'the reviewed inadequate grade and positively binding support select the exact same full-body quote');
+  assert.equal(receipt.read.narrativePublicSupport?.method, 'narrative-public-support-v1');
+  assert.equal(receipt.read.narrativePublicSupport?.judgments.NARRATIVE_DESCRIPTION?.verdict, 'INADEQUATE');
+  assert.equal(receipt.read.narrativePublicSupport?.judgments.NARRATIVE_DESCRIPTION?.review.accepted, true);
+  assert.equal(receipt.read.narrativePublicSupport?.judgments.EXPLAINABLE_THESIS?.review.accepted, true);
+  assert.equal(receipt.proposal.claims[0]?.value, true, 'the original unsupported factual narrative proposal is retained');
+  assert.equal(receipt.review.decisions.find(item => item.id === 'claim-topic')?.accepted, false,
+    'the inadequate-support grade does not promote the rejected factual narrative');
+  assert.equal(receipt.read.comparisonCoverage?.complete, false, 'the negative grade leaves raw candidate coverage false');
+  assert.equal(receipt.review.candidateSet.complete, false);
+  const bodyReviewEnvelope = JSON.parse(bundle.rawArtifacts['attention-comparison-1-review-response']!) as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+  };
+  const bodyReview = JSON.parse(bodyReviewEnvelope.candidates[0]!.content.parts[0]!.text) as {
+    sourceDecisions: {
+      withLiteralObservations: Array<{ sourceId: string; disposition: string; insufficiencyKind: string }>;
+      withoutLiteralObservations: Array<{ sourceId: string; disposition: string; insufficiencyKind: string }>;
+    };
+  };
+  assert.ok(bodyReview.sourceDecisions.withLiteralObservations.some(decision => decision.sourceId === unresolvedMarketSource.id),
+    'the market body carries a literal mint while factual acquisition remains unresolved');
+  const unresolvedMarketDecision = bodyReview.sourceDecisions.withLiteralObservations.find(decision => decision.sourceId === unresolvedMarketSource.id);
+  assert.deepEqual([unresolvedMarketDecision?.disposition, unresolvedMarketDecision?.insufficiencyKind], ['INSUFFICIENT', 'UNRESOLVED_MEANING_OR_ASSOCIATION'],
+    'clear market-body observations can support public review while the exact factual token association stays unresolved');
+  const canonicalPostSourceIds = receipt.read.sources.filter(source => source.kind === 'POST').map(source => source.id);
+  assert.deepEqual(canonicalPostSourceIds, postUrls.map(url => receipt.read.sources.find(source => source.url === url)?.id));
+  assert.ok(canonicalPostSourceIds.length > 1, 'the fixture exercises multiple keyed POST selections');
+  assert.deepEqual(receipt.proposal.posts.map(post => post.sourceId), canonicalPostSourceIds,
+    'Service decodes post labels in retained source order even when the provider JSON keys are reversed');
+  const rawBase = JSON.parse(bundle.rawArtifacts['attention-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const rawBaseWire = JSON.parse(rawBase.candidates[0]!.content.parts[0]!.text) as {
+    claims: Array<{ id: string }>; posts: Record<string, unknown>; competitors: Array<{ id: string }>;
+  };
+  assert.deepEqual(Object.keys(rawBaseWire.posts), [...canonicalPostSourceIds].reverse(), 'the retained model response deliberately reverses keyed POST order');
+  const rawReview = JSON.parse(bundle.rawArtifacts['attention-review-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const rawReviewWire = JSON.parse(rawReview.candidates[0]!.content.parts[0]!.text) as { decisions: Record<string, unknown> };
+  const canonicalDecisionIds = [
+    ...rawBaseWire.claims.map(item => item.id),
+    ...canonicalPostSourceIds.map(id => `post:${id}`),
+    ...rawBaseWire.competitors.map(item => item.id),
+  ];
+  assert.ok(canonicalDecisionIds.length > 1, 'the fixture exercises multiple keyed review decisions');
+  assert.deepEqual(Object.keys(rawReviewWire.decisions), [...canonicalDecisionIds].reverse(), 'the retained review deliberately reverses keyed decision order');
+  assert.deepEqual(receipt.review.decisions.filter(decision => canonicalDecisionIds.includes(decision.id)).map(decision => decision.id), canonicalDecisionIds,
+    'Service reconstructs review decisions in canonical proposal order');
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A09')?.projection?.value, false);
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A01')?.projection?.value, false);
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A05')?.projection?.value, false);
+  assert.deepEqual([bundle.details?.baseline.find(row => row.id === 'A03')?.quality,
+    bundle.details?.baseline.find(row => row.id === 'A03')?.projection?.value], ['KNOWN', false],
+  'the task-v5 public origin-traceability grade produces a scoped NAR-02 failure while leaving the underlying facts separate');
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A14')?.quality, 'KNOWN');
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A14')?.projection?.value, true,
+    'the independently reviewed leadership PASS is separate from the origin-traceability FAIL');
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A02')?.quality, 'MISSING');
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A04')?.quality, 'MISSING');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A10')?.quality, 'MISSING');
+  assert.ok(bundle.details?.shared, 'Service receives the nonempty Shared source audit from the collected bundle');
+  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GATES_V1');
+  assert.equal((JSON.parse(bundle.rawArtifacts['shared-derivation']!) as { qualityMode?: string }).qualityMode, 'ENTRY_GATES_V1',
+    'the live shared proof persists the explicit entry-data-quality mode');
+  assert.ok(bundle.evidence.some(item => item.id === 'shared-derivation'));
+  const sharedSupportClaim = sharedClaims(bundle.details!.baseline, bundle.details!.social).find(claim => claim.id === 'A09:entry');
+  assert.ok(sharedSupportClaim,
+    'the Shared audit retains the binary CAN-01 entry decision alongside the separate missing factual binding');
+  assert.match(sharedSupportClaim.statement, /Entry CAN-01 evidence standard FAIL/);
+  assert.ok(sharedSupportClaim.citations.length > 0, 'the Shared entry decision keeps its selected literal evidence citations');
+  const sharedOriginClaim = sharedClaims(bundle.details!.baseline, bundle.details!.social).find(claim => claim.id === 'A03');
+  assert.ok(sharedOriginClaim, 'Shared receives the independently reviewed task-v5 origin-traceability projection');
+  assert.match(sharedOriginClaim.statement, /Entry origin\/catalyst evidence standard FAIL/);
+  assert.ok(sharedOriginClaim.citations.length > 0, 'the origin-traceability grade retains its selected original-scope citation');
+  const narrativeSupportClaim = sharedClaims(bundle.details!.baseline, bundle.details!.social).find(claim => claim.id === 'A01:adequacy');
+  assert.ok(narrativeSupportClaim, 'the Shared audit receives the separate reviewed narrative-support grade');
+  assert.match(narrativeSupportClaim.statement, /factual narrative remains unresolved/);
+  assert.ok(narrativeSupportClaim.citations.length > 0);
+  const rawBaseClaimWire = JSON.parse(rawBase.candidates[0]!.content.parts[0]!.text) as { claims: Array<Record<string, unknown>> };
+  assert.deepEqual(Object.keys(rawBaseClaimWire.claims[0]!), ['citations', 'value', 'id', 'feature', 'summary'], 'the raw producer order is intentionally noncanonical');
 
-  const directory = mkdtempSync(join(tmpdir(), 'shared-inadequacy-replay-'));
+  const directory = mkdtempSync(join(tmpdir(), 'v3-accounting-service-'));
   try {
     const database = join(directory, 'accepted.sqlite');
     let snapshotId = '';
@@ -2064,102 +3000,317 @@ test('accepted representation inadequacy persists with bound metadata and reject
       const saved = writer.analyzeLive(bundle);
       snapshotId = saved.id;
       snapshotHash = saved.hash;
+      const can01 = saved.result.checks.find(row => row.checkId === 'CAN-01');
+      assert.equal(can01?.status, 'FAIL');
+      assert.deepEqual(can01?.featureRefs, ['A09'], 'the accepted binary public judgment remains distinct from missing factual A10');
+      assert.doesNotThrow(() => renderSnapshot(saved, { details: saved.details }),
+        'the binary decision route renders snapshots whose unrelated baseline rows have null assessment data');
     } finally { writer.close(); }
+    const storedDb = new DatabaseSync(database);
+    try {
+      const row = storedDb.prepare('SELECT semantic FROM snapshots WHERE id=?').get(snapshotId) as { semantic: string };
+      const semantic = JSON.parse(row.semantic) as { policyVersion: string; entryComparison?: boolean };
+      assert.equal(semantic.policyVersion, 'research-screen-shared-v2');
+      assert.equal(semantic.entryComparison, false, 'the independently reviewed public FAIL is frozen for offline policy replay');
+    } finally { storedDb.close(); }
     const reopened = new Service(database);
     try {
       const replay = reopened.replay(snapshotId);
       assert.equal(replay.hash, snapshotHash);
       assert.deepEqual(replay, reopened.show(snapshotId));
+      assert.equal(replay.result.checks.find(row => row.checkId === 'CAN-01')?.status, 'FAIL');
       assert.equal(replay.details?.baseline.find(row => row.id === 'A09')?.projection?.value, false);
     } finally { reopened.close(); }
 
     const recalculateProofHashes = (candidate: typeof bundle) => {
       for (const evidence of candidate.evidence) {
         const raw = candidate.rawArtifacts[evidence.id];
-        if (raw !== undefined) evidence.contentHash = sha256(raw);
+        if (raw !== undefined) evidence.contentHash = createHash('sha256').update(raw).digest('hex');
       }
       const proofRecord = candidate.evidence.find(evidence => evidence.id === 'shared-derivation')!;
       const proof = JSON.parse(candidate.rawArtifacts[proofRecord.id]!) as { evidence: typeof candidate.evidence };
       proof.evidence = candidate.evidence.filter(evidence => evidence.id !== proofRecord.id);
       candidate.rawArtifacts[proofRecord.id] = JSON.stringify(proof);
+      proofRecord.contentHash = createHash('sha256').update(candidate.rawArtifacts[proofRecord.id]!).digest('hex');
+    };
+    const tampered = structuredClone(bundle);
+    const raw = JSON.parse(tampered.rawArtifacts['attention-comparison-support-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+    const wire = JSON.parse(raw.candidates[0]!.content.parts[0]!.text) as { verdict: string };
+    wire.verdict = 'UNRESOLVED';
+    raw.candidates[0]!.content.parts[0]!.text = JSON.stringify(wire);
+    tampered.rawArtifacts['attention-comparison-support-proposal-response'] = JSON.stringify(raw);
+    recalculateProofHashes(tampered);
+    const verifier = new Service(join(directory, 'tampered.sqlite'));
+    try { assert.throws(() => verifier.analyzeLive(tampered), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { verifier.close(); }
+
+    const strippedLeadershipMarker = structuredClone(bundle);
+    const screeningReceipt = JSON.parse(strippedLeadershipMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    delete screeningReceipt.review.entryDecisions;
+    strippedLeadershipMarker.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(screeningReceipt);
+    recalculateProofHashes(strippedLeadershipMarker);
+    const screeningVerifier = new Service(join(directory, 'stripped-binary-entry-marker.sqlite'));
+    try { assert.throws(() => screeningVerifier.analyzeLive(strippedLeadershipMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { screeningVerifier.close(); }
+
+    const strippedOriginCatalogMarker = structuredClone(bundle);
+    const originCatalogReceipt = JSON.parse(strippedOriginCatalogMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    delete originCatalogReceipt.read.comparisonQualification.entryScopeMethod;
+    strippedOriginCatalogMarker.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(originCatalogReceipt);
+    recalculateProofHashes(strippedOriginCatalogMarker);
+    const originCatalogVerifier = new Service(join(directory, 'stripped-origin-catalog-marker.sqlite'));
+    try { assert.throws(() => originCatalogVerifier.analyzeLive(strippedOriginCatalogMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { originCatalogVerifier.close(); }
+
+    const strippedCitationMarker = structuredClone(bundle);
+    const citationReceipt = JSON.parse(strippedCitationMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    delete citationReceipt.read.comparisonQualification.entryCitationMethod;
+    strippedCitationMarker.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(citationReceipt);
+    recalculateProofHashes(strippedCitationMarker);
+    const citationMarkerVerifier = new Service(join(directory, 'stripped-single-citation-marker.sqlite'));
+    try { assert.throws(() => citationMarkerVerifier.analyzeLive(strippedCitationMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { citationMarkerVerifier.close(); }
+
+    const tamperedNarrative = structuredClone(bundle);
+    const narrativeEnvelope = JSON.parse(tamperedNarrative.rawArtifacts['attention-narrative-support-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const narrativeWire = JSON.parse(narrativeEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      judgments: Record<string, { verdict: string }>;
+    };
+    narrativeWire.judgments.NARRATIVE_DESCRIPTION!.verdict = 'UNRESOLVED';
+    narrativeEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(narrativeWire);
+    tamperedNarrative.rawArtifacts['attention-narrative-support-proposal-response'] = JSON.stringify(narrativeEnvelope);
+    recalculateProofHashes(tamperedNarrative);
+    const narrativeVerifier = new Service(join(directory, 'tampered-narrative.sqlite'));
+    try { assert.throws(() => narrativeVerifier.analyzeLive(tamperedNarrative), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { narrativeVerifier.close(); }
+
+    const pluralDescriptorWire = structuredClone(bundle);
+    const descriptorEnvelope = JSON.parse(pluralDescriptorWire.rawArtifacts['attention-comparison-support-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const descriptorProposal = JSON.parse(descriptorEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      leadRoles: Array<{ descriptorRef?: { sourceId: string; spanId: string }; descriptorRefs?: Array<{ sourceId: string; spanId: string }> }>;
+    };
+    for (const row of descriptorProposal.leadRoles) {
+      assert.ok(row.descriptorRef, 'the accepted proof starts with the v4 singular selector');
+      row.descriptorRefs = [row.descriptorRef];
+      delete row.descriptorRef;
+    }
+    descriptorEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(descriptorProposal);
+    pluralDescriptorWire.rawArtifacts['attention-comparison-support-proposal-response'] = JSON.stringify(descriptorEnvelope);
+    recalculateProofHashes(pluralDescriptorWire);
+    const pluralDescriptorVerifier = new Service(join(directory, 'plural-descriptor-wire.sqlite'));
+    try { assert.throws(() => pluralDescriptorVerifier.analyzeLive(pluralDescriptorWire), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { pluralDescriptorVerifier.close(); }
+
+    const downgradedScope = structuredClone(bundle);
+    const downgradedReceipt = JSON.parse(downgradedScope.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    downgradedReceipt.read.comparisonPublicSupport!.method = 'comparison-public-support-v2';
+    downgradedReceipt.read.comparisonPublicSupport!.leadScopes = [];
+    downgradedReceipt.read.comparisonPublicSupport!.sourceSupport = [];
+    downgradedScope.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(downgradedReceipt);
+    recalculateProofHashes(downgradedScope);
+    const downgradeVerifier = new Service(join(directory, 'downgraded-public-scope.sqlite'));
+    try { assert.throws(() => downgradeVerifier.analyzeLive(downgradedScope), /SHARED_(?:PROOF|ATTENTION)_/); }
+    finally { downgradeVerifier.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+test('reviewed inadequate A03 persists as bounded traceability and Service rejects rehashed scope or review forgery', async () => {
+  const target = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
+  const website = 'https://public.example/river-lantern-origin';
+  const sourceText = `Token ${target.address}. The River Lantern page describes a community project but provides no dated origin or catalyst source.`;
+  const mock = mockedFetch({
+    dexValue: [{
+      chainId: 'base', pairAddress: 'FixtureRiverLanternOriginPair',
+      baseToken: { address: target.address, name: 'River Lantern', symbol: 'RIVER' },
+      quoteToken: { address: '0x3333333333333333333333333333333333333333', name: 'USD Coin', symbol: 'USDC' },
+      priceUsd: '0.001', liquidity: { usd: '100000' },
+      info: { websites: [{ url: website }], socials: [] },
+    }],
+    searchValue: { results: [] },
+    fetchValue: (urls: string[]) => ({ results: urls.map(url => ({ url, final_url: url, text: sourceText })), errors: [] }),
+    attentionResponse: packet => {
+      if (isSocialModelPacket(packet)) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'No optional social judgments are present in this sample.' } });
+      if (packet.manifest) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'No common-query representations were acquired.' } });
+      if (packet.proposal) {
+        const required = packet.requiredDecisionIds as string[];
+        const scope = packet.originEvidenceScope as { complete: boolean; sourceIds: string[] };
+        assert.equal(scope.complete, true, 'the live collector supplies a complete exact-address origin scope');
+        return attentionEnvelope({
+          decisions: Object.fromEntries(required.map(id => [id, { accepted: true, rationale: 'The cited source and bounded screening scope support this decision.' }])),
+          originScopeReview: { complete: true, sourceIds: [...scope.sourceIds], rationale: 'Every original source in this exact-token sample was independently inspected.' },
+          candidateSet: { complete: false, rationale: 'No complete exact-contract comparison set was acquired.' },
+          originRelationship: { status: 'UNKNOWN', citations: [], rationale: 'No dated primary origin relationship is established.' },
+        });
+      }
+      const typed = packet as AttentionPacket;
+      const sourceId = attentionSourceId(packet, target.address);
+      return attentionEnvelope({
+        claims: [
+          { id: 'claim-narrative', feature: 'A01', value: true, summary: 'A River Lantern community project narrative.', citations: [{ sourceId, spanId: attentionSpanId(packet, sourceId, target.address) }] },
+          { id: 'claim-origin-screen', feature: 'A03', value: false, summary: 'The bounded sources do not establish this project origin or catalyst.',
+            originBasis: 'PUBLIC_EVIDENCE_INADEQUATE', citations: [{ sourceId, spanId: attentionSpanId(packet, sourceId, target.address) }] },
+        ],
+        posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => [id, { spanId: attentionSpanId(packet, id, target.address), role: 'NEWS' }])),
+        competitors: [],
+      });
+    },
+  });
+
+  const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
+    tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
+  }));
+  const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
+    read: { originScope: { complete: boolean; sourceIds: string[] } };
+    proposal: { claims: Array<{ id: string; feature: string; value: boolean; originBasis?: string }> };
+    review: { originScopeReview: { complete: boolean; sourceIds: string[] } };
+  };
+  assert.equal(receipt.read.originScope.complete, true);
+  assert.deepEqual(receipt.review.originScopeReview.sourceIds, receipt.read.originScope.sourceIds);
+  assert.ok(receipt.proposal.claims.some(claim => claim.feature === 'A03' && claim.value === false && claim.originBasis === 'PUBLIC_EVIDENCE_INADEQUATE'));
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A03')?.quality, 'KNOWN');
+  assert.equal(bundle.features.find(feature => feature.id === 'A03')?.value, false);
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A01')?.quality, 'KNOWN', 'the separately accepted narrative survives the negative origin grade');
+  assert.equal(bundle.semantic.claims.find(claim => claim.kind === 'ORIGIN')?.assertion, 'MODEL_INFERENCE',
+    'the scoped screening grade is reported as model-reviewed evidence, not a source-proved fact');
+  const screenedClaim = sharedClaims(bundle.details!.baseline, bundle.details!.social).find(claim => claim.id === 'A03');
+  assert.ok(screenedClaim);
+  assert.match(screenedClaim.statement, /traceability screening grade, not fraud/);
+  assert.ok(bundle.details?.shared, 'the Service proof includes the source and Shared derivations');
+
+  const directory = mkdtempSync(join(tmpdir(), 'origin-screen-service-proof-'));
+  try {
+    const service = new Service(join(directory, 'valid.sqlite'));
+    try {
+      const saved = service.analyzeLive(bundle);
+      assert.deepEqual(service.replay(saved.id), saved);
+      assert.match(renderSnapshot(saved, { details: saved.details }), /poor traceability, not a finding of fraud/);
+    } finally { service.close(); }
+
+    const rehashProof = (candidate: typeof bundle) => {
+      for (const evidence of candidate.evidence) {
+        const raw = candidate.rawArtifacts[evidence.id];
+        if (raw !== undefined) evidence.contentHash = sha256(raw);
+      }
+      const proofRecord = candidate.evidence.find(evidence => evidence.id === 'shared-derivation');
+      assert.ok(proofRecord);
+      const proof = JSON.parse(candidate.rawArtifacts[proofRecord.id]!) as { evidence: typeof candidate.evidence };
+      proof.evidence = candidate.evidence.filter(evidence => evidence.id !== proofRecord.id);
+      candidate.rawArtifacts[proofRecord.id] = JSON.stringify(proof);
       proofRecord.contentHash = sha256(candidate.rawArtifacts[proofRecord.id]!);
     };
-  const assertRejected = (label: string, mutate: (candidate: typeof bundle) => void, code: RegExp) => {
+    const rejectRehashed = (change: (candidate: typeof bundle) => void, label: string) => {
       const candidate = structuredClone(bundle);
-      mutate(candidate);
-      recalculateProofHashes(candidate);
+      change(candidate);
+      rehashProof(candidate);
       const verifier = new Service(join(directory, `${label}.sqlite`));
-      try { assert.throws(() => verifier.analyzeLive(candidate), code, label); }
+      try { assert.throws(() => verifier.analyzeLive(candidate), /SHARED_PROOF_INVALID/, label); }
       finally { verifier.close(); }
     };
-    assertRejected('search-normalized-target-tamper', candidate => {
-      const descriptor = JSON.parse(candidate.rawArtifacts[selectedLead.metadataEvidenceId]!) as { normalizedUrl: string };
-      descriptor.normalizedUrl = 'https://public.example/attacker';
-      candidate.rawArtifacts[selectedLead.metadataEvidenceId] = JSON.stringify(descriptor);
-    }, /SHARED_SOURCE_INVALID/);
-    assertRejected('search-method-tamper', candidate => {
-      const descriptor = JSON.parse(candidate.rawArtifacts[selectedLead.metadataEvidenceId]!) as { urlMethod: string };
-      descriptor.urlMethod = 'tinyfish-search-redirect-v2';
-      candidate.rawArtifacts[selectedLead.metadataEvidenceId] = JSON.stringify(descriptor);
-    }, /SHARED_SOURCE_INVALID/);
-    assertRejected('missing-proposal-response', candidate => {
-      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof attentionReceipt;
-      receipt.evidenceIds = receipt.evidenceIds.filter(id => id !== 'attention-comparison-lead-proposal-response');
-      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
-    }, /SHARED_PROOF_(REQUIRED|INVALID)/);
-    assertRejected('selected-proposal-pointer-tamper', candidate => {
-      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof attentionReceipt;
-      receipt.read.comparisonQualification.proposalResponseId = 'attention-comparison-lead-proposal-response';
-      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
-    }, /SHARED_PROOF_INVALID/);
-    assertRejected('missing-recovery-query-membership', candidate => {
-      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof attentionReceipt;
-      const lead = receipt.read.comparisonAcquisition.leads.find(item => item.id === adequacyDecision.leadId)!;
-      receipt.evidenceIds = receipt.evidenceIds.filter(id => !lead.recoveryQueryIds.includes(id));
-      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
-    }, /SHARED_PROOF_(REQUIRED|INVALID)/);
-    assertRejected('forged-recovery-query-membership', candidate => {
-      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof attentionReceipt;
-      const lead = receipt.read.comparisonAcquisition.leads.find(item => item.id === adequacyDecision.leadId)!;
-      lead.recoveryQueryIds.push('attention-recovery-search-forged');
-      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
-    }, /SHARED_PROOF_REQUIRED|SHARED_PROOF_INVALID|SHARED_ATTENTION_INVALID/);
-    assertRejected('retained-length-tamper', candidate => {
-      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof attentionReceipt;
-      receipt.read.comparisonQualification.adequacySourceLengths[0]!.retainedLength += 1;
-      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
-    }, /SHARED_SOURCE_INVALID/);
-    assertRejected('shared-source-union-tamper', candidate => {
-      const proofRecord = candidate.evidence.find(evidence => evidence.id === 'shared-derivation')!;
-      const proof = JSON.parse(candidate.rawArtifacts[proofRecord.id]!) as { sources: Array<{ id: string }> };
-      proof.sources.pop();
-      candidate.rawArtifacts[proofRecord.id] = JSON.stringify(proof);
-    }, /SHARED_SOURCE_INVALID/);
+    rejectRehashed(candidate => {
+      const value = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+      value.read.originScope.sourceIds = [];
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(value);
+    }, 'rehashed but source-unbound origin scope is rejected');
+    rejectRehashed(candidate => {
+      const envelope = JSON.parse(candidate.rawArtifacts['attention-review-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      const response = JSON.parse(envelope.candidates[0]!.content.parts[0]!.text) as { originScopeReview: { sourceIds: string[] } };
+      response.originScopeReview.sourceIds = [];
+      envelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(response);
+      candidate.rawArtifacts['attention-review-response'] = JSON.stringify(envelope);
+    }, 'rehashed reviewer scope that disagrees with its receipt is rejected');
+    rejectRehashed(candidate => {
+      const value = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+      const read = value.read as unknown as Parameters<typeof originSourceScope>[0];
+      read.discoveryUrls = [];
+      value.read.originScope = originSourceScope(read, target);
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(value);
+    }, 'rehashed receipt cannot delete a discovery seed and recompute an incomplete scope');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
-    for (const [label, field, value] of [
-      ['metadata-title-tamper', 'title', 'Forged title'],
-      ['metadata-snippet-tamper', 'snippet', 'Forged descriptor text'],
-      ['metadata-url-tamper', 'url', 'https://forged.example/descriptor'],
-    ] as const) assertRejected(label, candidate => {
-      const proof = JSON.parse(candidate.rawArtifacts['shared-derivation']!) as { claims: Array<{ citations: Array<{ sourceId: string }> }> };
-      const metadataId = proof.claims.flatMap(claim => claim.citations.map(citation => citation.sourceId))
-        .find(id => candidate.evidence.some(evidence => evidence.id === id && evidence.sourceType === 'INDEXED_LEAD'))!;
-      const descriptor = JSON.parse(candidate.rawArtifacts[metadataId]!) as Record<string, unknown>;
-      if (field === 'url') descriptor.normalizedUrl = value;
-      else descriptor[field] = value;
-      candidate.rawArtifacts[metadataId] = JSON.stringify(descriptor);
-    }, /SHARED_SOURCE_INVALID/);
+test('Service rejects a rehashed negative A03 scope that drops a blocked exact-token URL', async () => {
+  const target = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
+  const website = 'https://public.example/river-lantern-origin';
+  const launch = 'https://public.example/river-lantern-launch';
+  const sourceText = `Token ${target.address}. The River Lantern page describes a community project but provides no dated origin or catalyst source.`;
+  const mock = mockedFetch({
+    dexValue: [{
+      chainId: 'base', pairAddress: 'FixtureRiverLanternOriginPair',
+      baseToken: { address: target.address, name: 'River Lantern', symbol: 'RIVER' },
+      quoteToken: { address: '0x3333333333333333333333333333333333333333', name: 'USD Coin', symbol: 'USDC' },
+      priceUsd: '0.001', liquidity: { usd: '100000' },
+      info: { websites: [{ url: website }], socials: [] },
+    }],
+    searchValue: (_url, call) => ({ results: call === 0 ? [{ url: website }, { url: launch }] : [] }),
+    fetchValue: (urls: string[]) => ({
+      results: urls.filter(url => url !== launch).map(url => ({ url, final_url: url, text: sourceText })),
+      errors: urls.includes(launch) ? [{ url: launch, error: 'bot_blocked', status: 403 }] : [],
+    }),
+    attentionResponse: packet => {
+      if (isSocialModelPacket(packet)) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'No optional social judgments are present in this sample.' } });
+      if (packet.manifest) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'No common-query representations were acquired.' } });
+      if (packet.proposal) {
+        const required = packet.requiredDecisionIds as string[];
+        const scope = packet.originEvidenceScope as { complete: boolean; sourceIds: string[]; acquisition: { urls: Array<{ url: string; state: string }> } };
+        assert.equal(scope.complete, false);
+        assert.equal(scope.acquisition.urls.find(item => item.url === launch)?.state, 'UNAVAILABLE');
+        return attentionEnvelope({
+          decisions: Object.fromEntries(required.map(id => [id, { accepted: true, rationale: 'The available source supports this bounded screening judgment.' }])),
+          originScopeReview: { complete: true, sourceIds: [...scope.sourceIds], rationale: 'Every acquired source was independently inspected.' },
+          candidateSet: { complete: false, rationale: 'No complete exact-contract comparison set was acquired.' },
+          originRelationship: { status: 'UNKNOWN', citations: [], rationale: 'No dated primary origin relationship is established.' },
+        });
+      }
+      const typed = packet as AttentionPacket;
+      const sourceId = attentionSourceId(packet, target.address);
+      return attentionEnvelope({
+        claims: [{ id: 'claim-origin-screen', feature: 'A03', value: false,
+          summary: 'The acquired sample does not establish this project origin or catalyst.', originBasis: 'PUBLIC_EVIDENCE_INADEQUATE',
+          citations: [{ sourceId, spanId: attentionSpanId(packet, sourceId, target.address) }] }],
+        posts: Object.fromEntries((typed.requiredPostSourceIds ?? []).map(id => [id, { spanId: attentionSpanId(packet, id, target.address), role: 'NEWS' }])),
+        competitors: [],
+      });
+    },
+  });
 
-    assertRejected('metadata-provenance-tamper', candidate => {
-      const metadataEvidence = candidate.evidence.find(evidence => evidence.sourceType === 'INDEXED_LEAD')!;
-      metadataEvidence.sourceId = 'tinyfish-fetch';
-    }, /LIVE_PROVENANCE_INVALID|SHARED_SOURCE_INVALID/);
-    assertRejected('metadata-time-tamper', candidate => {
-      const proof = JSON.parse(candidate.rawArtifacts['shared-derivation']!) as { sources: Array<{ id: string }> };
-      const metadataId = proof.sources.find(source => candidate.evidence.find(evidence => evidence.id === source.id)?.sourceType === 'INDEXED_LEAD')!.id;
-      const metadataEvidence = candidate.evidence.find(evidence => evidence.id === metadataId)!;
-      metadataEvidence.availableAt = '2026-09-28T00:00:00.000Z';
-    }, /SHARED_PROOF_INVALID|SHARED_SOURCE_INVALID/);
+  const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
+    tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
+  }));
+  const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
+    read: { originScope: { complete: boolean; sourceIds: string[]; acquisition: { complete: boolean; urls: Array<{ url: string; state: string }> } } };
+    review: { decisions: Array<{ id: string; accepted: boolean }>; originScopeReview: { complete: boolean } };
+  };
+  assert.equal(receipt.read.originScope.complete, false);
+  assert.equal(receipt.read.originScope.acquisition.urls.find(item => item.url === launch)?.state, 'UNAVAILABLE');
+  assert.equal(receipt.review.decisions.find(item => item.id === 'claim-origin-screen')?.accepted, true);
+  assert.equal(receipt.review.originScopeReview.complete, true);
+  assert.equal(bundle.details?.baseline.find(row => row.id === 'A03')?.quality, 'MISSING');
+
+  const directory = mkdtempSync(join(tmpdir(), 'origin-blocked-service-proof-'));
+  try {
+    const forged = structuredClone(bundle);
+    const value = JSON.parse(forged.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    value.read.originScope.complete = true;
+    value.read.originScope.acquisition.complete = true;
+    value.read.originScope.acquisition.urls = value.read.originScope.acquisition.urls.filter(item => item.url !== launch);
+    forged.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(value);
+    for (const evidence of forged.evidence) {
+      const raw = forged.rawArtifacts[evidence.id];
+      if (raw !== undefined) evidence.contentHash = sha256(raw);
+    }
+    const proofRecord = forged.evidence.find(evidence => evidence.id === 'shared-derivation');
+    assert.ok(proofRecord);
+    const proof = JSON.parse(forged.rawArtifacts[proofRecord.id]!) as { evidence: typeof forged.evidence };
+    proof.evidence = forged.evidence.filter(evidence => evidence.id !== proofRecord.id);
+    forged.rawArtifacts[proofRecord.id] = JSON.stringify(proof);
+    proofRecord.contentHash = sha256(forged.rawArtifacts[proofRecord.id]!);
+
+    const service = new Service(join(directory, 'forged.sqlite'));
+    try { assert.throws(() => service.analyzeLive(forged), /SHARED_PROOF_INVALID/); }
+    finally { service.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -2174,13 +3325,15 @@ test('missing provider keys skip optional web/model calls while preserving RPC a
   assert.equal(result.collection.dex.state, 'OBSERVED');
 });
 
-test('shared live derivation adds exactly one C05 projection and persists it through replay', async () => {
+test('ENTRY_GATES_V1 records an incomplete C05 as known false and persists it through replay', async () => {
   const mock = mockedFetch({ dexValue: [pair(1)] });
   const bundle = await collectLiveSolana(token, liveOptions(mock.fetcher, { semanticEnabled: true }));
   const c05Features = bundle.features.filter(feature => feature.id === 'C05');
   const c05Assessment = bundle.details?.baseline.find(row => row.id === 'C05');
   assert.equal(c05Features.length, 1, 'a legacy C05 with no projection still receives one shared projection');
-  assert.equal(c05Features[0]?.quality, 'MISSING', 'missing model receipts stay missing');
+  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GATES_V1');
+  assert.equal(c05Features[0]?.quality, 'KNOWN', 'the explicit gate mode records an incomplete review as a known failed quality gate');
+  assert.equal(c05Features[0]?.value, false);
   assert.deepEqual(c05Assessment?.projection, c05Features[0]);
   assert.ok(bundle.details?.shared, 'the shared proof is present even when optional hosted keys are absent');
   assert.equal(mock.calls.some(call => call.url.includes('tinyfish.ai') || call.url.includes('generativelanguage.googleapis.com')), false,
@@ -2273,10 +3426,10 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
   const initialClaims = Object.fromEntries(claims.map(claim => [claim.id, {
     disposition: claim.id === 'A01' ? 'CONFLICT' : 'CLEAR',
     rationale: claim.id === 'A01'
-      ? 'The initial cross-claim pass records a deliberately rejected comparison conflict.'
+      ? 'The initial cross-claim pass records a one-sided comparison conflict.'
       : 'The retained sources show no incompatible assertion for this claim.',
     citations: claim.id === 'A01'
-      ? [sourceAClaimRefs[claim.id], spanFor(counterSource.id)]
+      ? [sourceAClaimRefs[claim.id]]
       : [sourceAClaimRefs[claim.id]],
   }]));
   const repairClaims = {
@@ -2287,6 +3440,19 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
       citations: [sourceAClaimRefs.A01],
     },
   };
+  const resolveProposalForPrompt = (wire: Record<string, { disposition: string; rationale: string; citations: Array<{ sourceId: string; spanId: string }> }>) =>
+    Object.entries(wire).map(([id, decision]) => ({
+      ...decision,
+      id,
+      citations: decision.citations.map(ref => {
+        const source = sources.find(item => item.id === ref.sourceId)!;
+        const span = sourceSpans(source.id, source.text, 'SHARED_MODEL').find(item => item.id === ref.spanId);
+        assert.ok(span, `the resolved prompt citation points to an original span ${ref.spanId}`);
+        return { sourceId: ref.sourceId, quote: span.text };
+      }),
+    }));
+  const initialResolvedProposal = resolveProposalForPrompt(initialClaims);
+  const repairResolvedProposal = resolveProposalForPrompt(repairClaims);
   const review = (acceptA01: boolean) => ({
     claims: Object.fromEntries(claims.map(claim => [claim.id, claim.id === 'A01' ? acceptA01 : true])),
     sources: Object.fromEntries(sources.map(item => [item.id, true])),
@@ -2294,24 +3460,27 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
   const raw = (value: unknown) => sourceModelRaw({ claims: value && typeof value === 'object' && 'claims' in value
     ? (value as { claims: unknown }).claims : value });
   const proposalResponse = raw({ claims: initialClaims });
-  const reviewResponse = sourceModelRaw(review(false));
+  const reviewResponse = sourceModelRaw(review(true));
   const repairProposalResponse = raw({ claims: repairClaims });
   const repairReviewResponse = sourceModelRaw(review(true));
   const audit = decodeSharedAudit(claims, sources, repairProposalResponse, repairReviewResponse);
   const initialAudit = decodeSharedAudit(claims, sources, proposalResponse, reviewResponse);
-  assert.equal(initialAudit.review.find(item => item.id === 'A01')?.accepted, false);
+  assert.equal(initialAudit.review.find(item => item.id === 'A01')?.accepted, true);
+  assert.deepEqual(sharedReassessmentIds(initialAudit), ['A01'], 'the locally detected one-sided conflict is the repair trigger');
   assert.equal(validSharedReassessment(initialAudit, audit), true);
   assert.equal(deriveShared({ ...fixture, social: undefined, claims, sources, audit }).facts.values.C06, true);
 
   const modelScope = { method: 'automated-source-review-v1', model: 'fixture' };
   for (const [id, content, sourceType] of [
-    ['shared-proposal-prompt', JSON.stringify({ stage: 'proposal' }), 'MODEL_INPUT'],
+    ['shared-proposal-prompt', sharedAuditPrompt('proposal', claims, sources, bundle.token), 'MODEL_INPUT'],
     ['shared-proposal-response', proposalResponse, 'MODEL_RESPONSE'],
-    ['shared-review-prompt', JSON.stringify({ stage: 'review' }), 'MODEL_INPUT'],
+    ['shared-review-prompt', sharedAuditPrompt('review', claims, sources, bundle.token, { proposal: initialResolvedProposal }), 'MODEL_INPUT'],
     ['shared-review-response', reviewResponse, 'MODEL_RESPONSE'],
-    ['shared-repair-proposal-prompt', JSON.stringify({ stage: 'repair-proposal' }), 'MODEL_INPUT'],
+    ['shared-repair-proposal-prompt', sharedAuditPrompt('repair-proposal', claims, sources, bundle.token, {
+      initialProposal: initialClaims, initialAudit, rejectedIds: sharedReassessmentIds(initialAudit),
+    }), 'MODEL_INPUT'],
     ['shared-repair-proposal-response', repairProposalResponse, 'MODEL_RESPONSE'],
-    ['shared-repair-review-prompt', JSON.stringify({ stage: 'repair-review' }), 'MODEL_INPUT'],
+    ['shared-repair-review-prompt', sharedAuditPrompt('repair-review', claims, sources, bundle.token, { proposal: repairResolvedProposal }), 'MODEL_INPUT'],
     ['shared-repair-review-response', repairReviewResponse, 'MODEL_RESPONSE'],
   ] as const) attachArtifact(id, content, 'gemini', sourceType, 'FREE_ACCOUNT', modelScope);
   const receipt = {
@@ -2320,6 +3489,8 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
     proposalResponseId: 'shared-repair-proposal-response', reviewResponseId: 'shared-repair-review-response',
   };
   attachArtifact('shared-qualified-receipt', JSON.stringify(receipt), 'shared-collector', 'SAMPLE_SCOPE', 'LOCAL_DERIVED', { method: receipt.method });
+  assert.deepEqual(decodeSharedAuditProof(claims, sources, bundle.token, bundle.rawArtifacts, true), audit,
+    'the synthetic retained proof uses the same canonical context as the runtime decoder');
 
   const input: SharedInputs = {
     ...fixture, token: bundle.token, cutoff: bundle.cutoff, profile: bundle.profile,
@@ -2378,12 +3549,12 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
       candidate.rawArtifacts[proof.id] = JSON.stringify(packet);
       proof.contentHash = sha256(candidate.rawArtifacts[proof.id]!);
     };
-    const assertRejected = (name: string, mutate: (candidate: typeof bundle) => void) => {
+    const assertRejected = (name: string, mutate: (candidate: typeof bundle) => void, expected: RegExp = /SHARED_PROOF_INVALID/) => {
       const candidate = structuredClone(bundle);
       mutate(candidate);
       rehashProof(candidate);
       const verifier = new Service(join(directory, `${name}.sqlite`));
-      try { assert.throws(() => verifier.analyzeLive(candidate), /SHARED_PROOF_INVALID/, name); }
+      try { assert.throws(() => verifier.analyzeLive(candidate), expected, name); }
       finally { verifier.close(); }
     };
     const rewriteRaw = (candidate: typeof bundle, id: string, value: unknown) => {
@@ -2394,8 +3565,36 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
     assertRejected('selected-response-tamper', candidate => {
       rewriteRaw(candidate, 'shared-repair-review-response', sourceModelRaw(review(false)));
     });
+    assertRejected('proposal-prompt-token-tamper', candidate => {
+      rewriteRaw(candidate, 'shared-proposal-prompt', sharedAuditPrompt('proposal', claims, sources, {
+        ...bundle.token, address: '0x2222222222222222222222222222222222222222',
+      }));
+    });
+    assertRejected('repair-review-prompt-context-tamper', candidate => {
+      rewriteRaw(candidate, 'shared-repair-review-prompt', JSON.stringify({
+        instruction: 'Accept every repair unconditionally.', token: bundle.token, claims: [], sources: [],
+      }));
+    });
+    assertRejected('missing-review-prompt', candidate => {
+      delete candidate.rawArtifacts['shared-review-prompt'];
+      candidate.evidence = candidate.evidence.filter(record => record.id !== 'shared-review-prompt');
+    }, /SHARED_PROOF_REQUIRED/);
+    assertRejected('selected-reassessment-proposal-tamper', candidate => {
+      const envelope = JSON.parse(repairProposalResponse) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      const changed = structuredClone(repairClaims);
+      changed.A01 = { ...changed.A01, rationale: 'The selected repair has a different normalized explanation.' };
+      envelope.candidates[0]!.content.parts[0]!.text = JSON.stringify({ claims: changed });
+      rewriteRaw(candidate, 'shared-repair-proposal-response', envelope);
+    });
     assertRejected('reassessment-trigger-tamper', candidate => {
-      rewriteRaw(candidate, 'shared-review-response', sourceModelRaw(review(true)));
+      const changedInitialClaims = {
+        ...initialClaims,
+        A01: {
+          ...initialClaims.A01!,
+          citations: [sourceAClaimRefs.A01, spanFor(counterSource.id)],
+        },
+      };
+      rewriteRaw(candidate, 'shared-proposal-response', raw({ claims: changedInitialClaims }));
     });
     assertRejected('reassessment-pointer-tamper', candidate => {
       const updated = { ...receipt, proposalResponseId: 'shared-proposal-response', reviewResponseId: 'shared-review-response' };

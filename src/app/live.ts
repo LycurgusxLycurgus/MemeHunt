@@ -1,8 +1,10 @@
+import { recoverOriginPages, qualifyOriginExclusions } from '../providers/origin-recovery.js';
 import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import type { EvidenceRecord, FeatureResult, LiveBundle, Observation, Profile, Thesis, TokenRef } from '../domain/contracts.js';
 import { dexArtifacts, fetchDexPairs, type DexRead, type DexRecoveryOptions } from '../providers/dexscreener.js';
 import { geminiSettings } from '../providers/gemini.js';
+import { geminiPacerForKey } from '../providers/gemini-pacing.js';
 import { decodeSolanaAddress, inspectSolanaDetails, inspectSolanaMint, type SolanaRead, type SolanaDetails } from '../providers/solana.js';
 import { deriveBaseline, validateResearch } from '../domain/baseline.js';
 import type { ResearchPacket } from '../domain/research.js';
@@ -10,12 +12,14 @@ import { materializeThesis } from './config.js';
 import { inspectPumpSwap } from '../providers/pumpswap.js';
 import { collectAttentionSources } from '../providers/attention.js';
 import { qualifyAttention } from '../providers/attention-model.js';
-import { deriveAttention } from '../domain/attention.js';
+import { deriveAttention, originSourceScope } from '../domain/attention.js';
 import { collectSocialSources } from '../providers/social.js';
 import { qualifySocial } from '../providers/social-model.js';
 import { deriveSocial, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
-import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,type SharedAudit,type SharedSource } from '../domain/shared.js';
+import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,comparisonEntryGrade,type SharedAudit,type SharedSource } from '../domain/shared.js';
 import { qualifyShared } from '../providers/shared-model.js';
+import { discoverTokenMetadata } from '../providers/token-discovery.js';
+import { inspectPumpCurve } from '../providers/pumpcurve.js';
 
 
 export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; semanticEnabled: boolean; fetcher?: typeof fetch; now?: () => string };
@@ -32,6 +36,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const now = options.now ?? (() => new Date().toISOString());
   if(options.research)validateResearch(options.research,token,now());
   let operations=0;
+  const modelRouting={fallbackActive:false,...(options.semanticEnabled&&options.geminiKey?{pacing:geminiPacerForKey(options.geminiKey)}:{})};
   const runStartedAt=Date.now();let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
   const runBudgetMs=options.semanticEnabled?600_000:120_000;
   const deadline=AbortSignal.timeout(runBudgetMs);
@@ -46,6 +51,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const observations: Observation[] = [];
   const features: FeatureResult[] = [];
   const addEvidence = (id: string, raw: string, sourceId: string, sourceType: string, accessMode: EvidenceRecord['accessMode'], scope: Record<string,unknown>, at=now()): string => {
+    if(id.includes('-transport-attempt-'))try{const r=JSON.parse(raw);if(r.kind==='LOCAL_MODEL_TRANSPORT'&&[geminiSettings.model,geminiSettings.fallbackModel].includes(r.model))scope={...scope,model:r.model};}catch{/* Local receipt validation remains with its producer. */}
+    if(sourceId==='gemini'&&sourceType==='MODEL_RESPONSE')try{const model=JSON.parse(raw).modelVersion;if(typeof model==='string'&&/^gemini-[a-zA-Z0-9.\-]{1,100}$/.test(model))scope={...scope,model};}catch{/* Failed response remains retained without an invented model version. */}
     evidence.push({ id, sourceId, sourceType, retrievedAt: at, availableAt: at, contentHash: hash(raw), adapterVersion: 'live-v1', accessMode, scope });
     rawArtifacts[id] = raw;
     return id;
@@ -135,7 +142,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   let socialPacket:{read:SocialInput;proposal:SocialProposal|null;review:SocialReview|null;evidenceIds:string[]}|undefined;
   if(options.semanticEnabled&&options.tinyfishKey&&options.geminiKey){
     const attentionStartedAt=Date.now();
-    let name:string|undefined;const discoveryUrls:string[]=[];
+    let name:string|undefined,metadataUri:string|undefined;const discoveryUrls:string[]=[];
     try{
       const pairs=JSON.parse(dex.recovery&&!dex.recovery.selected?'[]':dex.raw??'[]') as Array<{chainId:string;baseToken?:{address:string;name?:string};quoteToken?:{address:string;name?:string};info?:{websites?:Array<{url?:string}>;socials?:Array<{url?:string}>}}>; 
       const matches=(address?:string)=>token.chain==='solana'?address===token.address:address?.toLowerCase()===token.address.toLowerCase();
@@ -145,17 +152,24 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
         for(const link of [...(Array.isArray(p.info?.websites)?p.info.websites:[]),...(Array.isArray(p.info?.socials)?p.info.socials:[])])if(typeof link?.url==='string'&&!discoveryUrls.includes(link.url)&&discoveryUrls.length<4)discoveryUrls.push(link.url);
       }
     }catch{/* Discovery metadata is optional and untrusted, never identity evidence. */}
-    const read=await collectAttentionSources(token,options.tinyfishKey,fetcher,now,name,discoveryUrls);
+    if(sharedEnabled&&token.chain==='solana'){
+      const discovery=await discoverTokenMetadata(token.address,options.rpcUrl,fetcher,now,deadline);
+      for(const [id,raw] of Object.entries(discovery.rawArtifacts))addEvidence(id,raw,'token-metadata-discovery','JSON_RPC','PUBLIC_API',{mint:token.address,role:'discovery only'},discovery.retrievedAt[id]);
+      if(discovery.uri){metadataUri=discovery.uri;if(!discoveryUrls.includes(discovery.uri))discoveryUrls.unshift(discovery.uri);}
+    }
+    let read=await collectAttentionSources(token,options.tinyfishKey,fetcher,now,name,discoveryUrls);
+    if(metadataUri){read.metadataLinks=true;read.metadataUri=metadataUri;}
+    if(sharedEnabled){read.originScope=originSourceScope(read,token);read=await recoverOriginPages(read,token,options.tinyfishKey,fetcher,now);read.originScope=originSourceScope(read,token);read=await qualifyOriginExclusions(read,token,options.tinyfishKey,options.geminiKey,fetcher,now,deadline,modelRouting);read.originScope=originSourceScope(read,token);}
     web={state:read.sources.length?read.complete?'OBSERVED':'TRUNCATED':read.complete?'NO_RESULTS':'UNAVAILABLE',count:read.sources.length,...(read.codes.length?{code:read.codes[0]}:{})};
     const ids:string[]=[];
-    for(const [id,raw] of Object.entries(read.rawArtifacts))ids.push(addEvidence(id,raw,id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{queries:read.queries,discoveryUrls:read.discoveryUrls,scope:'bounded web search and DEX-linked source sample'}));
+    for(const [id,raw] of Object.entries(read.rawArtifacts))ids.push(id.startsWith('attention-origin-role-')&&!id.endsWith('-search')&&!id.endsWith('-fetch')?addEvidence(id,raw,'gemini',id.endsWith('-prompt')?'MODEL_INPUT':'MODEL_RESPONSE','FREE_ACCOUNT',{method:'origin-role-review-v1'}):addEvidence(id,raw,(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')?'SAMPLE_SCOPE':id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{queries:read.queries,discoveryUrls:read.discoveryUrls,scope:'bounded web search and DEX-linked source sample'}));
     for(const s of read.sources)ids.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,...(s.discoveredFrom?{discoveredFrom:s.discoveredFrom}:{})},s.availableAt));
     ids.push(addEvidence('attention-acquisition-scope',JSON.stringify({comparisonAcquisition:read.comparisonAcquisition,comparisonComplete:read.comparisonComplete,comparisonSourceIds:read.comparisonSourceIds,codes:read.codes}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'original-comparison-acquisition-v1'}));
-    const qualification=await qualifyAttention(read,token,options.geminiKey,fetcher,undefined,{tinyfishKey:options.tinyfishKey,now,signal:deadline,representationScreen:sharedEnabled});
+    const qualification=await qualifyAttention(read,token,options.geminiKey,fetcher,undefined,{tinyfishKey:options.tinyfishKey,now,signal:deadline,representationScreen:sharedEnabled,modelRouting});
     const scope=qualification.scope;
-    ids.push(addEvidence('attention-scope',JSON.stringify({queries:scope.queries,complete:scope.complete,comparisonComplete:scope.comparisonComplete,comparisonSourceIds:scope.comparisonSourceIds,comparisonRankingSourceIds:scope.comparisonRankingSourceIds,postSampleSourceIds:scope.postSampleSourceIds,comparisonAcquisition:scope.comparisonAcquisition,comparisonQualification:scope.comparisonQualification,postSampleComplete:scope.postSampleComplete,codes:scope.codes,start:scope.start,end:scope.end,discoveryUrls:scope.discoveryUrls}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'comparison-scope-v2'}));
+    ids.push(addEvidence('attention-scope',JSON.stringify({queries:scope.queries,complete:scope.complete,comparisonComplete:scope.comparisonComplete,comparisonSourceIds:scope.comparisonSourceIds,comparisonRankingSourceIds:scope.comparisonRankingSourceIds,postSampleSourceIds:scope.postSampleSourceIds,comparisonAcquisition:scope.comparisonAcquisition,comparisonQualification:scope.comparisonQualification,comparisonCoverage:scope.comparisonCoverage,comparisonPublicSupport:scope.comparisonPublicSupport,postSampleComplete:scope.postSampleComplete,codes:scope.codes,start:scope.start,end:scope.end,discoveryUrls:scope.discoveryUrls}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'comparison-scope-v2'}));
     for(const s of scope.sources.filter(s=>!read.sources.some(original=>original.id===s.id)))ids.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,recovery:true},s.availableAt));
-    for(const [id,raw] of Object.entries(qualification.rawArtifacts))ids.push(id.includes('-transport-attempt-')||id==='attention-comparison-manifest'||id==='comparison-lead-qualification'||id==='comparison-lead-wire-repair'||id.endsWith('-scope')
+    for(const [id,raw] of Object.entries(qualification.rawArtifacts))ids.push(id.includes('-transport-attempt-')||id==='attention-narrative-public-support'||(id==='attention-comparison-manifest'||id==='attention-comparison-coverage'||id==='attention-comparison-public-support')||id==='comparison-lead-qualification'||id==='comparison-lead-wire-repair'||id.endsWith('-scope')
       ?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'complete-comparison-batches-v1'})
       :id.startsWith('attention-recovery-')?addEvidence(id,raw,id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{method:'free-comparison-recovery-v1'},(scope.comparisonQualification as {recoveryQueries?:Array<{queryId:string;availableAt:string}>}|undefined)?.recoveryQueries?.find(q=>q.queryId===id)?.availableAt)
       :addEvidence(id,raw,'gemini',id.endsWith('prompt')?'MODEL_INPUT':'MODEL_RESPONSE','FREE_ACCOUNT',{method:'automated-source-review-v1',model:geminiSettings.model}));
@@ -167,16 +181,18 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     attention=deriveAttention(qualifiedRead,qualification.proposal,qualification.review,token,attentionTime,ids,!options.research);
     sharedSources=scope.sources.map(s=>({...s,text:rawArtifacts[s.id]??s.text}));
     const claims=qualification.proposal?.claims.flatMap(c=>{
-      const a=attention!.find(a=>a.id===c.feature);if(a?.quality!=='KNOWN')return [];
-      return [{kind:c.feature==='A01'?'NARRATIVE' as const:c.feature==='A02'?'GAME_TYPE' as const:c.feature==='A03'?'ORIGIN' as const:'TOKEN_RELATION' as const,value:c.summary,evidenceId:c.citations[0].sourceId,quote:c.citations[0].quote,assertion:'SOURCE_STATES' as const}];
+      const a=attention!.find(a=>a.id===c.feature);if(a?.quality!=='KNOWN'||!qualification.review?.decisions.some(d=>d.id===c.id&&d.accepted)||['narrative-public-support-v1','origin-traceability-screen-v2','binary-public-support-v1'].includes((a.data as {method?:string}).method??''))return [];
+      return [{kind:c.feature==='A01'?'NARRATIVE' as const:c.feature==='A02'?'GAME_TYPE' as const:c.feature==='A03'?'ORIGIN' as const:'TOKEN_RELATION' as const,value:c.summary,evidenceId:c.citations[0].sourceId,quote:c.citations[0].quote,assertion:c.originBasis==='PUBLIC_EVIDENCE_INADEQUATE'?'MODEL_INFERENCE' as const:'SOURCE_STATES' as const}];
     })??[];
+    const originGrade=attention.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1'].includes((a.data as {method?:string}).method??''));
+    if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};claims.push({kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'});}
     semantic={status:claims.length?'VALIDATED':qualification.code?/INVALID|FINISH|CONTENT|PACKET_LIMIT/.test(qualification.code)?'INVALID':'PROVIDER_UNAVAILABLE':!read.sources.length?'NO_PUBLIC_CORPUS':'CANDIDATE',claims,model:geminiSettings.model,schemaVersion:1,...(qualification.code?{validationErrors:[qualification.code]}:{})};
     attentionElapsedMs=Math.max(0,Date.now()-attentionStartedAt);
     if(!options.research){
       const socialStartedAt=Date.now();
       const socialRead=await collectSocialSources(token,scope,options.tinyfishKey,fetcher,now,deadline);
       const {rawArtifacts:acquisitionArtifacts,...socialInput}=socialRead;
-      const socialQualification=await qualifySocial(socialInput,token,options.geminiKey,fetcher,undefined,deadline,{screeningRepair:!!dexRecovery});
+      const socialQualification=await qualifySocial(socialInput,token,options.geminiKey,fetcher,undefined,deadline,{screeningRepair:!!dexRecovery,modelRouting});
       const socialIds=socialRead.sources.filter(s=>scope.sources.some(original=>original.id===s.id)).map(s=>s.id);
       for(const s of socialRead.sources.filter(s=>!scope.sources.some(original=>original.id===s.id)))socialIds.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,socialSupplement:true},s.availableAt));
       for(const [id,raw] of Object.entries({...acquisitionArtifacts,...socialQualification.rawArtifacts}))socialIds.push(addEvidence(id,raw,id.startsWith('social-search-')?'tinyfish-search':id.startsWith('social-fetch-')?'tinyfish-fetch':id.includes('prompt')||id.includes('response')?'gemini':'social-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.startsWith('social-search-')||id.startsWith('social-fetch-')||id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'social-source-review-v1'}));
@@ -193,9 +209,9 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       if(e){const descriptor=JSON.parse(rawArtifacts[id]);sharedSources.push({id,url:descriptor.normalizedUrl??descriptor.url,text:descriptor.title+'\n'+descriptor.snippet,kind:'INDEXED_METADATA',authorId:null,publishedAt:null,availableAt:e.availableAt});}
     }
     const semanticFeatures=[...new Map([...features,...attention.flatMap(a=>a.projection?[a.projection]:[]),...(interimSocial?.assessments??[]).flatMap(a=>a.projection?[a.projection]:[])].map(f=>[f.id,f])).values()];
-    const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
+    const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts,comparisonEntryGrade(attention)).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
     if(semanticScope.every(w=>w.status!=='UNKNOWN')&&auditClaims.length>0&&semanticReceiptIds.length===2){
-      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true);
+      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true,modelRouting);
       sharedAudit=audit.audit;
       addEvidence('shared-audit-status',JSON.stringify({method:'shared-conflict-review-v1',received:!!audit.audit,code:audit.code??null}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:audit.code??'SHARED_AUDIT_RECEIVED'});
       for(const [id,raw] of Object.entries(audit.rawArtifacts))addEvidence(id,raw,id.includes('prompt')||id.includes('response')?'gemini':'shared-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'shared-conflict-review-v1'});
@@ -203,8 +219,13 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
   if(sharedEnabled)await captureCanonical();
-  const venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery):undefined;
-  for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id];addEvidence(id,raw,a?.sourceId??(id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':id==='pump-quote-calculation'?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
+  let venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery):undefined;
+  if(sharedEnabled&&typeof rpc.mint?.slot==='number'&&venueRead&&!venueRead.inspection.bindingVerified&&venueRead.rawArtifacts['pump-pool-config']&&JSON.parse(venueRead.rawArtifacts['pump-pool-config']).result?.value?.[0]===null){
+    const curve=await inspectPumpCurve(token,options.profile,detailRead?.holders,rpc.mint!.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery);
+    const selection=JSON.stringify({method:'pump-venue-selection-v1',primaryStateId:'pump-pool-config',selected:curve.inspection.bindingVerified?'BONDING_CURVE':'UNVERIFIED',reason:'Canonical PumpSwap pool account absent'});
+    venueRead={...curve,rawArtifacts:{...venueRead.rawArtifacts,...curve.rawArtifacts,'venue-route-selection':selection},retrievedAt:{...venueRead.retrievedAt,...curve.retrievedAt,'venue-route-selection':now()}};
+  }
+  for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id],curve=id.startsWith('curve-'),derived=id==='venue-route-selection'||id==='curve-quote-calculation'||id==='curve-simulation-proof'||id==='curve-fee-requests'||/^curve-(?:entry|exit)-fee-recovery$/.test(id);addEvidence(id,raw,a?.sourceId??(derived?'pump-curve-derived':curve?'pump-curve-direct':id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(derived?'CALCULATION':id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':id==='pump-quote-calculation'?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(derived||id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
   if(sharedEnabled)addEvidence('live-state-capture',JSON.stringify({method:'late-state-capture-v1',token,discoveryId:evidence.some(e=>e.id==='dex-discovery')?'dex-discovery':null,startedAt:stateCaptureStartedAt,endedAt:stateCaptureEndedAt,canonical:evidence.filter(e=>e.sourceId==='solana-rpc'||e.id==='dex-pairs').map(e=>({id:e.id,retrievedAt:e.retrievedAt})),rpcState:rpc.status,dexState:dex.status}),'shared-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'late-state-capture-v1'});
   addEvidence('analysis-context',JSON.stringify({profile:options.profile,origins:options.origins??{}}),'local-config','CONFIG','LOCAL_DERIVED',{kind:'user-selected research context'});
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
@@ -220,14 +241,16 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
-    const input={token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
+    const input={qualityMode:'ENTRY_GATES_V1' as const,...(rawArtifacts['venue-route-selection']?{venueInspection:venueRead!.inspection,venue:venueRead!.venue}:{}),token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
     const effective=expireSharedWitnesses(input);
     for(const a of effective.baseline)baseline[baseline.findIndex(b=>b.id===a.id)]=a;
     features.splice(0,features.length,...effective.features);
     shared=deriveShared(effective);
-    addEvidence('shared-derivation',JSON.stringify(input),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:'shared-evidence-v1'},cutoff);
+    addEvidence('shared-derivation',JSON.stringify(input),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:'shared-evidence-v1',qualityMode:input.qualityMode},cutoff);
     for(const a of shared.assessments){baseline[baseline.findIndex(old=>old.id===a.id)]=a;const index=features.findIndex(f=>f.id===a.id);if(index>=0)features[index]=a.projection!;else features.push(a.projection!);}
   }
+  const attentionModels=[...new Set(Object.entries(rawArtifacts).filter(([id])=>id.startsWith('attention-')&&id.includes('-transport-attempt-')).flatMap(([,raw])=>{const r=JSON.parse(raw);return r.code==='ATT_MODEL_HTTP_200'&&typeof r.model==='string'?[r.model]:[]}))];
+  if(attentionModels.length)semantic.model=attentionModels.join(', ');
   return {
     token, cutoff, analysisKind: 'LIVE', evidence, rawArtifacts, observations, features, profile: options.profile,thesis,
     collection,semantic, market: dex.market ?? null,

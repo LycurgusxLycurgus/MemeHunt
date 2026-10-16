@@ -16,6 +16,8 @@ import type { AssessmentDetails, EntrySnapshot, LiveBundle, TokenRef } from '../
 const MINT = '3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump';
 const TOKEN: TokenRef = { chain: 'solana', address: MINT };
 const AT = '2026-09-29T12:00:00.000Z';
+let testGeminiKeySequence = 0;
+const nextTestGeminiKey = () => `gemini-test-key-${++testGeminiKeySequence}`;
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 type AttentionSpanSource = { id: string; spans: Array<{ id: string; text: string }> };
 function attentionSpanId(packet: Record<string, unknown>, sourceId: string, includes?: string): string {
@@ -159,6 +161,7 @@ function mockPublicProviders(fetchValue: unknown = { results: [{
       return new Response(JSON.stringify(fetchValue), { headers: { 'content-type': 'application/json' } });
     }
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+      if (url.endsWith(':countTokens')) return new Response(JSON.stringify({ totalTokens: 100 }), { headers: { 'content-type': 'application/json' } });
       const request = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
       const packet = JSON.parse(request.contents[0]?.parts[0]?.text ?? '{}') as Record<string, unknown>;
       geminiPackets.push(packet);
@@ -552,7 +555,7 @@ test('a live full run keeps source-bound narrative through partial collection an
     for (let attempt = 0; attempt < 4; attempt++) {
       rpcAttemptMilestones.push(new Promise<void>(resolve => { signalRpcAttempt.push(resolve); }));
     }
-    const requestOrder: Array<'handshake' | 'canonical' | 'research' | 'market' | 'other'> = [];
+    const requestOrder: Array<'handshake' | 'metadata' | 'canonical' | 'research' | 'market' | 'other'> = [];
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url === rpcUrl) {
@@ -560,6 +563,12 @@ test('a live full run keeps source-bound narrative through partial collection an
         if (request.method === 'getGenesisHash') {
           requestOrder.push('handshake');
           return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: SOLANA_MAINNET_GENESIS }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (request.method === 'getMultipleAccounts') {
+          requestOrder.push('metadata');
+          return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { context: { slot: 456 }, value: [null, null] } }), {
             headers: { 'content-type': 'application/json' },
           });
         }
@@ -580,7 +589,7 @@ test('a live full run keeps source-bound narrative through partial collection an
       env: {
         SOLANA_RPC_URL: rpcUrl,
         TINYFISH_API_KEY: 'tinyfish-secret',
-        GEMINI_API_KEY: 'gemini-secret',
+        GEMINI_API_KEY: nextTestGeminiKey(),
       },
       fetcher,
     });
@@ -607,7 +616,16 @@ test('a live full run keeps source-bound narrative through partial collection an
     assert.equal(snapshot.semantic?.claims[0]?.evidenceId, 'attention-page-1');
     assert.equal(snapshot.semantic?.claims[0]?.quote, pageText, 'the public quote is the exact selected span, never model-authored text');
     assert.equal(snapshot.result.classification, 'INSUFFICIENT_DATA');
-    assert.deepEqual(snapshot.result.coverage, { known: 1, total: 27 });
+    assert.deepEqual(snapshot.result.coverage, { known: 4, total: 27 }, 'A01 plus the three approved Shared data-quality gates are decidable in ENTRY_GATES_V1');
+    assert.equal(snapshot.details?.shared?.qualityMode, 'ENTRY_GATES_V1');
+    assert.deepEqual(snapshot.details?.shared?.values, { C03: false, C04: false, C05: false, C06: false },
+      'partial collection, incomplete semantic qualification, and the uncompleted conflict audit remain explicit quality failures');
+    assert.equal(snapshot.details?.shared?.auditQualified, false);
+    assert.deepEqual(snapshot.details?.shared?.conflicts, [], 'an incomplete conflict audit does not fabricate a detected conflict');
+    assert.equal((snapshot.details?.baseline.find(item => item.id === 'C06')?.data as { conflictAssessment?: string } | undefined)?.conflictAssessment,
+      'INCOMPLETE_REVIEW');
+    assert.deepEqual(['DAT-01', 'DAT-02', 'DAT-03'].map(id => snapshot.result.checks.find(check => check.checkId === id)?.status),
+      ['FAIL', 'FAIL', 'FAIL'], 'the three Shared quality gates are known failures rather than missing facts');
     assert.equal(snapshot.features.find(row => row.id === 'A01')?.quality, 'KNOWN');
     assert.equal(snapshot.features.find(row => row.id === 'A01')?.value, true);
     assert.equal(snapshot.features.find(row => row.id === 'A02')?.quality, 'MISSING');
@@ -620,7 +638,7 @@ test('a live full run keeps source-bound narrative through partial collection an
     assert.ok(provider.calls.some(url => url.includes('api.fetch.tinyfish.ai')));
     assert.ok(provider.calls.some(url => url.includes('generativelanguage.googleapis.com')));
     assert.match(output.stderr, /RPC_TIMEOUT/);
-    assert.match(output.stderr, /1\/27/);
+    assert.match(output.stderr, /4\/27/);
     assert.equal(output.stdout.includes('rpc-secret'), false);
     assert.equal(output.stdout.includes('tinyfish-secret'), false);
     assert.equal(output.stdout.includes('gemini-secret'), false);
@@ -733,11 +751,11 @@ test('Solana analysis requires visible full or partial intent, and key presence 
   const directory = temporaryDirectory();
   try {
     const mock = mockPublicProviders();
-    const keys = { TINYFISH_API_KEY: 'tinyfish-secret', GEMINI_API_KEY: 'gemini-secret' };
+    const keys = () => ({ TINYFISH_API_KEY: 'tinyfish-secret', GEMINI_API_KEY: nextTestGeminiKey() });
 
     await t.test('non-interactive bare analyze fails with exact mode guidance, even with keys and legacy env', async () => {
       const result = await invoke(['analyze', MINT, '--chain', 'solana', '--db', join(directory, 'no-mode.sqlite')], {
-        env: { ...keys, DD_ENABLE_HOSTED_SEMANTIC: '1' }, fetcher: mock.fetcher,
+        env: { ...keys(), DD_ENABLE_HOSTED_SEMANTIC: '1' }, fetcher: mock.fetcher,
       });
       assert.equal(result.exitCode, 2);
       assert.match(result.stderr, /EXPLICIT_ANALYSIS_MODE_REQUIRED/);
@@ -748,7 +766,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
 
     await t.test('--partial remains RPC+DEX only even when both keys and legacy env are set', async () => {
       const result = await invoke(['analyze', MINT, '--chain', 'solana', '--partial', '--db', join(directory, 'partial.sqlite')], {
-        env: { ...keys, DD_ENABLE_HOSTED_SEMANTIC: '1' }, fetcher: mock.fetcher,
+        env: { ...keys(), DD_ENABLE_HOSTED_SEMANTIC: '1' }, fetcher: mock.fetcher,
       });
       assert.equal(result.exitCode, 0);
       assert.equal((JSON.parse(result.stdout) as { semantic: { status: string } }).semantic.status, 'NOT_REQUESTED');
@@ -758,7 +776,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
 
     await t.test('--full without both keys fails before collection and shows secure setup', async () => {
       const result = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', join(directory, 'missing-key.sqlite')], {
-        env: { TINYFISH_API_KEY: keys.TINYFISH_API_KEY }, fetcher: mock.fetcher,
+        env: { TINYFISH_API_KEY: keys().TINYFISH_API_KEY }, fetcher: mock.fetcher,
       });
       assert.equal(result.exitCode, 2);
       assert.equal(result.stdout, '');
@@ -770,7 +788,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
 
     await t.test('--full explicitly runs both optional providers without relying on legacy consent', async () => {
       const result = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', join(directory, 'full.sqlite')], {
-        env: keys, fetcher: mock.fetcher,
+        env: keys(), fetcher: mock.fetcher,
       });
       assert.equal(result.exitCode, 0);
       assert.equal((JSON.parse(result.stdout) as { semantic: { status: string } }).semantic.status, 'CANDIDATE');
@@ -794,7 +812,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
         return base.fetcher(input, init);
       };
       const output = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', dbPath], {
-        env: keys, fetcher,
+        env: keys(), fetcher,
       });
       assert.equal(output.exitCode, 0);
       const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
@@ -821,7 +839,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
       const fetchBody = { results: [], errors: [{ url: 'https://public.example/evidence', error: 'timeout' }] };
       const mock = mockPublicProviders(fetchBody);
       const output = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', dbPath], {
-        env: keys, fetcher: mock.fetcher,
+        env: keys(), fetcher: mock.fetcher,
       });
       assert.equal(output.exitCode, 0);
       const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
@@ -863,7 +881,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
       };
       const dbPath = join(directory, 'tinyfish-empty.sqlite');
       const output = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', dbPath], {
-        env: keys, fetcher,
+        env: keys(), fetcher,
       });
       assert.equal(output.exitCode, 0, output.stderr);
       const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
@@ -895,7 +913,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
         errors: [{ url: 'https://public.example/other', error: 'bot_blocked' }],
       });
       const output = await invoke(['analyze', MINT, '--chain', 'solana', '--full', '--db', join(directory, 'tinyfish-mixed.sqlite')], {
-        env: keys, fetcher: mock.fetcher,
+        env: keys(), fetcher: mock.fetcher,
       });
       assert.equal(output.exitCode, 0);
       const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
@@ -908,7 +926,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
     await t.test('interactive yes authorizes the full pass; decline cancels without collection', async () => {
       const before = mock.calls.length;
       const declined = await invoke(['analyze', MINT, '--chain', 'solana', '--db', join(directory, 'declined.sqlite')], {
-        env: keys, fetcher: mock.fetcher, isInteractive: true, confirmFull: async () => false,
+        env: keys(), fetcher: mock.fetcher, isInteractive: true, confirmFull: async () => false,
       });
       assert.equal(declined.exitCode, 2);
       assert.equal(declined.stdout, '');
@@ -918,7 +936,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
 
       let approvalPrompt = '';
       const approved = await invoke(['analyze', MINT, '--chain', 'solana', '--db', join(directory, 'approved.sqlite')], {
-        env: keys, fetcher: mock.fetcher, isInteractive: true,
+        env: keys(), fetcher: mock.fetcher, isInteractive: true,
         confirmFull: async prompt => { approvalPrompt = prompt; return true; },
       });
       assert.equal(approved.exitCode, 0);
@@ -1036,11 +1054,11 @@ test('full Shared fallback persists its fixed DEX receipt, replays offline, and 
       assert.deepEqual(call.request, expectedRequest);
       assert.equal((call.init?.headers as Record<string, string>)['X-API-Key'], tinyfishKey);
     }
-    assert.deepEqual(searchQueries.filter(query => query.includes('River Lantern')), ['"River Lantern" solana token contract meme narrative']);
+    assert.deepEqual(searchQueries.filter(query => query.includes('River Lantern')), ['"River Lantern" solana crypto token contract']);
     const attentionScope = JSON.parse(bundle.rawArtifacts['attention-scope']!) as {
       queries: string[]; discoveryUrls: string[];
     };
-    assert.ok(attentionScope.queries.includes('"River Lantern" solana token contract meme narrative'));
+    assert.ok(attentionScope.queries.includes('"River Lantern" solana crypto token contract'));
     assert.ok(attentionScope.discoveryUrls.includes(website));
     assert.ok(attentionScope.discoveryUrls.includes(social));
     assert.equal(attentionScope.discoveryUrls.includes(quoteOnlyWebsite), false, 'quote-side metadata cannot seed project discovery');
@@ -1208,26 +1226,32 @@ test('full CLI retains attention and social qualification proofs and replays the
           return { url: item, final_url: item, text: profileText };
         }
         const result: Record<string, unknown> = { url: item, final_url: item, text: text[match.key] };
-        if (match.key !== 'narrative') result.published_date = '2026-09-29T10:00:00.000Z';
+        if (match.key !== 'narrative') result.published_date = '2026-09-28T10:00:00.000Z';
         return result;
       });
       return new Response(JSON.stringify({ results, errors: [] }), { headers: { 'content-type': 'application/json' } });
     }
     if (url.startsWith('https://generativelanguage.googleapis.com/')) {
+      if (url.endsWith(':countTokens')) return new Response(JSON.stringify({ totalTokens: 100 }), { headers: { 'content-type': 'application/json' } });
       const request = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
       const packet = JSON.parse(request.contents[0]?.parts[0]?.text ?? '{}') as Record<string, unknown>;
       if (Array.isArray(packet.requiredPostIds) && packet.rubric) {
         socialModelCalls++;
         socialPackets.push(packet);
         let value: unknown;
-        if (packet.proposal) {
+        if (packet.invalidProposal) {
+          const corrected = structuredClone(packet.invalidProposal) as ReturnType<typeof socialProposal>;
+          corrected.posts[0]!.metrics.replies = null;
+          value = corrected;
+        } else if (packet.proposal) {
           const proposal = packet.proposal as { identityAssessment: { verdict: string }; integrityAssessment: { verdict: string }; posts: Array<{ sourceId: string }>; identities: Array<{ id: string }>; accounts: Array<{ accountId: string }> };
           const pairs = packet.pairs as Array<{ id: string }>;
           const decisions = [
-            { id: 'assessment:identity', accepted: packet.repair === true, rationale: packet.repair === true
-              ? 'The full inspected source packet supports the bounded identity evidence judgment.'
-              : 'The initial positive identity judgment lacks an independent source and is rejected.' },
-            { id: 'assessment:integrity', accepted: true, rationale: 'The bounded integrity rationale matches its exact cited public source and states its missing desired indicators.' },
+          { id: 'assessment:identity', accepted: true,
+            rationale: 'No official-account identity claim is made from the historical posts in this bounded sample.' },
+          { id: 'assessment:integrity', accepted: packet.repair === true, rationale: packet.repair === true
+            ? 'The dated publications are historical and the corrected judgment stays within the bounded current-visibility sample.'
+            : 'The initial integrity judgment treats historical publications as evidence of current visibility.' },
             ...proposal.posts.map(post => ({ id: `post:${post.sourceId}`, accepted: true, rationale: 'Synthetic review accepts the exact contract source.' })),
             ...proposal.identities.map(identity => ({ id: `identity:${identity.id}`, accepted: true, rationale: 'Synthetic review accepts the source relationship.' })),
             ...proposal.accounts.map(account => ({ id: `account:${account.accountId}`, accepted: true, rationale: 'Synthetic review accepts source-bound account fields.' })),
@@ -1242,35 +1266,48 @@ test('full CLI retains attention and social qualification proofs and replays the
           };
         } else if (packet.initialProposal) {
           const sources = packet.sources as SocialSpanSource[];
-          const profile = sources.find(source => source.url === 'https://x.com/community_author');
-          assert.ok(profile, 'repair proposal sees the retained account profile');
-          const span = profile.spans.find(item => item.text.includes(address));
-          assert.ok(span, 'repair proposal cites the complete exact-contract profile text');
-          value = {
-            identityAssessment: {
+          const selectedAssessmentIds = packet.selectedAssessmentIds as string[];
+          const corrected: Record<string, unknown> = {};
+          if (selectedAssessmentIds.includes('assessment:integrity')) {
+            const historicalPost = sources.find(source => source.kind === 'POST');
+            assert.ok(historicalPost?.spans[0], 'the repair packet retains the dated original publication body');
+            corrected.integrityAssessment = {
+              verdict: 'CONTRADICTED',
+              rationale: 'The retained September publication predates the current sample and cannot establish current visibility; this is a bounded verifiability concern, not proof of manipulation.',
+              citations: [{ sourceId: historicalPost.id, spanId: historicalPost.spans[0]!.id }],
+            };
+          }
+          if (selectedAssessmentIds.includes('assessment:identity')) {
+            const profile = sources.find(source => source.url === 'https://x.com/community_author');
+            assert.ok(profile, 'identity repair requires the retained account profile');
+            const span = profile.spans.find(item => item.text.includes(address));
+            assert.ok(span, 'identity repair cites the complete exact-contract profile text');
+            corrected.identityAssessment = {
               verdict: 'CONTRADICTED',
               rationale: 'The complete inspected source set contains only an account self-claim and no independent project confirmation.',
               citations: [{ sourceId: profile.id, spanId: span.id }],
-            },
-          };
+            };
+          }
+          value = corrected;
         } else {
           const initial = socialProposal(packet);
-          const sources = packet.sources as SocialSpanSource[];
-          const profile = sources.find(source => source.url === 'https://x.com/community_author');
-          assert.ok(profile, 'initial proposal sees the retained account profile');
-          const span = profile.spans.find(item => item.text.includes(address));
-          assert.ok(span, 'initial proposal cites the complete exact-contract profile text');
+          const firstPost = initial.posts[0]!;
+          (firstPost as unknown as { metrics: { replies: unknown } }).metrics.replies = {
+            text: '1', citation: { sourceId: firstPost.sourceId, spanId: `${firstPost.sourceId}:span:1` },
+          };
           value = {
             ...initial,
             identityAssessment: {
-              verdict: 'SUPPORTED',
-              rationale: 'The account profile publicly states this exact contract relationship.',
-              citations: [{ sourceId: profile.id, spanId: span.id }],
+              verdict: 'UNRESOLVED',
+              rationale: 'No official-account identity claim is established by this historical post sample.',
+              citations: [{ sourceId: firstPost.sourceId, spanId: attentionSpanId(packet, firstPost.sourceId) }],
             },
-            identities: [{
-              id: 'identity:x.com:community_author', accountId: 'x.com:community_author', status: 'CLAIMED',
-              citations: [{ sourceId: profile.id, spanId: span.id }],
-            }],
+            integrityAssessment: {
+              verdict: 'SUPPORTED',
+              rationale: 'These historical publications demonstrate current integrity and active visibility.',
+              citations: [{ sourceId: firstPost.sourceId, spanId: attentionSpanId(packet, firstPost.sourceId) }],
+            },
+            identities: [],
           };
         }
         return new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] }), { headers: { 'content-type': 'application/json' } });
@@ -1299,7 +1336,9 @@ test('full CLI retains attention and social qualification proofs and replays the
 
   try {
     const keys = { TINYFISH_API_KEY: 'synthetic-tinyfish-key', GEMINI_API_KEY: 'synthetic-gemini-key' };
-    const output = await invoke(['analyze', address, '--chain', 'base', '--full', '--db', dbPath], { env: keys, fetcher });
+  const output = await invoke(['analyze', address, '--chain', 'base', '--full', '--db', dbPath], {
+    env: keys, fetcher,
+  });
     assert.equal(output.exitCode, 0, output.stderr);
     const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
     assert.deepEqual(snapshot.token, token);
@@ -1310,55 +1349,59 @@ test('full CLI retains attention and social qualification proofs and replays the
       evidenceId: 'attention-page-1', quote: text.narrative, assertion: 'SOURCE_STATES',
     }]);
     assert.equal(attentionModelCalls, 2, 'attention extraction and review retain their two calls');
-    assert.equal(socialModelCalls, 4, 'the one eligible rejected identity screen receives one repair proposal and one full review');
-    assert.equal(attentionModelCalls + socialModelCalls, 6);
-    assert.equal(socialPackets.length, 4);
+    assert.equal(socialModelCalls, 5, 'one invalid metric selector receives one correction before review and one combined screening repair');
+    assert.equal(attentionModelCalls + socialModelCalls, 7);
+    assert.equal(socialPackets.length, 5);
     for (const packet of socialPackets.slice(1)) assert.deepEqual(packet.sources, socialPackets[0]?.sources);
-    assert.ok(socialPackets[0]?.sources && socialPackets[1]?.proposal);
-    assert.deepEqual(socialPackets[2]?.selectedAssessmentIds, ['assessment:identity']);
-    assert.equal(socialPackets[3]?.repair, true);
-    assert.ok((socialPackets[1]?.requiredDecisionIds as string[]).includes('identity:identity:x.com:community_author'));
-    assert.ok((socialPackets[3]?.requiredDecisionIds as string[]).includes('identity:identity:x.com:community_author'));
-    for (const packet of [socialPackets[1], socialPackets[3]]) assert.ok((packet?.outputContract as string).includes('Copy each key unchanged'));
+    assert.ok(socialPackets[0]?.sources && socialPackets[1]?.invalidProposal && socialPackets[2]?.proposal);
+    const badMetric = (socialPackets[1]?.invalidProposal as { posts: Array<{ metrics: { replies: { citation: { sourceId: string; spanId: string } } } }> }).posts[0]?.metrics.replies;
+    assert.equal(badMetric?.citation.spanId, `${badMetric?.citation.sourceId}:span:1`);
+    assert.equal(((socialPackets[2]?.proposal as ReturnType<typeof socialProposal>).posts[0]?.metrics.replies), null);
+    assert.deepEqual(socialPackets[3]?.selectedAssessmentIds, ['assessment:integrity'],
+      'one existing screening repair selects only the independently rejected time-invalid integrity assessment');
+    assert.equal(socialPackets[4]?.repair, true);
+    assert.ok((socialPackets[2]?.requiredDecisionIds as string[]).includes('assessment:identity'));
+    assert.ok((socialPackets[4]?.requiredDecisionIds as string[]).includes('assessment:identity'));
+    for (const packet of [socialPackets[2], socialPackets[4]]) assert.ok((packet?.outputContract as string).includes('Copy each key unchanged'));
     const initialReviewEvidence = snapshot.evidence.find(item => item.id === 'social-review-response');
     assert.ok(initialReviewEvidence);
     const initialReviewEnvelope = JSON.parse(readFileSync(join(directory, 'artifacts', initialReviewEvidence.contentHash), 'utf8')) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
-    const initialReviewRaw = JSON.parse(initialReviewEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: object };
-    assert.ok(Object.hasOwn(initialReviewRaw.decisions, 'identity:identity:x.com:community_author'));
+    const initialReviewRaw = JSON.parse(initialReviewEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: Record<string, { accepted: boolean }> };
+    assert.equal(initialReviewRaw.decisions['assessment:identity']?.accepted, true, 'the unasserted identity stays outside screening repair');
+    assert.equal(initialReviewRaw.decisions['assessment:integrity']?.accepted, false, 'the original time-invalid current-integrity judgment remains rejected');
     const repairReviewEvidence = snapshot.evidence.find(item => item.id === 'social-repair-review-response');
     assert.ok(repairReviewEvidence);
     const repairReviewEnvelope = JSON.parse(readFileSync(join(directory, 'artifacts', repairReviewEvidence.contentHash), 'utf8')) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
-    const repairReviewRaw = JSON.parse(repairReviewEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: object };
-    assert.ok(Object.hasOwn(repairReviewRaw.decisions, 'identity:identity:x.com:community_author'));
+    const repairReviewRaw = JSON.parse(repairReviewEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: Record<string, { accepted: boolean }> };
+    assert.equal(repairReviewRaw.decisions['assessment:identity']?.accepted, true, 'the unselected identity judgment stays accepted unchanged');
+    assert.equal(repairReviewRaw.decisions['assessment:integrity']?.accepted, true, 'a fresh full review accepts the corrected bounded historical-post judgment');
     assert.equal(snapshot.details?.social?.method, 'social-source-review-v1');
-    assert.equal(snapshot.details?.social?.identityReview?.verdict, 'CONTRADICTED');
+    assert.equal(snapshot.details?.social?.identityReview?.verdict, 'UNRESOLVED');
     assert.equal(snapshot.details?.social?.integrityReview?.verdict, 'CONTRADICTED');
     assert.deepEqual(snapshot.details?.social?.integrityReview?.missingIndicators, ['ACCOUNT_HISTORY', 'ENGAGEMENT', 'COMPARABLE_HISTORY']);
-    assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-01')?.status, 'FAIL');
+    assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-01')?.status, 'UNKNOWN');
     assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-02')?.status, 'FAIL');
     assert.ok(snapshot.evidence.some(item => item.id === 'social-qualified-receipt'));
     assert.ok(snapshot.evidence.some(item => item.id === 'social-proposal-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
+    assert.ok(snapshot.evidence.some(item => item.id === 'social-selector-repair-prompt' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
+    assert.ok(snapshot.evidence.some(item => item.id === 'social-selector-repair-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
     assert.ok(snapshot.evidence.some(item => item.id === 'social-review-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
     assert.ok(snapshot.evidence.some(item => item.id === 'social-repair-proposal-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
     assert.ok(snapshot.evidence.some(item => item.id === 'social-repair-review-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
     const repairMarker = snapshot.evidence.find(item => item.id === 'social-repair-selection');
     assert.ok(repairMarker);
     assert.deepEqual(JSON.parse(readFileSync(join(directory, 'artifacts', repairMarker.contentHash), 'utf8')), {
-      method: 'social-screening-repair-v1', selectedAssessmentIds: ['assessment:identity'], applied: true,
+      method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:integrity'], applied: true,
     });
-    assert.equal(calls.filter(item => item.startsWith('https://api.search.tinyfish.ai/')).length, 3, 'attention uses its two searches and social uses one optional account search');
-    assert.equal(searchQueries.length, 3);
+    assert.equal(calls.filter(item => item.startsWith('https://api.search.tinyfish.ai/')).length, 2, 'the attention collector keeps its two searches when no identity profile is proposed');
+    assert.equal(searchQueries.length, 2);
     const marketFetches = fetchRequests.filter(request => request.format === 'html');
     assert.equal(marketFetches.length, 2, 'discovery and final DEX views each use one fixed-URL market fetch');
     assert.ok(marketFetches.every(request => request.urls.length === 1
       && request.urls[0] === `https://api.dexscreener.com/token-pairs/v1/base/${address}`), JSON.stringify(marketFetches));
     const sourceFetches = fetchRequests.filter(request => request.format !== 'html');
-    assert.equal(sourceFetches.length, 2, 'one original-source fetch and one bounded social supplement fetch are classified separately');
+    assert.equal(sourceFetches.length, 1, 'the original-source fetch is retained without an unnecessary social profile supplement');
     assert.deepEqual(new Set(sourceFetches[0]?.urls), new Set(Object.values(urls)), 'the original attention source membership stays fixed');
-    assert.deepEqual(new Set(sourceFetches[1]?.urls), new Set([
-      'https://x.com/community_author', 'https://x.com/price_feed', 'https://x.com/injection_fixture',
-    ]), 'social supplements fetch each observed account profile once');
-    assert.ok((sourceFetches[1]?.urls.length ?? 9) <= 8, 'social supplements stay within the existing eight-URL bound');
     assert.deepEqual(
       packets[0]?.requiredPostSourceIds,
       ['attention-page-2', 'attention-page-3', 'attention-page-4'],
@@ -1382,14 +1425,12 @@ test('full CLI retains attention and social qualification proofs and replays the
     }
     assert.equal(baseline.get('A15')?.quality, 'KNOWN');
     assert.equal((baseline.get('A15')?.data as { raw?: number })?.raw, 3);
-    assert.equal((baseline.get('A15')?.data as { originals?: number })?.originals, 3);
+    assert.equal((baseline.get('A15')?.data as { originals?: number })?.originals, 0);
     assert.equal(baseline.get('A16')?.quality, 'KNOWN');
-    assert.equal(baseline.get('A16')?.projection?.value, '1');
+    assert.equal(baseline.get('A16')?.projection?.value, '0');
     assert.equal(baseline.get('A17')?.quality, 'KNOWN');
-    assert.equal(baseline.get('A17')?.projection?.value, '1');
-    assert.deepEqual((baseline.get('A16')?.data as { excluded?: unknown[] })?.excluded, [
-      { id: 'attention-page-3', role: 'PRICE_ONLY' }, { id: 'attention-page-4', role: 'OTHER' },
-    ]);
+    assert.equal(baseline.get('A17')?.projection?.value, '0');
+    assert.deepEqual((baseline.get('A16')?.data as { excluded?: unknown[] })?.excluded, []);
 
     const pageEvidence = snapshot.evidence.find(item => item.id === 'attention-page-1');
     const proposalInput = snapshot.evidence.find(item => item.id === 'attention-proposal-prompt');
@@ -1413,8 +1454,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.deepEqual(JSON.parse(shown.stdout), snapshot);
     assert.deepEqual(JSON.parse(replayed.stdout), snapshot);
     assert.equal(identityExplanation.exitCode, 0);
-    assert.match(identityExplanation.stdout, /Public-evidence review: CONTRADICTED/);
-    assert.match(identityExplanation.stdout, /does not prove impersonation/i);
+    assert.match(identityExplanation.stdout, /Public-evidence review: UNRESOLVED/);
     assert.equal(integrityExplanation.exitCode, 0);
     assert.match(integrityExplanation.stdout, /Desired indicators unavailable: ACCOUNT_HISTORY, ENGAGEMENT, COMPARABLE_HISTORY/);
     assert.match(integrityExplanation.stdout, /visibility risks, not proof of fraud, bots or manipulation/);
@@ -1446,6 +1486,44 @@ test('full CLI retains attention and social qualification proofs and replays the
     };
     const receiptRecord = proofBundle.evidence.find(item => item.id === 'social-qualified-receipt');
     assert.ok(receiptRecord);
+
+    const replaceRawArtifact = (bundle: LiveBundle, id: string, raw: string) => {
+      const record = bundle.evidence.find(item => item.id === id);
+      assert.ok(record, `proof bundle retains ${id}`);
+      bundle.rawArtifacts[id] = raw;
+      record.contentHash = sha256(raw);
+    };
+    for (const tamper of ['repair-catalog', 'invalid-selector-trigger', 'identity-closure-marker'] as const) {
+      const candidate = structuredClone(proofBundle);
+      if (tamper === 'repair-catalog') {
+        const id = 'social-selector-repair-prompt';
+        const prompt = JSON.parse(candidate.rawArtifacts[id]!) as { sources: SocialSpanSource[] };
+        prompt.sources[0]!.spans[0]!.text += ' forged catalog text';
+        replaceRawArtifact(candidate, id, JSON.stringify(prompt));
+      } else if (tamper === 'invalid-selector-trigger') {
+        const id = 'social-proposal-response';
+        const response = JSON.parse(candidate.rawArtifacts[id]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+        const original = JSON.parse(response.candidates[0]!.content.parts[0]!.text) as { posts: Array<{ sourceId: string; metrics: { replies: { citation: { sourceId: string; spanId: string } } | null } }> };
+        const source = (socialPackets[0]!.sources as SocialSpanSource[]).find(row => row.id === original.posts[0]!.sourceId);
+        assert.ok(source?.spans[0]);
+        original.posts[0]!.metrics.replies!.citation.spanId = source.spans[0]!.id;
+        response.candidates[0]!.content.parts[0]!.text = JSON.stringify(original);
+        replaceRawArtifact(candidate, id, JSON.stringify(response));
+      } else {
+        const id = 'social-qualified-receipt';
+        const receipt = JSON.parse(candidate.rawArtifacts[id]!) as Record<string, unknown>;
+        assert.equal(receipt.identityCitationMethod, 'identity-citation-closure-v2');
+        receipt.identityCitationMethod = 'forged-closure';
+        replaceRawArtifact(candidate, id, JSON.stringify(receipt));
+      }
+      const verifier = new Service(':memory:');
+      try {
+        assert.throws(() => verifier.analyzeLive(candidate), /SOCIAL_PROOF_INVALID/, tamper);
+      } finally {
+        verifier.close();
+      }
+    }
+
     const forgedFactsBundle = structuredClone(proofBundle);
     assert.ok(forgedFactsBundle.details?.social?.integrityReview);
     forgedFactsBundle.details.social.integrityReview.verdict = 'SUPPORTED';
@@ -1474,7 +1552,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     // Convert the current capture into the older v2 social-proof shape. This fixture
     // must not carry fresh shared-mode facts or their proof chain into legacy replay.
     const currentOnlyEvidence = new Set(legacyBundle.evidence
-      .filter(item => item.id.startsWith('shared-') || item.id.startsWith('social-repair-') || item.id === 'attention-qualified-receipt'
+      .filter(item => item.id.startsWith('shared-') || item.id.startsWith('social-repair-') || item.id.startsWith('social-selector-repair-') || item.id === 'attention-qualified-receipt'
         || item.id === 'attention-comparison-final-review-response')
       .map(item => item.id));
     legacyBundle.evidence = legacyBundle.evidence.filter(item => !currentOnlyEvidence.has(item.id));
@@ -1491,9 +1569,10 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.ok(legacyReceiptRecord && legacyBundle.details?.social);
     const legacyReceipt = JSON.parse(legacyBundle.rawArtifacts[legacyReceiptRecord.id]!) as {
       proposal: Record<string, unknown>; review: { decisions: Array<{ id: string }> };
-      wireMethod?: string; repairSelectionId?: string | null;
+      wireMethod?: string; identityCitationMethod?: string; repairSelectionId?: string | null;
     };
     delete legacyReceipt.wireMethod;
+    delete legacyReceipt.identityCitationMethod;
     delete legacyReceipt.repairSelectionId;
     delete legacyReceipt.proposal.identityAssessment;
     delete legacyReceipt.proposal.integrityAssessment;

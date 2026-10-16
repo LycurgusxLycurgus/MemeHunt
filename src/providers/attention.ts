@@ -1,3 +1,4 @@
+import { verifyOriginAlias, verifiedOriginExclusion, type OriginExclusion, type OriginRecovery } from './origin-recovery.js';
 import { fetchReadResponse, readLimitedText } from './http.js';
 import { publicHttpsUrl } from './tinyfish.js';
 import type { TokenRef } from '../domain/contracts.js';
@@ -6,9 +7,48 @@ export type AttentionSource = {id:string;url:string;text:string;publishedAt:stri
 export type ComparisonLead={id:string;searchArtifactId:string;resultIndex:number;url:string|null;title:string;snippet:string;metadataEvidenceId:string;sourceIds:string[];acquisitionStatus:'ACQUIRED'|'FAILED'|'BLOCKED'|'OMITTED'|'CONFLICTED'|'UNSAFE';acquisitionCodes:string[];recoveryQueryIds:string[];recoverySourceIds:string[]};
 export type ComparisonAcquisition={originalComplete:boolean;searchSucceeded:boolean;descriptorComplete:boolean;leadCount:number;leads:ComparisonLead[]};
 export type RecoveryQueryParent={leadId:string;originalUrl:string|null};
+export function requiredComparisonRecoveryParents(leads:ComparisonLead[]):ComparisonLead[]{
+  return leads.filter(lead=>{
+    if(lead.acquisitionStatus!=='ACQUIRED'||lead.acquisitionCodes.length)return true;
+    if(!lead.url)return false;
+    const url=new URL(lead.url);return /^(?:www\.)?(?:x|twitter)\.com$/.test(url.hostname)&&/^\/[A-Za-z0-9_]+\/?$/.test(url.pathname);
+  });
+}
+export type OriginAcquisition={method:'original-origin-acquisition-v1';complete:boolean;sourceIds:string[];searches:Array<{id:string;complete:boolean}>;urls:Array<{url:string;sourceId:string|null;state:'ACQUIRED'|'UNAVAILABLE'|'OMITTED'|'CLIPPED'|'CONFLICTED'|'EXCLUDED_REVIEWED'}>};
 type RecoveryPlan={queries:string[];skipUrls:string[];maxUrls:number;queryParents?:RecoveryQueryParent[];recordQueryTimes?:boolean};
-export type AttentionRead = {sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;queryRetrievedAt?:Record<string,string>;growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
+export type AttentionRead = {sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;comparisonCoverage?:import('../domain/attention.js').ComparisonCoverage;comparisonPublicSupport?:import('../domain/attention.js').ComparisonPublicSupport;narrativePublicSupport?:import('../domain/attention.js').NarrativePublicSupport;queryRetrievedAt?:Record<string,string>;metadataLinks?:true;metadataUri?:string;originRecovery?:OriginRecovery;originExclusions?:OriginExclusion[];originScope?:{method:'bounded-origin-sources-v1';complete:boolean;sourceIds:string[];acquisition?:OriginAcquisition};growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
 const object=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
+/** The collector and persistence reconstruction share the original seed-link boundary. */
+export function originSeedLinks(seed:string,links:unknown[]):string[]{
+  const u=new URL(seed),metadata=/\.json(?:[?]|$)/i.test(seed),social=/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname);
+  return [...new Set(links.flatMap(link=>{
+    if(typeof link!=='string')return [];const safe=publicHttpsUrl(link,true),next=safe?normalizeAttentionSearchUrl(safe):null;if(!next)return [];const v=new URL(next);
+    const eligible=metadata?!/\.(?:png|jpe?g|webp|gif|svg)(?:[?]|$)/i.test(v.pathname):social?/^\/[A-Za-z0-9_]+\/?$/.test(u.pathname)&&/^\/[A-Za-z0-9_]+\/status\/\d+/.test(v.pathname)&&v.pathname.split('/')[1].toLowerCase()===u.pathname.split('/')[1]?.toLowerCase():v.hostname===u.hostname&&/^\/(?:docs?|about|whitepaper|launch|log)(?:[/.\-]|$)/i.test(v.pathname);
+    return eligible?[next]:[];
+  }))];
+}
+/** Failed or omitted original pages cannot disappear behind the surviving text. */
+export function reconstructOriginAcquisition(read:AttentionRead,token?:TokenRef):OriginAcquisition{
+  const required=new Set(read.discoveryUrls??[]),searches:OriginAcquisition['searches']=[];
+  for(let i=1;i<=2;i++){
+    const id=`attention-search-${i}`;let complete=false;
+    try{const r=JSON.parse(read.rawArtifacts[id]);complete=Array.isArray(r.results)&&!r.error&&(!Array.isArray(r.errors)||!r.errors.length);if(complete)for(const item of r.results){const url=typeof item?.url==='string'?normalizeAttentionSearchUrl(item.url):null;if(url)required.add(url);else complete=false;}}catch{/* Missing original search remains incomplete. */}
+    searches.push({id,complete});
+  }
+  const results:Array<{url:string;finalUrl:string;text:string}>=[],attempted=new Set<string>();
+  for(const [id,raw] of Object.entries(read.rawArtifacts))if(/^attention-fetch-\d+(?:-retry-\d+)?$/.test(id))try{
+    const response=JSON.parse(raw);if(!Array.isArray(response.results)||!Array.isArray(response.errors))continue;
+    for(const e of response.errors)if(typeof e?.url==='string'){const url=normalizeAttentionSearchUrl(e.url);if(url)attempted.add(url);}
+    for(const r of response.results){const url=typeof r?.url==='string'?normalizeAttentionSearchUrl(r.url):null,finalUrl=typeof r?.final_url==='string'?normalizeAttentionSearchUrl(r.final_url):url;if(!url||!finalUrl||typeof r.text!=='string')continue;attempted.add(url);results.push({url,finalUrl,text:r.text});if(read.discoveryUrls?.includes(url)){const metadata=/\.json(?:[?]|$)/i.test(url)?[...r.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];for(const link of originSeedLinks(url,[...(Array.isArray(r.links)?r.links:[]),...metadata]))required.add(link);}}
+  }catch{/* Invalid response cannot supply a page. */}
+  const urls:OriginAcquisition['urls']=[...required].map(url=>{
+    const observed=results.filter(r=>r.url===url),alias=read.originRecovery?.aliases.find(a=>a.originUrl===url),verified=alias?verifyOriginAlias(alias,read.sources,read.rawArtifacts):null,source=verified??read.sources.find(s=>observed.some(r=>r.finalUrl===s.url&&r.text===s.text)&&s.text.trim()&&s.text.trim().toLowerCase()!=='safety check');
+    const excluded=read.originExclusions?.find(e=>e.url===url);
+    const state:OriginAcquisition['urls'][number]['state']=!source&&excluded&&verifiedOriginExclusion(read,excluded,token)?'EXCLUDED_REVIEWED':!source?(attempted.has(url)?'UNAVAILABLE':'OMITTED'):!verified&&observed.some(r=>r.text!==source.text)?'CONFLICTED':source.text.length>6000?'CLIPPED':'ACQUIRED';
+    return {url,sourceId:source?.id??null,state};
+  });
+  return {method:'original-origin-acquisition-v1',complete:searches.every(s=>s.complete)&&urls.length>0&&urls.every(u=>u.state==='ACQUIRED'||u.state==='EXCLUDED_REVIEWED'),sourceIds:[...new Set(urls.flatMap(u=>u.sourceId?[u.sourceId]:[]))],searches,urls};
+}
 /** Decode only the observed search-result redirect wire, then apply the normal public URL gate. */
 export function normalizeAttentionSearchUrl(value:string):string|null{
   let target=value;
@@ -38,14 +78,23 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
   const seedScopes=seeds.map(url=>{const u=new URL(url);return `site:${u.hostname}${/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)?u.pathname:''}`;});
   const queries=recoveryPlan?[...recoveryPlan.queries]:[`"${token.address}" ${token.chain} ${seedScopes.length?`(${seedScopes.join(' OR ')})`:'narrative origin catalyst'}`,`"${token.address}" (site:x.com OR site:twitter.com)`];
   const comparisonIntent='Find public sources identifying distinct token contract addresses representing this named crypto project or narrative. Prioritize contract-bearing project pages and substantive original posts. Exclude non-crypto dictionary matches. Same name alone does not establish association; do not rank by price.';
-  if(!recoveryPlan&&name&&name.length<=100)queries.push(`"${name.replace(/["\\]/g,'')}" ${token.chain} token contract meme narrative`);
+  if(!recoveryPlan&&name&&name.length<=100)queries.push(`"${name.replace(/["\\]/g,'')}" ${token.chain} crypto token contract`);
   let postSampleComplete=true,comparisonSearchSucceeded=false,comparisonIncomplete=false;
   for(const [i,query] of queries.entries())try{
     const url=new URL('https://api.search.tinyfish.ai/');url.searchParams.set('query',query);
     if(recoveryPlan||i===2){const intent=recoveryPlan?'Identify and corroborate the indexed entity and distinctive subject or mechanism named in this query using descriptive independent public sources. Include descriptive context and alternate contract-bearing pages when applicable; a shared name alone is insufficient.':comparisonIntent;url.searchParams.set('intent',intent);rawArtifacts[`attention-search-${i+1}-intent`]=intent;}
     const response=await fetchReadResponse(url.toString(),{headers:{'X-API-Key':key,accept:'application/json'}},fetcher,10000);
     if(!response.ok){codes.push(`ATT_SEARCH_HTTP_${response.status}`);postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}
-    const raw=await readLimitedText(response,100000);rawArtifacts[`attention-search-${i+1}`]=raw;if(recoveryPlan?.recordQueryTimes)queryRetrievedAt[`attention-search-${i+1}`]=now();const value:unknown=JSON.parse(raw);
+    let raw=await readLimitedText(response,100000);rawArtifacts[`attention-search-${i+1}`]=raw;if(recoveryPlan?.recordQueryTimes)queryRetrievedAt[`attention-search-${i+1}`]=now();let value:unknown=JSON.parse(raw);
+    if(!recoveryPlan&&i===2&&query!==`"${name!.replace(/["\\]/g,'')}" ${token.chain}`&&object(value)&&!value.error&&Array.isArray(value.results)&&value.results.length===0&&(value.errors===undefined||Array.isArray(value.errors)&&value.errors.length===0)){
+      rawArtifacts['attention-search-3-primary-query']=query;
+      rawArtifacts['attention-search-3-empty-response']=raw;
+      const fallback=`"${name!.replace(/["\\]/g,'')}" ${token.chain}`;
+      const fallbackUrl=new URL(url);fallbackUrl.searchParams.set('query',fallback);
+      const fallbackResponse=await fetchReadResponse(fallbackUrl.toString(),{headers:{'X-API-Key':key,accept:'application/json'}},fetcher,10000);
+      if(!fallbackResponse.ok){codes.push(`ATT_SEARCH_HTTP_${fallbackResponse.status}`);comparisonIncomplete=true;continue;}
+      raw=await readLimitedText(fallbackResponse,100000);value=JSON.parse(raw);rawArtifacts['attention-search-3']=raw;queries[i]=fallback;
+    }
     if(!object(value)||!Array.isArray(value.results)){codes.push('ATT_SEARCH_SHAPE');postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}
     if(recoveryPlan||i===2)comparisonSearchSucceeded=true;
     for(const [resultIndex,r] of value.results.entries()){
@@ -164,13 +213,10 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
       sources.push({id:`attention-page-${sources.length+1}`,url,text,publishedAt:at,authorId:post?`${u.hostname.replace(/^www\./,'').replace('twitter.com','x.com')}:${u.pathname.split('/')[1].toLowerCase()}`:null,availableAt:now(),kind:post?'POST':'PAGE',...(discoveryParents.has(requestedUrl)?{discoveredFrom:discoveryParents.get(requestedUrl)}:{})});
       sourceByRequested.set(requestedUrl,sources.at(-1)!.id);
       if(comparisonUrls.has(requestedUrl))comparisonSourceIds.push(sources.at(-1)!.id);
-      if(!recoveryPlan&&seeds.includes(requestedUrl)&&Array.isArray(r.links))for(const link of r.links){
-        if(typeof link!=='string'||followed.size>=4)continue;
-        const safe=publicHttpsUrl(link,true);if(!safe)continue;
-        const next=canonicalUrl(safe),v=new URL(next);
-        const social=/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname);
-        const eligible=social?/^\/[A-Za-z0-9_]+\/?$/.test(u.pathname)&&isPostUrl(next)&&v.pathname.split('/')[1].toLowerCase()===u.pathname.split('/')[1]?.toLowerCase():v.hostname===u.hostname&&/^\/(?:docs?|about|whitepaper|launch|log)(?:[/.\-]|$)/i.test(v.pathname);
-        if(!eligible||urls.includes(next))continue;
+      const metadataSeed=seeds.includes(requestedUrl)&&/\.json(?:[?]|$)/i.test(requestedUrl);
+      const metadataLinks=metadataSeed?[...text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];
+      if(!recoveryPlan&&seeds.includes(requestedUrl))for(const next of originSeedLinks(requestedUrl,[...(Array.isArray(r.links)?r.links:[]),...metadataLinks])){
+        if(urls.includes(next))continue;
         // Follow only seed-page links, ahead of remaining search pages, without exceeding the shared page budget.
         followed.add(next);discoveryParents.set(next,requestedUrl);urls.splice(offset+followed.size-1,0,next);
         if(urls.length>32){const omitted=urls.pop()!;codes.push('ATT_PAGE_CAP');if(isPostUrl(omitted))postSampleComplete=false;if(comparisonUrls.has(omitted))comparisonIncomplete=true;}

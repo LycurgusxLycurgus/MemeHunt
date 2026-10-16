@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { z } from 'zod';
+import { geminiSettings } from '../src/providers/gemini.js';
 import { sourceSpans, requestSourceJson, parseSourceResponse } from '../src/providers/source-model.js';
 import { normalizeSocialProposal, qualifySocial, validateSocialWire } from '../src/providers/social-model.js';
 import { deriveSocial } from '../src/domain/social.js';
@@ -12,7 +13,7 @@ const KEY = 'social-model-test-key';
 type Span = { id: string; sourceId: string; start: number; end: number; text: string };
 type PacketSource = { id: string; kind: 'POST' | 'PAGE'; spans: Span[]; lines?: Array<{ id: string; text: string }> };
 type WireCitation = { sourceId: string; spanId: string };
-type ModelPacket = { sources: PacketSource[]; requiredPostIds: string[]; requiredDecisionIds?: string[]; outputContract?: string; proposal?: { posts: Array<{ sourceId: string; body: { sourceId: string; quote: string }; [key: string]: unknown }>; identities: Array<{ id: string; [key: string]: unknown }>; accounts: Array<{ accountId: string; [key: string]: unknown }>; identityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; integrityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> } }; pairs?: Array<{ id: string }> };
+type ModelPacket = { sources: PacketSource[]; requiredPostIds: string[]; requiredDecisionIds?: string[]; outputContract?: string; invalidProposal?: unknown; proposal?: { posts: Array<{ sourceId: string; body: { sourceId: string; quote: string }; [key: string]: unknown }>; identities: Array<{ id: string; [key: string]: unknown }>; accounts: Array<{ accountId: string; [key: string]: unknown }>; identityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; integrityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> } }; pairs?: Array<{ id: string }> };
 type CapturedRequest = { payload: Record<string, unknown>; packet: ModelPacket };
 type CitationMode = 'valid' | 'unknown-span' | 'wrong-source' | 'extra-quote' | 'extra-offset';
 type BodyMode = 'complete' | 'body-segment' | 'unresolved' | 'unknown-line' | 'reversed' | 'cross-source';
@@ -44,6 +45,21 @@ function fromRequest(init: RequestInit | undefined): CapturedRequest {
 
 function envelope(value: unknown): Response {
   return new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] }), { headers: { 'content-type': 'application/json' } });
+}
+
+function quotaErrorBody(options: { quotaIds?: string[]; model?: string; retryDelay?: string | null; quotaValue?: string } = {}): string {
+  const quotaFailureType = 'type.googleapis.com/google.rpc.QuotaFailure';
+  const retryInfoType = 'type.googleapis.com/google.rpc.RetryInfo';
+  const quotaIds = options.quotaIds ?? ['GenerateContentInputTokensPerModelPerMinute-FreeTier'];
+  const details: Array<Record<string, unknown>> = [{
+    '@type': quotaFailureType,
+    violations: quotaIds.map(quotaId => ({
+      quotaId, quotaValue: options.quotaValue ?? '250000',
+      quotaDimensions: { model: options.model ?? geminiSettings.model },
+    })),
+  }];
+  if (options.retryDelay !== null) details.push({ '@type': retryInfoType, retryDelay: options.retryDelay ?? '45s' });
+  return JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', details } });
 }
 
 function fullText(source: PacketSource): string {
@@ -111,6 +127,11 @@ function reviewWire(packet: ModelPacket, pairMode: PairMode = 'valid', sourceCom
   };
 }
 
+function keyedReviewWire(packet: ModelPacket) {
+  const review = reviewWire(packet);
+  return { ...review, decisions: Object.fromEntries(review.decisions.map(({ id, ...decision }) => [id, decision])) };
+}
+
 function inputWithCopiedPosts(): SocialInput {
   const value = input();
   const original = value.sources[0]!;
@@ -163,6 +184,260 @@ test('social qualification makes exactly two reviewed passes over identical full
   assert.match(proposalPacket.instruction, /Select supplied sourceId and spanId for citations; code supplies literal quotes/);
   assert.match(proposalPacket.instruction, /firstLineId and lastLineId covering the ENTIRE actual original body/);
   assert.match(proposalPacket.instruction, /Use null when boundaries cannot be established/);
+});
+
+test('selector repair is limited to a reproducible citation failure and receives one strict corrected proposal', async t => {
+  const invalidProposal = (packet: ModelPacket) => {
+    const proposal = proposalWire(packet) as ReturnType<typeof proposalWire>;
+    const sourceId = packet.requiredPostIds[0]!;
+    const mutablePost = proposal.posts[0]! as unknown as { metrics: { replies: unknown } };
+    mutablePost.metrics.replies = {
+      text: '1', citation: { sourceId, spanId: `${sourceId}:span:1` },
+    };
+    return proposal;
+  };
+
+  await t.test('valid correction gets the unchanged catalog and a fresh independent review', async () => {
+    const mock = mockModel({ responder: (packet, call) => {
+      if (call === 1) return invalidProposal(packet);
+      if (call === 2) {
+        assert.ok(packet.invalidProposal, 'repair packet identifies the locally rejected proposal');
+        return proposalWire(packet);
+      }
+      return keyedReviewWire(packet);
+    } });
+    const socialInput = input(2);
+    const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(mock.calls.length, 3, 'one invalid proposal, one full corrected proposal, then the ordinary independent review');
+    assert.ok(result.proposal && result.review);
+    assert.equal(result.code, undefined);
+    assert.equal(result.proposal.posts[0]?.metrics.replies, null);
+    assert.deepEqual(mock.calls[0]!.packet.sources, mock.calls[1]!.packet.sources);
+    assert.deepEqual(mock.calls[0]!.packet.sources, mock.calls[2]!.packet.sources);
+    assert.equal(fullText(mock.calls[1]!.packet.sources[0]!), socialInput.sources[0]!.text);
+    assert.deepEqual(mock.calls[2]!.packet.proposal, result.proposal);
+
+    const originalPrompt = JSON.parse(result.rawArtifacts['social-proposal-prompt']!) as Record<string, unknown>;
+    const repairPrompt = JSON.parse(result.rawArtifacts['social-selector-repair-prompt']!) as Record<string, unknown>;
+    const { instruction: _originalInstruction, ...originalContext } = originalPrompt;
+    const { instruction: _repairInstruction, invalidProposal: repairTrigger, ...repairContext } = repairPrompt;
+    assert.deepEqual(repairContext, originalContext, 'repair retains the exact original token, scope, inventory, timeline, and full catalog');
+    assert.deepEqual(repairTrigger, mock.responses[0]);
+    assert.match(String(repairPrompt.instruction), /identical complete catalog/);
+    assert.ok(result.rawArtifacts['social-selector-repair-response']);
+    assert.doesNotMatch(result.rawArtifacts['social-review-prompt']!, /invalidProposal/);
+    validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+
+    const forgedCatalog = { ...result.rawArtifacts };
+    const forgedRepairPrompt = JSON.parse(forgedCatalog['social-selector-repair-prompt']!) as { sources: PacketSource[] };
+    forgedRepairPrompt.sources[0]!.spans[0]!.text += ' forged';
+    forgedCatalog['social-selector-repair-prompt'] = JSON.stringify(forgedRepairPrompt);
+    assert.throws(() => validateSocialWire(forgedCatalog, socialInput, SOCIAL_TOKEN, result.proposal, result.review), /SOCIAL_PROOF_INVALID/);
+  });
+
+  await t.test('a second invalid selector remains unknown without a third request', async () => {
+    const mock = mockModel({ responder: (packet, call) => call === 1
+      ? invalidProposal(packet)
+      : call === 2
+        ? invalidProposal(packet)
+        : reviewWire(packet) });
+    const result = await qualifySocial(input(), SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(mock.calls.length, 2);
+    assert.equal(result.proposal, null);
+    assert.equal(result.review, null);
+    assert.equal(result.code, 'SOC_CITATION_INVALID');
+    assert.ok(result.rawArtifacts['social-proposal-response']);
+    assert.ok(result.rawArtifacts['social-selector-repair-prompt']);
+    assert.ok(result.rawArtifacts['social-selector-repair-response']);
+    assert.equal(result.rawArtifacts['social-review-prompt'], undefined);
+  });
+
+  await t.test('a valid initial proposal or a non-citation validation error never enters selector repair', async () => {
+    const valid = mockModel({ responder: (packet, call) => call === 1 ? proposalWire(packet) : keyedReviewWire(packet) });
+    const validResult = await qualifySocial(input(), SOCIAL_TOKEN, KEY, valid.fetcher, async () => {}, undefined, { screeningRepair: true });
+    assert.equal(valid.calls.length, 2);
+    assert.ok(validResult.proposal && validResult.review);
+    assert.equal(validResult.rawArtifacts['social-selector-repair-prompt'], undefined);
+
+    const malformed = mockModel({ responder: packet => {
+      const proposal = proposalWire(packet) as Record<string, unknown>;
+      delete proposal.identityAssessment;
+      return proposal;
+    } });
+    const malformedResult = await qualifySocial(input(), SOCIAL_TOKEN, KEY, malformed.fetcher, async () => {}, undefined, { screeningRepair: true });
+    assert.equal(malformed.calls.length, 1);
+    assert.equal(malformedResult.code, 'SOC_MODEL_INVALID');
+    assert.equal(malformedResult.proposal, null);
+    assert.equal(malformedResult.rawArtifacts['social-selector-repair-prompt'], undefined);
+  });
+});
+
+test('fresh identity citation closure only carries an existing assessment edge into the binding record', async t => {
+  const socialInput = input();
+  socialInput.sources.push(
+    {
+      id: 'primary-binding', url: 'https://public.example/project',
+      text: `The project account @alice represents token contract ${SOCIAL_TOKEN.address}.`,
+      publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+    },
+    {
+      id: 'profile-alice', url: 'https://x.com/alice',
+      text: `Official public profile for @alice names token contract ${SOCIAL_TOKEN.address}.`,
+      publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+    },
+    {
+      id: 'primary-bob', url: 'https://public.example/other-project',
+      text: `The project account @bob represents token contract ${SOCIAL_TOKEN.address}.`,
+      publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+    },
+    {
+      id: 'alice-without-contract', url: 'https://public.example/account-reference',
+      text: 'The project account @alice is mentioned here without a token contract address.',
+      publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+    },
+  );
+  socialInput.identitySourceIds = ['profile-alice'];
+  socialInput.identityComplete = true;
+
+  const sourceCitation = (packet: ModelPacket, sourceId: string, matches: (text: string) => boolean) => {
+    const source = packet.sources.find(row => row.id === sourceId);
+    assert.ok(source, `the packet supplies ${sourceId}`);
+    const span = source.spans.find(candidate => matches(candidate.text));
+    assert.ok(span, `${sourceId} supplies the required literal citation span`);
+    return { sourceId, spanId: span.id };
+  };
+  const bindingProposal = (packet: ModelPacket, primarySourceId: string) => {
+    const profile = sourceCitation(packet, 'profile-alice', text => text.includes(SOCIAL_TOKEN.address) && text.includes('@alice'));
+    const primary = sourceCitation(packet, primarySourceId, text => text.includes('@') && text.includes(SOCIAL_TOKEN.address));
+    return {
+      ...proposalWire(packet),
+      identityAssessment: {
+        verdict: 'SUPPORTED',
+        rationale: 'A distinct primary project page and the public account profile both state this exact token binding.',
+        citations: [primary],
+      },
+      identities: [{
+        id: 'identity:x.com:alice', accountId: 'x.com:alice', status: 'PUBLIC_BINDING_SUPPORTED', citations: [primary],
+      }],
+    };
+  };
+
+  const mock = mockModel({ responder: (packet, call) => call === 1
+    ? bindingProposal(packet, 'primary-binding')
+    : keyedReviewWire(packet) });
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+  assert.equal(mock.calls.length, 2);
+  assert.ok(result.proposal && result.review);
+  assert.deepEqual(result.proposal.identities[0]?.citations, [
+    { sourceId: 'primary-binding', quote: socialInput.sources.find(source => source.id === 'primary-binding')!.text },
+    { sourceId: 'profile-alice', quote: socialInput.sources.find(source => source.id === 'profile-alice')!.text },
+  ]);
+  assert.deepEqual(result.proposal.identityAssessment?.citations, [
+    { sourceId: 'primary-binding', quote: socialInput.sources.find(source => source.id === 'primary-binding')!.text },
+    { sourceId: 'profile-alice', quote: socialInput.sources.find(source => source.id === 'profile-alice')!.text },
+  ]);
+  assert.deepEqual(mock.calls[1]!.packet.proposal?.identities[0]?.citations, result.proposal.identities[0]?.citations,
+    'the independent reviewer receives the existing account-page citation added to both supported edges');
+  assert.deepEqual(mock.calls[1]!.packet.proposal?.identities[0], result.proposal.identities[0],
+    'the independently reviewed proposal contains the mechanically closed primary and account edges');
+  assert.equal(result.review.decisions.find(row => row.id === 'assessment:identity')?.accepted, true);
+  assert.equal(deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-test']).facts.identityReview?.verdict, 'SUPPORTED');
+  const receipt = JSON.parse(result.rawArtifacts['social-qualified-receipt']!) as { identityCitationMethod?: string };
+  assert.equal(receipt.identityCitationMethod, 'identity-citation-closure-v2');
+  validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+
+  const originalWire = mock.responses[0];
+  const onlyAssessmentCitations = (sourceIds: string[]) => {
+    const value = structuredClone(originalWire) as ReturnType<typeof bindingProposal>;
+    const packet = mock.calls[0]!.packet;
+    value.identityAssessment.citations = sourceIds.map(sourceId => sourceCitation(packet, sourceId, text => text.length > 0));
+    return normalizeSocialProposal(value, socialInput, SOCIAL_TOKEN, true).proposal.identities[0]!.citations;
+  };
+  await t.test('account-only assessment cannot add an independent primary edge', () => {
+    assert.deepEqual(onlyAssessmentCitations(['profile-alice']), result.proposal!.identities[0]!.citations.slice(0, 1));
+  });
+  await t.test('a page for another account cannot close Alice’s binding', () => {
+    assert.deepEqual(onlyAssessmentCitations(['primary-bob', 'profile-alice']), result.proposal!.identities[0]!.citations.slice(0, 1));
+  });
+  await t.test('a page without the literal token address cannot close the binding', () => {
+    assert.deepEqual(onlyAssessmentCitations(['alice-without-contract', 'profile-alice']), result.proposal!.identities[0]!.citations.slice(0, 1));
+  });
+
+  await t.test('own-account closure appends only the existing matching account publication with literal CA and account name', () => {
+    const raw = structuredClone(originalWire) as ReturnType<typeof bindingProposal>;
+    const normalized = normalizeSocialProposal(raw, socialInput, SOCIAL_TOKEN, true, true).proposal;
+    assert.deepEqual(normalized.identities[0]?.citations, result.proposal!.identities[0]!.citations);
+    assert.deepEqual(normalized.identityAssessment?.citations, result.proposal!.identityAssessment?.citations);
+    assert.equal(raw.identities[0]?.citations.some(ref => ref.sourceId === 'profile-alice'), false,
+      'the account-page edge was selected from the retained catalog rather than supplied in the original proposal');
+  });
+
+  await t.test('a different account URL or a page without the literal CA cannot supply the own-account edge', () => {
+    const raw = structuredClone(originalWire) as ReturnType<typeof bindingProposal>;
+    const wrongAccount = structuredClone(socialInput);
+    wrongAccount.sources.find(source => source.id === 'profile-alice')!.url = 'https://x.com/bob';
+    const wrongAccountResult = normalizeSocialProposal(raw, wrongAccount, SOCIAL_TOKEN, true, true).proposal;
+    assert.deepEqual(wrongAccountResult.identities[0]?.citations, [
+      { sourceId: 'primary-binding', quote: socialInput.sources.find(source => source.id === 'primary-binding')!.text },
+    ]);
+
+    const missingAddress = structuredClone(socialInput);
+    missingAddress.sources.find(source => source.id === 'profile-alice')!.text = 'Official public profile for @alice with no token address.';
+    const missingAddressResult = normalizeSocialProposal(raw, missingAddress, SOCIAL_TOKEN, true, true).proposal;
+    assert.deepEqual(missingAddressResult.identities[0]?.citations, [
+      { sourceId: 'primary-binding', quote: socialInput.sources.find(source => source.id === 'primary-binding')!.text },
+    ]);
+  });
+
+  await t.test('a reviewer rejection keeps the identity judgment unresolved', async () => {
+    const rejected = mockModel({ responder: (packet, call) => {
+      if (call === 1) return bindingProposal(packet, 'primary-binding');
+      const review = keyedReviewWire(packet) as { decisions: Record<string, { accepted: boolean; rationale: string }> };
+      review.decisions['assessment:identity']!.accepted = false;
+      return review;
+    } });
+    const rejectedResult = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, rejected.fetcher, async () => {}, undefined, { screeningRepair: true });
+    assert.ok(rejectedResult.proposal && rejectedResult.review);
+    const reviewedIdentity = rejected.calls[1]!.packet.proposal?.identities[0] as { citations?: Array<{ sourceId: string }> } | undefined;
+    assert.ok(reviewedIdentity?.citations?.some(citation => citation.sourceId === 'profile-alice'));
+    assert.equal(deriveSocial(rejectedResult.read, rejectedResult.proposal, rejectedResult.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-test']).facts.identityReview?.verdict, 'UNRESOLVED');
+    validateSocialWire(rejectedResult.rawArtifacts, socialInput, SOCIAL_TOKEN, rejectedResult.proposal, rejectedResult.review);
+  });
+
+  await t.test('v1 reconstruction keeps its prior assessment-only behavior; a rehashed v2-to-v1 downgrade cannot retain the v2 result', () => {
+    const v1Proposal = normalizeSocialProposal(structuredClone(originalWire), socialInput, SOCIAL_TOKEN, true, false).proposal;
+    assert.deepEqual(v1Proposal.identities[0]?.citations, [
+      { sourceId: 'primary-binding', quote: socialInput.sources.find(source => source.id === 'primary-binding')!.text },
+    ]);
+
+    const legacyRaw = { ...result.rawArtifacts };
+    const legacyReceipt = JSON.parse(legacyRaw['social-qualified-receipt']!) as { identityCitationMethod?: string; proposal?: unknown };
+    legacyReceipt.identityCitationMethod = 'assessment-citation-closure-v1';
+    legacyReceipt.proposal = v1Proposal;
+    legacyRaw['social-qualified-receipt'] = JSON.stringify(legacyReceipt);
+    validateSocialWire(legacyRaw, socialInput, SOCIAL_TOKEN, v1Proposal, result.review);
+
+    const downgradedRaw = { ...result.rawArtifacts };
+    const downgradedReceipt = JSON.parse(downgradedRaw['social-qualified-receipt']!) as { identityCitationMethod?: string };
+    downgradedReceipt.identityCitationMethod = 'assessment-citation-closure-v1';
+    downgradedRaw['social-qualified-receipt'] = JSON.stringify(downgradedReceipt);
+    assert.throws(() => validateSocialWire(downgradedRaw, socialInput, SOCIAL_TOKEN, result.proposal, result.review), /SOCIAL_PROOF_INVALID/);
+  });
+
+  await t.test('marker and local citation tampering fail proof reconstruction', () => {
+    const forgedMarker = { ...result.rawArtifacts };
+    const rawReceipt = JSON.parse(forgedMarker['social-qualified-receipt']!) as Record<string, unknown>;
+    rawReceipt.identityCitationMethod = 'forged-closure';
+    forgedMarker['social-qualified-receipt'] = JSON.stringify(rawReceipt);
+    assert.throws(() => validateSocialWire(forgedMarker, socialInput, SOCIAL_TOKEN, result.proposal, result.review), /SOCIAL_PROOF_INVALID/);
+
+    const withoutClosedEdge = structuredClone(result.proposal!);
+    withoutClosedEdge.identities[0]!.citations = withoutClosedEdge.identities[0]!.citations.slice(0, 1);
+    assert.throws(() => validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, withoutClosedEdge, result.review), /SOCIAL_PROOF_INVALID/);
+  });
 });
 
 test('full Shared repairs only a rejected supported identity screen and preserves the original source records', async t => {
@@ -269,7 +544,7 @@ test('full Shared repairs only a rejected supported identity screen and preserve
     const selection = JSON.parse(result.rawArtifacts['social-repair-selection']!) as {
       method: string; selectedAssessmentIds: string[]; applied: boolean;
     };
-    assert.deepEqual(selection, { method: 'social-screening-repair-v1', selectedAssessmentIds: ['assessment:identity'], applied: true });
+    assert.deepEqual(selection, { method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:identity'], applied: true });
     const receipt = JSON.parse(result.rawArtifacts['social-qualified-receipt']!) as { wireMethod: string; repairSelectionId: string };
     assert.deepEqual(receipt, { ...receipt, wireMethod: 'social-line-span-v2', repairSelectionId: 'social-repair-selection' });
     assert.ok(result.rawArtifacts['social-repair-proposal-prompt']);
@@ -293,10 +568,93 @@ test('full Shared repairs only a rejected supported identity screen and preserve
     assert.equal(result.review.decisions.find(decision => decision.id === 'assessment:identity')?.accepted, false);
     const selection = JSON.parse(result.rawArtifacts['social-repair-selection']!) as { applied: boolean; code: string };
     assert.deepEqual(selection, {
-      method: 'social-screening-repair-v1', selectedAssessmentIds: ['assessment:identity'], applied: false, code: 'SOC_REPAIR_REJECTED',
+      method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:identity'], applied: false, code: 'SOC_REPAIR_REJECTED',
     });
     validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
   });
+});
+
+test('screening repair can correct a rejected historical integrity rationale once while preserving copy relations', async () => {
+  const socialInput = inputWithCopiedPosts();
+  socialInput.sources.filter(source => source.kind === 'POST').forEach((source, index) => {
+    source.publishedAt = `2026-10-02T12:0${index}:00.000Z`;
+  });
+  const before = structuredClone(socialInput.sources);
+  const pairId = 'copy:post-alice-1:post-alice-2';
+  const mock = mockModel({ responder: (packet, call) => {
+    if (call === 1) {
+      const initial = proposalWire(packet);
+      return { ...initial, integrityAssessment: {
+        verdict: 'SUPPORTED', rationale: 'These historical posts establish current integrity and active visibility.',
+        citations: initial.integrityAssessment.citations,
+      } };
+    }
+    if (call === 2) {
+      const initialReview = keyedReviewWire(packet) as { decisions: Record<string, { accepted: boolean; rationale: string }>; pairs: Record<string, { relation: string; rationale: string }> };
+      const rejected = initialReview.decisions['assessment:integrity'];
+      assert.ok(rejected);
+      rejected.accepted = false;
+      rejected.rationale = 'The cited posts predate the current sample and cannot establish current visibility.';
+      initialReview.pairs[pairId] = { relation: 'COPIED_ENDORSEMENT', rationale: 'The identical historical publications are copied endorsements.' };
+      return initialReview;
+    }
+    if (call === 3) {
+      assert.deepEqual((packet as ModelPacket & { selectedAssessmentIds?: string[] }).selectedAssessmentIds, ['assessment:integrity'], 'only the temporally invalid integrity judgment is selected');
+      const initialReview = (packet as ModelPacket & { initialReview?: { pairs?: Array<{ id: string; relation: string }> } }).initialReview;
+      assert.deepEqual(initialReview?.pairs?.map(pair => [pair.id, pair.relation]), [[pairId, 'COPIED_ENDORSEMENT']],
+        'repair receives the initial full review and the same copy-pair relationship');
+      const post = packet.sources.find(source => source.id === 'post-alice-1')!;
+      const span = post.spans.find(candidate => candidate.text.includes(SOCIAL_TOKEN.address))!;
+      return { integrityAssessment: {
+        verdict: 'CONTRADICTED',
+        rationale: 'Every publication in the complete sample predates the window, so this bounded sample lacks current public verifiability.',
+        citations: [{ sourceId: post.id, spanId: span.id }],
+      } };
+    }
+    if (call === 4) {
+      const repairedReview = keyedReviewWire({ ...packet, pairs: [{ id: pairId }] }) as { pairs: Record<string, { relation: string; rationale: string }> };
+      repairedReview.pairs[pairId] = { relation: 'COPIED_ENDORSEMENT', rationale: 'The same two source bodies remain copied endorsements.' };
+      return repairedReview;
+    }
+    throw new Error(`UNEXPECTED_HISTORICAL_SCREENING_REPAIR_CALL_${call}`);
+  } });
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+  assert.equal(mock.calls.length, 4, `the historical integrity correction uses one proposal/review pair: ${JSON.stringify({
+    code: result.code, selection: result.rawArtifacts['social-repair-selection'], pairs: result.review?.pairs,
+    integrity: result.proposal?.integrityAssessment,
+  })}`);
+  assert.ok(result.proposal && result.review);
+  assert.deepEqual(result.submittedSources, before, 'the original post dates and source text remain unchanged');
+  assert.deepEqual(result.proposal.posts.map(post => post.sourceId), ['post-alice-1', 'post-alice-2']);
+  assert.equal(result.proposal.identityAssessment?.verdict, 'UNRESOLVED', 'the unselected identity judgment is frozen');
+  assert.equal(result.proposal.integrityAssessment?.verdict, 'CONTRADICTED');
+  assert.equal(result.review.decisions.find(decision => decision.id === 'assessment:integrity')?.accepted, true,
+    'the corrected historical-only explanation receives a new accepted full review');
+  const selection = JSON.parse(result.rawArtifacts['social-repair-selection']!) as { method: string; selectedAssessmentIds: string[]; applied: boolean };
+  assert.deepEqual(selection, { method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:integrity'], applied: true });
+  const initialReview = JSON.parse(result.rawArtifacts['social-review-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const initialWire = JSON.parse(initialReview.candidates[0]!.content.parts[0]!.text) as {
+    decisions: Record<string, { accepted: boolean }>; pairs: Record<string, { relation: string }>;
+  };
+  const finalReview = JSON.parse(result.rawArtifacts['social-repair-review-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const finalWire = JSON.parse(finalReview.candidates[0]!.content.parts[0]!.text) as { pairs: Record<string, { relation: string }> };
+  assert.equal(initialWire.decisions['assessment:integrity']?.accepted, false, 'the original rejection remains retained');
+  assert.equal(initialWire.pairs[pairId]?.relation, 'COPIED_ENDORSEMENT');
+  assert.equal(finalWire.pairs[pairId]?.relation, initialWire.pairs[pairId]?.relation,
+    'the repaired review cannot change an already-reviewed copy relation');
+  const derived = deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence']);
+  assert.equal(derived.facts.integrityReview?.verdict, 'CONTRADICTED', 'the reviewed correction supports only the bounded current-window shortfall');
+
+  validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+  const tampered = { ...result.rawArtifacts };
+  const tamperedEnvelope = JSON.parse(tampered['social-repair-review-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const changedWire = JSON.parse(tamperedEnvelope.candidates[0]!.content.parts[0]!.text) as { pairs: Record<string, { relation: string; rationale: string }> };
+  changedWire.pairs[pairId] = { relation: 'DISTINCT_COMMENTARY', rationale: 'A changed pair judgment must not enter through screening repair.' };
+  tamperedEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(changedWire);
+  tampered['social-repair-review-response'] = JSON.stringify(tamperedEnvelope);
+  assert.throws(() => validateSocialWire(tampered, socialInput, SOCIAL_TOKEN, result.proposal, result.review), /SOCIAL_PROOF_INVALID/,
+    'offline proof rejects a changed nonselected pair relationship');
 });
 
 test('fresh social wire always carries both source-span judgments and independent review IDs', async () => {
@@ -567,9 +925,241 @@ test('packet transport errors use SOC_MODEL prefix without changing retry or pay
     async () => new Response('bad request', { status: 400 }),
     raw => { retained.push(raw); }, async () => {}, undefined, 'SOC_MODEL'), /SOC_MODEL_HTTP_400/);
   assert.equal(retained[0], 'bad request');
-  const transportReceipt = JSON.parse(retained[1]!) as { kind: string; attempt: number; code: string; willRetry: boolean };
+  const transportReceipt = JSON.parse(retained[1]!) as { kind: string; attempt: number; model: string; code: string; willRetry: boolean };
   assert.deepEqual({ kind: transportReceipt.kind, attempt: transportReceipt.attempt, code: transportReceipt.code, willRetry: transportReceipt.willRetry }, {
     kind: 'LOCAL_MODEL_TRANSPORT', attempt: 1, code: 'SOC_MODEL_HTTP_400', willRetry: false,
+  });
+  assert.equal(transportReceipt.model, geminiSettings.model);
+});
+
+test('source-model fallback follows two eligible failures with the same request and records model per attempt', async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const retained: string[] = [];
+  const waits: number[] = [];
+  const timeout = Object.assign(new Error('private upstream detail'), { name: 'TimeoutError' });
+  const result = await requestSourceJson('same packet', z.object({ ok: z.boolean() }), KEY,
+    async (input, init) => {
+      calls.push({ url: String(input), body: String(init?.body) });
+      if (calls.length === 1) throw timeout;
+      if (calls.length === 2) return new Response('temporary 500 response', { status: 500 });
+      return envelope({ ok: true });
+    }, raw => { retained.push(raw); }, async milliseconds => { waits.push(milliseconds); }, undefined, 'SOC_MODEL');
+
+  assert.deepEqual(result.value, { ok: true });
+  assert.deepEqual(calls.map(call => call.url), [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+  ]);
+  assert.equal(calls[0]!.body, calls[1]!.body);
+  assert.equal(calls[1]!.body, calls[2]!.body);
+  assert.deepEqual(waits, [30_000, 60_000]);
+  assert.equal(result.raw, retained.find(raw => raw.startsWith('{"candidates"')));
+  const receipts = retained.filter(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')).map(raw => JSON.parse(raw) as {
+    attempt: number; model: string; code: string; willRetry: boolean;
+  });
+  assert.deepEqual(receipts.map(({ attempt, model, code, willRetry }) => ({ attempt, model, code, willRetry })), [
+    { attempt: 1, model: geminiSettings.model, code: 'SOC_MODEL_TIMEOUT', willRetry: true },
+    { attempt: 2, model: geminiSettings.model, code: 'SOC_MODEL_HTTP_500', willRetry: true },
+    { attempt: 3, model: geminiSettings.fallbackModel, code: 'SOC_MODEL_HTTP_200', willRetry: false },
+  ]);
+});
+
+test('fallback exhaustion is bounded to three identical bodies and reports the last HTTP failure', async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const retained: string[] = [];
+  const waits: number[] = [];
+  await assert.rejects(() => requestSourceJson('same packet', z.object({ ok: z.boolean() }), KEY,
+    async (input, init) => {
+      calls.push({ url: String(input), body: String(init?.body) });
+      return new Response(`temporary failure ${calls.length}`, { status: 500 });
+    }, raw => { retained.push(raw); }, async milliseconds => { waits.push(milliseconds); }, undefined, 'SOC_MODEL'), /SOC_MODEL_HTTP_500/);
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0]!.body, calls[1]!.body);
+  assert.equal(calls[1]!.body, calls[2]!.body);
+  assert.deepEqual(calls.map(call => call.url), [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+  ]);
+  assert.deepEqual(waits, [30_000, 60_000]);
+  assert.deepEqual(retained.filter(raw => !raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')), [
+    'temporary failure 1', 'temporary failure 2', 'temporary failure 3',
+  ]);
+  const receipts = retained.filter(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')).map(raw => JSON.parse(raw) as { model: string; willRetry: boolean });
+  assert.deepEqual(receipts.map(receipt => [receipt.model, receipt.willRetry]), [
+    [geminiSettings.model, true], [geminiSettings.model, true], [geminiSettings.fallbackModel, false],
+  ]);
+});
+
+test('verified minute quota retries the same request using RetryInfo and preserves generic receipts', async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const retained: string[] = [];
+  const waits: number[] = [];
+  const routing = { fallbackActive: false };
+  const quotaBody = quotaErrorBody({ retryDelay: '45s' });
+  const result = await requestSourceJson('same quota packet', z.object({ ok: z.boolean() }), KEY,
+    async (input, init) => {
+      calls.push({ url: String(input), body: String(init?.body) });
+      return calls.length === 1 ? new Response(quotaBody, { status: 429 }) : envelope({ ok: true });
+    }, raw => { retained.push(raw); }, async milliseconds => { waits.push(milliseconds); }, undefined, 'SOC_MODEL', routing);
+
+  assert.deepEqual(result.value, { ok: true });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(call => call.url), Array(2).fill(
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`));
+  assert.equal(calls[0]!.body, calls[1]!.body, 'the retry sends the exact serialized request');
+  assert.deepEqual(waits, [45_000], 'the valid RetryInfo delay above the normal first wait is honored');
+  assert.equal(routing.fallbackActive, false, 'a successful primary-model retry does not activate fallback routing');
+  assert.equal(retained[0], quotaBody, 'the original provider response remains available as raw evidence');
+  const receipts = retained.filter(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')).map(raw => JSON.parse(raw) as {
+    attempt: number; model: string; code: string; willRetry: boolean;
+  });
+  assert.deepEqual(receipts.map(({ attempt, model, code, willRetry }) => ({ attempt, model, code, willRetry })), [
+    { attempt: 1, model: geminiSettings.model, code: 'SOC_MODEL_HTTP_429', willRetry: true },
+    { attempt: 2, model: geminiSettings.model, code: 'SOC_MODEL_HTTP_200', willRetry: false },
+  ]);
+  assert.ok(receipts.every(receipt => !JSON.stringify(receipt).includes('PerMinute')),
+    'transport receipts expose the bounded HTTP code without leaking provider quota details');
+});
+
+test('repeated verified minute quotas use the bounded third fallback attempt and keep it scoped to the run', async () => {
+  const calls: Array<{ url: string; body: string }> = [];
+  const retained: string[] = [];
+  const waits: number[] = [];
+  const routing = { fallbackActive: false };
+  const fetcher: typeof fetch = async (input, init) => {
+    calls.push({ url: String(input), body: String(init?.body) });
+    return calls.length <= 2
+      ? new Response(quotaErrorBody({ retryDelay: calls.length === 1 ? '45s' : '58s' }), { status: 429 })
+      : envelope({ ok: true });
+  };
+  const firstStage = await requestSourceJson('quota proposal packet', z.object({ ok: z.boolean() }), KEY,
+    fetcher, raw => { retained.push(raw); }, async milliseconds => { waits.push(milliseconds); }, undefined, 'SOC_MODEL', routing);
+  const sameRunStage = await requestSourceJson('later stage packet', z.object({ ok: z.boolean() }), KEY,
+    fetcher, raw => { retained.push(raw); }, async () => {}, undefined, 'SOC_MODEL', routing);
+  const freshRouting = { fallbackActive: false };
+  const freshRunStage = await requestSourceJson('new run packet', z.object({ ok: z.boolean() }), KEY,
+    fetcher, raw => { retained.push(raw); }, async () => {}, undefined, 'SOC_MODEL', freshRouting);
+
+  assert.deepEqual(firstStage.value, { ok: true });
+  assert.deepEqual(sameRunStage.value, { ok: true });
+  assert.deepEqual(freshRunStage.value, { ok: true });
+  assert.deepEqual(calls.slice(0, 3).map(call => call.url), [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+  ]);
+  assert.equal(calls[0]!.body, calls[1]!.body);
+  assert.equal(calls[1]!.body, calls[2]!.body);
+  assert.deepEqual(waits, [45_000, 60_000], 'RetryInfo is bounded by the existing 30/60 second waits');
+  assert.equal(calls[3]!.url, `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+    'the fallback stays active for later stages in this run');
+  assert.equal(calls[4]!.url, `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    'a fresh route begins on the primary model');
+  assert.equal(routing.fallbackActive, true);
+  assert.equal(freshRouting.fallbackActive, false);
+  const receipts = retained.filter(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')).map(raw => JSON.parse(raw) as {
+    attempt: number; model: string; code: string; willRetry: boolean;
+  });
+  assert.deepEqual(receipts.slice(0, 3).map(({ attempt, model, code, willRetry }) => ({ attempt, model, code, willRetry })), [
+    { attempt: 1, model: geminiSettings.model, code: 'SOC_MODEL_HTTP_429', willRetry: true },
+    { attempt: 2, model: geminiSettings.model, code: 'SOC_MODEL_HTTP_429', willRetry: true },
+    { attempt: 3, model: geminiSettings.fallbackModel, code: 'SOC_MODEL_HTTP_200', willRetry: false },
+  ]);
+});
+
+test('caller abort during identified minute-quota wait prevents the next request', async () => {
+  const controller = new AbortController();
+  const urls: string[] = [];
+  const waits: number[] = [];
+  await assert.rejects(() => requestSourceJson('quota packet', z.object({ ok: z.boolean() }), KEY,
+    async input => {
+      urls.push(String(input));
+      return new Response(quotaErrorBody({ retryDelay: '45s' }), { status: 429 });
+    }, () => {}, async milliseconds => {
+      waits.push(milliseconds);
+      controller.abort(new DOMException('cancelled', 'AbortError'));
+    }, controller.signal, 'SOC_MODEL'), /SOC_MODEL_RUN_ABORTED/);
+  assert.deepEqual(urls, [`https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`]);
+  assert.deepEqual(waits, [45_000]);
+});
+
+test('daily, mixed, mismatched, incomplete, and invalid-delay quota responses remain permanent 429 failures', async t => {
+  const cases = [
+    { name: 'daily quota', body: quotaErrorBody({ quotaIds: ['GenerateContentInputTokensPerModelPerDay-FreeTier'] }) },
+    { name: 'mixed minute and daily quotas', body: quotaErrorBody({ quotaIds: ['GenerateContentInputTokensPerModelPerMinute-FreeTier', 'GenerateContentInputTokensPerModelPerDay-FreeTier'] }) },
+    { name: 'different model', body: quotaErrorBody({ model: 'gemini-other-model' }) },
+    { name: 'missing RetryInfo', body: quotaErrorBody({ retryDelay: null }) },
+    { name: 'delay above sixty seconds', body: quotaErrorBody({ retryDelay: '61s' }) },
+    { name: 'zero quota value', body: quotaErrorBody({ quotaValue: '0' }) },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async () => {
+    const urls: string[] = [];
+    const retained: string[] = [];
+    const waits: number[] = [];
+    const routing = { fallbackActive: false };
+    let message = '';
+    await assert.rejects(() => requestSourceJson('quota packet', z.object({ ok: z.boolean() }), KEY,
+      async input => { urls.push(String(input)); return new Response(scenario.body, { status: 429 }); },
+      raw => { retained.push(raw); }, async milliseconds => { waits.push(milliseconds); }, undefined, 'SOC_MODEL', routing),
+    error => {
+      message = String(error);
+      return message.includes('SOC_MODEL_HTTP_429');
+    });
+    assert.deepEqual(urls, [`https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`]);
+    assert.deepEqual(waits, []);
+    assert.equal(routing.fallbackActive, false);
+    assert.equal(message.includes('RESOURCE_EXHAUSTED'), false, 'the thrown status does not expose provider quota details');
+    const receipt = JSON.parse(retained.find(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"'))!) as {
+      kind: string; attempt: number; phase: string; elapsedMs: number; budgetMs: number;
+      model: string; code: string; willRetry: boolean;
+    };
+    assert.ok(Number.isFinite(receipt.elapsedMs) && receipt.elapsedMs >= 0);
+    assert.deepEqual(receipt, {
+      kind: 'LOCAL_MODEL_TRANSPORT', attempt: 1, phase: 'RESPONSE_BODY',
+      elapsedMs: receipt.elapsedMs, budgetMs: 90_000, model: geminiSettings.model,
+      code: 'SOC_MODEL_HTTP_429', willRetry: false,
+    });
+    assert.equal(JSON.stringify(receipt).includes('PerMinute'), false);
+  });
+});
+
+test('HTTP 400/429, malformed successful output, and abort during backoff do not start a fallback request', async t => {
+  for (const status of [400, 429] as const) await t.test(`HTTP ${status}`, async () => {
+    const urls: string[] = [];
+    await assert.rejects(() => requestSourceJson('packet', z.object({ ok: z.boolean() }), KEY,
+      async input => { urls.push(String(input)); return new Response('rejected', { status }); }, () => {}, async () => {}, undefined, 'SOC_MODEL'),
+    new RegExp(`SOC_MODEL_HTTP_${status}`));
+    assert.deepEqual(urls, [`https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`]);
+  });
+
+  await t.test('schema-invalid HTTP 200', async () => {
+    const urls: string[] = [];
+    await assert.rejects(() => requestSourceJson('packet', z.object({ ok: z.boolean() }), KEY,
+      async input => { urls.push(String(input)); return new Response('{"candidates":[]}'); }, () => {}, async () => {}, undefined, 'SOC_MODEL'), /SOC_MODEL_FINISH/);
+    assert.deepEqual(urls, [`https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`]);
+  });
+
+  await t.test('caller abort during second delay', async () => {
+    const controller = new AbortController();
+    const urls: string[] = [];
+    const waits: number[] = [];
+    await assert.rejects(() => requestSourceJson('packet', z.object({ ok: z.boolean() }), KEY,
+      async input => {
+        urls.push(String(input));
+        if (urls.length === 1) throw Object.assign(new Error('timeout'), { name: 'TimeoutError' });
+        return new Response('temporary failure', { status: 500 });
+      }, () => {}, async milliseconds => {
+        waits.push(milliseconds);
+        if (milliseconds === 60_000) controller.abort(new DOMException('cancelled', 'AbortError'));
+      }, controller.signal, 'SOC_MODEL'), /SOC_MODEL_RUN_ABORTED/);
+    assert.deepEqual(urls, [
+      `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    ]);
+    assert.deepEqual(waits, [30_000, 60_000]);
   });
 });
 

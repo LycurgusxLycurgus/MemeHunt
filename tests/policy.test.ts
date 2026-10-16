@@ -32,6 +32,24 @@ test('entry policy emits the stable 33 rows and fails closed when required evide
   assert.ok(result.checks.every(row => row.status === 'UNKNOWN'));
 });
 
+test('a reviewed CAN-01 public PASS does not require unresolved factual A10 binding', () => {
+  const features = completeFixtureEntryFeatures({ A09: true });
+  const binding = features.find(feature => feature.id === 'A10')!;
+  binding.value = null;
+  binding.quality = 'MISSING';
+
+  const factualOnly = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF, 'QUALIFIED_V2');
+  assert.equal(factualOnly.checks.find(row => row.checkId === 'CAN-01')?.status, 'UNKNOWN',
+    'without the separately reviewed entry grade, missing factual binding remains unresolved');
+
+  const reviewedEntry = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'QUALIFIED_V2', undefined, false, true);
+  const can01 = reviewedEntry.checks.find(row => row.checkId === 'CAN-01');
+  assert.equal(can01?.status, 'PASS');
+  assert.deepEqual(can01?.featureRefs, ['A09'], 'the reviewed entry judgment is scoped to A09');
+  assert.equal(binding.value, null, 'the entry-grade override does not fill factual A10');
+});
+
 test('complete evidence cannot fill missing user-owned size, horizon, or risk settings', () => {
   const profile = { id: 'unconfigured-live', risk: {}, stage: { ageBands: [] } };
   const result = evaluateEntry(completeFixtureEntryFeatures(), profile, FIXTURE_CUTOFF);

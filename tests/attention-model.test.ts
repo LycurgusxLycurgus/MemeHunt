@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { z } from 'zod';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { deriveAttention, qualifiedComparisonEvidence } from '../src/domain/attention.js';
+import { comparisonPublicScopeFacts, deriveAttention, originSourceScope, qualifiedComparisonEvidence } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import type { AttentionRead } from '../src/providers/attention.js';
 import { geminiSettings } from '../src/providers/gemini.js';
-import { comparisonLeadArraySchema, comparisonLeadReviewArraySchema, decodeComparisonLeadArray, qualifyAttention } from '../src/providers/attention-model.js';
+import { comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonSourceLineage, compactComparisonLeadScope, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, qualifyAttention } from '../src/providers/attention-model.js';
+import { geckoPoolBinding } from '../src/providers/origin-recovery.js';
+import { sourceSpans } from '../src/providers/source-model.js';
 
 const TOKEN = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
 const KEY = 'attention-model-test-key';
@@ -16,6 +18,13 @@ type Span = { id: string; sourceId: string; start: number; end: number; text: st
 type PacketSource = { id: string; text?: string; spans: Span[]; uncitableText?: string; [key: string]: unknown };
 type Request = { url: string; init: RequestInit; packet: Record<string, unknown> };
 
+function comparisonGradeIdFields(packet: Record<string, unknown>): Record<string, unknown> {
+  const qualification = packet.leadQualification as { globalScopeWireMethod?: string } | undefined;
+  return qualification?.globalScopeWireMethod === 'code-owned-comparison-ids-v1' ? {} : {
+    leadIds: packet.requiredLeadIds, sourceIds: packet.requiredSourceIds, batchIds: packet.requiredBatchIds,
+  };
+}
+
 function sourceRead(pageText = `Token ${TOKEN.address}. ${NARRATIVE}`, postText = `Token ${TOKEN.address}. Neighbors share a new lantern story.`): AttentionRead {
   return {
     sources: [{ id: 'page-1', url: 'https://public.example/source', text: pageText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
@@ -23,6 +32,40 @@ function sourceRead(pageText = `Token ${TOKEN.address}. ${NARRATIVE}`, postText 
     rawArtifacts: {}, queries: [`"${TOKEN.address}" narrative`], complete: true, postSampleComplete: true, codes: [],
     start: '2026-09-30T12:00:00.000Z', end: CUTOFF,
   };
+}
+
+function linkedReferenceRead(): AttentionRead {
+  const read = inadequateOriginRead();
+  const metadataUrl = 'https://metadata.example/token.json';
+  const referenceUrl = 'https://community.example/narrative';
+  const comparisonApiId = 'attention-origin-page-13';
+  read.sources.push(
+    { id: 'token-metadata-json', url: metadataUrl, text: JSON.stringify({ mint: TOKEN.address, website: referenceUrl }), publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+    { id: 'linked-reference', url: referenceUrl, text: 'River Lantern tells a neighborhood story through shared local art.', publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE', discoveredFrom: metadataUrl },
+    { id: comparisonApiId, url: 'https://api.geckoterminal.com/api/v2/networks/base/pools/market-only',
+      text: JSON.stringify({ data: { token: TOKEN.address } }), publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+  );
+  read.discoveryUrls = [...(read.discoveryUrls ?? []), metadataUrl];
+  read.metadataLinks = true;
+  read.metadataUri = metadataUrl;
+  read.comparisonComplete = true;
+  read.comparisonSourceIds = [comparisonApiId];
+  return read;
+}
+
+function inadequateOriginRead(): AttentionRead {
+  const read = sourceRead();
+  read.queries = [`"${TOKEN.address}" base narrative origin catalyst`, `"${TOKEN.address}" (site:x.com OR site:twitter.com)`];
+  read.rawArtifacts['attention-search-1'] = JSON.stringify({ results: [{ url: 'https://public.example/source' }] });
+  read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [{ url: 'https://public.example/source' }] });
+  const source = read.sources.find(item => item.id === 'page-1');
+  assert.ok(source);
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+    results: [{ url: source.url, final_url: source.url, text: source.text }], errors: [],
+  });
+  read.discoveryUrls = ['https://public.example/source'];
+  read.originScope = originSourceScope(read, TOKEN);
+  return read;
 }
 
 function v2OriginRead(): AttentionRead {
@@ -101,13 +144,114 @@ function a05Claim(packet: Record<string, unknown>, overrides: Record<string, unk
 
 function mockModel(responder: (packet: Record<string, unknown>, call: number) => unknown) {
   const requests: Request[] = [];
+  const responses: unknown[] = [];
+  const toRows = (value: unknown, key: string) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.entries(value as Record<string, unknown>).map(([id, row]) => ({ [key]: id, ...(row as Record<string, unknown>) }));
+  };
+  const rowsForV3 = (packet: Record<string, unknown>, value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const response = structuredClone(value) as Record<string, unknown>;
+    const instruction = `${String(packet.rowFormat ?? '')}\n${String(packet.instruction ?? '')}`;
+    const coherentRows = (source: unknown) => {
+      const rows = Array.isArray(source) ? source : toRows(source, 'leadId');
+      return Array.isArray(rows) ? rows.map(value => {
+        const row = value as Record<string, unknown>;
+        const accounting = row.accounting as Record<string, unknown> | undefined;
+        if (!accounting || ('descriptorRef' in accounting && !('status' in accounting))) return row;
+        const descriptorRefs = accounting.descriptorRefs;
+        const corroboratingRefs = accounting.corroboratingRefs;
+        if (!Array.isArray(descriptorRefs) || descriptorRefs.length !== 1 || !Array.isArray(corroboratingRefs)) return row;
+        if (accounting.status === 'UNRESOLVED' && accounting.basis === 'NONE') {
+          const { status: _status, descriptorRefs: _descriptorRefs, ...rest } = accounting;
+          return { ...row, accounting: { ...rest, descriptorRef: descriptorRefs[0] } };
+        }
+        if (accounting.status === 'ACCOUNTED' && accounting.basis !== 'NONE' && accounting.role !== 'UNRESOLVED'
+          && corroboratingRefs.length > 0 && corroboratingRefs.length <= 5) {
+          const { status: _status, descriptorRefs: _descriptorRefs, corroboratingRefs: _corroboratingRefs, ...rest } = accounting;
+          return { ...row, accounting: { ...rest, descriptorRef: descriptorRefs[0], corroboratingRef: corroboratingRefs[0], additionalCorroboratingRefs: corroboratingRefs.slice(1) } };
+        }
+        return row;
+      }) : rows;
+    };
+    if (Array.isArray(packet.operands) && packet.requiredLeadDecisionGroups && !('proposal' in packet)
+      && response.decisions && !('withOriginalBodies' in (response.decisions as Record<string, unknown>))) {
+      const groups = packet.requiredLeadDecisionGroups as { withOriginalBodies: string[]; withoutOriginalBodies: string[] };
+      const rows = coherentRows(response.decisions) as Array<Record<string, unknown>>;
+      const byId = new Map(rows.map(row => [String(row.leadId), row]));
+      response.decisions = {
+        withOriginalBodies: groups.withOriginalBodies.flatMap(id => byId.has(id) ? [byId.get(id)] : []),
+        withoutOriginalBodies: groups.withoutOriginalBodies.flatMap(id => byId.has(id) ? [byId.get(id)] : []),
+      };
+    } else if (Array.isArray(packet.operands) && instruction.includes('Accounting has one authoritative basis and no status field.')
+      && !('proposal' in packet) && response.decisions) {
+      response.decisions = coherentRows(response.decisions);
+    } else if (Array.isArray(packet.selectedLeadIds) && Array.isArray(packet.leads) && response.leads && !Array.isArray(response.leads)) {
+      response.leads = toRows(response.leads, 'leadId');
+    } else if (packet.requiredSourceDecisionGroups && response.sourceDecisions
+      && !('withLiteralObservations' in (response.sourceDecisions as Record<string, unknown>))) {
+      const decisions = response.sourceDecisions as Record<string, unknown>;
+      const groups = packet.requiredSourceDecisionGroups as { withLiteralObservations: string[]; withoutLiteralObservations: string[] };
+      response.decisions = toRows(response.decisions, 'id');
+      response.bodyDecisions = toRows(response.bodyDecisions, 'sourceId');
+      response.sourceDecisions = {
+        withLiteralObservations: groups.withLiteralObservations.flatMap(id => id in decisions ? [{ sourceId: id, ...(decisions[id] as Record<string, unknown>) }] : []),
+        withoutLiteralObservations: groups.withoutLiteralObservations.flatMap(id => id in decisions ? [{ sourceId: id, ...(decisions[id] as Record<string, unknown>) }] : []),
+      };
+    } else if (Array.isArray(packet.operands) && instruction.includes('Return decisions as one array row for EVERY operand')) {
+      response.decisions = toRows(response.decisions, 'leadId');
+    } else if (Array.isArray(packet.operands) && instruction.includes('Return decisions as an array with exactly one leadId row')) {
+      response.decisions = toRows(response.decisions, 'leadId');
+    } else if (instruction.includes('Return bodyObservations and posts as arrays')) {
+      response.bodyObservations = toRows(response.bodyObservations, 'sourceId');
+      const postRows = toRows(response.posts, 'sourceId');
+      const omitNoPosts = String(packet.rowFormat ?? '').includes('There are no POST sources: posts field does not exist');
+      if (omitNoPosts && Array.isArray(postRows) && postRows.length === 0) delete response.posts;
+      else response.posts = postRows;
+      const omitNoObservations = String(packet.rowFormat ?? '').includes('There are no literal contract observations: competitors field does not exist');
+      if (omitNoObservations && Array.isArray(response.competitors) && response.competitors.length === 0) delete response.competitors;
+    } else if (instruction.includes('Return decisions, sourceDecisions and bodyDecisions as arrays')) {
+      response.decisions = toRows(response.decisions, 'id');
+      response.sourceDecisions = toRows(response.sourceDecisions, 'sourceId');
+      response.bodyDecisions = toRows(response.bodyDecisions, 'sourceId');
+    } else if (instruction.includes('Return leadRoles, sourceSupport and leadBlockers as arrays')) {
+      const roleRows = toRows(response.leadRoles, 'leadId');
+      if (Array.isArray(roleRows) && String(packet.rowFormat ?? '').includes('descriptorRef is a single object, not an array')) {
+        response.leadRoles = roleRows.map(value => {
+          const row = value as Record<string, unknown>;
+          if ('descriptorRef' in row) return row;
+          const { descriptorRefs, ...rest } = row;
+          return Array.isArray(descriptorRefs) && descriptorRefs.length > 0
+            ? { ...rest, descriptorRef: descriptorRefs[0] }
+            : rest;
+        });
+      } else response.leadRoles = roleRows;
+      response.sourceSupport = toRows(response.sourceSupport, 'sourceId');
+      const blockerRows = toRows(response.leadBlockers, 'leadId');
+      response.leadBlockers = Array.isArray(blockerRows) ? blockerRows.map((row: Record<string, unknown>) => ({
+        ...row, blockerProof: row.blockerProof ?? null,
+      })) : blockerRows;
+    } else if (instruction.includes('Return entryReview.leadRoles, sourceSupport and leadBlockers as exact ID arrays')) {
+      const entryReview = response.entryReview as Record<string, unknown> | undefined;
+      if (entryReview) response.entryReview = {
+        ...entryReview,
+        leadRoles: toRows(entryReview.leadRoles, 'leadId'),
+        sourceSupport: toRows(entryReview.sourceSupport, 'sourceId'),
+        leadBlockers: toRows(entryReview.leadBlockers, 'leadId'),
+      };
+      response.decisions = toRows(response.decisions, 'id');
+    }
+    return response;
+  };
   const fetcher: typeof fetch = async (input, init) => {
     const body = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
     const packet = JSON.parse(body.contents[0]!.parts[0]!.text) as Record<string, unknown>;
     requests.push({ url: String(input), init: init ?? {}, packet });
-    return envelope(responder(packet, requests.length));
+    const response = rowsForV3(packet, responder(packet, requests.length));
+    responses.push(response);
+    return envelope(response);
   };
-  return { requests, fetcher };
+  return { requests, responses, fetcher };
 }
 
 function compactLeadDecisions(decisions: Record<string, unknown>) {
@@ -134,8 +278,49 @@ test('A18 derives from the qualified fixed sample without adding a model request
     'adding A18 does not alter existing attention assessments');
 });
 
+test('a one-hop mint-metadata reference can support A01 after independent review, with reference-only rules in both model passes', async () => {
+  const read = linkedReferenceRead();
+  const mock = mockModel(packet => packet.proposal ? reviewWire(packet) : proposalWire(packet, {
+    claims: [{ id: 'claim-reference', feature: 'A01', value: true, summary: 'A linked source describes the neighborhood narrative.', citations: [{ sourceId: 'linked-reference', spanId: spanId(packet, 'linked-reference', 'River Lantern') }] }],
+  }));
+
+  const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+
+  assert.equal(result.code, undefined);
+  assert.equal(mock.requests.length, 2, 'the linked source uses the existing proposal and independent review passes');
+  const first = mock.requests[0]!.packet;
+  const second = mock.requests[1]!.packet;
+  assert.ok((first.eligibleClaimSourceIds as string[]).includes('linked-reference'));
+  assert.ok((first.eligibleClaimSourceIds as string[]).includes('attention-origin-page-13'),
+    'the exact-token comparison API remains eligible for its comparison/narrative role');
+  assert.ok((first.eligibleOriginClaimSourceIds as string[]).includes('page-1'), 'a literal-mint source remains selectable for A03');
+  assert.ok(!(first.eligibleOriginClaimSourceIds as string[]).includes('linked-reference'),
+    'a metadata-linked narrative page without the mint remains eligible for narrative fields, not origin');
+  assert.ok(!(first.eligibleOriginClaimSourceIds as string[]).includes('attention-origin-page-13'),
+    'a literal-mint comparison API outside the original origin scope cannot be selected for A03');
+  assert.ok(!(read.originScope?.sourceIds ?? []).includes('attention-origin-page-13'));
+  for (const packet of [first, second]) {
+    const rule = packet.metadataLinkRule as string;
+    assert.match(rule, /exact-token metadata page/);
+    assert.match(rule, /not independent project identity/);
+    assert.match(rule, /A03 still needs primary relationship evidence/);
+  }
+  assert.equal(result.proposal?.claims[0]?.citations[0]?.sourceId, 'linked-reference');
+  const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['source', 'proposal', 'review']);
+  assert.equal(rows.find(row => row.id === 'A01')?.quality, 'KNOWN');
+
+  const invalidOrigin = mockModel(packet => proposalWire(packet, { claims: [
+    { id: 'claim-origin-screen', feature: 'A03', value: false, summary: 'The linked reference does not establish primary origin.',
+      originBasis: 'PUBLIC_EVIDENCE_INADEQUATE', citations: [{ sourceId: 'linked-reference', spanId: spanId(packet, 'linked-reference', 'River Lantern') }] },
+  ] }));
+  const rejected = await qualifyAttention(read, TOKEN, KEY, invalidOrigin.fetcher);
+  assert.equal(invalidOrigin.requests.length, 1, 'an ineligible metadata-linked A03 selector is rejected before independent review');
+  assert.equal(rejected.code, 'ATT_MODEL_INVALID');
+  assert.equal(rejected.proposal, null);
+});
+
 type TransportReceipt = {
-  kind: string; attempt: number; phase: string; elapsedMs: number; budgetMs: number; code: string; willRetry: boolean;
+  kind: string; attempt: number; phase: string; elapsedMs: number; budgetMs: number; model: string; code: string; willRetry: boolean;
 };
 
 function transportReceipt(artifacts: Record<string, string>, requestId: string, attempt: number): TransportReceipt {
@@ -147,7 +332,7 @@ function transportReceipt(artifacts: Record<string, string>, requestId: string, 
 const recoveryOptions = (signal: AbortSignal) => ({ tinyfishKey: '', now: () => CUTOFF, signal });
 
 function metadataSpanId(packet: Record<string, unknown>, sourceId: string, includes?: string): string {
-  const catalog = packet.metadata as Array<{ id: string; spans: Span[] }>;
+  const catalog = (packet.metadata ?? packet.sources) as Array<{ id: string; spans: Span[] }>;
   const source = catalog.find(item => item.id === sourceId);
   assert.ok(source, `missing indexed metadata ${sourceId}`);
   const span = source.spans.find(item => includes === undefined || item.text.includes(includes));
@@ -200,7 +385,7 @@ function comparisonCandidate(packet: Record<string, unknown>, spec: ComparisonCa
   const span = source.spans.find(item => item.text.includes(spec.token.address)
     && (spec.sourceMatch === undefined || item.text.includes(spec.sourceMatch)));
   assert.ok(span, `no complete-text span in ${source.id} contains ${spec.token.address}`);
-  return { id: spec.id, token: spec.token, sourceId: source.id, spanId: span.id };
+  return { id: spec.id, observationId: comparisonObservationId(packet, spec.token, source.id, spec.sourceMatch ?? spec.token.address) };
 }
 
 function completeComparisonResponder(options: {
@@ -209,33 +394,354 @@ function completeComparisonResponder(options: {
   batchComplete?: (packet: Record<string, unknown>) => boolean;
   rejectBatchIds?: (packet: Record<string, unknown>) => string[];
   sourceDispositions?: (packet: Record<string, unknown>) => Record<string, 'RELEVANT' | 'CONTEXT' | 'UNRELATED' | 'INSUFFICIENT'>;
+  sourceInsufficiencyKinds?: (packet: Record<string, unknown>) => Record<string, 'NO_SUBSTANTIVE_CONTENT' | 'PUBLIC_SUPPORT_GAP' | 'UNRESOLVED_MEANING_OR_ASSOCIATION'>;
+  sourceSupport?: (packet: Record<string, unknown>) => Record<string, {
+    status: 'BINDING_EVIDENCE' | 'PUBLIC_SUPPORT_GAP' | 'CONTEXT_ONLY' | 'UNRESOLVED';
+    rationale: string; citations: Array<{ sourceId: string; spanId: string }>; leadIds: string[];
+  }>;
+  sourceSupportRepair?: (packet: Record<string, unknown>) => Record<string, {
+    status: 'BINDING_EVIDENCE' | 'PUBLIC_SUPPORT_GAP' | 'CONTEXT_ONLY' | 'UNRESOLVED';
+    rationale: string; citations: Array<{ sourceId: string; spanId: string }>; leadIds: string[];
+  }>;
+  inspectionComplete?: (packet: Record<string, unknown>, source: PacketSource) => boolean;
+  supportProposal?: (packet: Record<string, unknown>) => unknown;
+  entryProposal?: (packet: Record<string, unknown>) => unknown;
+  entryReview?: (packet: Record<string, unknown>, proposal: Record<string, unknown>) => unknown;
+  malformedDescriptorRef?: 'missing' | 'foreign' | 'bad-span';
+  bodyObservation?: (packet: Record<string, unknown>, source: PacketSource) => {
+    bodyRole: { kind: 'MARKET_OR_INDEX_RECORD' | 'PROJECT_OR_PUBLICATION' | 'OTHER_CONTEXT' | 'UNRESOLVED'; rationale: string; citations: Array<{ sourceId: string; spanId: string }> };
+    description: { kind: 'SPECIFIC_PROJECT_OR_MECHANISM' | 'MARKET_FIELDS_OR_BOILERPLATE' | 'DISTINCT_OTHER_SUBJECT' | 'NO_SUBSTANTIVE_CONTENT' | 'UNINTERPRETABLE'; rationale: string; citations: Array<{ sourceId: string; spanId: string }> };
+  };
+  entryGradeAccepted?: boolean;
+  omitLeadOwnContextRefs?: boolean;
+  binaryEntryVerdict?: 'PASS' | 'FAIL';
+  binaryOriginVerdict?: 'PASS' | 'FAIL';
+  binaryLeadershipVerdict?: 'PASS' | 'FAIL';
+  entrySupportOverride?: 'BINDING_EVIDENCE' | 'CONTEXT_ONLY';
+  otherMarketBody?: boolean;
+  gradeCitationMismatch?: boolean;
+  forceInadequateGrade?: boolean;
+  gradeUnresolved?: boolean;
+  bodyDecisionAccepted?: boolean;
+  onePublicScopeCitation?: boolean;
+  unresolvedPublicRole?: boolean;
   missingRepresentations?: (packet: Record<string, unknown>) => MissingRepresentation[];
   omitFinalDecision?: boolean;
+  finalKeyVariant?: 'missing-null-blocker' | 'batch-id-as-decision';
   supportedBaseOrigin?: boolean;
   postRole?: (source: PacketSource) => string;
 } = {}) {
+  const defaultPublicLeadScopes = (packet: Record<string, unknown>) => {
+    const qualification = packet.leadQualification as {
+      leads?: Array<{ id: string; metadataEvidenceId: string; sourceIds?: string[]; recoverySourceIds?: string[] }>;
+      decisions?: Array<{ leadId: string; accounted: boolean; accounting: { role: string } }>;
+    } | undefined;
+    const facts = packet.publicScopeFacts as Array<{
+      leadId: string; originalComplete: boolean; recoveryComplete: boolean; queryReady: boolean; queryCount: number;
+      effectiveAccounted: boolean; descriptorComplete: boolean; descriptorFresh: boolean;
+      collectionBlocked: boolean; leadReviewsComplete: boolean; reviewedIndexedRole?: string;
+    }> | undefined;
+    const catalog = packet.sources as Array<{ sourceId: string; spans: Span[] }> | undefined;
+    assert.ok(qualification?.leads && facts && catalog, 'marked public-support requests include code-owned lead and collection facts');
+    return Object.fromEntries(qualification.leads.map(lead => {
+      const fact = facts.find(row => row.leadId === lead.id);
+      const decision = qualification.decisions?.find(row => row.leadId === lead.id);
+      assert.ok(fact && decision, `the public scope has exact facts for ${lead.id}`);
+      const descriptor = catalog.find(source => source.sourceId === lead.metadataEvidenceId);
+      assert.ok(descriptor?.spans[0], `the public scope catalog contains ${lead.metadataEvidenceId}`);
+      const citations: Array<{ sourceId: string; spanId: string }> = [{ sourceId: descriptor.sourceId, spanId: descriptor.spans[0]!.id }];
+      const bodyIds = fact.originalComplete ? (lead.sourceIds ?? []) : (lead.recoverySourceIds ?? []);
+      const body = catalog.find(source => bodyIds.includes(source.sourceId) && source.spans.length > 0);
+      if (body?.spans[0]) citations.push({ sourceId: body.sourceId, spanId: body.spans[0].id });
+      const reviewed = fact.descriptorComplete && fact.descriptorFresh && !fact.collectionBlocked
+        && fact.queryReady && fact.recoveryComplete && fact.leadReviewsComplete;
+      const role = fact.reviewedIndexedRole ?? decision.accounting.role;
+      const basis = fact.originalComplete ? 'ORIGINAL_COMPLETE'
+        : fact.effectiveAccounted && fact.queryCount > 0 && fact.queryReady && fact.recoveryComplete ? 'MATCHED_ENTITY_RECOVERY'
+          : role === 'MARKET_OR_INDEX_RECORD' && fact.queryCount > 0 && fact.queryReady && fact.recoveryComplete
+            ? 'REVIEWED_MARKET_RECOVERY' : 'NONE';
+      const isReviewed = reviewed && basis !== 'NONE' && role !== 'UNRESOLVED';
+      return [lead.id, {
+        status: isReviewed ? 'REVIEWED' : 'UNRESOLVED',
+        basis: isReviewed ? basis : 'NONE',
+        role,
+        blocker: isReviewed ? 'NONE' : role === 'PROJECT_OR_PUBLICATION' ? 'MISSING_NECESSARY_CONTEXT' : 'INCOMPLETE_COLLECTION_OR_REVIEW',
+        rationale: isReviewed
+          ? 'The independently reviewed original or own recovery scope is complete for this public review.'
+          : 'This lead public-review scope remains unresolved because a necessary own collection or review condition is incomplete.',
+        citations,
+      }];
+    }));
+  };
+  const publicLeadScopes = (packet: Record<string, unknown>) => {
+    const scopes = defaultPublicLeadScopes(packet) as Record<string, { citations: Array<{ sourceId: string; spanId: string }> }>;
+    if (options.onePublicScopeCitation) {
+      const first = Object.values(scopes)[0];
+      if (first) first.citations = first.citations.slice(0, 1);
+    }
+    return scopes;
+  };
   return (packet: Record<string, unknown>) => {
     const scope = packet.scope as Record<string, unknown> | undefined;
+    if (packet.entryTask && packet.mergeTask) {
+      const entry = packet.entryTask as { proposal?: Record<string, unknown>; sources?: PacketSource[] };
+      const merge = packet.mergeTask as { candidates?: Array<{ id: string }>; manifest?: { qualificationMethod?: string; entryDecisionMethod?: string } };
+      const proposed = entry.proposal;
+      assert.ok(proposed, 'the final comparison pass receives the exact entry proposal');
+      const proposedRoles = proposed.leadRoles as Record<string, unknown>;
+      const proposedSources = proposed.sourceSupport as Record<string, unknown>;
+      const proposedBlockers = proposed.leadBlockers as Record<string, unknown>;
+      const entryReview = options.entryReview?.(packet, proposed) ?? {
+        leadRoles: Object.fromEntries(Object.keys(proposedRoles).map(id => [id, { accepted: true, rationale: 'The independent review verifies the indexed role against its own descriptor and retained sources.' } ])),
+        sourceSupport: Object.fromEntries(Object.keys(proposedSources).map(id => [id, { accepted: true, rationale: 'The independent review verifies the body classification against its literal source spans.' } ])),
+        leadBlockers: Object.fromEntries(Object.keys(proposedBlockers).map(id => [id, { accepted: true, rationale: 'The independent review checks whether a semantic blocker is actually supported.' } ])),
+        grade: { accepted: options.entryGradeAccepted !== false, rationale: 'The independent review checks the bounded public-support judgment against the selected literal evidence.' },
+      };
+      const finalDecisions = Object.fromEntries((merge.candidates ?? []).map(({ id }) => [id, {
+        accepted: true, rationale: 'The merged exact-contract candidate is checked against its retained literal source.' } ]));
+      const binaryEntryDecision = merge.manifest?.entryDecisionMethod === 'binary-public-support-v1';
+      const entrySources = entry.sources;
+      const entryCitation = entrySources?.flatMap(source => source.spans.map(span => ({ sourceId: source.id, spanId: span.id })))
+        .find(ref => ref.sourceId && ref.spanId);
+      if (binaryEntryDecision) assert.ok(entryCitation, 'the binary entry decision cites an actual supplied comparison span');
+      if (options.finalKeyVariant === 'batch-id-as-decision') finalDecisions['claim-a01'] = {
+        accepted: true, rationale: 'This batch claim ID is not a merged candidate key.',
+      };
+      if (options.finalKeyVariant === 'missing-null-blocker') {
+        const blockerIds = Object.keys(proposedBlockers);
+        const reviewedBlockers = (entryReview as Record<string, unknown>).leadBlockers as Record<string, unknown>;
+        if (blockerIds[0]) delete reviewedBlockers[blockerIds[0]];
+      }
+      return {
+        ...(binaryEntryDecision ? { entryDecision: { verdict: options.binaryEntryVerdict ?? 'FAIL',
+          rationale: 'The independent final review judges whether this bounded comparison evidence meets the entry standard.',
+          citations: [entryCitation!] } } : {}),
+        entryReview,
+        decisions: finalDecisions,
+        candidateSet: { complete: true, rationale: 'Every fully reviewed exact-contract representation in the bounded source sample is included.' },
+      };
+    }
+    if (Array.isArray(packet.operands)) {
+      const operands = packet.operands as Array<{
+        leadId: string; indexedDescriptorId: string; originalBodyIds: string[]; recoveryBodyIds: string[];
+      }>;
+      if (packet.proposal) {
+        const proposal = packet.proposal as { decisions: Record<string, unknown> };
+        return { decisions: Object.fromEntries(Object.keys(proposal.decisions).map(id => [id, {
+          accounting: { accepted: true, rationale: 'The indexed item identity is reviewed on its own factual axis.' },
+          representation: { accepted: options.entryGradeAccepted !== false,
+            rationale: 'The representation outcome is reviewed separately from factual item accounting.' },
+          subjectComparison: { accepted: true, rationale: 'The original-body comparison is reviewed as a separate axis.' },
+          evidenceAdequacy: { accepted: true, rationale: 'The stated evidence-adequacy outcome is reviewed separately.' },
+        }])) };
+      }
+      const catalog = packet.sources as Array<{ id: string; spans: Span[] }>;
+      return { decisions: Object.fromEntries(operands.map(operand => {
+        const descriptor = catalog.find(source => source.id === operand.indexedDescriptorId);
+        assert.ok(descriptor?.spans[0], `the lead task contains ${operand.indexedDescriptorId}`);
+        const descriptorRef = { sourceId: descriptor.id, spanId: descriptor.spans[0]!.id };
+        const role = options.unresolvedPublicRole ? 'UNRESOLVED'
+          : /dexscreener|market pair|trading pool|market index/i.test(descriptor.spans.map(span => span.text).join(' '))
+            ? 'MARKET_OR_INDEX_RECORD' : 'PROJECT_OR_PUBLICATION';
+        const decision: Record<string, unknown> = {
+          accounting: { status: 'UNRESOLVED', basis: 'NONE', role,
+            rationale: 'This fixture leaves exact indexed item accounting unresolved absent positive same-item proof.',
+            descriptorRefs: [descriptorRef], corroboratingRefs: [] },
+          representation: { status: 'UNRESOLVED',
+            rationale: 'The separate entry review evaluates public support without asserting factual identity.', citations: [descriptorRef] },
+        };
+        if (operand.originalBodyIds.length) {
+          decision.subjectComparison = { status: 'UNRESOLVED', indexedSubject: 'The indexed item described by its own descriptor.',
+            currentSubject: null, rationale: 'This generic fixture does not assert an original-body subject match.',
+            descriptorRefs: [descriptorRef], fetchedRefs: [] };
+          decision.evidenceAdequacy = { verdict: 'UNRESOLVED',
+            rationale: 'This generic fixture leaves original-body adequacy unresolved.', citations: [descriptorRef] };
+        }
+        return [operand.leadId, decision];
+      })) };
+    }
+    if (Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) {
+      if (options.entryProposal) return options.entryProposal(packet);
+      const catalog = packet.sources as Array<{ id: string; spans: Span[] }>;
+      const observations = packet.bodyObservations as Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string; citations: Array<{ sourceId: string; quote: string }> } }>;
+      const contexts = packet.leadContexts as Array<{ leadId: string; indexedMetadataSourceId: string; originalSourceIds: string[]; recoverySourceIds: string[] }>;
+      const leadRoles = Object.fromEntries(contexts.map((context, index) => {
+        const descriptor = catalog.find(source => source.id === context.indexedMetadataSourceId);
+        assert.ok(descriptor?.spans[0], `the entry proposal receives ${context.indexedMetadataSourceId}`);
+        const ownIds = [...context.originalSourceIds, ...context.recoverySourceIds];
+        const ownBody = catalog.find(source => ownIds.includes(source.id) && source.spans.length);
+        const descriptorRef = {
+          sourceId: options.malformedDescriptorRef === 'foreign' && index === 0 ? 'foreign-indexed-metadata' : descriptor.id,
+          spanId: options.malformedDescriptorRef === 'bad-span' && index === 0 ? 'not-a-retained-span' : descriptor.spans[0]!.id,
+        };
+        return [context.leadId, {
+          role: options.unresolvedPublicRole ? 'UNRESOLVED'
+            : descriptor.spans.some(span => /market|pair|dexscreener|trading pool/i.test(span.text)) ? 'MARKET_OR_INDEX_RECORD' : 'PROJECT_OR_PUBLICATION',
+          rationale: 'The role is classified from the lead’s own indexed descriptor and checked against its retained context.',
+          descriptorRefs: options.malformedDescriptorRef === 'missing' && index === 0 ? [] : [descriptorRef],
+          ownContextRefs: !options.omitLeadOwnContextRefs && ownBody?.spans[0] ? [{ sourceId: ownBody.id, spanId: ownBody.spans[0].id }] : [],
+        }];
+      }));
+      const sourceSupport = Object.fromEntries(observations.map(observation => {
+        const source = catalog.find(item => item.id === observation.sourceId);
+        assert.ok(source?.spans[0], `the entry proposal receives ${observation.sourceId}`);
+        const gap = observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE';
+        const binding = observation.description.kind === 'SPECIFIC_PROJECT_OR_MECHANISM';
+        return [observation.sourceId, {
+          status: observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE' && options.entrySupportOverride
+            ? options.entrySupportOverride : gap ? 'PUBLIC_SUPPORT_GAP' : binding ? 'BINDING_EVIDENCE' : 'CONTEXT_ONLY',
+          rationale: options.entrySupportOverride === 'BINDING_EVIDENCE' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE'
+            ? 'The inspected source positively associates this exact token address with the target.'
+            : options.entrySupportOverride === 'CONTEXT_ONLY' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE'
+              ? 'The source is classified as context and does not supply an inadequate-support witness.'
+              : gap ? 'The fully inspected market body contains trading fields without project description.'
+            : binding ? 'The retained body supports a specific project or mechanism.'
+              : 'The retained text is contextual and does not establish the target representation.',
+          citations: [{ sourceId: observation.sourceId, spanId: source.spans[0]!.id }],
+          blockerProof: null,
+        }];
+      }));
+      const requirements = packet.sourceRequirements as Array<{ sourceId: string; obligation: string }>;
+      const gap = Object.entries(sourceSupport).find(([id, item]) => (item as { status: string }).status === 'PUBLIC_SUPPORT_GAP'
+        && requirements.some(requirement => requirement.sourceId === id && requirement.obligation === 'REQUIRED'));
+      const binding = Object.entries(sourceSupport).find(([id, item]) => (item as { status: string }).status === 'BINDING_EVIDENCE'
+        && requirements.some(requirement => requirement.sourceId === id && requirement.obligation === 'REQUIRED'));
+      const observationsById = new Map(observations.map(observation => [observation.sourceId, observation]));
+      const bindingMarket = binding && observationsById.get(binding[0])?.bodyRole.kind === 'MARKET_OR_INDEX_RECORD'
+        && observationsById.get(binding[0])?.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE' ? binding : undefined;
+      const gradeWitness = gap ?? bindingMarket ?? (options.forceInadequateGrade ? binding : undefined);
+      const gradeSource = options.gradeCitationMismatch && bindingMarket
+        ? catalog.find(source => source.id !== bindingMarket[0] && source.spans.length)
+          ?? catalog.find(source => source.spans.length)
+        : gradeWitness ? catalog.find(source => source.id === gradeWitness[0])
+        : catalog.find(source => observationsById.get(source.id)?.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE')
+          ?? catalog.find(source => source.spans.length);
+      assert.ok(gradeSource?.spans[0], 'the entry proposal receives a code-selected literal grade witness');
+      const gradeSpan = gradeSource.spans[0]!;
+      const inadequate = !!gap || !!bindingMarket || options.forceInadequateGrade === true;
+      return {
+        leadRoles, sourceSupport, leadBlockers: Object.fromEntries(contexts.map(context => [context.leadId, null])),
+        grade: { verdict: !options.gradeUnresolved && inadequate ? 'INADEQUATE' : 'UNRESOLVED',
+          rationale: inadequate ? 'The reviewed bounded sample provides an independently reviewed inadequate public-support witness.'
+            : 'The inspected evidence does not establish a positive public-support gap.',
+          citations: [{ sourceId: gradeSource.id, spanId: gradeSpan.id }] },
+      };
+    }
     if (packet.manifest) {
       const ids = packet.requiredDecisionIds as string[];
       const decisions = Object.fromEntries(ids.map(id => [id, { accepted: true, rationale: 'The merged exact-contract candidate is supported by its retained source citation.' }]));
       if (options.omitFinalDecision && ids.length) delete decisions[ids[0]!];
-      return { decisions, candidateSet: { complete: true, rationale: 'Every reviewed batch representation is accounted for in this global merge.' } };
+      const scopes = (packet.supportProposal as { leadScopes?: Record<string, unknown> } | undefined)?.leadScopes;
+      return {
+        ...(packet.supportProposal ? { supportReview: { accepted: true, rationale: 'The independent review checks the cited support assessment and its complete bounded scope.' } } : {}),
+        ...(scopes ? { leadScopeReviews: Object.fromEntries(Object.keys(scopes).map(id => [id, {
+          accepted: true, rationale: 'The independent review verifies this lead public-review scope against its own descriptor and retained source evidence.',
+        }])) } : {}),
+        decisions, candidateSet: { complete: true, rationale: 'Every reviewed batch representation is accounted for in this global merge.' },
+      };
+    }
+    if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) {
+      if (options.supportProposal) {
+        const proposal = options.supportProposal(packet) as Record<string, unknown>;
+        const qualification = packet.leadQualification as { supportScopeMethod?: string } | undefined;
+        return qualification?.supportScopeMethod === 'comparison-lead-support-scope-v2' && !('leadScopes' in proposal)
+          ? { ...proposal, leadScopes: publicLeadScopes(packet) }
+          : proposal;
+      }
+      const catalog = packet.sources as Array<{ sourceId: string; spans: Span[] }>;
+      const first = catalog.find(source => source.spans.length)?.spans[0];
+      assert.ok(first, 'the public-support proposal has at least one code-owned selected citation span');
+      return {
+        verdict: 'UNRESOLVED', rationale: 'The fully inspected fixture does not establish a positive public-support gap.',
+        citations: [{ sourceId: first.sourceId, spanId: first.id }],
+        ...comparisonGradeIdFields(packet),
+        ...((packet.leadQualification as { supportScopeMethod?: string } | undefined)?.supportScopeMethod === 'comparison-lead-support-scope-v2'
+          ? { leadScopes: publicLeadScopes(packet) } : {}),
+      };
     }
     if (typeof scope?.batch === 'number') {
+      if (scope.meaning === 'Every retained source span in this batch; original-record collection is outside this body-reading task.') {
+        const sources = packet.sources as PacketSource[];
+        if (!packet.proposal) {
+          const bodyObservations = Object.fromEntries(sources.map(source => {
+            const cited = source.spans[0];
+            assert.ok(cited, `the body task has a literal span for ${source.id}`);
+            const bodyText = source.spans.map(span => span.text).join('\n');
+            const market = /market index lists|market pair|pair and liquidity|trading data/i.test(bodyText);
+            const distinct = /OUSD reserve backing|gardening note|medical journal article|academic study/i.test(bodyText);
+            const sparseDeployment = /deployment metadata lists the contract but provides no project description or thesis/i.test(bodyText);
+          const noContent = /About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy/i.test(bodyText);
+            return [source.id, {
+            bodyRole: { kind: source.kind === 'POST' || noContent || (market && options.otherMarketBody) ? 'OTHER_CONTEXT' : market ? 'MARKET_OR_INDEX_RECORD' : distinct || sparseDeployment ? 'OTHER_CONTEXT' : 'PROJECT_OR_PUBLICATION',
+                rationale: 'The source role is classified from this actual retained body.', citations: [{ sourceId: source.id, spanId: cited.id }] },
+            description: { kind: noContent || sparseDeployment ? 'NO_SUBSTANTIVE_CONTENT' : market ? 'MARKET_FIELDS_OR_BOILERPLATE' : distinct ? 'DISTINCT_OTHER_SUBJECT' : 'SPECIFIC_PROJECT_OR_MECHANISM',
+                rationale: 'The body description follows the retained text and cites its own span.', citations: [{ sourceId: source.id, spanId: cited.id }] },
+            }];
+          }));
+          return { bodyObservations, competitors: options.candidates?.(packet).map(spec => comparisonCandidate(packet, spec)) ?? [],
+            posts: Object.fromEntries(((packet.requiredPostSourceIds ?? []) as string[]).map(id => [id, { spanId: spanId(packet, id), role: options.postRole?.(sources.find(source => source.id === id)!) ?? 'OTHER' }])) };
+        }
+        const required = packet.requiredDecisionIds as string[];
+        const rejected = new Set(options.rejectBatchIds?.(packet) ?? []);
+        const emptyCatalog = ((packet.exactContractObservations as unknown[] | undefined)?.length ?? 0) === 0;
+        const proposedCompetitors = (packet.proposal as { competitors?: Array<{ observationId?: string; sourceId?: string }> } | undefined)?.competitors ?? [];
+        const selectedObservationIds = new Set(proposedCompetitors.flatMap(item => typeof item.observationId === 'string' ? [item.observationId] : []));
+        const selectedSourceIds = new Set([
+          ...proposedCompetitors.flatMap(item => typeof item.sourceId === 'string' ? [item.sourceId] : []),
+          ...(((packet.exactContractObservations ?? []) as Array<{ observationId: string; sourceId: string }>)
+            .filter(observation => selectedObservationIds.has(observation.observationId)).map(observation => observation.sourceId)),
+        ]);
+        const omitNoItemDecisions = String(packet.rowFormat ?? '').includes('There are no required item decisions. The decisions field does not exist');
+        return {
+          ...(omitNoItemDecisions ? {} : { decisions: Object.fromEntries(required.map(id => [id, { accepted: !rejected.has(id), rationale: rejected.has(id)
+            ? 'The original batch item is disputed in its source context.' : 'The body observation is reviewed against every retained span.' } ])) }),
+          candidateSet: { complete: options.batchComplete?.(packet) ?? false, rationale: 'The fixture preserves conservative incomplete candidate coverage.' },
+          sourceDecisions: Object.fromEntries(sources.map(source => {
+            const noContent = source.spans.some(span => /About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy/i.test(span.text));
+            const disposition = rejected.has(`post:${source.id}`) || noContent ? 'INSUFFICIENT' : selectedSourceIds.has(source.id) ? 'RELEVANT' : 'CONTEXT';
+            return [source.id, { disposition,
+              insufficiencyKind: rejected.has(`post:${source.id}`) ? 'UNRESOLVED_MEANING_OR_ASSOCIATION' : noContent ? 'NO_SUBSTANTIVE_CONTENT' : 'NONE',
+              rationale: 'The independent pass checks each source disposition.', inspectionComplete: options.inspectionComplete?.(packet, source) ?? true }];
+          })),
+          bodyDecisions: Object.fromEntries(sources.map(source => [source.id, {
+            bodyRole: { accepted: options.bodyDecisionAccepted !== false && (options.inspectionComplete?.(packet, source) ?? true),
+              rationale: 'The independent review checked the role against the full retained body.' },
+            description: { accepted: options.bodyDecisionAccepted !== false && (options.inspectionComplete?.(packet, source) ?? true),
+              rationale: 'The independent review checked the description against the full retained body.' },
+          } ])),
+          ...(emptyCatalog ? {} : { missingRepresentations: options.missingRepresentations?.(packet) ?? [] }),
+        };
+      }
+      if (Array.isArray(packet.reconsiderSourceIds)) {
+        return { sourceSupport: options.sourceSupportRepair?.(packet) ?? packet.originalSupport };
+      }
       if (packet.proposal) {
         const required = packet.requiredDecisionIds as string[];
         const rejected = new Set(options.rejectBatchIds?.(packet) ?? []);
         const dispositions = options.sourceDispositions?.(packet) ?? {};
+        const insufficiencyKinds = options.sourceInsufficiencyKinds?.(packet) ?? {};
+        const missingRepresentations = options.missingRepresentations?.(packet);
+        const emptyCatalog = (packet.exactContractObservations as unknown[] | undefined)?.length === 0;
+        const fresh = typeof scope?.leadAccountingComplete === 'boolean';
         return {
           decisions: Object.fromEntries(required.map(id => [id, {
             accepted: !rejected.has(id), rationale: rejected.has(id) ? 'This duplicated representation is disputed in its source context.' : 'The complete source text supports this batch item.',
           }])),
           candidateSet: { complete: options.batchComplete?.(packet) ?? true, rationale: 'Every relevant exact-contract representation visible in this full-text batch is accounted for unless an adversarial fixture marks it incomplete.' },
-          sourceDecisions: Object.fromEntries((packet.sources as PacketSource[]).map(source => [source.id, {
-            disposition: dispositions[source.id] ?? 'RELEVANT', rationale: 'The full source context supports this bounded representation assessment.',
-          }])),
-          missingRepresentations: options.missingRepresentations?.(packet) ?? [],
+          sourceDecisions: Object.fromEntries((packet.sources as PacketSource[]).map(source => {
+            const disposition = dispositions[source.id] ?? 'RELEVANT';
+            return [source.id, {
+              disposition,
+              insufficiencyKind: disposition === 'INSUFFICIENT' ? insufficiencyKinds[source.id] ?? 'UNRESOLVED_MEANING_OR_ASSOCIATION' : 'NONE',
+              rationale: 'The full source context supports this bounded representation assessment.',
+              ...(fresh ? { inspectionComplete: options.inspectionComplete?.(packet, source) ?? true } : {}),
+            }];
+          })),
+          ...(fresh ? { supportDecisions: Object.fromEntries((packet.sources as PacketSource[]).map(source => [source.id, {
+            accepted: true, rationale: 'The independent review inspected the full source and the selected support disposition.',
+          }])) } : {}),
+          ...(emptyCatalog && (!missingRepresentations || missingRepresentations.length === 0)
+            ? {} : { missingRepresentations: missingRepresentations ?? [] }),
         };
       }
       const required = packet.requiredPostSourceIds as string[];
@@ -245,7 +751,57 @@ function completeComparisonResponder(options: {
         const span = source.spans.find(item => item.text.includes(TOKEN.address)) ?? source.spans[0]!;
         return [id, { spanId: span.id, role: options.postRole?.(source) ?? 'NEWS' }];
       }));
-      return { competitors: (options.candidates?.(packet) ?? []).map(spec => comparisonCandidate(packet, spec)), posts };
+      const fresh = typeof scope.leadAccountingComplete === 'boolean';
+      const sourceSupport = fresh ? options.sourceSupport?.(packet) ?? Object.fromEntries(sources.map(source => {
+        const targetSpan = source.spans.find(span => span.text.includes(TOKEN.address));
+        const leadScope = (scope.leadQualification as { leads?: Array<{ id?: string; sourceIds?: string[]; recoverySourceIds?: string[] }> } | undefined)?.leads ?? [];
+        const leadIds = leadScope.filter(lead => [...(lead.sourceIds ?? []), ...(lead.recoverySourceIds ?? [])].includes(source.id))
+          .flatMap(lead => typeof lead.id === 'string' ? [lead.id] : []);
+        return [source.id, targetSpan
+          ? { status: 'BINDING_EVIDENCE', rationale: 'The full retained page ties this exact token to the target narrative.', citations: [{ sourceId: source.id, spanId: targetSpan.id }], leadIds }
+          : { status: 'CONTEXT_ONLY', rationale: 'The full retained page is contextual and does not establish another token representation.', citations: [], leadIds }];
+      })) : undefined;
+      return { ...(fresh ? { sourceSupport } : {}), competitors: (options.candidates?.(packet) ?? []).map(spec => comparisonCandidate(packet, spec)), posts };
+    }
+    if (packet.originEvidenceScope && Array.isArray(packet.sources)) {
+      const sources = packet.sources as Array<{ id: string; spans: Span[] }>;
+      const sourceIds = sources.map(source => source.id);
+      const codeOwnedOriginScope = typeof packet.instruction === 'string'
+        && packet.instruction.includes('The originEvidenceScope source catalog is code-owned; do not repeat sourceIds.');
+      const singleRequiredCitation = codeOwnedOriginScope && typeof packet.instruction === 'string'
+        && packet.instruction.includes('MUST supply one citation object per criterion');
+      const echoedScope = codeOwnedOriginScope ? {} : { sourceIds };
+      const cited = sources.flatMap(source => source.spans.map(span => ({ source, span })))
+        .find(({ span }) => span.text.includes(TOKEN.address));
+      assert.ok(cited, 'the leadership-support pair receives a literal target span from the original origin scope');
+      const assessment = (verdict: 'INADEQUATE' | 'UNRESOLVED') => ({ verdict,
+        rationale: 'This independent criterion remains unresolved in the generic fixture.',
+        citations: [{ sourceId: cited.source.id, spanId: cited.span.id }] });
+      if (packet.method === 'binary-public-support-v1') {
+        const decision = (verdict: 'PASS' | 'FAIL') => ({ verdict,
+          rationale: 'The criterion is decided independently from the supplied bounded evidence.',
+          citations: [{ sourceId: cited.source.id, spanId: cited.span.id }] });
+        if ('screening' in packet) {
+          const finalDecision = (verdict: 'PASS' | 'FAIL') => {
+            const value = decision(verdict);
+            if (!singleRequiredCitation) return value;
+            const { citations, ...grade } = value;
+            return { ...grade, citation: citations[0] };
+          };
+          return {
+            originTraceability: finalDecision(options.binaryOriginVerdict ?? 'FAIL'),
+            leadership: finalDecision(options.binaryLeadershipVerdict ?? 'FAIL'),
+            inspectionComplete: true, ...echoedScope,
+          };
+        }
+        return { originTraceability: assessment('UNRESOLVED'), leadership: assessment('UNRESOLVED'), ...echoedScope };
+      }
+      if ('screening' in packet) return {
+        originTraceability: { accepted: true, rationale: 'The independent reviewer checks origin traceability separately.' },
+        leadership: { accepted: true, rationale: 'The independent reviewer checks entry leadership separately.' },
+        inspectionComplete: true, sourceIds,
+      };
+      return { originTraceability: assessment('UNRESOLVED'), leadership: assessment('UNRESOLVED'), sourceIds };
     }
     if (packet.proposal) {
       const base = reviewWire(packet, true);
@@ -460,6 +1016,94 @@ test('v2 review covers the discovered candidate set and returns source-bound ori
     'Gemini receives supported one-value string enums while local Zod retains exact literal validation');
 });
 
+test('negative A03 screening requires a complete origin scope and independent exact-ID review', async () => {
+  const read = inadequateOriginRead();
+  assert.equal(read.originScope?.complete, true);
+  const mock = mockModel(packet => {
+    if (!packet.proposal) return proposalWire(packet, {
+      claims: [
+        { id: 'claim-narrative', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1') }] },
+        { id: 'claim-origin-screen', feature: 'A03', value: false,
+          summary: 'The bounded source set does not establish a project origin or catalyst.', originBasis: 'PUBLIC_EVIDENCE_INADEQUATE',
+          citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1') }] },
+      ],
+    });
+    return {
+      decisions: Object.fromEntries((packet.requiredDecisionIds as string[]).map(id => [id, {
+        accepted: true, rationale: 'The exact source supports the bounded screening judgment.',
+      }])),
+      originScopeReview: {
+        complete: true, sourceIds: [...read.originScope!.sourceIds],
+        rationale: 'Every original source in the declared exact-token sample was independently inspected.',
+      },
+    };
+  });
+
+  const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+
+  assert.equal(result.code, undefined);
+  assert.equal(mock.requests.length, 2);
+  const proposalPacket = mock.requests[0]!.packet;
+  assert.deepEqual(proposalPacket.originEvidenceScope, read.originScope);
+  assert.match(proposalPacket.instruction as string, /only use this marker for A03=false/i);
+  assert.match(proposalPacket.instruction as string, /not fraud or absence everywhere/i);
+  const reviewPacket = mock.requests[1]!.packet;
+  assert.deepEqual(reviewPacket.originEvidenceScope, read.originScope);
+  assert.match(reviewPacket.instruction as string, /independently inspect every originEvidenceScope\.sourceId in full/i);
+  assert.match(reviewPacket.instruction as string, /do not treat it as fraud/i);
+  const reviewSchema = (JSON.parse(String(mock.requests[1]!.init.body)) as {
+    generationConfig: { responseJsonSchema: { properties: Record<string, { properties?: Record<string, { items?: { enum?: string[] } }> }> } };
+  }).generationConfig.responseJsonSchema;
+  assert.deepEqual(reviewSchema.properties.originScopeReview?.properties?.sourceIds?.items?.enum, read.originScope?.sourceIds,
+    'the independent reviewer can report only code-owned IDs from the exact declared scope');
+  assert.deepEqual(result.review?.originScopeReview?.sourceIds, read.originScope?.sourceIds);
+
+  const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review']);
+  assert.equal(rows.find(row => row.id === 'A03')?.quality, 'KNOWN');
+  assert.equal(rows.find(row => row.id === 'A03')?.projection?.value, false);
+  assert.equal(rows.find(row => row.id === 'A01')?.quality, 'KNOWN', 'the separate supported narrative remains available');
+  assert.equal(rows.find(row => row.id === 'A01')?.projection?.value, true);
+});
+
+test('an accepted negative A03 stays unknown when an exact-token launch URL was blocked', async () => {
+  const read = inadequateOriginRead();
+  const launch = 'https://public.example/launch';
+  read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [
+    { url: 'https://public.example/source' }, { url: launch },
+  ] });
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+    results: [{ url: 'https://public.example/source', final_url: 'https://public.example/source', text: read.sources[0]!.text }],
+    errors: [{ url: launch, error: 'bot_blocked', status: 403 }],
+  });
+  read.originScope = originSourceScope(read, TOKEN);
+  assert.equal(read.originScope.complete, false);
+  assert.equal(read.originScope.acquisition?.urls.find(item => item.url === launch)?.state, 'UNAVAILABLE');
+
+  const mock = mockModel(packet => {
+    if (!packet.proposal) return proposalWire(packet, { claims: [{
+      id: 'claim-origin-screen', feature: 'A03', value: false,
+      summary: 'The reviewed public sources do not establish a project origin or catalyst.',
+      originBasis: 'PUBLIC_EVIDENCE_INADEQUATE',
+      citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1') }],
+    }] });
+    return {
+      decisions: Object.fromEntries((packet.requiredDecisionIds as string[]).map(id => [id, {
+        accepted: true, rationale: 'The cited source supports this bounded screening judgment.',
+      }])),
+      originScopeReview: {
+        complete: true, sourceIds: [...read.originScope!.sourceIds],
+        rationale: 'Every acquired original source was inspected; the blocked URL remains an acquisition gap.',
+      },
+    };
+  });
+
+  const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+  assert.equal(result.review?.decisions[0]?.accepted, true, 'the independent model review accepts the proposed grade');
+  const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review']);
+  assert.equal(rows.find(row => row.id === 'A03')?.quality, 'MISSING');
+  assert.equal(rows.find(row => row.id === 'A03')?.projection?.value, null);
+});
+
 test('origin citation validation rejects a webpage URL where an exact catalog source ID is required', async () => {
   const read = v2OriginRead();
   const mock = mockModel(packet => packet.proposal ? {
@@ -527,8 +1171,12 @@ test('complete comparison batches recover exact tail citations and replace trunc
   const postLead = `Token ${TOKEN.address}. Neighbors share a new lantern story.\n`;
   const postText = postLead + 'p'.repeat(6100 - postLead.length) + '\nPRICE_ONLY marker in retained tail; chart volume only.\n';
   const read = sourceRead(pageText, postText);
+  const urlOnlyAddress = '0x9999999999999999999999999999999999999999';
+  read.sources.push({ id: 'url-only-contract', url: `https://public.example/token/${urlOnlyAddress}`,
+    text: 'River Lantern contract listing page with no literal contract address in its fetched body.',
+    publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
   read.comparisonComplete = true;
-  read.comparisonSourceIds = ['page-1', 'post-1'];
+  read.comparisonSourceIds = ['page-1', 'post-1', 'url-only-contract'];
   const candidates: ComparisonCandidate[] = [
     { id: 'target-fulltext', token: TOKEN, sourceMatch: 'Target representation' },
     { id: 'rival-tail', token: rival, sourceMatch: 'Rival representation' },
@@ -536,13 +1184,15 @@ test('complete comparison batches recover exact tail citations and replace trunc
   const mock = mockModel(completeComparisonResponder({
     candidates: () => candidates,
     postRole: source => source.spans.some(span => span.text.includes('PRICE_ONLY marker in retained tail')) ? 'PRICE_ONLY' : 'NEWS',
+    sourceDispositions: packet => Object.fromEntries((packet.sources as PacketSource[]).map(source => [source.id,
+      source.id === 'url-only-contract' ? 'CONTEXT' : 'RELEVANT'])),
   }));
 
   const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
 
   assert.equal(mock.requests.length, 5, 'two preserved origin/narrative passes, one batch proposal/review, and one global merge review');
   assert.equal(result.code, undefined);
-  assert.equal(result.scope?.comparisonComplete, true);
+  assert.equal(result.scope?.comparisonComplete, true, JSON.stringify({ codes: result.scope?.codes, coverage: result.rawArtifacts['attention-comparison-coverage'], qualification: result.rawArtifacts['comparison-lead-qualification'] }));
   assert.deepEqual(result.scope?.codes, []);
   assert.equal((mock.requests[0]!.packet.scope as { comparisonDeferred?: boolean }).comparisonDeferred, true);
   const baseProposalResponse = JSON.parse(result.rawArtifacts['attention-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
@@ -552,6 +1202,7 @@ test('complete comparison batches recover exact tail citations and replace trunc
   assert.deepEqual(result.review?.originRelationship?.citations, []);
   assert.equal(result.sources?.find(source => source.id === 'page-1')?.text, pageText);
   assert.equal(result.sources?.find(source => source.id === 'post-1')?.text, postText);
+  const artifacts = result.rawArtifacts;
 
   const fullTextCandidates = result.proposal?.competitors ?? [];
   assert.deepEqual(fullTextCandidates.map(item => item.token), [TOKEN, rival]);
@@ -567,13 +1218,101 @@ test('complete comparison batches recover exact tail citations and replace trunc
   const batchSources = batchProposal.packet.sources as PacketSource[];
   assert.equal(batchSources.find(source => source.id === 'page-1')?.spans.map(span => span.text).join(''), pageText);
   assert.equal(batchSources.find(source => source.id === 'post-1')?.spans.map(span => span.text).join(''), postText);
-  const artifacts = result.rawArtifacts;
+  const batchResponseSchema = (JSON.parse(String(batchProposal.init.body)) as {
+    generationConfig: { responseJsonSchema: { properties: { competitors: { items: { properties: Record<string, { enum?: unknown[] }> } } } } };
+  }).generationConfig.responseJsonSchema;
+  const competitorProperties = batchResponseSchema.properties.competitors.items.properties;
+  const exactObservations = batchProposal.packet.exactContractObservations as Array<{
+    observationId: string; token: { chain: string; address: string }; sourceId: string; spanId: string;
+  }>;
+  assert.deepEqual(competitorProperties.observationId?.enum, exactObservations.map(observation => observation.observationId),
+    'the model selects only code-owned literal observations from supplied full text');
+  for (const field of ['token', 'sourceId', 'spanId', 'quote']) assert.equal(competitorProperties[field], undefined,
+    `the wire cannot invent ${field}; local code resolves it from the selected observation`);
+  assert.equal(exactObservations.some(observation => observation.sourceId === 'url-only-contract'), false,
+    'an address in URL metadata never becomes a selectable contract observation');
+  const batchWireEnvelope = JSON.parse(artifacts['attention-comparison-1-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+  const batchWire = JSON.parse(batchWireEnvelope.candidates[0]!.content.parts[0]!.text) as { competitors: Array<{ id: string; observationId: string }> };
+  for (const selected of batchWire.competitors) {
+    const observation = exactObservations.find(item => item.observationId === selected.observationId);
+    assert.ok(observation, 'the accepted wire points to a code-owned exact observation');
+    const source = batchSources.find(item => item.id === observation.sourceId)!;
+    const resolvedQuote = source.spans.find(span => span.id === observation.spanId)?.text;
+    const normalized = fullTextCandidates.find(item => item.token.chain === observation.token.chain
+      && item.token.address === observation.token.address && item.sourceId === observation.sourceId && item.quote === resolvedQuote);
+    assert.ok(normalized, 'the merged proposal preserves the selected observation after assigning its canonical item ID');
+    assert.deepEqual(normalized.token, observation.token);
+    assert.equal(normalized.sourceId, observation.sourceId);
+    assert.equal(normalized.quote,
+      resolvedQuote,
+      'the saved token and literal quote are resolved from the selected observation');
+  }
+  const manifest = JSON.parse(artifacts['attention-comparison-manifest']!) as { wireMethod: string };
+  assert.equal(manifest.wireMethod, 'literal-observations-v2');
   for (const id of [
     'attention-comparison-manifest',
     'attention-comparison-1-proposal-prompt', 'attention-comparison-1-proposal-response',
     'attention-comparison-1-review-prompt', 'attention-comparison-1-review-response',
     'attention-comparison-final-review-prompt', 'attention-comparison-final-review-response',
   ]) assert.ok(artifacts[id], `retained complete-comparison artifact ${id}`);
+});
+
+test('comparison batch packets compact qualified lead receipts while the final merge keeps the complete receipt', async () => {
+  const pageText = `Target representation ${TOKEN.address}. ${NARRATIVE}\n` + 'x'.repeat(6_100);
+  const read = comparisonRead(pageText);
+  const leadId = 'comparison-lead-compact';
+  const title = 'River Lantern neighborhood art project';
+  const snippet = 'The indexed project describes a community art token and shared public murals.';
+  const lead = comparisonLead(leadId, 0, 'https://public.example/source', title, snippet, 'ACQUIRED', ['page-1']);
+  read.comparisonAcquisition = {
+    originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [lead],
+  };
+  const completeResponder = completeComparisonResponder({
+    candidates: () => [{ id: 'target-representation', token: TOKEN, sourceMatch: 'Target representation' }],
+  });
+  const model = mockModel(packet => {
+    const scope = packet.scope as { mode?: string } | undefined;
+    if (scope?.mode === 'qualified-identified-leads-v1') {
+      const entry = (packet.leads as Array<{ id: string; metadataEvidenceId: string }>)[0]!;
+      if (packet.proposal) return { decisions: { [entry.id]: {
+        accepted: true, rationale: 'The independent review accepts the original fetched source for this indexed lead.',
+      } } };
+      return { decisions: { [entry.id]: {
+        rationale: 'The indexed project descriptor and its own fetched source describe the same project.',
+        descriptorRefs: [{ sourceId: entry.metadataEvidenceId, spanId: metadataSpanId(packet, entry.metadataEvidenceId, 'community art token') }],
+        disposition: 'ACQUIRED',
+        corroboratingRefs: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', 'Target representation') }],
+        token: null,
+      } } };
+    }
+    return completeResponder(packet);
+  });
+
+  const result = await qualifyAttention(read, TOKEN, KEY, model.fetcher, async () => {}, {
+    tinyfishKey: 'offline-search-key', now: () => CUTOFF,
+  });
+  assert.equal(result.code, undefined);
+  assert.equal(result.scope?.comparisonComplete, true);
+  const qualification = result.scope?.comparisonQualification;
+  assert.ok(qualification);
+  const batch = model.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 1 && !request.packet.proposal)!;
+  const batchScope = batch.packet.scope as { leadQualification: unknown };
+  assert.deepEqual(batchScope.leadQualification, JSON.parse(JSON.stringify(compactComparisonLeadScope(result.scope!))));
+  assert.equal(JSON.stringify(batchScope.leadQualification).includes('corroboratingRefs'), false,
+    'batch context does not repeat proposal and review citation details');
+  const batchCatalog = batch.packet.sources as PacketSource[];
+  assert.equal(batchCatalog.find(source => source.id === 'page-1')?.spans.map(span => span.text).join(''), pageText,
+    'compacting lead context does not truncate the complete comparison source');
+  const expandedBatch = {
+    ...batch.packet,
+    scope: { ...(batch.packet.scope as Record<string, unknown>), leadQualification: qualification },
+  };
+  assert.ok(JSON.stringify(batch.packet).length < JSON.stringify(expandedBatch).length,
+    'the hosted batch receives a smaller lead receipt than the complete qualification object');
+
+  const final = model.requests.find(request => request.packet.manifest)!;
+  assert.deepEqual(final.packet.leadQualification, qualification,
+    'the final global audit retains the full code-owned comparison qualification receipt');
 });
 
 test('complete comparison splits over 300k of retained text into four bounded batches and deduplicates by chain and address', async () => {
@@ -723,6 +1462,55 @@ test('a successful model review cannot upgrade incomplete original comparison ac
   assert.equal(result.scope?.comparisonComplete, false);
 });
 
+test('recovery lineage reuses a redirected original only by its final URL or an actual recovery fetch', () => {
+  const requestedUrl = 'https://index.example/project';
+  const finalUrl = 'https://publisher.example/project';
+  const pageText = `The indexed project represents ${TOKEN.address} with its original public description.`;
+  const source = {
+    id: 'page-1', url: finalUrl, text: pageText, publishedAt: null, authorId: null,
+    availableAt: CUTOFF, kind: 'PAGE' as const,
+  };
+  const makeRead = (hitUrl: string, recoveryFetched = false): AttentionRead => {
+    const lead = comparisonLead('comparison-lead-1', 0, requestedUrl, 'Indexed project', 'Original project description', 'ACQUIRED', ['page-1']);
+    lead.recoveryQueryIds = ['attention-recovery-search-1'];
+    const read = sourceRead();
+    read.sources = [source];
+    read.rawArtifacts = {
+      'attention-fetch-1': JSON.stringify({
+        results: [{ url: requestedUrl, final_url: finalUrl, text: pageText }], errors: [],
+      }),
+      'attention-recovery-search-1': JSON.stringify({ results: [{ url: hitUrl }] }),
+      ...(recoveryFetched ? {
+        'attention-recovery-fetch-1': JSON.stringify({
+          results: [{ url: requestedUrl, final_url: finalUrl, text: pageText }], errors: [],
+        }),
+      } : {}),
+    };
+    read.comparisonComplete = true;
+    read.comparisonSourceIds = ['page-1'];
+    read.comparisonAcquisition = {
+      originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [lead],
+    };
+    read.comparisonQualification = {
+      recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: lead.id }],
+    };
+    return read;
+  };
+
+  const requestedHit = comparisonSourceLineage(makeRead(requestedUrl))[0]!;
+  assert.deepEqual(requestedHit.sourceIds, ['page-1'], 'the original Fetch response binds the source to its requested lead');
+  assert.deepEqual(requestedHit.recoverySourceIds, [],
+    'a search hit to the old requested URL cannot reuse a page retained under a different final URL');
+
+  const canonicalHit = comparisonSourceLineage(makeRead(finalUrl))[0]!;
+  assert.deepEqual(canonicalHit.recoverySourceIds, ['page-1'],
+    'a hit to the already retained canonical final URL can reuse that source');
+
+  const fetchedAgain = comparisonSourceLineage(makeRead(requestedUrl, true))[0]!;
+  assert.deepEqual(fetchedAgain.recoverySourceIds, ['page-1'],
+    'the original requested URL can gain recovery lineage when a recovery Fetch actually returns the same final page and body');
+});
+
 test('bounded alternate search can qualify an exact-contract lead while preserving the incomplete original acquisition', async () => {
   const alternate = { chain: 'base', address: '0x2222222222222222222222222222222222222222' } as const;
   const targetUrl = 'https://public.example/source';
@@ -770,14 +1558,16 @@ test('bounded alternate search can qualify an exact-contract lead while preservi
       const sources = packet.sources as PacketSource[];
       if (packet.proposal) {
         const ids = packet.requiredDecisionIds as string[];
+        const exactContractObservations = packet.exactContractObservations as unknown[];
         return envelope({
           decisions: Object.fromEntries(ids.map(id => [id, { accepted: true, rationale: 'The supplied source spans support this full-text observation.' }])),
           candidateSet: { complete: true, rationale: 'Every relevant exact-contract representation in this bounded source batch is covered.' },
           sourceDecisions: Object.fromEntries(sources.map(source => [source.id, {
             disposition: source.spans.some(span => span.text.includes(TOKEN.address) || span.text.includes(alternate.address)) ? 'RELEVANT' : 'CONTEXT',
+            insufficiencyKind: 'NONE',
             rationale: 'The source is judged against its supplied exact-contract content.',
           }])),
-          missingRepresentations: [],
+          ...(exactContractObservations.length ? { missingRepresentations: [] } : {}),
         });
       }
       const candidates: ComparisonCandidate[] = [];
@@ -894,7 +1684,8 @@ test('a stale profile lead with target-mechanism metadata stays unresolved when 
     if (typeof scope?.batch === 'number' && packet.proposal) return {
       ...(completeComparisonResponder()(packet) as Record<string, unknown>),
       sourceDecisions: Object.fromEntries((packet.sources as PacketSource[]).map(source => [source.id, {
-        disposition: source.id === 'stale-profile' ? 'CONTEXT' : 'RELEVANT', rationale: 'The source has been reviewed in its full retained context.',
+        disposition: source.id === 'stale-profile' ? 'CONTEXT' : 'RELEVANT', insufficiencyKind: 'NONE',
+        rationale: 'The source has been reviewed in its full retained context.',
       }])),
     };
     if (typeof scope?.batch === 'number') return {
@@ -1009,6 +1800,98 @@ test('recovery planning sees the selected acquired profile prefix and searches i
   assert.equal(result.scope?.comparisonComplete, false, 'a recovery plan and empty search do not resolve the stale profile lead');
 });
 
+test('fresh recovery plans every required parent in first-query round-robin order', async () => {
+  const leads = Array.from({ length: 10 }, (_, index) => comparisonLead(
+    `comparison-lead-${index + 1}`, index, `https://index-${index + 1}.example/project-${index + 1}`,
+    `Indexed project ${index + 1}`, `A distinctive public mechanism for indexed project ${index + 1} on Base.`, 'FAILED'));
+  const read = ledgerComparisonRead(leads);
+  const plannerRows = leads.map((lead, index) => ({
+    leadId: lead.id,
+    queries: [
+      `Indexed project ${index + 1} distinctive mechanism Base`,
+      `Indexed project ${index + 1} original publication`,
+    ],
+    rationale: 'Search for this indexed subject using its own descriptive metadata.',
+    metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: '' }],
+  }));
+  const searchCalls: string[] = [];
+  const model = mockModel(packet => {
+    if (Array.isArray(packet.selectedLeadIds) && Array.isArray(packet.leads)) {
+      return { leads: plannerRows.map(row => ({
+        ...row,
+        metadataRefs: [{ sourceId: row.metadataRefs[0]!.sourceId,
+          spanId: metadataSpanId(packet, row.metadataRefs[0]!.sourceId) }],
+      })).reverse() };
+    }
+    if (Array.isArray(packet.operands)) {
+      const operands = packet.operands as Array<{ leadId: string; indexedDescriptorId: string }>;
+      if (packet.proposal) return { decisions: operands.map(({ leadId }) => ({
+        leadId,
+        accounting: { accepted: true, rationale: 'The unread original is accurately recorded as unavailable.' },
+        representation: { accepted: true, rationale: 'No representation conclusion is inferred from missing data.' },
+        subjectComparison: { accepted: true, rationale: 'The code accurately records that no original body was acquired.' },
+        evidenceAdequacy: { accepted: true, rationale: 'The code accurately records that no original body was acquired.' },
+      })) };
+      return { decisions: operands.map(({ leadId, indexedDescriptorId }) => ({
+        leadId,
+        accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'UNRESOLVED',
+          rationale: 'The failed original source leaves this item unaccounted.',
+          descriptorRefs: [{ sourceId: indexedDescriptorId, spanId: metadataSpanId(packet, indexedDescriptorId) }],
+          corroboratingRefs: [] },
+        representation: { status: 'UNRESOLVED', rationale: 'No fetched source supports a representation conclusion.', citations: [] },
+      })) };
+    }
+    return packet.proposal ? reviewWire(packet, true) : proposalWire(packet);
+  });
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      searchCalls.push(new URL(url).searchParams.get('query') ?? '');
+      return new Response(JSON.stringify({ results: [] }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (url.startsWith('https://api.fetch.tinyfish.ai/')) {
+      assert.fail('empty successful searches do not dispatch Fetch requests');
+    }
+    return model.fetcher(input, init);
+  };
+
+  const result = await qualifyAttention(read, TOKEN, KEY, fetcher, async () => {}, {
+    tinyfishKey: 'offline-search-key', now: () => CUTOFF, representationScreen: true,
+    signal: new AbortController().signal,
+  });
+  const planRequest = model.requests.filter(request => Array.isArray(request.packet.selectedLeadIds));
+  assert.equal(planRequest.length, 1, 'the complete parent set is planned in one model request');
+  const plan = planRequest[0]!.packet;
+  const parentIds = leads.map(lead => lead.id);
+  assert.deepEqual(plan.selectedLeadIds, parentIds,
+    'all ten failed original leads are required, including the former fifth-through-tenth deferred parents');
+  assert.equal((plan.leads as unknown[]).length, parentIds.length);
+
+  const firstQueries = plannerRows.map(row => row.queries[0]!);
+  const secondQueries = plannerRows.map(row => row.queries[1]!);
+  const expectedQueries = [...firstQueries, ...secondQueries];
+  const expectedParents = [...parentIds, ...parentIds];
+  assert.deepEqual(searchCalls, expectedQueries,
+    'every parent first query is dispatched before any parent second query, regardless of provider row order');
+  const recoveryScope = JSON.parse(result.rawArtifacts['attention-comparison-recovery-scope']!) as {
+    queries: string[]; queryParents: string[];
+  };
+  assert.deepEqual(recoveryScope.queries, expectedQueries);
+  assert.deepEqual(recoveryScope.queryParents, expectedParents);
+  const qualification = result.scope?.comparisonQualification as {
+    selectedLeadIds: string[]; recoveryQueries: Array<{ queryId: string; parentLeadId: string; state: string; availableAt: string }>;
+    accountingComplete: boolean;
+  };
+  assert.deepEqual(qualification.selectedLeadIds, parentIds);
+  assert.deepEqual(qualification.recoveryQueries.map(query => [query.queryId, query.parentLeadId, query.state, query.availableAt]),
+    expectedQueries.map((_, index) => [`attention-recovery-search-${index + 1}`, expectedParents[index], 'NO_RESULTS', CUTOFF]),
+    'every query outcome and injected retrieval clock is retained against its canonical parent');
+  assert.equal(qualification.accountingComplete, false, 'successful empty searches do not invent fetched evidence or factual accounting');
+  assert.equal(result.scope?.comparisonComplete, false);
+  assert.equal(result.rawArtifacts['attention-recovery-fetch-1'], undefined,
+    'no fetched page is invented when all successful searches return zero results');
+});
+
 test('inadequacy assessment is span-resolved against identical indexed and fetched catalogs in both lead passes', async () => {
   const scenarios = [
     { name: 'accepted assessment', verdict: 'INADEQUATE', review: 'ACCEPT', output: true },
@@ -1102,271 +1985,1696 @@ test('inadequacy assessment is span-resolved against identical indexed and fetch
   }
 });
 
-test('V2 reviews every selected profile lead and only accepts a mismatch after successful empty recovery searches', async t => {
-  const leadOneId = 'comparison-lead-1';
-  const leadTwoId = 'comparison-lead-2';
-  const leadOneMetadata = `${leadOneId}-metadata`;
-  const leadTwoMetadata = `${leadTwoId}-metadata`;
-  const leadOnePage = 'current-profile-one';
-  const leadTwoPage = 'current-profile-two';
-  const leadOneTitle = 'River Lantern neighborhood art project';
-  const leadOneSnippet = 'The indexed project describes a community art token and shared public murals.';
-  const leadOneCurrent = 'The current account now publishes OUSD reserve backing and stablecoin lending updates; these fetched publications do not reflect the indexed River Lantern neighborhood art project.';
-  const leadTwoTitle = 'Cedar Lantern neighborhood art project';
-  const leadTwoSnippet = 'The indexed project describes a community art token and shared public murals in Cedar County.';
-  const leadTwoCurrent = 'The Cedar Lantern account continues publishing community art token updates and neighborhood mural plans.';
-  const leadOne = comparisonLead(leadOneId, 0, 'https://x.com/river_lantern', leadOneTitle, leadOneSnippet, 'ACQUIRED', [leadOnePage]);
-  const leadTwo = comparisonLead(leadTwoId, 1, 'https://x.com/cedar_lantern', leadTwoTitle, leadTwoSnippet, 'ACQUIRED', [leadTwoPage]);
-  const read = ledgerComparisonRead([leadOne, leadTwo]);
-  read.comparisonAcquisition!.originalComplete = true;
-  read.sources.push(
-    { id: leadOnePage, url: leadOne.url!, text: leadOneCurrent, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
-    { id: leadTwoPage, url: leadTwo.url!, text: leadTwoCurrent, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
-  );
-  read.comparisonSourceIds = [];
+test('fresh task-v5 accounts the acquired profile separately from representation support and grades only after full review', async t => {
+  const leadId = 'comparison-lead-screening';
+  const metadataId = `${leadId}-metadata`;
+  const profileUrl = 'https://x.com/river_lantern';
+  const title = 'River Lantern neighborhood art project';
+  const snippet = 'The indexed project describes a community art token and shared public murals.';
+  const currentText = 'The current account now publishes OUSD reserve backing and stablecoin lending updates; these fetched publications do not reflect the indexed River Lantern neighborhood art project.';
+  const run = async (mode: 'accept' | 'reject' | 'entry-rejected' | 'search-error' | 'one-scope-citation' | 'market-acquired' | 'market-unresolved' | 'market-no-results' | 'market-factual-unresolved' | 'market-source-support-unresolved' | 'market-search-error' | 'project-unresolved'
+    | 'market-support-repair' | 'market-support-repair-review-rejected' | 'source-support-repair'
+    | 'source-support-repair-nonowner'
+    | 'source-support-repair-rationale-changed'
+    | 'source-support-repair-inspection-incomplete' | 'source-support-repair-lead-unresolved'
+    | 'source-support-repair-candidate-rejected' | 'source-support-repair-post-rejected', options: { now?: string; includeOriginScope?: boolean; baseNarrative?: boolean; originText?: string; narrativeReviewAccepted?: boolean; malformedGroupedReview?: 'cross-group' | 'duplicate-id' | 'incoherent' | 'zero-claim-decision' | 'page-as-post'; overflowCompetitors?: boolean; malformedDescriptorRef?: 'missing' | 'foreign' | 'bad-span'; publicationRole?: 'known' | 'unresolved'; finalKeyVariant?: 'missing-null-blocker' | 'batch-id-as-decision'; bindingMarketWitness?: boolean; entrySupportOverride?: 'BINDING_EVIDENCE' | 'CONTEXT_ONLY'; forceInadequateGrade?: boolean; gradeUnresolved?: boolean; gradeCitationMismatch?: boolean; otherMarketBody?: boolean; bodyInspectionComplete?: boolean; bodyDecisionAccepted?: boolean; omitLeadOwnContextRefs?: boolean; entryGradeAccepted?: boolean; binaryEntryVerdict?: 'PASS' | 'FAIL'; binaryOriginVerdict?: 'PASS' | 'FAIL'; binaryLeadershipVerdict?: 'PASS' | 'FAIL' } = {}) => {
+    const marketUnresolved = mode === 'market-acquired' || mode === 'market-unresolved' || mode === 'entry-rejected' || mode === 'market-no-results' || mode === 'market-search-error' || mode === 'project-unresolved'
+      || mode === 'market-factual-unresolved' || mode === 'market-source-support-unresolved'
+      || mode === 'market-support-repair' || mode === 'market-support-repair-review-rejected';
+    const marketAcquired = mode === 'market-acquired';
+    const unresolvedRole = options.publicationRole === 'unresolved' ? 'UNRESOLVED'
+      : options.publicationRole === 'known' || mode === 'project-unresolved' ? 'PROJECT_OR_PUBLICATION' : 'MARKET_OR_INDEX_RECORD';
+    const leadUrl = options.publicationRole ? 'https://journal.example/articles/clinical-outcomes-2026'
+      : marketUnresolved ? 'https://dexscreener.com/base/river-lantern-usdc-pair' : profileUrl;
+    const leadTitle = options.publicationRole ? 'Peer-reviewed medical journal article on clinical outcomes'
+      : marketUnresolved ? 'River Lantern / USDC pair on DexScreener' : title;
+    const leadSnippet = marketUnresolved
+      ? options.publicationRole ? 'The indexed item is a peer-reviewed medical journal article reporting unrelated clinical outcomes.'
+        : 'DexScreener lists a River Lantern market pair on Base with pair and liquidity data only, without project narrative or origin context.'
+      : snippet;
+    const marketText = options.publicationRole
+      ? 'A peer-reviewed medical journal article reports clinical outcomes for an unrelated treatment study and does not discuss this token or project.'
+      : options.bindingMarketWitness
+        ? `Token ${TOKEN.address}. A market index lists a River Lantern pair and trading data only; it contains no project narrative or origin description.`
+        : 'A market index lists a River Lantern pair and trading data only; it contains no project narrative or origin description.';
+    const descriptorNeedle = options.publicationRole ? 'medical journal article'
+      : marketUnresolved ? 'DexScreener lists' : 'community art token';
+    const bodyNeedle = options.publicationRole ? '__no-positive-support-gap__'
+      : marketUnresolved ? 'market index lists' : 'OUSD reserve backing';
+    const recoveryUrl = options.publicationRole ? 'https://journal.example/articles/clinical-outcomes-2026'
+      : 'https://index.example/river-lantern-market-record';
+    const marketSourceId = 'market-original';
+    const lead = comparisonLead(leadId, 0, leadUrl, leadTitle, leadSnippet,
+      marketUnresolved && !marketAcquired ? 'FAILED' : 'ACQUIRED', marketAcquired ? [marketSourceId] : marketUnresolved ? [] : ['current-profile']);
+    // The base A01 fixture stays valid; market evidence is added through the lead's actual recovery response below.
+    const read = ledgerComparisonRead([lead]);
+    read.codes = [];
+    if (options.includeOriginScope) {
+      const originRead = inadequateOriginRead();
+      read.originScope = originRead.originScope;
+      read.discoveryUrls = originRead.discoveryUrls;
+      read.rawArtifacts['attention-search-1'] = originRead.rawArtifacts['attention-search-1']!;
+      read.rawArtifacts['attention-search-2'] = originRead.rawArtifacts['attention-search-2']!;
+      read.rawArtifacts['attention-fetch-1'] = originRead.rawArtifacts['attention-fetch-1']!;
+      read.queries = originRead.queries;
+      read.start = originRead.start;
+      read.end = originRead.end;
+      if (options.originText !== undefined) {
+        const original = read.sources.find(source => source.id === 'page-1');
+        assert.ok(original);
+        original.text = options.originText;
+        const fetched = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<{ text: string }> };
+        fetched.results[0]!.text = options.originText;
+        read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetched);
+        read.originScope = originSourceScope(read, TOKEN);
+      }
+    }
+    read.comparisonAcquisition!.originalComplete = !marketUnresolved || marketAcquired;
+    read.comparisonSourceIds = marketUnresolved ? [] : ['current-profile'];
+    if (options.includeOriginScope) read.comparisonSourceIds = ['page-1'];
+    read.rawArtifacts['attention-search-3'] = JSON.stringify({ results: [{ url: leadUrl, title: leadTitle, snippet: leadSnippet }] });
+    if (!marketUnresolved) {
+      read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+        results: [{ url: profileUrl, final_url: profileUrl, text: currentText }], errors: [],
+      });
+      read.sources.push({ id: 'current-profile', url: profileUrl, text: currentText,
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    }
+    if (mode.startsWith('source-support-repair')) {
+      read.comparisonSourceIds = ['page-1', 'current-profile', ...(mode === 'source-support-repair-post-rejected' ? ['post-1'] : [])];
+    }
+    if (marketAcquired) {
+      read.comparisonSourceIds = [marketSourceId];
+      read.rawArtifacts['attention-fetch-1'] = JSON.stringify({ results: [{ url: leadUrl, final_url: leadUrl, text: marketText }], errors: [] });
+      read.sources.push({ id: marketSourceId, url: leadUrl, text: marketText,
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+      assert.deepEqual(comparisonSourceLineage(read)[0]?.sourceIds, [marketSourceId]);
+    }
+    if (!marketUnresolved) assert.deepEqual(comparisonSourceLineage(read)[0]?.sourceIds, ['current-profile']);
 
-  const run = async (mode: 'accept' | 'reject' | 'omit-second-plan' | 'repair-cross-parent' | 'failed-repair') => {
-    const searchQueries: string[] = [];
-    const comparisonProposal = (packet: Record<string, unknown>, crossParent: boolean) => {
-      const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
-      const catalog = packet.sources as Array<PacketSource & { leadId?: string }>;
-      const foreign = catalog.find(source => source.id.startsWith('attention-recovery-') && source.leadId === leadTwoId);
-      if (crossParent) assert.ok(foreign, 'the second parent’s actual recovery metadata is present in the shared catalog');
-      const decisions = Object.fromEntries(leads.map(lead => {
-        const descriptorRef = { sourceId: lead.metadataEvidenceId,
-          spanId: spanId(packet, lead.metadataEvidenceId, 'community art token') };
-        const mismatch = lead.id === leadOneId;
-        const profileId = lead.sourceIds[0]!;
-        const fetchedRef = { sourceId: profileId,
-          spanId: spanId(packet, profileId, mismatch ? 'OUSD reserve backing' : 'Cedar Lantern account') };
-        return [lead.id, {
-          disposition: 'UNRESOLVED', rationale: 'The indexed lead remains unresolved after reviewing its own original source scope.',
-          descriptorRefs: [descriptorRef],
-          corroboratingRefs: crossParent && lead.id === leadOneId
-            ? [{ sourceId: foreign!.id, spanId: spanId(packet, foreign!.id, 'community art token') }]
-            : [],
-          token: null,
-          subjectComparison: {
-            status: mismatch ? 'MISMATCH' : 'CONSISTENT',
-            indexedSubject: mismatch ? 'River Lantern neighborhood art project' : 'Cedar Lantern neighborhood art project',
-            currentSubject: mismatch ? 'OUSD reserve backing account' : 'Cedar Lantern community art account',
-            rationale: 'The indexed and current public subjects are compared from their respective original sources.',
-            descriptorRefs: [descriptorRef], fetchedRefs: [fetchedRef],
-          },
-          evidenceAdequacy: {
-            verdict: 'UNRESOLVED',
-            rationale: 'This fixture does not assert a complete negative representation finding.', citations: [],
-          },
+    const reassessBatchSupport = mode === 'source-support-repair' || mode === 'source-support-repair-nonowner' || mode === 'source-support-repair-rationale-changed' || mode === 'source-support-repair-inspection-incomplete'
+      || mode === 'source-support-repair-lead-unresolved' || mode === 'source-support-repair-candidate-rejected'
+      || mode === 'source-support-repair-post-rejected';
+    const responder = completeComparisonResponder({
+      candidates: options.overflowCompetitors
+        ? () => Array.from({ length: 11 }, () => ({ id: 'tokenmint', token: TOKEN }))
+        : undefined,
+      malformedDescriptorRef: options.malformedDescriptorRef,
+      finalKeyVariant: options.finalKeyVariant,
+      entryGradeAccepted: options.entryGradeAccepted,
+      binaryEntryVerdict: options.binaryEntryVerdict,
+      binaryOriginVerdict: options.binaryOriginVerdict,
+      binaryLeadershipVerdict: options.binaryLeadershipVerdict,
+      entrySupportOverride: options.entrySupportOverride,
+      forceInadequateGrade: options.forceInadequateGrade,
+      gradeUnresolved: options.gradeUnresolved,
+      gradeCitationMismatch: options.gradeCitationMismatch,
+      otherMarketBody: options.otherMarketBody,
+      bodyDecisionAccepted: options.bodyDecisionAccepted,
+      omitLeadOwnContextRefs: options.omitLeadOwnContextRefs,
+      inspectionComplete: (_packet, source) => options.bodyInspectionComplete !== false
+        || !source.spans.some(span => span.text.includes('market index lists')),
+      onePublicScopeCitation: mode === 'one-scope-citation',
+      unresolvedPublicRole: options.publicationRole === 'unresolved',
+      entryReview: mode === 'entry-rejected' ? (_packet, proposed) => ({
+        leadRoles: Object.fromEntries(Object.keys(proposed.leadRoles as Record<string, unknown>).map(id => [id, { accepted: true, rationale: 'The indexed role matches its own descriptor and retained sources.' }])),
+        sourceSupport: Object.fromEntries(Object.keys(proposed.sourceSupport as Record<string, unknown>).map(id => [id, { accepted: true, rationale: 'The source classification matches its retained body.' }])),
+        leadBlockers: Object.fromEntries(Object.keys(proposed.leadBlockers as Record<string, unknown>).map(id => [id, { accepted: true, rationale: 'The proposed semantic blocker is correctly absent.' }])),
+        grade: { accepted: false, rationale: 'The independent reviewer rejects the proposed negative entry grade.' },
+      }) : undefined,
+      batchComplete: () => false,
+      ...(reassessBatchSupport ? {
+        candidates: mode === 'source-support-repair-candidate-rejected' ? () => [{ id: 'target-fulltext', token: TOKEN }] : undefined,
+        rejectBatchIds: mode === 'source-support-repair-candidate-rejected'
+          ? () => ['target-fulltext']
+          : mode === 'source-support-repair-post-rejected' ? () => ['post:post-1'] : undefined,
+        inspectionComplete: (_packet, source) => mode !== 'source-support-repair-inspection-incomplete' || source.id !== 'page-1',
+        sourceSupportRepair: packet => {
+          const original = packet.originalSupport as Record<string, { status: 'BINDING_EVIDENCE' | 'PUBLIC_SUPPORT_GAP' | 'CONTEXT_ONLY' | 'UNRESOLVED'; rationale: string; citations: Array<{ sourceId: string; spanId: string }>; leadIds: string[] }>;
+          return { ...original, 'page-1': { status: 'BINDING_EVIDENCE', rationale: mode === 'source-support-repair-rationale-changed'
+            ? 'A fresh review confirms the retained page connects this exact token with the described neighborhood art.'
+            : 'The retained page explicitly connects the exact token to the described neighborhood project.',
+            citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }], leadIds: [] } };
+        },
+      } : {}),
+      sourceDispositions: packet => Object.fromEntries((packet.sources as PacketSource[]).map(source => [source.id,
+        source.spans.some(span => span.text.includes(TOKEN.address)) ? 'RELEVANT' as const
+          : source.spans.some(span => span.text.includes(bodyNeedle)) ? 'INSUFFICIENT' as const : 'CONTEXT' as const])),
+      sourceInsufficiencyKinds: packet => Object.fromEntries((packet.sources as PacketSource[])
+        .filter(source => source.spans.some(span => span.text.includes(bodyNeedle)))
+        .map(source => [source.id, mode === 'market-source-support-unresolved' ? 'UNRESOLVED_MEANING_OR_ASSOCIATION' as const : 'PUBLIC_SUPPORT_GAP' as const])),
+      sourceSupport: packet => Object.fromEntries((packet.sources as PacketSource[]).map(source => {
+        if (mode === 'source-support-repair-nonowner' && source.id === 'page-1') return [source.id, {
+          status: 'UNRESOLVED', rationale: 'The malformed fixture assigns a parent that does not own this source.', citations: [], leadIds: [leadId],
         }];
-      }));
-      return { decisions: compactLeadDecisions(decisions) };
-    };
+        if (mode === 'source-support-repair-nonowner' && source.id === 'current-profile') return [source.id, {
+          status: 'CONTEXT_ONLY', rationale: 'The malformed fixture assigns a foreign lead to this source.', citations: [], leadIds: ['comparison-lead-not-owner'],
+        }];
+        if (reassessBatchSupport && source.id === 'page-1') return [source.id, {
+          status: 'UNRESOLVED', rationale: 'The first pass leaves this source support classification unresolved.', citations: [], leadIds: [],
+        }];
+        const span = source.spans.find(item => item.text.includes(bodyNeedle));
+        return [source.id, span
+          ? { status: mode === 'market-source-support-unresolved' ? 'UNRESOLVED' : 'PUBLIC_SUPPORT_GAP', rationale: 'The inspected market record contains trading data but no project narrative or origin description.', citations: [{ sourceId: source.id, spanId: span.id }], leadIds: [leadId] }
+          : { status: 'CONTEXT_ONLY', rationale: 'This retained source is not the lead page that documents the representation gap.', citations: [], leadIds: [] }];
+      })),
+      supportProposal: packet => {
+        const catalog = packet.sources as Array<{ sourceId: string; spans: Span[] }>;
+        if (options.publicationRole) {
+          const descriptor = catalog.find(item => item.sourceId === metadataId)?.spans[0];
+          assert.ok(descriptor, 'the recognized publication still has a code-owned indexed descriptor citation');
+          return { verdict: 'UNRESOLVED', rationale: 'An unrelated publication is context, not positive evidence of a public-support gap.',
+            citations: [{ sourceId: metadataId, spanId: descriptor.id }],
+            ...comparisonGradeIdFields(packet) };
+        }
+        const source = catalog.find(item => item.spans.some(span => span.text.includes(bodyNeedle)));
+        const span = source?.spans.find(item => item.text.includes(bodyNeedle));
+        if (mode === 'market-no-results') {
+          const descriptor = (packet.sources as Array<{ sourceId: string; spans: Span[] }>).find(item => item.sourceId === metadataId)?.spans[0];
+          assert.ok(descriptor, 'the unresolved grade still has a code-owned indexed descriptor citation');
+          return { verdict: 'UNRESOLVED', rationale: 'The successful empty own search does not positively establish a public-support gap.\n',
+            citations: [{ sourceId: metadataId, spanId: descriptor.id }],
+            ...comparisonGradeIdFields(packet) };
+        }
+        assert.ok(source && span, 'the global support pass receives the selected literal source evidence');
+        return { verdict: 'INADEQUATE', rationale: 'The fully inspected profile and indexed descriptor leave exact-token representation support inadequate in this bounded sample.',
+          citations: [{ sourceId: source.sourceId, spanId: span.id }],
+          ...comparisonGradeIdFields(packet) };
+      },
+    });
+    let v3LeadReviewCount = 0;
+    let v3LeadRepairProposalCount = 0;
     const model = mockModel(packet => {
       const scope = packet.scope as Record<string, unknown> | undefined;
-      if (packet.selectedLeadIds) {
-        const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
-        const ids = mode === 'omit-second-plan' ? selected.filter(lead => lead.id !== leadTwoId) : selected;
-        const metadata = packet.metadata as PacketSource[];
-        return {
-          leads: Object.fromEntries(ids.map((lead, index) => {
-            const source = metadata.find(item => item.id === lead.metadataEvidenceId);
-            assert.ok(source, `planner omitted the own indexed descriptor for ${lead.id}`);
-            assert.ok(Array.isArray(packet.originalSources), 'planner receives the selected lead original fetched prefixes');
-            assert.ok((packet.originalSources as PacketSource[]).some(item => lead.id === leadOneId
-              ? item.id === leadOnePage && item.spans.some(span => span.text.includes('OUSD reserve backing'))
-              : item.id === leadTwoPage && item.spans.some(span => span.text.includes('Cedar Lantern account'))),
-            `planner receives the retained fetched profile text for ${lead.id}`);
-            const descriptorSpan = source.spans.find(item => item.text.includes('community art token'));
-            assert.ok(descriptorSpan, `planner has an exact metadata span for ${lead.id}`);
-            return [lead.id, {
-              queries: [`Compare ${lead.id} indexed neighborhood project with independent original public sources`],
-              rationale: 'Check whether the indexed subject matches the account current profile and public search results.',
-              metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: descriptorSpan.id }],
-            }];
-          })) ,
-        };
+      const instruction = String(packet.instruction ?? '');
+      if (Array.isArray(packet.operands) || packet.entryTask && packet.mergeTask
+        || Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) {
+        return responder(packet);
       }
-      if (scope?.mode === 'qualified-identified-leads-v2' && packet.proposal) {
-        const proposed = packet.proposal as { decisions: Record<string, Record<string, unknown>> };
-        const decisions = Object.fromEntries(Object.keys(proposed.decisions).map(id => [id, {
-          accepted: true,
-          rationale: 'The proposed disposition matches the indexed and fetched source lineage.',
-          subjectComparison: { accepted: true, rationale: 'The indexed and current subjects are separately checked against their own citations.' },
-          evidenceAdequacy: {
-            accepted: id !== leadOneId || mode === 'accept',
-            rationale: id === leadOneId && mode === 'reject'
-              ? 'The independent review rejects the proposed negative despite the submitted sources.'
-              : 'The independent review checks the same subject mismatch and successful bounded query results.',
+      if (options.malformedGroupedReview === 'page-as-post' && typeof scope?.batch === 'number' && !packet.proposal
+        && String(packet.rowFormat ?? '').includes('There are no POST sources: posts field does not exist')) {
+        const response = responder(packet) as Record<string, unknown>;
+        const page = (packet.sources as PacketSource[]).find(source => source.kind === 'PAGE' && source.spans[0]);
+        assert.ok(page?.spans[0], 'the zero-post fixture includes an acquired PAGE source that could be wrongly relabeled as a post');
+        return { ...response, posts: [{ sourceId: page.id, spanId: page.spans[0]!.id, role: 'NEWS' }] };
+      }
+      if (options.malformedGroupedReview && packet.requiredSourceDecisionGroups && packet.proposal
+        && typeof scope?.batch === 'number') {
+        const response = responder(packet) as Record<string, unknown>;
+        if (options.malformedGroupedReview === 'zero-claim-decision') {
+          return { ...response, decisions: [{ id: 'claim-a01', accepted: true, rationale: 'The unsupported claim row must not replace an empty task decision set.' }] };
+        }
+        const groups = packet.requiredSourceDecisionGroups as { withLiteralObservations: string[]; withoutLiteralObservations: string[] };
+        const sourceRows = response.sourceDecisions as Record<string, Record<string, unknown>>;
+        const decisions = Object.entries(response.decisions as Record<string, Record<string, unknown>>)
+          .map(([id, decision]) => ({ id, ...decision }));
+        const bodyDecisions = Object.entries(response.bodyDecisions as Record<string, Record<string, unknown>>)
+          .map(([sourceId, decision]) => ({ sourceId, ...decision }));
+        let sourceDecisions: Record<string, unknown>;
+        if (options.malformedGroupedReview === 'cross-group') {
+          const misplaced = groups.withoutLiteralObservations[0];
+          assert.ok(misplaced, 'the invalid fixture has an actual no-literal source to misplace');
+          sourceDecisions = { withLiteralObservations: [{ sourceId: misplaced, ...sourceRows[misplaced]! }], withoutLiteralObservations: [] };
+        } else if (options.malformedGroupedReview === 'duplicate-id') {
+          const first = groups.withLiteralObservations[0];
+          assert.ok(first, 'the duplicate fixture has an actual literal-observation source');
+          const duplicate = { sourceId: first, ...sourceRows[first]! };
+          sourceDecisions = {
+            withLiteralObservations: [duplicate, structuredClone(duplicate)],
+            withoutLiteralObservations: groups.withoutLiteralObservations.map(sourceId => ({ sourceId, ...sourceRows[sourceId]! })),
+          };
+        } else {
+          const firstNoLiteral = groups.withoutLiteralObservations[0];
+          assert.ok(firstNoLiteral, 'the coherence fixture has an actual no-literal source');
+          sourceDecisions = {
+            withLiteralObservations: groups.withLiteralObservations.map(sourceId => ({ sourceId, ...sourceRows[sourceId]! })),
+            withoutLiteralObservations: groups.withoutLiteralObservations.map(sourceId => ({
+              sourceId, ...sourceRows[sourceId]!, ...(sourceId === firstNoLiteral ? { disposition: 'INSUFFICIENT', insufficiencyKind: 'NONE' } : {}),
+            })),
+          };
+        }
+        return { ...response, decisions, bodyDecisions, sourceDecisions };
+      }
+      if (packet.originEvidenceScope && (packet.comparisonQualification as { wireMethod?: string } | undefined)?.wireMethod === 'comparison-lead-tasks-v5') {
+        const sources = packet.sources as PacketSource[];
+        const sourceIds = sources.map(source => source.id);
+        const cited = sources.flatMap(source => source.spans.map(span => ({ source, span })))
+          .find(({ span }) => span.text.includes(TOKEN.address));
+        assert.ok(cited, 'task-v5 public-origin screening receives a literal original-scope span');
+        const criterion = (verdict: 'INADEQUATE' | 'UNRESOLVED') => ({ verdict,
+          rationale: 'This criterion remains unresolved in the fixture unless a dedicated domain case supplies a reviewed grade.',
+          citations: [{ sourceId: cited.source.id, spanId: cited.span.id }] });
+        if ('screening' in packet) return {
+          originTraceability: { accepted: true, rationale: 'Origin traceability receives its own independent review.' },
+          leadership: { accepted: true, rationale: 'Leadership receives its own independent review.' },
+          inspectionComplete: true, sourceIds,
+        };
+        return { originTraceability: criterion('UNRESOLVED'), leadership: criterion('UNRESOLVED'), sourceIds };
+      }
+      if (instruction.includes('ENTRY PUBLIC SUPPORT')) {
+        if ('screening' in packet) return { accepted: true, rationale: 'The independent review accepts the poor-entry-support grade without asserting factual non-origin or non-leadership.' };
+        const originScope = packet.originEvidenceScope as { sourceIds: string[] };
+        return { verdict: 'INADEQUATE', rationale: 'The complete bounded evidence does not establish primary origin or measured leadership.',
+          citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }], sourceIds: [...originScope.sourceIds] };
+      }
+      if ('originalProposal' in packet) {
+        const catalog = packet.sources as PacketSource[];
+        const cited = catalog.flatMap(source => source.spans.map(span => ({ source, span })))
+          .find(({ span }) => span.text.includes(TOKEN.address));
+        assert.ok(cited, 'the complete original narrative scope contains an exact-token source span');
+        if ('proposal' in packet) return {
+          sourceDecisions: Object.fromEntries(catalog.map(source => [source.id, {
+            accepted: true, rationale: 'The independent pass inspected every original source span.', inspectionComplete: true,
+          }])),
+          decisions: {
+            NARRATIVE_DESCRIPTION: { accepted: options.narrativeReviewAccepted !== false, rationale: 'The complete cited scope supports an inadequate description grade.' },
+            EXPLAINABLE_THESIS: { accepted: options.narrativeReviewAccepted !== false, rationale: 'The complete cited scope supports an inadequate explanation grade.' },
           },
-        }]));
+        };
         return {
-          decisions: compactLeadDecisions(decisions),
+          sourceSupport: Object.fromEntries(catalog.map(source => {
+            const own = source.spans.find(span => span.text.includes(TOKEN.address));
+            return [source.id, own
+              ? { status: 'PUBLIC_SUPPORT_GAP', criteria: ['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'], rationale: 'This exact-token source does not describe a narrative or explainable thesis.', citations: [{ sourceId: source.id, spanId: own.id }] }
+              : { status: 'CONTEXT_ONLY', criteria: [], rationale: 'This original source is contextual and has no token-bound narrative citation.', citations: [] }];
+          })),
+          judgments: Object.fromEntries(['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'].map(criterion => [criterion, {
+            verdict: 'INADEQUATE', rationale: `The complete reviewed origin scope does not establish ${criterion}.`,
+            citations: [{ sourceId: cited.source.id, spanId: cited.span.id }],
+          }])),
         };
       }
-      if (scope?.mode === 'qualified-identified-leads-v2' && packet.initialInvalidProposal) {
-        assert.equal(packet.localError, 'ATT_MODEL_COMPARISON_LEAD_REF_INVALID');
-        return comparisonProposal(packet, mode === 'failed-repair');
+      if (packet.originEvidenceScope && !packet.proposal) return proposalWire(packet, { claims: [
+        ...(options.baseNarrative === false ? [] : [{ id: 'claim-narrative', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }] }]),
+        { id: 'claim-origin-screen', feature: 'A03', value: false, summary: 'The bounded original sources do not establish a primary origin relationship.',
+          originBasis: 'PUBLIC_EVIDENCE_INADEQUATE', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }] },
+      ] });
+      if (packet.originEvidenceScope && packet.proposal) {
+        const base = reviewWire(packet, true) as Record<string, unknown>;
+        const originScope = packet.originEvidenceScope as { sourceIds: string[] };
+        return { ...base,
+          originScopeReview: { complete: true, sourceIds: [...originScope.sourceIds], rationale: 'Every original source in the supplied origin scope was inspected in full.' } };
       }
-      if (scope?.mode === 'qualified-identified-leads-v2') {
-        if (mode === 'repair-cross-parent' || mode === 'failed-repair') return comparisonProposal(packet, true);
-        const leads = packet.leads as Array<{ id: string; metadataEvidenceId: string; sourceIds: string[] }>;
-        const decisions = Object.fromEntries(leads.map(lead => {
-          const mismatch = lead.id === leadOneId;
-          const descriptorRef = { sourceId: lead.metadataEvidenceId, spanId: spanId(packet, lead.metadataEvidenceId, 'community art token') };
-          const profileId = lead.sourceIds[0]!;
-          const fetchedRef = { sourceId: profileId, spanId: spanId(packet, profileId, mismatch ? 'OUSD reserve backing' : 'Cedar Lantern account') };
-          return [lead.id, {
-            disposition: 'UNRESOLVED',
-            rationale: 'The lead is not resolved as a representation of the target contract from this source set.',
-            descriptorRefs: [descriptorRef], corroboratingRefs: [], token: null,
-            subjectComparison: {
-              status: mismatch ? 'MISMATCH' : 'CONSISTENT',
-              indexedSubject: mismatch ? 'River Lantern neighborhood art project' : 'Cedar Lantern neighborhood art project',
-              currentSubject: mismatch ? 'OUSD reserve backing account' : 'Cedar Lantern community art account',
-              rationale: mismatch ? 'The indexed River Lantern descriptor and current OUSD account context name different subjects.' : 'The indexed and current Cedar Lantern materials identify the same neighborhood art project.',
-              descriptorRefs: [descriptorRef], fetchedRefs: [fetchedRef],
-            },
-            evidenceAdequacy: mismatch ? {
-              verdict: 'INADEQUATE',
-              rationale: 'The indexed project descriptor and positively different current account subject leave this public representation unbound after successful bounded recovery searches.',
-              citations: [descriptorRef, fetchedRef],
-            } : {
-              verdict: 'UNRESOLVED',
-              rationale: 'The sources do not establish inadequate public representation for this consistent indexed and current subject.',
-              citations: [],
-            },
-          }];
-        }));
-        return { decisions: compactLeadDecisions(decisions) };
+      if (Array.isArray(packet.selectedLeadIds)) {
+        const descriptor = metadataSpanId(packet, metadataId, descriptorNeedle);
+        return { leads: { [leadId]: { queries: ['River Lantern indexed project independent public sources'],
+          rationale: 'Check the indexed project with one bounded independent query.',
+          metadataRefs: [{ sourceId: metadataId, spanId: descriptor }] } } };
       }
-      return packet.proposal ? reviewWire(packet, true) : proposalWire(packet);
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.initialProposal) {
+        v3LeadRepairProposalCount++;
+        const original = packet.initialProposal as { decisions: Record<string, Record<string, unknown>> };
+        const decision = structuredClone(original.decisions[leadId]!);
+        const recovered = (packet.sources as PacketSource[]).find(source => source.id !== metadataId
+          && source.spans.some(span => span.text.includes(bodyNeedle)));
+        assert.ok(recovered, 'the retry sees the retained actual fetched market-only recovery page');
+        (decision.representation as Record<string, unknown>) = {
+          status: 'INADEQUATE', unresolvedKind: 'NONE', token: null,
+          rationale: 'The own indexed listing and fetched recovery page provide pair data only and no project narrative.',
+          citations: [
+            { sourceId: metadataId, spanId: metadataSpanId(packet, metadataId, descriptorNeedle) },
+            { sourceId: recovered.id, spanId: spanId(packet, recovered.id, bodyNeedle) },
+          ],
+        };
+        return { decisions: [{ leadId, ...decision }] };
+      }
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
+        v3LeadReviewCount++;
+        const proposed = packet.proposal as { decisions: Record<string, unknown> };
+        return { decisions: Object.keys(proposed.decisions).map(id => ({ leadId: id,
+          accounting: { accepted: mode !== 'source-support-repair-lead-unresolved', rationale: 'The original indexed entity and actual acquired page are separately accounted.' },
+          representation: { accepted: mode !== 'reject' && !(mode.startsWith('market-support-repair') && v3LeadReviewCount === 1)
+            && !(mode === 'market-support-repair-review-rejected' && v3LeadReviewCount === 2),
+            rationale: 'The review checks the positive current-page subject comparison and the distinct representation judgment.' },
+          subjectComparison: { accepted: true, rationale: 'The indexed description and original fetched profile are compared from their own citations.' },
+          evidenceAdequacy: { accepted: true, rationale: 'The cited current profile and indexed description support the scoped adequacy decision.' },
+        })) };
+      }
+      if (scope?.mode === 'qualified-identified-leads-v3') {
+        const metadataRef = { sourceId: metadataId, spanId: metadataSpanId(packet, metadataId, descriptorNeedle) };
+        if (marketUnresolved) return { decisions: [{ leadId,
+          accounting: { status: 'UNRESOLVED', basis: 'NONE', role: unresolvedRole,
+            rationale: 'The exact market record remains factually unresolved after the complete successful bounded search.',
+            descriptorRefs: [metadataRef], corroboratingRefs: [] },
+          representation: { status: mode === 'market-factual-unresolved' ? 'UNRESOLVED' : 'INADEQUATE', unresolvedKind: mode === 'market-factual-unresolved' ? 'PUBLIC_SUPPORT_GAP' : 'NONE', token: null,
+            rationale: mode === 'market-factual-unresolved'
+              ? 'The indexed market evidence does not resolve a factual representation relationship.'
+              : 'The reviewed market record contains pair metrics without public project or narrative support.', citations: [metadataRef] },
+          subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'River Lantern market listing', currentSubject: null,
+            rationale: 'The original market record body was not acquired, so its factual subject remains unresolved.', descriptorRefs: [metadataRef], fetchedRefs: [] },
+          evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The original market record was not fetched, so no original-body adequacy fact is asserted.', citations: [metadataRef] },
+        }] };
+        const currentRef = { sourceId: 'current-profile', spanId: spanId(packet, 'current-profile', 'OUSD reserve backing') };
+        return { decisions: [{ leadId,
+          accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+            rationale: 'The original profile body was actually acquired and retained for this indexed project lead.',
+            descriptorRefs: [metadataRef], corroboratingRefs: [currentRef] },
+          representation: { status: 'INADEQUATE', unresolvedKind: 'NONE', token: null,
+            rationale: 'The acquired current profile positively describes a different reserve-lending subject and does not support the indexed token narrative.',
+            citations: [metadataRef, currentRef] },
+          subjectComparison: { status: 'MISMATCH', indexedSubject: 'River Lantern neighborhood art project', currentSubject: 'OUSD reserve backing account',
+            rationale: 'The indexed project and actually fetched current account describe different subjects.', descriptorRefs: [metadataRef], fetchedRefs: [currentRef] },
+          evidenceAdequacy: { verdict: 'INADEQUATE',
+            rationale: 'The positively different original account body leaves the indexed public representation unsupported.', citations: [metadataRef, currentRef] },
+        }] };
+      }
+      if ((Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds))
+        || typeof scope?.batch === 'number' || packet.manifest) return responder(packet);
+      return packet.proposal ? reviewWire(packet, true) : proposalWire(packet, { claims: options.baseNarrative === false ? [] : undefined });
     });
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url.startsWith('https://api.search.tinyfish.ai/')) {
-        const query = new URL(url).searchParams.get('query') ?? '';
-        searchQueries.push(query);
-        if (mode === 'repair-cross-parent' || mode === 'failed-repair') {
-          const first = query.includes(leadOneId);
-          const hit = first
-            ? { url: 'https://guides.example/river-lantern', title: 'River Lantern community art token guide', snippet: 'The River Lantern guide describes a community art token and shared public murals.' }
-            : { url: 'https://archives.example/cedar-lantern', title: 'Cedar Lantern community art token archive', snippet: 'The Cedar Lantern archive describes a community art token and county murals.' };
-          return new Response(JSON.stringify({ results: [hit] }), { headers: { 'content-type': 'application/json' } });
-        }
-        return new Response(JSON.stringify({ results: [] }), { headers: { 'content-type': 'application/json' } });
+        const searchValue = mode === 'search-error' || mode === 'market-search-error'
+          ? { results: [], error: 'temporary search failure' }
+          : mode === 'market-no-results' ? { results: [] }
+          : marketUnresolved ? { results: [{ url: recoveryUrl, title: leadTitle, snippet: leadSnippet }] }
+          : { results: [] };
+        return new Response(JSON.stringify(searchValue), { headers: { 'content-type': 'application/json' } });
       }
-      if ((mode === 'repair-cross-parent' || mode === 'failed-repair') && url.startsWith('https://api.fetch.tinyfish.ai/')) {
-        const requested = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
-        return new Response(JSON.stringify({ results: requested.map(item => ({
-          url: item, final_url: item, text: `The complete public guide describes the ${item.includes('river-lantern') ? 'River Lantern' : 'Cedar Lantern'} community art token.`,
+      if (url.startsWith('https://api.fetch.tinyfish.ai/') && marketUnresolved) {
+        const requested = JSON.parse(String(init?.body)) as { urls?: string[] };
+        return new Response(JSON.stringify({ results: (requested.urls ?? []).map(requestedUrl => ({
+          url: requestedUrl, final_url: requestedUrl, text: marketText,
         })), errors: [] }), { headers: { 'content-type': 'application/json' } });
       }
       return model.fetcher(input, init);
     };
-    const result = await qualifyAttention(read, TOKEN, KEY, fetcher, async () => {}, {
-      tinyfishKey: 'offline-search-key', now: () => CUTOFF, representationScreen: true,
-    });
-    return { result, model, searchQueries };
+    return { read, result: await qualifyAttention(read, TOKEN, KEY, fetcher, async () => {}, {
+      tinyfishKey: 'offline-search-key', now: () => options.now ?? CUTOFF, representationScreen: true,
+    }), model, v3LeadReviewCount, v3LeadRepairProposalCount };
   };
 
-  await t.test('accepted mismatch uses both complete empty-query receipts and keeps A10 missing', async () => {
-    const { result, model, searchQueries } = await run('accept');
-    const scope = result.scope!;
-    const qualification = scope.comparisonQualification as {
-      mode: string; selectedLeadIds: string[]; decisions: Array<{ leadId: string }>;
-      recoveryQueries: Array<{ parentLeadId: string; queryId: string; state: string; descriptorComplete: boolean; resultCount: number; availableAt: string }>;
-    };
-    assert.equal(qualification.mode, 'qualified-identified-leads-v2');
-    assert.deepEqual(qualification.selectedLeadIds, [leadOneId, leadTwoId]);
-    assert.deepEqual(qualification.decisions.map(decision => decision.leadId), [leadOneId, leadTwoId]);
-    assert.equal(searchQueries.length, 2, 'one bounded recovery query is actually executed for each selected profile');
-    assert.deepEqual(qualification.recoveryQueries.map(query => [query.parentLeadId, query.state, query.descriptorComplete, query.resultCount]), [
-      [leadOneId, 'NO_RESULTS', true, 0], [leadTwoId, 'NO_RESULTS', true, 0],
-    ]);
-    assert.ok(qualification.recoveryQueries.every(query => query.availableAt === CUTOFF));
-    assert.ok(qualifiedComparisonEvidence(scope, CUTOFF), 'successful empty searches preserve the lead-specific mismatch proof');
-    const rows = deriveAttention(scope, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
-    assert.equal(rows.find(row => row.id === 'A09')?.quality, 'KNOWN');
-    assert.equal(rows.find(row => row.id === 'A09')?.projection?.value, false);
-    assert.equal(rows.find(row => row.id === 'A10')?.quality, 'MISSING');
-    assert.equal(model.requests.some(request => request.packet.scope && (request.packet.scope as { batch?: number }).batch !== undefined), false,
-      'a valid negative does not require a fabricated completed full comparison');
-  });
-
-  await t.test('a rejected inadequacy judgment cannot become an A09 negative', async () => {
-    const { result } = await run('reject');
+  await t.test('fresh task rows keep a separately acquired profile distinct from the supported target narrative', async () => {
+    const { result, model } = await run('accept', { binaryEntryVerdict: 'PASS' });
+    assert.ok(result.scope, JSON.stringify({ code: result.code, codes: result.scope?.codes }));
+    const qualification = result.scope!.comparisonQualification as { mode: string; wireMethod?: string; supportScopeMethod?: string; accountingComplete: boolean };
+    assert.equal(qualification.mode, 'qualified-identified-leads-v3');
+    assert.equal(qualification.wireMethod, 'comparison-lead-tasks-v5');
+    assert.equal(qualification.supportScopeMethod, 'comparison-lead-support-scope-v4');
+    assert.equal(qualification.accountingComplete, false, 'unresolved original item identity is preserved');
+    const task = model.requests.find(request => Array.isArray(request.packet.operands));
+    assert.ok(task, 'the actual per-lead task proposal is submitted');
+    assert.ok(model.requests.some(request => Array.isArray(request.packet.operands) && 'proposal' in request.packet),
+      'the actual per-lead task receives an independent four-axis review');
+    const receipt = result.scope!.comparisonPublicSupport as { method?: string; verdict?: string; decision?: { verdict: string }; researchComplete?: boolean; entry?: { sourceSupport?: Record<string, { status: string }> } } | undefined;
+    assert.equal(receipt?.method, 'comparison-public-support-v6');
+    assert.equal(receipt?.verdict, 'UNRESOLVED', 'an unrelated current profile and a supported target story do not establish a public-support gap');
+    assert.equal(receipt?.decision?.verdict, 'PASS', 'the separate final binary entry judgment is retained even when no negative witness exists');
     assert.equal(qualifiedComparisonEvidence(result.scope!, CUTOFF), null);
+    assert.ok(receipt?.entry?.sourceSupport, 'the same producer completed body-level and entry-level assessment');
     const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
-    assert.notEqual(rows.find(row => row.id === 'A09')?.projection?.value, false);
+    assert.equal(rows.find(row => row.id === 'A10')?.quality, 'MISSING', 'public-support classification does not manufacture an identity fact');
   });
 
-  await t.test('omitting a selected profile key invalidates the V2 recovery plan', async () => {
-    const { result } = await run('omit-second-plan');
-    assert.ok(result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_LEAD_FAILED:')));
-    assert.equal(qualifiedComparisonEvidence(result.scope!, CUTOFF), null);
-    const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
-    assert.notEqual(rows.find(row => row.id === 'A09')?.projection?.value, false);
+  await t.test('a rejected task review cannot qualify an entry grade', async () => {
+    const rejected = await run('reject');
+    assert.ok(rejected.result.scope);
+    assert.equal(qualifiedComparisonEvidence(rejected.result.scope!, CUTOFF), null);
+    assert.equal((rejected.result.scope!.comparisonPublicSupport as { verdict?: string } | undefined)?.verdict, 'UNRESOLVED');
+    assert.equal(rejected.result.rawArtifacts['attention-comparison-lead-review-response'] !== undefined, true,
+      'the original task response and its rejected independent review remain in the proof');
   });
-
-  await t.test('one complete local repair replaces a cross-parent metadata reference before the full independent review', async () => {
-    const { result, model, searchQueries } = await run('repair-cross-parent');
-    const v2Requests = model.requests.filter(request => (request.packet.scope as { mode?: string } | undefined)?.mode === 'qualified-identified-leads-v2');
-    assert.ok(result.rawArtifacts['comparison-lead-wire-repair'], JSON.stringify({
-      codes: result.scope?.codes, qualification: result.rawArtifacts['comparison-lead-qualification'],
-      v2Packets: v2Requests.map(request => Object.keys(request.packet)), searchQueries,
-    }));
-    const qualification = JSON.parse(result.rawArtifacts['comparison-lead-qualification']!) as {
-      proposalResponseId: string; proposal: { decisions: Record<string, unknown> }; review: { decisions: Record<string, unknown> };
-    };
-    const marker = JSON.parse(result.rawArtifacts['comparison-lead-wire-repair']!) as Record<string, string>;
-    const originalEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-lead-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
-    const originalWire = JSON.parse(originalEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: Array<{ leadId: string; corroboratingRefs: Array<{ sourceId: string }> }> };
-    const repairRequest = v2Requests.find(request => request.packet.initialInvalidProposal)!.packet;
-    const foreignRefId = originalWire.decisions[0]!.corroboratingRefs[0]!.sourceId;
-    const foreignDescriptor = (v2Requests[0]!.packet.sources as Array<PacketSource & { leadId?: string }>).find(source => source.id === foreignRefId);
-    const localFailure = repairRequest.localReferenceFailure as {
-      leadId: string; requiredDescriptorSourceId: string; eligibleCorroboratingSourceIds: string[];
-      selectedDescriptorSourceIds: string[]; selectedCorroboratingSourceIds: string[];
-    };
-
-    assert.equal(searchQueries.length, 2, 'each original parent gets its own bounded recovery search');
-    assert.deepEqual(v2Requests.map(request => request.packet.proposal ? 'review' : request.packet.initialInvalidProposal ? 'repair' : 'proposal'), [
-      'proposal', 'repair', 'review',
-    ]);
-    assert.deepEqual(originalWire, repairRequest.initialInvalidProposal, 'the initially rejected raw array is passed unchanged to the single repair');
-    assert.equal(foreignDescriptor?.leadId, leadTwoId, 'the rejected source is truly indexed under the other lead');
-    assert.equal(originalWire.decisions[0]!.leadId, leadOneId);
-    assert.equal(localFailure.leadId, leadOneId);
-    assert.equal(localFailure.requiredDescriptorSourceId, leadOneMetadata);
-    assert.deepEqual(localFailure.selectedCorroboratingSourceIds, [foreignRefId]);
-    assert.equal(localFailure.eligibleCorroboratingSourceIds.includes(foreignRefId), false);
-    assert.deepEqual(marker, {
-      method: 'comparison-lead-reference-repair-v1', code: 'ATT_MODEL_COMPARISON_LEAD_REF_INVALID',
-      originalResponseId: 'attention-comparison-lead-proposal-response',
-      selectedResponseId: 'attention-comparison-lead-repair-proposal-response',
+  await t.test('full reviewed market evidence can qualify poor public support without resolving identity', async () => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    const { result, model } = await run('market-factual-unresolved', {
+      includeOriginScope: true, baseNarrative: false, originText: deploymentOnly,
+      bindingMarketWitness: true, entrySupportOverride: 'BINDING_EVIDENCE',
     });
-    assert.equal(qualification.proposalResponseId, 'attention-comparison-lead-repair-proposal-response');
-    assert.deepEqual(Object.keys(qualification.proposal.decisions), [leadOneId, leadTwoId]);
-    assert.deepEqual(Object.keys(qualification.review.decisions), [leadOneId, leadTwoId], 'the fresh independent review covers every original lead');
-    assert.ok(result.rawArtifacts['attention-comparison-lead-repair-proposal-response']);
-    assert.ok(result.rawArtifacts['attention-comparison-lead-review-response']);
-    assert.equal(result.scope?.comparisonComplete, false, 'repairing a reference does not turn unresolved leads into a negative result');
+    assert.ok(result.scope, JSON.stringify({ code: result.code, codes: result.scope?.codes }));
+    const qualification = result.scope!.comparisonQualification as {
+      wireMethod?: string; supportScopeMethod?: string; accountingComplete: boolean;
+      recoveryQueries: Array<{ state: string; descriptorComplete: boolean }>;
+      decisions: Array<{ accounted: boolean; qualified: boolean; representation: { status: string } }>;
+    };
+    assert.equal(qualification.wireMethod, 'comparison-lead-tasks-v5');
+    assert.equal(qualification.supportScopeMethod, 'comparison-lead-support-scope-v4');
+    assert.equal(qualification.accountingComplete, false, 'public review does not manufacture exact original-item accounting');
+    assert.deepEqual(qualification.recoveryQueries.map(query => [query.state, query.descriptorComplete]), [['OBSERVED', true]]);
+    assert.deepEqual(qualification.decisions.map(item => [item.accounted, item.qualified, item.representation.status]), [[false, false, 'UNRESOLVED']]);
+    assert.equal(result.scope?.comparisonComplete, false, 'the public grade does not rewrite factual comparison completion');
+    assert.equal(result.scope?.comparisonCoverage?.complete, false, 'the public grade does not convert incomplete positive coverage into complete coverage');
+    const receipt = result.scope!.comparisonPublicSupport as {
+      method?: string; verdict?: string; decision?: { verdict: string }; researchComplete?: boolean;
+      entry?: { grade?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; sourceSupport?: Record<string, { status: string }>;
+        leadRoles?: Record<string, { ownContextRefs: unknown[] }> };
+      entryReview?: { grade?: { accepted: boolean } };
+      bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string; citations: Array<{ sourceId: string; quote: string }> }; description: { kind: string; citations: Array<{ sourceId: string; quote: string }> } }>;
+      leadScopes?: Array<{ leadId: string; status: string; citations: Array<{ sourceId: string; quote: string }> }>;
+    } | undefined;
+    assert.equal(receipt?.method, 'comparison-public-support-v6');
+    assert.equal(receipt?.researchComplete, true, 'the source and lead review can finish even though factual item accounting remains unresolved');
+    assert.equal(receipt?.decision?.verdict, 'FAIL', 'the independent final binary decision owns the public entry grade');
+    assert.equal(receipt?.verdict, 'INADEQUATE', JSON.stringify({ code: result.code, codes: result.scope?.codes,
+      qualification, receipt, artifacts: Object.keys(result.rawArtifacts), requests: model.requests.map(request => Object.keys(request.packet)) }));
+    assert.equal(receipt?.entry?.grade?.verdict, 'INADEQUATE');
+    assert.equal(receipt?.entryReview?.grade?.accepted, true);
+    const marketBody = receipt?.bodyObservations?.find(observation => observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD'
+      && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE');
+    assert.ok(marketBody, 'the actual recovered body is classified as a market record with only market fields');
+    const batchProposal = model.requests.find(request => typeof (request.packet.scope as { batch?: unknown } | undefined)?.batch === 'number'
+      && !('proposal' in request.packet));
+    assert.ok(batchProposal, 'the actual independent-entry batch proposal is captured');
+    const competitorContract = String(batchProposal.packet.rowFormat ?? '');
+    assert.match(competitorContract, /at most ten distinct positively associated TOKEN MINT identities/);
+    assert.match(competitorContract, /deduplicated by chain and address/);
+    assert.match(competitorContract, /Each item has a unique local id/);
+    assert.match(competitorContract, /positively connects that token to the target specific project or narrative/);
+    assert.match(competitorContract, /Return an empty competitors array when no such association is supported/);
+    assert.match(competitorContract, /API examples, wrapped-native tokens, quote currencies and pool\/program\/wallet addresses are not competing representations/);
+    const batchResponseEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-1-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const batchResponse = JSON.parse(batchResponseEnvelope.candidates[0]!.content.parts[0]!.text) as { competitors: unknown[] };
+    assert.deepEqual(batchResponse.competitors, [],
+      'a literal in deployment-only context is not emitted as a competing representation without positive association');
+    const publicProposalRequest = model.requests.find(request => String(request.packet.rowFormat ?? '').includes('descriptorRef is a single object, not an array'));
+    assert.ok(publicProposalRequest, 'the v4 global public-support proposal uses the compact singular descriptor selector');
+    assert.match(String(publicProposalRequest.packet.rowFormat), /Every leadRoles row MUST include the required descriptorRef object/);
+    const publicProposalBody = JSON.parse(String(publicProposalRequest.init.body)) as {
+      generationConfig: { responseJsonSchema: { properties: { leadRoles: { items: { properties: Record<string, unknown> } } } } };
+    };
+    assert.ok(publicProposalBody.generationConfig.responseJsonSchema.properties.leadRoles.items.properties.descriptorRef,
+      'the provider schema requires one descriptorRef object per lead role');
+    assert.equal(publicProposalBody.generationConfig.responseJsonSchema.properties.leadRoles.items.properties.descriptorRefs, undefined,
+      'the new global wire does not repeat a descriptor reference array');
+    const publicProposalEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-support-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const publicProposalWire = JSON.parse(publicProposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      leadRoles: Array<{ leadId: string; descriptorRef?: { sourceId: string; spanId: string }; descriptorRefs?: unknown }>;
+    };
+    assert.equal(publicProposalWire.leadRoles.length, 1);
+    assert.equal(publicProposalWire.leadRoles[0]!.descriptorRef?.sourceId, metadataId,
+      'the retained provider response selects this lead’s own indexed metadata source');
+    assert.ok(publicProposalWire.leadRoles[0]!.descriptorRef?.spanId);
+    assert.equal(publicProposalWire.leadRoles[0]!.descriptorRefs, undefined,
+      'the exact retained v4 response preserves the singular field before normalization');
+    assert.equal(Object.values(receipt?.entry?.sourceSupport ?? {}).some(item => item.status === 'PUBLIC_SUPPORT_GAP'), false,
+      'the required source is positively binding, so the separate narrative-support gap route is not used');
+    const marketSourceId = marketBody?.sourceId;
+    assert.ok(marketSourceId);
+    const marketSupport = receipt?.entry?.sourceSupport?.[marketSourceId];
+    assert.equal(marketSupport?.status, 'BINDING_EVIDENCE');
+    assert.deepEqual(receipt?.entry?.grade?.citations, marketBody?.description.citations,
+      'the accepted negative grade cites the exact quote independently classified as market-only');
+    const optionalRead = structuredClone(result.scope!) as AttentionRead;
+    const optionalMarketRequirement = optionalRead.comparisonCoverage?.sourceRequirements.find(item => item.sourceId === marketSourceId);
+    assert.equal(optionalMarketRequirement?.obligation, 'REQUIRED', 'the accepted witness belongs to a required recovered source');
+    optionalMarketRequirement!.obligation = 'OPTIONAL_UNUSABLE_SUPPLEMENT';
+    assert.equal(qualifiedComparisonEvidence(optionalRead, CUTOFF, TOKEN), null,
+      'the same accepted binding-market quote cannot qualify the negative grade when its source is optional');
+    const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
+    assert.equal(rows.find(row => row.id === 'A09')?.quality, 'KNOWN');
+    assert.equal(rows.find(row => row.id === 'A09')?.projection?.value, false,
+      'the reviewed comparison public-support gap yields the authorized CAN01 negative while factual accounting remains unresolved');
+    assert.equal(rows.find(row => row.id === 'A01')?.quality, 'KNOWN');
+    assert.equal(rows.find(row => row.id === 'A01')?.projection?.value, false,
+      'the reviewed narrative gap produces the allowed negative entry result');
+    assert.equal(rows.find(row => row.id === 'A10')?.quality, 'MISSING', 'negative public support does not claim factual identity');
+    assert.ok(model.requests.some(request => request.packet.entryTask && request.packet.mergeTask),
+      'the successful grade passed through the distinct final entry review and factual merge review');
   });
 
-  await t.test('a second invalid reference leaves the comparison unresolved without another review or repair', async () => {
-    const { result, model } = await run('failed-repair');
-    const v2Requests = model.requests.filter(request => (request.packet.scope as { mode?: string } | undefined)?.mode === 'qualified-identified-leads-v2');
-    assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_LEAD_FAILED:ATT_MODEL_COMPARISON_LEAD_REF_INVALID'), JSON.stringify({
-      codes: result.scope?.codes, qualification: result.rawArtifacts['comparison-lead-qualification'],
-      v2Packets: v2Requests.map(request => Object.keys(request.packet)),
-    }));
-    assert.equal(v2Requests.length, 2, 'one initial proposal and one local repair are the full retry budget');
-    assert.deepEqual(v2Requests.map(request => request.packet.initialInvalidProposal ? 'repair' : 'proposal'), ['proposal', 'repair']);
-    assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_LEAD_FAILED:ATT_MODEL_COMPARISON_LEAD_REF_INVALID'));
-    assert.equal(result.rawArtifacts['attention-comparison-lead-review-prompt'], undefined, 'invalid repair output is never sent for independent acceptance');
-    assert.equal(result.rawArtifacts['attention-comparison-lead-repair-proposal-response'] !== undefined, true);
-    assert.equal(result.scope?.comparisonComplete, false);
+  await t.test('the task-v4 binding-market route requires a required matching body and accepted reviews', async t => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    const base = { includeOriginScope: true, baseNarrative: false, originText: deploymentOnly, bindingMarketWitness: true };
+    const variants: Array<{ name: string; options: Parameters<typeof run>[1] }> = [
+      { name: 'UNRESOLVED draft grade', options: { entrySupportOverride: 'BINDING_EVIDENCE', gradeUnresolved: true, binaryEntryVerdict: 'PASS' } },
+      { name: 'rejected draft-grade assessment', options: { entrySupportOverride: 'BINDING_EVIDENCE', entryGradeAccepted: false, binaryEntryVerdict: 'PASS' } },
+      { name: 'CONTEXT_ONLY source support', options: { entrySupportOverride: 'CONTEXT_ONLY', forceInadequateGrade: true, binaryEntryVerdict: 'PASS' } },
+      { name: 'different body quote', options: { entrySupportOverride: 'BINDING_EVIDENCE', gradeCitationMismatch: true, binaryEntryVerdict: 'PASS' } },
+      { name: 'nonmarket body role', options: { entrySupportOverride: 'BINDING_EVIDENCE', otherMarketBody: true, forceInadequateGrade: true, omitLeadOwnContextRefs: true, binaryEntryVerdict: 'PASS' } },
+      { name: 'body not fully inspected', options: { entrySupportOverride: 'BINDING_EVIDENCE', bodyInspectionComplete: false, forceInadequateGrade: true, omitLeadOwnContextRefs: true } },
+      { name: 'body review rejected', options: { entrySupportOverride: 'BINDING_EVIDENCE', bodyDecisionAccepted: false, forceInadequateGrade: true, omitLeadOwnContextRefs: true } },
+    ];
+    for (const variant of variants) {
+      await t.test(variant.name, async () => {
+        const { result } = await run('market-factual-unresolved', { ...base, ...variant.options });
+        assert.ok(result.scope, JSON.stringify({ name: variant.name, code: result.code, codes: result.scope?.codes }));
+        const receipt = result.scope.comparisonPublicSupport as {
+          verdict?: string;
+          entry?: { grade: { citations: Array<{ sourceId: string; quote: string }> } };
+          bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string; citations: Array<{ sourceId: string; quote: string }> } }>;
+        } | undefined;
+        if (variant.name === 'different body quote') {
+          const witness = receipt?.entry?.grade.citations ?? [];
+          const marketBody = receipt?.bodyObservations?.find(item => item.bodyRole.kind === 'MARKET_OR_INDEX_RECORD'
+            && item.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE');
+          const bodyQuotes = marketBody?.description.citations ?? [];
+          assert.ok(witness.length > 0 && bodyQuotes.length > 0, 'the mismatched-quote case carries both selected citations');
+          assert.equal(witness.some(ref => bodyQuotes.some(body => body.sourceId === ref.sourceId && body.quote === ref.quote)), false,
+            JSON.stringify({ witness, bodyQuotes }));
+        }
+        assert.equal(receipt?.verdict, 'UNRESOLVED', `${variant.name} cannot satisfy the alternate binding-market witness`);
+        assert.equal(qualifiedComparisonEvidence(result.scope!, CUTOFF, TOKEN), null, `${variant.name} does not qualify the public grade`);
+        const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
+        if (variant.options?.binaryEntryVerdict) {
+          assert.equal(rows.find(row => row.id === 'A09')?.quality, 'KNOWN', `${variant.name} has a separate completed direct decision`);
+          assert.equal(rows.find(row => row.id === 'A09')?.projection?.value, true, `${variant.name} retains the direct PASS without promoting the failed legacy witness`);
+        } else assert.equal(rows.find(row => row.id === 'A09')?.quality, 'MISSING', `${variant.name} prevents a completed direct decision`);
+      });
+    }
   });
+
+  await t.test('an unrelated acquired publication is a reviewed project/publication context but does not create a public-support gap', async () => {
+    const missingRoleSelector = await run('market-acquired', { omitLeadOwnContextRefs: true, bindingMarketWitness: true });
+    assert.ok(missingRoleSelector.result.scope, JSON.stringify({ code: missingRoleSelector.result.code, codes: missingRoleSelector.result.scope?.codes }));
+    const recoveredRoleReceipt = missingRoleSelector.result.scope!.comparisonPublicSupport as {
+      entry?: { leadRoles?: Record<string, { ownContextRefs: unknown[] }> };
+      leadScopes?: Array<{ leadId: string; status: string; basis: string; citations: Array<{ sourceId: string; quote: string }> }>;
+      bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string; citations: Array<{ sourceId: string; quote: string }> } }>;
+    } | undefined;
+    const recoveredBody = recoveredRoleReceipt?.bodyObservations?.find(item => item.sourceId === 'market-original');
+    const recoveredScope = recoveredRoleReceipt?.leadScopes?.find(item => item.leadId === leadId);
+    assert.deepEqual(recoveredRoleReceipt?.entry?.leadRoles?.[leadId]?.ownContextRefs, [],
+      'the raw role task leaves the optional body selector empty');
+    assert.deepEqual([recoveredScope?.status, recoveredScope?.basis], ['REVIEWED', 'ORIGINAL_COMPLETE']);
+    assert.ok(recoveredScope?.citations.some(ref => ref.sourceId === recoveredBody?.sourceId
+      && recoveredBody.bodyRole.citations.some(body => body.sourceId === ref.sourceId && body.quote === ref.quote)),
+      'the derived scope reuses a literal bodyRole citation from the same fully reviewed original source');
+
+    for (const [name, options] of [
+      ['body review rejected', { bodyDecisionAccepted: false }],
+      ['body role mismatches indexed role', { otherMarketBody: true }],
+    ] as const) {
+      const negative = await run('market-acquired', { ...options, omitLeadOwnContextRefs: true, bindingMarketWitness: true });
+      assert.ok(negative.result.scope, JSON.stringify({ name, code: negative.result.code, codes: negative.result.scope?.codes }));
+      const receipt = negative.result.scope!.comparisonPublicSupport as typeof recoveredRoleReceipt;
+      const scope = receipt?.leadScopes?.find(item => item.leadId === leadId);
+      assert.equal(scope?.status, 'UNRESOLVED', `${name} cannot close original public-scope review through a reused body citation`);
+    }
+
+    const known = await run('market-acquired', { publicationRole: 'known', binaryEntryVerdict: 'PASS' });
+    assert.ok(known.result.scope, JSON.stringify({ code: known.result.code, codes: known.result.scope?.codes }));
+    const qualification = known.result.scope!.comparisonQualification as {
+      decisions: Array<{ accounted: boolean; accounting: { status: string; role: string } }>;
+      accountingComplete: boolean;
+    };
+    assert.equal(qualification.accountingComplete, false, 'the publication type does not manufacture exact-token identity');
+    assert.deepEqual(qualification.decisions.map(item => [item.accounted, item.accounting.status, item.accounting.role]),
+      [[false, 'UNRESOLVED', 'PROJECT_OR_PUBLICATION']]);
+    const receipt = known.result.scope!.comparisonPublicSupport as {
+      method?: string; verdict?: string; decision?: { verdict: string };
+      leadScopes?: Array<{ leadId: string; status: string; basis: string; role: string; review: { accepted: boolean } }>;
+      bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string };
+        review: { bodyRole: { accepted: boolean }; description: { accepted: boolean } } }>;
+      entry?: { sourceSupport: Record<string, { status: string }> };
+      entryReview?: { grade: { accepted: boolean }; sourceSupport: Record<string, { accepted: boolean }> };
+    } | undefined;
+    assert.equal(receipt?.method, 'comparison-public-support-v6');
+    assert.equal(receipt?.decision?.verdict, 'PASS', 'an unrelated publication type does not force a negative public entry decision');
+    assert.equal(receipt?.verdict, 'UNRESOLVED', 'context-only publication evidence cannot establish the required positive gap');
+    const publicScope = receipt?.leadScopes?.find(item => item.leadId === leadId);
+    assert.deepEqual([publicScope?.status, publicScope?.basis, publicScope?.role, publicScope?.review.accepted],
+      ['REVIEWED', 'ORIGINAL_COMPLETE', 'PROJECT_OR_PUBLICATION', true],
+      'a fully acquired, independently reviewed publication type closes original public-scope collection');
+    const body = receipt?.bodyObservations?.find(item => item.sourceId === 'market-original');
+    assert.deepEqual([body?.bodyRole.kind, body?.description.kind, body?.review.bodyRole.accepted, body?.review.description.accepted],
+      ['OTHER_CONTEXT', 'DISTINCT_OTHER_SUBJECT', true, true]);
+    assert.equal(receipt?.entry?.sourceSupport['market-original']?.status, 'CONTEXT_ONLY');
+    assert.equal(receipt?.entryReview?.sourceSupport['market-original']?.accepted, true);
+    assert.equal(receipt?.entryReview?.grade.accepted, true);
+    assert.equal(qualifiedComparisonEvidence(known.result.scope!, CUTOFF), null,
+      'accepted context classification remains separate from a reviewed public-support gap');
+
+    const unknown = await run('market-acquired', { publicationRole: 'unresolved' });
+    assert.ok(unknown.result.scope, JSON.stringify({ code: unknown.result.code, codes: unknown.result.scope?.codes }));
+    const unknownQualification = unknown.result.scope!.comparisonQualification as {
+      decisions: Array<{ accounting: { status: string; role: string } }>;
+    };
+    assert.deepEqual(unknownQualification.decisions.map(item => [item.accounting.status, item.accounting.role]),
+      [['UNRESOLVED', 'UNRESOLVED']]);
+    const unknownReceipt = unknown.result.scope!.comparisonPublicSupport as typeof receipt;
+    const unresolvedScope = unknownReceipt?.leadScopes?.find(item => item.leadId === leadId);
+    assert.deepEqual([unknownReceipt?.verdict, unresolvedScope?.status, unresolvedScope?.role],
+      ['UNRESOLVED', 'UNRESOLVED', 'UNRESOLVED'],
+      'an unidentified source role keeps public-scope closure unresolved even when its body is fully inspected');
+  });
+
+  await t.test('an oversized repeated competitor response fails before batch review without salvage', async () => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    const { result, model } = await run('market-factual-unresolved', {
+      includeOriginScope: true, baseNarrative: false, originText: deploymentOnly, overflowCompetitors: true,
+    });
+    assert.ok(result.scope);
+    assert.equal(result.scope.comparisonComplete, false);
+    assert.ok(result.scope.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_INVALID'));
+    const responseEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-1-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const response = JSON.parse(responseEnvelope.candidates[0]!.content.parts[0]!.text) as { competitors: Array<{ id: string }> };
+    assert.equal(response.competitors.length, 11, 'the raw malformed provider output is retained unchanged');
+    assert.ok(response.competitors.every(item => item.id === 'tokenmint'), 'the fixture reproduces the repeated item id');
+    assert.equal(model.requests.some(request => typeof (request.packet.scope as { batch?: unknown } | undefined)?.batch === 'number'
+      && 'proposal' in request.packet), false, 'an invalid proposal is rejected before any independent batch review');
+    assert.equal(result.scope.comparisonPublicSupport, undefined, 'the malformed response is not salvaged into a public grade');
+  });
+
+  await t.test('fresh v4 rejects missing or non-owned descriptorRef selectors before independent review', async t => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    for (const malformedDescriptorRef of ['missing', 'foreign', 'bad-span'] as const) {
+      await t.test(malformedDescriptorRef, async () => {
+        const { result, model } = await run('market-factual-unresolved', {
+          includeOriginScope: true, baseNarrative: false, originText: deploymentOnly, malformedDescriptorRef,
+        });
+        assert.ok(result.scope);
+        assert.ok(result.scope.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')),
+          `the malformed descriptor selector is rejected locally: ${result.scope.codes.join(', ')}`);
+        const responseEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-support-proposal-response']!) as {
+          candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+        };
+        const response = JSON.parse(responseEnvelope.candidates[0]!.content.parts[0]!.text) as {
+          leadRoles: Array<{ descriptorRef?: { sourceId: string; spanId: string } }>;
+        };
+        assert.equal(response.leadRoles.length, 1, 'the malformed selected response is retained');
+        if (malformedDescriptorRef === 'missing') assert.equal(response.leadRoles[0]!.descriptorRef, undefined);
+        if (malformedDescriptorRef === 'foreign') assert.equal(response.leadRoles[0]!.descriptorRef?.sourceId, 'foreign-indexed-metadata');
+        if (malformedDescriptorRef === 'bad-span') assert.equal(response.leadRoles[0]!.descriptorRef?.spanId, 'not-a-retained-span');
+        assert.equal(model.requests.some(request => request.packet.entryTask && request.packet.mergeTask), false,
+          'an invalid own selector is rejected before the distinct independent entry review');
+        assert.equal(result.scope.comparisonPublicSupport, undefined, 'invalid refs are not normalized into a public grade');
+      });
+    }
+  });
+
+  await t.test('scope-v4 grouped review admits empty groups and rejects cross-group or incoherent rows', async () => {
+    const noLiteral = await run('market-unresolved');
+    const noLiteralReview = noLiteral.model.requests.find(request => request.packet.requiredSourceDecisionGroups && request.packet.proposal);
+    assert.ok(noLiteralReview, 'the no-observation case reaches the actual grouped batch review');
+    const noLiteralGroups = noLiteralReview.packet.requiredSourceDecisionGroups as { withLiteralObservations: string[]; withoutLiteralObservations: string[] };
+    assert.deepEqual(noLiteralReview.packet.exactContractObservations, []);
+    assert.deepEqual(noLiteralGroups.withLiteralObservations, []);
+    assert.ok(noLiteralGroups.withoutLiteralObservations.length > 0);
+    const noLiteralSchemaBody = JSON.parse(String(noLiteralReview.init.body)) as {
+      generationConfig: { responseJsonSchema: { properties: Record<string, any> } };
+    };
+    const noLiteralSchema = noLiteralSchemaBody.generationConfig.responseJsonSchema.properties.sourceDecisions.properties.withoutLiteralObservations.items;
+    assert.equal(JSON.stringify(noLiteralSchema).includes('RELEVANT'), false,
+      'the no-literal group schema does not offer a RELEVANT disposition');
+    const noLiteralWireEnvelope = JSON.parse(noLiteral.result.rawArtifacts['attention-comparison-1-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const noLiteralWire = JSON.parse(noLiteralWireEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      sourceDecisions: { withLiteralObservations: unknown[]; withoutLiteralObservations: unknown[] };
+      missingRepresentations?: unknown;
+      decisions?: unknown;
+    };
+    assert.deepEqual(noLiteralWire.sourceDecisions.withLiteralObservations, []);
+    assert.equal(Object.hasOwn(noLiteralWire, 'missingRepresentations'), false,
+      'a genuinely empty literal catalog omits the missing-representations field');
+    assert.equal(Object.hasOwn(noLiteralWire, 'decisions'), false,
+      'a task-v4 batch with no item IDs omits the decisions field instead of returning an empty object');
+    assert.ok(noLiteral.model.requests.some(request => request.packet.entryTask && request.packet.mergeTask),
+      'the valid omitted batch decisions still reach the independent global entry review');
+    const noLiteralFinalEnvelope = JSON.parse(noLiteral.result.rawArtifacts['attention-comparison-final-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const noLiteralFinalWire = JSON.parse(noLiteralFinalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      entryReview: { leadRoles: Record<string, { accepted: boolean }>; sourceSupport: Record<string, { accepted: boolean }>;
+        leadBlockers: Record<string, { accepted: boolean }> };
+      decisions: Record<string, unknown>;
+    };
+    const noLiteralFinalRequest = noLiteral.model.requests.find(request => request.packet.entryTask && request.packet.mergeTask)!;
+    const noLiteralFinalProposal = (noLiteralFinalRequest.packet.entryTask as { proposal: {
+      leadRoles: Record<string, unknown>; sourceSupport: Record<string, unknown>; leadBlockers: Record<string, unknown>;
+    } }).proposal;
+    assert.deepEqual(Object.keys(noLiteralFinalWire.entryReview.leadRoles).sort(), Object.keys(noLiteralFinalProposal.leadRoles).sort());
+    assert.deepEqual(Object.keys(noLiteralFinalWire.entryReview.sourceSupport).sort(), Object.keys(noLiteralFinalProposal.sourceSupport).sort());
+    assert.deepEqual(Object.keys(noLiteralFinalWire.entryReview.leadBlockers).sort(), Object.keys(noLiteralFinalProposal.leadBlockers).sort(),
+      'the final review explicitly judges every keyed blocker, including each proposed null blocker');
+    assert.ok(Object.values(noLiteralFinalProposal.leadBlockers).every(value => value === null), 'the fixture includes null blocker proposals');
+    assert.ok(Object.values(noLiteralFinalWire.entryReview.leadBlockers).every(value => value.accepted), 'each null-blocker absence is independently reviewed');
+    assert.deepEqual(noLiteralFinalWire.decisions, {}, 'a task-v4 global review with no merged candidates returns the required empty keyed object');
+
+    for (const finalKeyVariant of ['missing-null-blocker', 'batch-id-as-decision'] as const) {
+      const malformedFinal = await run('market-unresolved', { finalKeyVariant });
+      assert.ok(malformedFinal.result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')),
+        `${finalKeyVariant} is rejected by the actual final keyed review parser`);
+      const malformedEnvelope = JSON.parse(malformedFinal.result.rawArtifacts['attention-comparison-final-review-response']!) as {
+        candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+      };
+      const malformedWire = JSON.parse(malformedEnvelope.candidates[0]!.content.parts[0]!.text) as {
+        entryReview: { leadBlockers: Record<string, unknown> }; decisions: Record<string, unknown>;
+      };
+      assert.equal(malformedFinal.result.scope?.comparisonPublicSupport, undefined, 'a malformed final review cannot produce a grade');
+      if (finalKeyVariant === 'missing-null-blocker') {
+        const requiredBlockers = (malformedFinal.model.requests.find(request => request.packet.entryTask && request.packet.mergeTask)!.packet.entryTask as {
+          proposal: { leadBlockers: Record<string, unknown> };
+        }).proposal.leadBlockers;
+        assert.ok(Object.keys(requiredBlockers).some(id => !(id in malformedWire.entryReview.leadBlockers)), 'the raw response keeps its omitted required key');
+      } else {
+        assert.ok(Object.hasOwn(malformedWire.decisions, 'claim-a01'), 'the raw response keeps the invalid batch claim ID');
+      }
+    }
+    const noLiteralProposalEnvelope = JSON.parse(noLiteral.result.rawArtifacts['attention-comparison-1-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const noLiteralProposalWire = JSON.parse(noLiteralProposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      posts?: unknown; competitors?: unknown;
+    };
+    assert.equal(Object.hasOwn(noLiteralProposalWire, 'posts'), false,
+      'a task-v4 proposal with no POST sources omits the posts field, although PAGE bodies remain in the source catalog');
+    assert.equal(Object.hasOwn(noLiteralProposalWire, 'competitors'), false,
+      'a task-v4 proposal with no literal observations omits competitors instead of emitting an empty placeholder');
+
+    const zeroClaimDecision = await run('market-unresolved', { malformedGroupedReview: 'zero-claim-decision' });
+    assert.ok(zeroClaimDecision.result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')),
+      'an unrelated claim decision is rejected when the task-v4 batch has no required item IDs');
+    const zeroClaimEnvelope = JSON.parse(zeroClaimDecision.result.rawArtifacts['attention-comparison-1-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const zeroClaimWire = JSON.parse(zeroClaimEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: Array<{ id: string }> };
+    assert.deepEqual(zeroClaimWire.decisions.map(item => item.id), ['claim-a01'], 'the invalid raw row remains available for diagnosis');
+    assert.equal(zeroClaimDecision.model.requests.some(request => request.packet.entryTask && request.packet.mergeTask), false,
+      'the invalid zero-item row is rejected before the independent global review');
+
+    const pageAsPost = await run('market-unresolved', { malformedGroupedReview: 'page-as-post' });
+    assert.ok(pageAsPost.result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')),
+      'a PAGE cannot be relabeled as a POST when the task-v4 schema omits posts');
+    const pageProposalEnvelope = JSON.parse(pageAsPost.result.rawArtifacts['attention-comparison-1-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const pageProposal = JSON.parse(pageProposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      posts: Array<{ sourceId: string; spanId: string; role: string }>;
+    };
+    assert.equal(pageProposal.posts.length, 1, 'the malformed selected PAGE-as-POST row remains retained for diagnosis');
+    const submittedPage = pageAsPost.model.requests.find(request => typeof (request.packet.scope as { batch?: unknown } | undefined)?.batch === 'number'
+      && !('proposal' in request.packet) && String(request.packet.rowFormat).includes('There are no POST sources'));
+    assert.ok(submittedPage);
+    const originalPage = (submittedPage.packet.sources as PacketSource[]).find(source => source.id === pageProposal.posts[0]!.sourceId);
+    assert.equal(originalPage?.kind, 'PAGE', 'the retained invalid row points to an actual PAGE source');
+    assert.equal(pageAsPost.model.requests.some(request => typeof (request.packet.scope as { batch?: unknown } | undefined)?.batch === 'number'
+      && 'proposal' in request.packet), false,
+      'the unexpected posts field is rejected before the independent batch review');
+
+    for (const malformedGroupedReview of ['cross-group', 'duplicate-id', 'incoherent'] as const) {
+      const malformed = await run('source-support-repair', { malformedGroupedReview });
+      const reviewRequest = malformed.model.requests.find(request => request.packet.requiredSourceDecisionGroups && request.packet.proposal);
+      assert.ok(reviewRequest, `${malformedGroupedReview}: the response is evaluated by the production grouped review`);
+      const groups = reviewRequest.packet.requiredSourceDecisionGroups as { withLiteralObservations: string[]; withoutLiteralObservations: string[] };
+      assert.ok(groups.withLiteralObservations.length > 0 && groups.withoutLiteralObservations.length > 0,
+        `${malformedGroupedReview}: the fixture has both literal and no-literal source groups`);
+      assert.ok(malformed.result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')),
+        `${malformedGroupedReview}: the malformed grouped response fails closed`);
+      assert.equal(malformed.model.requests.some(request => Boolean(request.packet.manifest)), false,
+        `${malformedGroupedReview}: invalid source rows do not reach the final merge review`);
+    }
+  });
+
+  await t.test('failed collection, rejected grade review, and unread project context remain UNKNOWN', async () => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    const options = { includeOriginScope: true, baseNarrative: false, originText: deploymentOnly };
+    const failedSearch = await run('market-search-error', options);
+    const failedQualification = failedSearch.result.scope?.comparisonQualification as {
+      recoveryQueries: Array<{ state: string; descriptorComplete: boolean }>;
+    } | undefined;
+    assert.deepEqual(failedQualification?.recoveryQueries.map(query => [query.state, query.descriptorComplete]), [['INVALID', false]]);
+    assert.equal(qualifiedComparisonEvidence(failedSearch.result.scope!, CUTOFF), null);
+
+    const emptySearch = await run('market-no-results', { ...options, now: '2026-10-01T12:01:00.000Z' });
+    const emptyQualification = emptySearch.result.scope?.comparisonQualification as {
+      recoveryQueries: Array<{ state: string; descriptorComplete: boolean; availableAt: string }>;
+    } | undefined;
+    assert.deepEqual(emptyQualification?.recoveryQueries.map(query => [query.state, query.descriptorComplete]),
+      [['NO_RESULTS', true]], 'a successful empty search is recorded but does not supply body evidence');
+    assert.equal(qualifiedComparisonEvidence(emptySearch.result.scope!, CUTOFF), null);
+
+    const rejectedGrade = await run('entry-rejected', options);
+    assert.equal((rejectedGrade.result.scope?.comparisonPublicSupport as { verdict?: string } | undefined)?.verdict, 'UNRESOLVED');
+    assert.equal(qualifiedComparisonEvidence(rejectedGrade.result.scope!, CUTOFF), null);
+
+    const unreadProject = await run('project-unresolved', options);
+    assert.equal(qualifiedComparisonEvidence(unreadProject.result.scope!, CUTOFF), null,
+      'the reviewed market poor-support rule cannot be applied to an unread project/publication lead');
+  });
+  await t.test('a fully reviewed narrative gap supplies an empty marked comparison target without inventing facts', async () => {
+    const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
+    const { result, model } = await run('market-factual-unresolved', {
+      includeOriginScope: true, baseNarrative: false, originText: deploymentOnly,
+    });
+    assert.equal(result.scope?.originScope?.complete, true);
+    const receipt = result.scope?.narrativePublicSupport as { method?: string; judgments?: Record<string, { verdict: string; review: { accepted: boolean } }> } | undefined;
+    assert.equal(receipt?.method, 'narrative-public-support-v1');
+    assert.equal(receipt?.judgments?.NARRATIVE_DESCRIPTION?.verdict, 'INADEQUATE');
+    assert.equal(receipt?.judgments?.NARRATIVE_DESCRIPTION?.review.accepted, true);
+    assert.equal(receipt?.judgments?.EXPLAINABLE_THESIS?.verdict, 'INADEQUATE');
+    const narrativeRequests = model.requests.filter(request => 'originalProposal' in request.packet);
+    assert.deepEqual(narrativeRequests.map(request => 'proposal' in request.packet ? 'review' : 'proposal'), ['proposal', 'review']);
+    const base = decodeSubmittedAttention(result.scope!, result.rawArtifacts);
+    const replayed = decodeNarrativePublicSupport(result.scope!, TOKEN, base.proposal, base.review, result.rawArtifacts);
+    assert.deepEqual(replayed.receipt, receipt, 'the synchronous decoder reproduces the same two-pass receipt');
+
+    const qualification = result.scope?.comparisonQualification as { targetContext?: { mode: string; narrativeClaims: unknown[]; narrativeSupportReceiptId: string | null } } | undefined;
+    assert.equal(qualification?.targetContext?.mode, 'REVIEWED_NARRATIVE_SUPPORT_GAP');
+    assert.deepEqual(qualification?.targetContext?.narrativeClaims, []);
+    assert.equal(qualification?.targetContext?.narrativeSupportReceiptId, 'attention-narrative-public-support');
+    const comparisonPacket = model.requests.find(request => Array.isArray(request.packet.targetNarrative))!.packet;
+    assert.equal(comparisonPacket.targetNarrative instanceof Array, true);
+    assert.deepEqual(comparisonPacket.targetNarrative, [], 'comparison prompts do not invent the missing story');
+
+    const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
+    for (const id of ['A01', 'A05']) {
+      assert.equal(rows.find(row => row.id === id)?.quality, 'KNOWN', `${id} receives only the reviewed entry-support grade`);
+      assert.equal(rows.find(row => row.id === id)?.projection?.value, false);
+      assert.equal((rows.find(row => row.id === id)?.data as { factualAssessment: { quality: string; value: unknown } }).factualAssessment.quality, 'MISSING');
+    }
+
+    const withoutScope = await run('market-factual-unresolved', { baseNarrative: false });
+    assert.equal(withoutScope.model.requests.some(request => 'originalProposal' in request.packet), false,
+      'an incomplete original scope does not trigger a support grade');
+    assert.equal(withoutScope.result.scope?.narrativePublicSupport, undefined);
+    assert.equal(deriveAttention(withoutScope.result.scope!, withoutScope.result.proposal, withoutScope.result.review, TOKEN, CUTOFF,
+      ['sources', 'proposal', 'review'], true).find(row => row.id === 'A01')?.quality, 'MISSING');
+
+    const rejectedReview = await run('market-factual-unresolved', {
+      includeOriginScope: true, baseNarrative: false, originText: deploymentOnly, narrativeReviewAccepted: false,
+    });
+    assert.equal(rejectedReview.result.scope?.originScope?.complete, true, 'the rejected judgment is tested against a complete original source scope');
+    assert.ok(rejectedReview.result.rawArtifacts['attention-narrative-support-proposal-response']);
+    assert.ok(rejectedReview.result.rawArtifacts['attention-narrative-support-review-response']);
+    assert.equal((rejectedReview.result.scope?.narrativePublicSupport as { judgments: Record<string, { review: { accepted: boolean } }> })
+      .judgments.NARRATIVE_DESCRIPTION?.review.accepted, false);
+    const rejectedRows = deriveAttention(rejectedReview.result.scope!, rejectedReview.result.proposal, rejectedReview.result.review,
+      TOKEN, CUTOFF, ['sources', 'proposal', 'review'], true);
+    for (const id of ['A01', 'A05']) assert.equal(rejectedRows.find(row => row.id === id)?.quality, 'MISSING',
+      `${id} remains unknown after a rejected narrative-support review`);
+  });
+});
+
+test('fresh task-v2 keeps multi-source span schemas compact and rejects invalid spans before review', async () => {
+  const leads = Array.from({ length: 2 }, (_, leadIndex) => {
+    const leadId = `schema-lead-${leadIndex + 1}`;
+    const sourceIds = Array.from({ length: 8 }, (_, sourceIndex) => `${leadId}-body-${sourceIndex + 1}`);
+    return comparisonLead(leadId, leadIndex, `https://index-${leadIndex + 1}.example/project`,
+      `Indexed project ${leadIndex + 1} with a distinctive art descriptor`,
+      `A public descriptor about project ${leadIndex + 1} and its own collected pages.`, 'ACQUIRED', sourceIds);
+  });
+  const read = ledgerComparisonRead(leads);
+  read.comparisonQualification = { recoveryQueries: [] };
+  for (const lead of leads) {
+    for (const sourceId of lead.sourceIds) {
+      const text = `Original collected body for ${sourceId}. ${TOKEN.address}.\n` + 'body detail '.repeat(510);
+      read.sources.push({ id: sourceId, url: `https://content-${lead.id}.example/${sourceId}`, text,
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    }
+  }
+  const targetContext: Parameters<typeof comparisonLeadTaskProgram>[2] = {
+    method: 'comparison-target-context-v1', mode: 'UNRESOLVED', narrativeClaims: [], narrativeSupportReceiptId: null,
+  };
+  const artifacts: Record<string, string> = {};
+  const program = comparisonLeadTaskProgram(read, TOKEN, targetContext, artifacts);
+  const initial = program.next();
+  assert.equal(initial.done, false);
+  assert.equal(initial.value.id, 'attention-comparison-lead-proposal');
+
+  const schemaText = JSON.stringify(z.toJSONSchema(initial.value.schema));
+  type JsonSchemaShape = { type?: string; enum?: unknown[]; properties?: Record<string, JsonSchemaShape>; items?: JsonSchemaShape };
+  const hostedDecisionSchema = z.toJSONSchema(initial.value.schema) as JsonSchemaShape;
+  const decisionProperties = hostedDecisionSchema.properties?.decisions?.properties;
+  assert.ok(decisionProperties);
+  for (const lead of leads) {
+    const accountingProperties: JsonSchemaShape['properties'] = decisionProperties[lead.id]?.properties?.accounting?.properties;
+    const corroboratingProperties: JsonSchemaShape['properties'] = accountingProperties?.corroboratingRefs?.items?.properties;
+    const descriptorProperties: JsonSchemaShape['properties'] = accountingProperties?.descriptorRefs?.items?.properties;
+    assert.deepEqual(corroboratingProperties?.sourceId?.enum,
+      [lead.metadataEvidenceId, ...lead.sourceIds], 'the schema constrains each selector to that lead’s own sources');
+    assert.deepEqual(descriptorProperties?.sourceId?.enum, [lead.metadataEvidenceId]);
+    assert.ok(corroboratingProperties?.spanId);
+    assert.equal('enum' in corroboratingProperties.spanId, false,
+      'span IDs remain compact strings and are checked against the submitted catalog locally');
+  }
+  const suppliedSources = JSON.parse(initial.value.prompt) as { sources: Array<{ id: string; spans: Span[] }> };
+  const suppliedSpanIds = suppliedSources.sources.flatMap(source => source.spans.map(span => span.id));
+  assert.ok(suppliedSpanIds.length >= 90, 'the fixture submits many exact spans across multiple sources and leads');
+  assert.ok(suppliedSpanIds.every(id => !schemaText.includes(id)),
+    'exact span IDs are not repeated through a cross-product of hosted schema enums');
+  assert.ok(schemaText.length < 30_000, `the hosted selector schema remains bounded (${schemaText.length} characters)`);
+
+  const makeProposal = (badSpan = false) => ({ decisions: Object.fromEntries(leads.map(lead => {
+    const descriptorSpan = sourceSpans(lead.metadataEvidenceId, `${lead.title}\n${lead.snippet}`)[0]!;
+    const ownBodySpan = sourceSpans(lead.sourceIds[0]!, read.sources.find(source => source.id === lead.sourceIds[0])!.text.slice(0, 6000))[0]!;
+    return [lead.id, {
+      accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'UNRESOLVED', rationale: 'The retained original body does not identify this indexed item with enough confidence.',
+        descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: descriptorSpan.id }], corroboratingRefs: [] },
+      representation: { status: 'UNRESOLVED', rationale: 'The evidence does not establish a target representation relationship.', citations: [] },
+      subjectComparison: { status: 'UNRESOLVED', indexedSubject: lead.title, currentSubject: null,
+        rationale: 'The retained text does not support a resolved original subject comparison.',
+        descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: badSpan && lead === leads[0] ? `${lead.metadataEvidenceId}:span:99` : descriptorSpan.id }], fetchedRefs: [] },
+      evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The bounded evidence does not settle the comparison.', citations: [] },
+    }];
+  })) });
+  const invalid = makeProposal(true);
+  assert.doesNotThrow(() => initial.value.schema.parse(invalid),
+    'the hosted shape accepts a span selector string without embedding the full span-ID catalog');
+  artifacts['attention-comparison-lead-proposal-response'] = JSON.stringify({
+    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(invalid) }] } }],
+  });
+  const repair = program.next(invalid);
+  assert.equal(repair.done, false);
+  assert.equal(repair.value.id, 'attention-comparison-lead-repair-proposal',
+    'the locally invalid exact span triggers the existing repair step before any independent review');
+  assert.equal(artifacts['attention-comparison-lead-review-prompt'], undefined);
+
+  const valid = makeProposal();
+  artifacts['attention-comparison-lead-repair-proposal-response'] = JSON.stringify({
+    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(valid) }] } }],
+  });
+  const reviewCall = program.next(valid);
+  assert.equal(reviewCall.done, false);
+  assert.equal(reviewCall.value.id, 'attention-comparison-lead-review');
+  const review = { decisions: Object.fromEntries(leads.map(lead => [lead.id, Object.fromEntries(
+    ['accounting', 'representation', 'subjectComparison', 'evidenceAdequacy'].map(axis => [axis, {
+      accepted: true, rationale: 'The retained evidence and selected source spans support this unresolved classification.',
+    }]),
+  )])) };
+  artifacts['attention-comparison-lead-review-response'] = JSON.stringify({
+    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(review) }] } }],
+  });
+  const generated = program.next(review);
+  assert.equal(generated.done, true);
+
+  const reconstructed = decodeComparisonLeadTasks(read, TOKEN, targetContext, artifacts);
+  assert.deepEqual(reconstructed, { ...generated.value, responseIds: [
+    'attention-comparison-lead-proposal-response', 'attention-comparison-lead-repair-proposal-response',
+    'attention-comparison-lead-review-response',
+  ] },
+    'the Service decoder reconstructs the same compact schema, local exact-span validation, and selected repair from retained raw packets');
+  assert.equal(reconstructed.proposalResponseId, 'attention-comparison-lead-repair-proposal-response');
+});
+
+test('fresh task-v3 uses a bounded common schema and validates exact own rows and spans before review', () => {
+  const makeFixture = (leadCount = 10, acquiredCount = 2) => {
+    const leads = Array.from({ length: leadCount }, (_, leadIndex) => {
+      const leadId = `v3-schema-lead-${leadIndex + 1}`;
+      const sourceIds = leadIndex < acquiredCount
+        ? Array.from({ length: 8 }, (_, sourceIndex) => `${leadId}-body-${sourceIndex + 1}`)
+        : [];
+      return comparisonLead(leadId, leadIndex, `https://index-${leadIndex + 1}.example/project`,
+        `Indexed project ${leadIndex + 1}`, `Own descriptor for indexed project ${leadIndex + 1}.`,
+        sourceIds.length ? 'ACQUIRED' : 'OMITTED', sourceIds);
+    });
+    const read = ledgerComparisonRead(leads);
+    read.comparisonQualification = { recoveryQueries: [] };
+    for (const lead of leads) for (const sourceId of lead.sourceIds) {
+      const text = Array.from({ length: 6 }, (_, index) =>
+        `Original body for ${sourceId}, paragraph ${index + 1}. ${'retained body detail '.repeat(35)}`).join('\n');
+      read.sources.push({ id: sourceId, url: `https://content.example/${sourceId}`, text,
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    }
+    const target: Parameters<typeof comparisonLeadTaskProgram>[2] = {
+      method: 'comparison-target-context-v1', mode: 'UNRESOLVED', narrativeClaims: [], narrativeSupportReceiptId: null,
+    };
+    const artifacts: Record<string, string> = {};
+    const program = comparisonLeadTaskProgram(read, TOKEN, target, artifacts, 'comparison-lead-tasks-v3');
+    const initial = program.next();
+    assert.equal(initial.done, false);
+    assert.equal(initial.value.id, 'attention-comparison-lead-proposal');
+
+    const proposal = () => ({ decisions: leads.map(lead => {
+      const descriptor = { sourceId: lead.metadataEvidenceId, spanId: sourceSpans(lead.metadataEvidenceId, `${lead.title}\n${lead.snippet}`)[0]!.id };
+      const row: Record<string, unknown> = {
+        leadId: lead.id,
+        accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'UNRESOLVED',
+          rationale: 'The indexed item remains factually unresolved.', descriptorRefs: [descriptor], corroboratingRefs: [] },
+        representation: { status: 'UNRESOLVED', rationale: 'The target relationship remains unresolved.', citations: [] },
+      };
+      if (lead.sourceIds.length) {
+        row.subjectComparison = { status: 'UNRESOLVED', indexedSubject: lead.title, currentSubject: null,
+          rationale: 'The original body does not resolve the indexed subject.', descriptorRefs: [descriptor], fetchedRefs: [] };
+        row.evidenceAdequacy = { verdict: 'UNRESOLVED', rationale: 'The retained evidence does not establish adequacy.', citations: [] };
+      }
+      return row;
+    }) });
+    const review = () => ({ decisions: leads.map(lead => ({ leadId: lead.id,
+      accounting: { accepted: true, rationale: 'The unresolved accounting matches the retained evidence.' },
+      representation: { accepted: true, rationale: 'The unresolved relation is appropriately cautious.' },
+      subjectComparison: { accepted: true, rationale: 'The body comparison reflects the available original evidence.' },
+      evidenceAdequacy: { accepted: true, rationale: 'No unsupported adequacy conclusion was made.' },
+    })) });
+    return { leads, read, target, artifacts, program, initial, proposal, review };
+  };
+  const envelope = (value: unknown) => JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] });
+
+  const full = makeFixture();
+  const schema = z.toJSONSchema(full.initial.value.schema) as {
+    type?: string; properties?: Record<string, { type?: string; items?: { properties?: Record<string, { type?: string; enum?: unknown[] }> } }>;
+  };
+  const schemaText = JSON.stringify(schema);
+  const decisions = schema.properties?.decisions;
+  assert.equal(decisions?.type, 'array');
+  assert.equal(decisions?.items?.properties?.leadId?.type, 'string');
+  assert.equal(decisions?.items?.properties?.leadId?.enum, undefined,
+    'the hosted schema does not enumerate each lead ID into a repeated item union');
+  const supplied = JSON.parse(full.initial.value.prompt) as { sources: Array<{ id: string; spans: Span[] }> };
+  const spanIds = supplied.sources.flatMap(source => source.spans.map(span => span.id));
+  assert.ok(full.leads.length === 10 && spanIds.length >= 100,
+    'the bounded schema is exercised with ten leads and many retained source spans');
+  assert.ok(schemaText.length < 10_000, `the common hosted schema remains bounded (${schemaText.length} characters)`);
+  const small = makeFixture(1, 1);
+  assert.equal(JSON.stringify(z.toJSONSchema(small.initial.value.schema)), schemaText,
+    'adding leads, sources, and spans does not grow the common hosted schema');
+
+  for (const malformed of ['missing', 'duplicate', 'unknown'] as const) {
+    const fixture = makeFixture(3, 2), wire = fixture.proposal();
+    if (malformed === 'missing') wire.decisions.pop();
+    if (malformed === 'duplicate') wire.decisions[2] = { ...wire.decisions[2]!, leadId: wire.decisions[1]!.leadId };
+    if (malformed === 'unknown') wire.decisions[2] = { ...wire.decisions[2]!, leadId: 'not-an-operand' };
+    assert.throws(() => fixture.program.next(wire), /ATT_MODEL_COMPARISON_ITEM_INVALID/,
+      `${malformed} lead IDs fail exact row accounting before independent review`);
+    assert.equal(fixture.artifacts['attention-comparison-lead-review-prompt'], undefined);
+  }
+
+  const unreadExtra = makeFixture(3, 1);
+  const extraWire = unreadExtra.proposal();
+  const unread = extraWire.decisions[2]! as {
+    leadId: string; accounting: { descriptorRefs: Array<{ sourceId: string; spanId: string }> };
+    subjectComparison?: unknown; evidenceAdequacy?: unknown;
+  };
+  const descriptor = unread.accounting.descriptorRefs[0]!;
+  unread.subjectComparison = { status: 'UNRESOLVED', indexedSubject: unread.leadId, currentSubject: null,
+    rationale: 'This neutral extra must still be omitted for unread input.', descriptorRefs: [descriptor], fetchedRefs: [] };
+  unread.evidenceAdequacy = { verdict: 'UNRESOLVED', rationale: 'This neutral extra must still be omitted for unread input.', citations: [] };
+  assert.throws(() => unreadExtra.program.next(extraWire), (error: unknown) => error instanceof Error && error.name === 'ZodError',
+    'even neutral factual-axis values are rejected for an unread lead instead of being accepted or coerced');
+  assert.equal(unreadExtra.artifacts['attention-comparison-lead-review-prompt'], undefined);
+
+  const acquiredMissing = makeFixture(3, 2);
+  const missingWire = acquiredMissing.proposal();
+  delete missingWire.decisions[0]!.evidenceAdequacy;
+  assert.throws(() => acquiredMissing.program.next(missingWire), (error: unknown) => error instanceof Error && error.name === 'ZodError',
+    'acquired leads must provide both factual comparison axes');
+  assert.equal(acquiredMissing.artifacts['attention-comparison-lead-review-prompt'], undefined);
+
+  const acquiredUnrelated = makeFixture(3, 2);
+  const badWire = acquiredUnrelated.proposal();
+  const firstLead = acquiredUnrelated.leads[0]!;
+  badWire.decisions[0]!.representation = { status: 'UNRELATED', rationale: 'The retained page concerns another subject.', citations: [
+    { sourceId: firstLead.metadataEvidenceId, spanId: sourceSpans(firstLead.metadataEvidenceId, `${firstLead.title}\n${firstLead.snippet}`)[0]!.id },
+  ] };
+  acquiredUnrelated.artifacts['attention-comparison-lead-proposal-response'] = envelope(badWire);
+  const repair = acquiredUnrelated.program.next(badWire);
+  assert.equal(repair.done, false);
+  if (repair.done) assert.fail('invalid acquired UNRELATED citations must receive the existing single repair');
+  assert.equal(repair.value.id, 'attention-comparison-lead-repair-proposal');
+  const repairPacket = JSON.parse(repair.value.prompt) as {
+    localError: string; localObligations: { leadId: string; field: string; allowedSourceIds: string[]; selectedRefs: Array<{ sourceId: string }> };
+    referenceRule: string;
+  };
+  assert.equal(repairPacket.localError, 'ATT_MODEL_COMPARISON_LEAD_REF_INVALID');
+  assert.equal(repairPacket.localObligations.leadId, firstLead.id);
+  assert.equal(repairPacket.localObligations.field, 'representation.citations');
+  assert.deepEqual(repairPacket.localObligations.selectedRefs.map(ref => ref.sourceId), [firstLead.metadataEvidenceId]);
+  assert.deepEqual(repairPacket.localObligations.allowedSourceIds, firstLead.sourceIds,
+    'acquired UNRELATED must cite its own original body, never its indexed metadata');
+  assert.match(repairPacket.referenceRule, /UNRELATED representation\.citations.*originalBodyIds/);
+  assert.equal(acquiredUnrelated.artifacts['attention-comparison-lead-review-prompt'], undefined,
+    'the invalid references are classified before independent review');
+
+  const corrected = acquiredUnrelated.proposal();
+  const firstBodyId = firstLead.sourceIds[0]!;
+  const firstBody = acquiredUnrelated.read.sources.find(source => source.id === firstBodyId)!;
+  corrected.decisions[0]!.representation = { status: 'UNRELATED', rationale: 'The acquired body positively describes a distinct subject.',
+    citations: [{ sourceId: firstBodyId, spanId: sourceSpans(firstBodyId, firstBody.text)[0]!.id }] };
+  acquiredUnrelated.artifacts['attention-comparison-lead-repair-proposal-response'] = envelope(corrected);
+  const acquiredReviewCall = acquiredUnrelated.program.next(corrected);
+  assert.equal(acquiredReviewCall.done, false);
+  if (acquiredReviewCall.done) assert.fail('a corrected acquired UNRELATED citation must proceed to the real independent review');
+  assert.equal(acquiredReviewCall.value.id, 'attention-comparison-lead-review');
+  assert.equal(acquiredUnrelated.artifacts['attention-comparison-lead-review-prompt'] !== undefined, true);
+  const acquiredReviewWire = acquiredUnrelated.review();
+  acquiredUnrelated.artifacts['attention-comparison-lead-review-response'] = envelope(acquiredReviewWire);
+  const completed = acquiredUnrelated.program.next(acquiredReviewWire);
+  assert.equal(completed.done, true);
+  const replayed = decodeComparisonLeadTasks(acquiredUnrelated.read, TOKEN, acquiredUnrelated.target,
+    acquiredUnrelated.artifacts, 'comparison-lead-tasks-v3');
+  assert.equal(replayed.proposalResponseId, 'attention-comparison-lead-repair-proposal-response');
+  const replayedProposal = replayed.proposal as { decisions: Record<string, { representation: { citations: Array<{ sourceId: string; spanId: string }> } }> };
+  assert.deepEqual(replayedProposal.decisions[firstLead.id]?.representation.citations,
+    [{ sourceId: firstBodyId, spanId: sourceSpans(firstBodyId, firstBody.text)[0]!.id }],
+    'offline reconstruction selects the repaired own-body citation and retains the original invalid proposal');
+
+  const crossOwner = makeFixture(2, 2);
+  const crossOwnerWire = crossOwner.proposal();
+  const crossOwnerSourceId = crossOwner.leads[1]!.sourceIds[0]!;
+  const crossOwnerSource = crossOwner.read.sources.find(source => source.id === crossOwnerSourceId)!;
+  crossOwnerWire.decisions[0]!.representation = { status: 'UNRELATED', rationale: 'The retained page concerns another subject.',
+    citations: [{ sourceId: crossOwnerSourceId, spanId: sourceSpans(crossOwnerSourceId, crossOwnerSource.text)[0]!.id }] };
+  const crossOwnerRepair = crossOwner.program.next(crossOwnerWire);
+  assert.equal(crossOwnerRepair.done, false);
+  if (crossOwnerRepair.done) assert.fail('a cross-lead body selector must be rejected through the same bounded repair');
+  assert.equal(crossOwnerRepair.value.id, 'attention-comparison-lead-repair-proposal');
+  assert.equal(crossOwner.artifacts['attention-comparison-lead-review-prompt'], undefined,
+    'a different lead’s body cannot be passed to review as this lead’s own UNRELATED evidence');
+
+  const stillInvalid = makeFixture(2, 2);
+  const invalidAgain = stillInvalid.proposal();
+  invalidAgain.decisions[0]!.representation = badWire.decisions[0]!.representation;
+  const firstRepair = stillInvalid.program.next(invalidAgain);
+  assert.equal(firstRepair.done, false);
+  if (firstRepair.done) assert.fail('the first invalid proposal must use its one existing repair');
+  assert.equal(firstRepair.value.id, 'attention-comparison-lead-repair-proposal');
+  assert.throws(() => stillInvalid.program.next(invalidAgain), /ATT_MODEL_COMPARISON_LEAD_REF_INVALID/,
+    'a second invalid own-source selection fails without another repair opportunity');
+  assert.equal(stillInvalid.artifacts['attention-comparison-lead-review-prompt'], undefined);
+
+  const invalidSpan = makeFixture();
+  const invalidWire = invalidSpan.proposal();
+  const first = invalidWire.decisions[0]!;
+  first.subjectComparison = { ...(first.subjectComparison as Record<string, unknown>),
+    fetchedRefs: [{ sourceId: invalidSpan.leads[0]!.sourceIds[0]!, spanId: `${invalidSpan.leads[0]!.sourceIds[0]}:span:999` }] };
+  invalidSpan.artifacts['attention-comparison-lead-proposal-response'] = envelope(invalidWire);
+  const repairCall = invalidSpan.program.next(invalidWire);
+  assert.equal(repairCall.done, false);
+  assert.equal(repairCall.value.id, 'attention-comparison-lead-repair-proposal');
+  assert.equal(invalidSpan.artifacts['attention-comparison-lead-review-prompt'], undefined,
+    'the exact own source span is checked locally before any semantic review');
+  const validWire = invalidSpan.proposal();
+  invalidSpan.artifacts['attention-comparison-lead-repair-proposal-response'] = envelope(validWire);
+  const reviewCall = invalidSpan.program.next(validWire);
+  assert.equal(reviewCall.done, false);
+  if (reviewCall.done) assert.fail('the repaired proposal must reach independent review');
+  assert.equal(reviewCall.value.id, 'attention-comparison-lead-review');
+  const reviewWire = invalidSpan.review();
+  invalidSpan.artifacts['attention-comparison-lead-review-response'] = envelope(reviewWire);
+  const generated = invalidSpan.program.next(reviewWire);
+  assert.equal(generated.done, true);
+  const reconstructed = decodeComparisonLeadTasks(invalidSpan.read, TOKEN, invalidSpan.target, invalidSpan.artifacts, 'comparison-lead-tasks-v3');
+  assert.equal(reconstructed.proposalResponseId, 'attention-comparison-lead-repair-proposal-response');
+  assert.deepEqual(reconstructed.responseIds, [
+    'attention-comparison-lead-proposal-response', 'attention-comparison-lead-repair-proposal-response',
+    'attention-comparison-lead-review-response',
+  ], 'offline decoding selects the same repaired proposal after verifying the exact original prompt and raw packets');
+});
+
+test('fresh task-v4 uses two authoritative accounting branches and normalizes only valid basis rows', () => {
+  const target: Parameters<typeof comparisonLeadTaskProgram>[2] = {
+    method: 'comparison-target-context-v1', mode: 'UNRESOLVED', narrativeClaims: [], narrativeSupportReceiptId: null,
+  };
+  const makeFixture = (leadCount: number, acquiredCount = 1) => {
+    const leads = Array.from({ length: leadCount }, (_, index) => {
+      const sourceIds = index < acquiredCount ? Array.from({ length: 8 }, (_, sourceIndex) => `v4-lead-${index + 1}-body-${sourceIndex + 1}`) : [];
+      return comparisonLead(`v4-lead-${index + 1}`, index, `https://index-${index + 1}.example/item`,
+        `Indexed market item ${index + 1}`, `Own indexed descriptor for item ${index + 1}.`,
+        sourceIds.length ? 'ACQUIRED' : 'OMITTED', sourceIds);
+    });
+    const read = ledgerComparisonRead(leads);
+    read.comparisonQualification = { recoveryQueries: [] };
+    for (const lead of leads) for (const sourceId of lead.sourceIds) {
+      const text = Array.from({ length: 12 }, (_, index) => `Original body paragraph ${index + 1} for ${sourceId}. ${'retained detail '.repeat(18)}`).join('\n');
+      read.sources.push({ id: sourceId, url: `https://content.example/${sourceId}`, text,
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    }
+    const artifacts: Record<string, string> = {};
+    const program = comparisonLeadTaskProgram(read, TOKEN, target, artifacts, 'comparison-lead-tasks-v4');
+    const first = program.next();
+    assert.equal(first.done, false);
+    if (first.done) assert.fail('the fresh v4 proposal is the first task');
+    return { leads, read, artifacts, program, initial: first.value };
+  };
+  const descriptorFor = (lead: ReturnType<typeof comparisonLead>) => ({
+    sourceId: lead.metadataEvidenceId,
+    spanId: sourceSpans(lead.metadataEvidenceId, `${lead.title}\n${lead.snippet}`)[0]!.id,
+  });
+  const unresolvedRow = (lead: ReturnType<typeof comparisonLead>) => ({
+    leadId: lead.id,
+    accounting: { basis: 'NONE', role: 'UNRESOLVED', rationale: 'The indexed item identity remains unresolved.',
+      descriptorRef: descriptorFor(lead), corroboratingRefs: [] },
+    representation: { status: 'UNRESOLVED', rationale: 'No exact target representation is claimed.', citations: [] },
+    ...(lead.sourceIds.length ? {
+      subjectComparison: { status: 'UNRESOLVED', indexedSubject: lead.title, currentSubject: null,
+        rationale: 'The retained original body does not establish a current subject.', descriptorRefs: [descriptorFor(lead)], fetchedRefs: [] },
+      evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The retained body does not support an adequacy conclusion.', citations: [] },
+    } : {}),
+  });
+  const wire = (leads: ReturnType<typeof comparisonLead>[]) => ({ decisions: leads.map(unresolvedRow) });
+
+  const small = makeFixture(1);
+  const medium = makeFixture(10);
+  const maximum = makeFixture(32);
+  const schemaJson = JSON.stringify(z.toJSONSchema(small.initial.schema));
+  assert.equal(JSON.stringify(z.toJSONSchema(medium.initial.schema)), schemaJson,
+    'adding leads and retained sources does not add lead-specific union branches');
+  assert.equal(JSON.stringify(z.toJSONSchema(maximum.initial.schema)), schemaJson,
+    'the same schema remains constant at the 32-lead boundary');
+  const schema = z.toJSONSchema(maximum.initial.schema) as Record<string, unknown>;
+  const topProperties = schema.properties as Record<string, unknown> | undefined;
+  const decisionsSchema = topProperties?.decisions as { items?: { properties?: Record<string, unknown> } } | undefined;
+  const accountingSchema = decisionsSchema?.items?.properties?.accounting as { anyOf?: Array<{ properties?: Record<string, unknown> }> } | undefined;
+  const accountingBranches = accountingSchema?.anyOf;
+  assert.equal(accountingBranches?.length, 2, 'the hosted schema has exactly the NONE and resolved-basis accounting branches');
+  const fields = accountingBranches?.map(branch => new Set(Object.keys(branch.properties ?? {}))) ?? [];
+  assert.ok(fields.some(names => names.has('basis') && names.has('descriptorRef') && names.has('corroboratingRefs')
+    && !names.has('status') && !names.has('descriptorRefs')));
+  assert.ok(fields.some(names => names.has('basis') && names.has('descriptorRef') && names.has('corroboratingRef')
+    && names.has('additionalCorroboratingRefs') && !names.has('status') && !names.has('descriptorRefs')));
+  assert.ok(schemaJson.length < 10_000, `the two-branch schema stays bounded across many source spans (${schemaJson.length} chars)`);
+
+  const structural = makeFixture(1);
+  const validNone = wire(structural.leads);
+  assert.equal(structural.initial.schema.safeParse(validNone).success, true,
+    'NONE with an unresolved role, required own descriptor and empty corroboration is a valid neutral proposal');
+  const descriptor = descriptorFor(structural.leads[0]!);
+  const invalidAccounting: Array<Record<string, unknown>> = [
+    { status: 'UNRESOLVED', basis: 'RECOVERED_ENTITY', role: 'UNRESOLVED', rationale: 'This captured contradictory row is not reinterpreted.', descriptorRefs: [descriptor], corroboratingRefs: [] },
+    { ...validNone.decisions[0]!.accounting, status: 'UNRESOLVED' },
+    { basis: 'NONE', role: 'UNRESOLVED', rationale: 'The required own descriptor is absent.', corroboratingRefs: [] },
+    { basis: 'INDEXED_CONTEXT', role: 'UNRESOLVED', rationale: 'A resolved basis cannot retain an unknown role.', descriptorRef: descriptor, corroboratingRef: descriptor, additionalCorroboratingRefs: [] },
+    { basis: 'RECOVERED_ENTITY', role: 'MARKET_OR_INDEX_RECORD', rationale: 'A resolved branch needs one own witness.', descriptorRef: descriptor, additionalCorroboratingRefs: [] },
+    { basis: 'UNRECOGNIZED', role: 'MARKET_OR_INDEX_RECORD', rationale: 'The basis is outside the closed enum.', descriptorRef: descriptor, corroboratingRef: descriptor, additionalCorroboratingRefs: [] },
+    { basis: 'INDEXED_CONTEXT', role: 'MARKET_OR_INDEX_RECORD', rationale: 'Additional witnesses have a fixed local bound.', descriptorRef: descriptor, corroboratingRef: descriptor, additionalCorroboratingRefs: Array.from({ length: 5 }, () => descriptor) },
+  ];
+  for (const accounting of invalidAccounting) {
+    const candidate = structuredClone(validNone) as { decisions: Array<Record<string, unknown>> };
+    candidate.decisions[0]!.accounting = accounting;
+    assert.equal(structural.initial.schema.safeParse(candidate).success, false,
+      'legacy status/basis contradictions and incomplete or out-of-contract v4 witnesses fail the strict schema');
+  }
+  const oldTuple = makeFixture(1);
+  const oldWire = wire(oldTuple.leads) as { decisions: Array<Record<string, unknown>> };
+  oldWire.decisions[0]!.accounting = invalidAccounting[0];
+  assert.throws(() => oldTuple.program.next(oldWire), (error: unknown) => error instanceof Error && error.name === 'ZodError');
+  assert.equal(oldTuple.artifacts['attention-comparison-lead-repair-proposal-prompt'], undefined,
+    'a structurally contradictory old tuple is rejected rather than salvaged through the reference repair');
+  assert.equal(oldTuple.artifacts['attention-comparison-lead-review-prompt'], undefined,
+    'no independent semantic review runs after the strict wire rejection');
+
+  const branches = makeFixture(4);
+  const [originalLead, recoveredLead, indexedLead, unresolvedLead] = branches.leads;
+  assert.ok(originalLead && recoveredLead && indexedLead && unresolvedLead);
+  const originalBody = branches.read.sources.find(source => source.id === originalLead.sourceIds[0]);
+  assert.ok(originalBody);
+  recoveredLead.recoverySourceIds = ['v4-recovery-first', 'v4-recovery-second'];
+  for (const id of recoveredLead.recoverySourceIds) branches.read.sources.push({ id, url: `https://${id}.example/record`,
+    text: `Independently recovered indexed record ${id}.`, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+  const indexedMetadataId = 'attention-recovery-comparison-lead-3-metadata';
+  branches.read.rawArtifacts[indexedMetadataId] = JSON.stringify({ originalLeadId: indexedLead.id, normalizedUrl: indexedLead.url,
+    title: 'Secondary indexed subject', snippet: 'A separately retained own index context record.' });
+  const branchArtifacts: Record<string, string> = {};
+  const branchProgram = comparisonLeadTaskProgram(branches.read, TOKEN, target, branchArtifacts, 'comparison-lead-tasks-v4');
+  const branchInitial = branchProgram.next();
+  assert.equal(branchInitial.done, false);
+  if (branchInitial.done) assert.fail('the multi-basis v4 proposal starts before decoding');
+  const recoveryRefs = recoveredLead.recoverySourceIds.map(id => ({ sourceId: id,
+    spanId: sourceSpans(id, branches.read.sources.find(source => source.id === id)!.text)[0]!.id }));
+  const indexedRef = { sourceId: indexedMetadataId, spanId: sourceSpans(indexedMetadataId,
+    'Secondary indexed subject\nA separately retained own index context record.')[0]!.id };
+  const normalizedWire = { decisions: [
+    { ...unresolvedRow(originalLead), accounting: { basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+      rationale: 'The own original body supports this accounting route.', descriptorRef: descriptorFor(originalLead),
+      corroboratingRef: { sourceId: originalBody.id, spanId: sourceSpans(originalBody.id, originalBody.text)[0]!.id }, additionalCorroboratingRefs: [] } },
+    { ...unresolvedRow(recoveredLead), accounting: { basis: 'RECOVERED_ENTITY', role: 'MARKET_OR_INDEX_RECORD',
+      rationale: 'The own recovered sources support this proposed route.', descriptorRef: descriptorFor(recoveredLead),
+      corroboratingRef: recoveryRefs[0], additionalCorroboratingRefs: [recoveryRefs[1]] } },
+    { ...unresolvedRow(indexedLead), accounting: { basis: 'INDEXED_CONTEXT', role: 'MARKET_OR_INDEX_RECORD',
+      rationale: 'The own indexed context is supplied as the second witness.', descriptorRef: descriptorFor(indexedLead),
+      corroboratingRef: indexedRef, additionalCorroboratingRefs: [] } },
+    unresolvedRow(unresolvedLead),
+  ] };
+  const raw = (value: unknown) => JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] });
+  branchArtifacts['attention-comparison-lead-proposal-response'] = raw(normalizedWire);
+  const reviewCall = branchProgram.next(normalizedWire);
+  assert.equal(reviewCall.done, false);
+  if (reviewCall.done) assert.fail('valid basis rows proceed to the actual four-axis independent review');
+  assert.equal(reviewCall.value.id, 'attention-comparison-lead-review');
+  const review = { decisions: branches.leads.map(lead => ({ leadId: lead.id, ...Object.fromEntries(
+    ['accounting', 'representation', 'subjectComparison', 'evidenceAdequacy'].map(axis => [axis, {
+      accepted: true, rationale: 'This independent judgment evaluates the proposed axis without changing its factual meaning.',
+    }]),
+  ) })) };
+  branchArtifacts['attention-comparison-lead-review-response'] = raw(review);
+  const completed = branchProgram.next(review);
+  assert.equal(completed.done, true);
+  if (!completed.done) assert.fail('the four actual judgments complete the v4 task');
+  const normalized = completed.value.proposal.decisions as Record<string, { accounting: {
+    status: string; basis: string; role: string; descriptorRefs: Array<{ sourceId: string; spanId: string }>;
+    corroboratingRefs: Array<{ sourceId: string; spanId: string }>;
+  } }>;
+  assert.deepEqual([normalized[originalLead.id]!.accounting.status, normalized[originalLead.id]!.accounting.basis,
+    normalized[originalLead.id]!.accounting.corroboratingRefs], ['ACCOUNTED', 'ORIGINAL_TEXT', [{ sourceId: originalBody.id,
+      spanId: sourceSpans(originalBody.id, originalBody.text)[0]!.id }]]);
+  assert.deepEqual([normalized[recoveredLead.id]!.accounting.status, normalized[recoveredLead.id]!.accounting.basis,
+    normalized[recoveredLead.id]!.accounting.corroboratingRefs], ['ACCOUNTED', 'RECOVERED_ENTITY', recoveryRefs],
+  'the singular resolved witness precedes additional witnesses in the canonical internal array');
+  assert.deepEqual([normalized[indexedLead.id]!.accounting.status, normalized[indexedLead.id]!.accounting.basis,
+    normalized[indexedLead.id]!.accounting.corroboratingRefs], ['ACCOUNTED', 'INDEXED_CONTEXT', [indexedRef]]);
+  assert.deepEqual([normalized[unresolvedLead.id]!.accounting.status, normalized[unresolvedLead.id]!.accounting.basis,
+    normalized[unresolvedLead.id]!.accounting.role, normalized[unresolvedLead.id]!.accounting.corroboratingRefs],
+  ['UNRESOLVED', 'NONE', 'UNRESOLVED', []], 'NONE stays a real unknown after actual independent review');
+  const decoded = decodeComparisonLeadTasks(branches.read, TOKEN, target, branchArtifacts, 'comparison-lead-tasks-v4');
+  assert.deepEqual(decoded.proposal.decisions, completed.value.proposal.decisions,
+    'offline Service reconstruction uses the same strict v4 wire and canonical basis normalization');
+});
+
+test('fresh task-v5 requires exact body-visibility groups and strict axis presence', () => {
+  const target: Parameters<typeof comparisonLeadTaskProgram>[2] = {
+    method: 'comparison-target-context-v1', mode: 'UNRESOLVED', narrativeClaims: [], narrativeSupportReceiptId: null,
+  };
+  const makeFixture = (coherentSubject = false) => {
+    const acquired = comparisonLead('task-v5-acquired', 0, 'https://index.example/acquired',
+      'An acquired indexed project', 'The indexed descriptor is retained separately.', 'ACQUIRED', ['task-v5-body']);
+    const unread = comparisonLead('task-v5-unread', 1, 'https://index.example/unread',
+      'An unread indexed project', 'The unread descriptor is retained separately.', 'FAILED');
+    const leads = [acquired, unread];
+    const read = ledgerComparisonRead(leads);
+    read.comparisonQualification = { recoveryQueries: [], ...(coherentSubject ? { subjectComparisonMethod: 'coherent-subject-v1' } : {}) };
+    const bodyText = 'The acquired original project body remains available for its own subject comparison.';
+    read.sources.push({ id: 'task-v5-body', url: 'https://content.example/acquired', text: bodyText,
+      publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    const artifacts: Record<string, string> = {};
+    const program = comparisonLeadTaskProgram(read, TOKEN, target, artifacts, 'comparison-lead-tasks-v5');
+    const initial = program.next();
+    assert.equal(initial.done, false);
+    if (initial.done) assert.fail('the grouped v5 proposal is the first production call');
+    const descriptor = (lead: typeof acquired) => ({ sourceId: lead.metadataEvidenceId,
+      spanId: sourceSpans(lead.metadataEvidenceId, `${lead.title}\n${lead.snippet}`)[0]!.id });
+    const row = (lead: typeof acquired | typeof unread) => ({
+      leadId: lead.id,
+      accounting: { basis: 'NONE', role: 'UNRESOLVED', rationale: 'The retained evidence does not identify this indexed item.',
+        descriptorRef: descriptor(lead), corroboratingRefs: [] },
+      representation: { status: 'UNRESOLVED', rationale: 'No target relationship is asserted.', citations: [] },
+      ...(lead.sourceIds.length ? {
+        subjectComparison: { status: 'UNRESOLVED', indexedSubject: lead.title, currentSubject: null,
+          rationale: 'The acquired body does not establish a resolved current subject.', descriptorRefs: [descriptor(lead)], fetchedRefs: [] },
+        evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The body does not support a separate adequacy finding.', citations: [] },
+      } : {}),
+    });
+    const valid = { decisions: { withOriginalBodies: [row(acquired)], withoutOriginalBodies: [row(unread)] } };
+    return { acquired, unread, artifacts, program, initial: initial.value, valid, row, descriptor };
+  };
+
+  const valid = makeFixture();
+  assert.equal(valid.initial.schema.safeParse(valid.valid).success, true,
+    'the mixed response contains both exact groups, with both factual axes acquired and omitted only for unread input');
+  const reviewCall = valid.program.next(valid.valid);
+  assert.equal(reviewCall.done, false);
+  if (reviewCall.done) assert.fail('a valid grouped proposal reaches the independent review');
+  assert.equal(reviewCall.value.id, 'attention-comparison-lead-review');
+
+  const malformed = (variant: 'wrong-group' | 'missing-acquired-axis' | 'extra-unread-axis') => {
+    const fixture = makeFixture();
+    const wire = structuredClone(fixture.valid) as {
+      decisions: { withOriginalBodies: Array<Record<string, unknown>>; withoutOriginalBodies: Array<Record<string, unknown>> };
+    };
+    if (variant === 'wrong-group') wire.decisions.withOriginalBodies[0]!.leadId = fixture.unread.id;
+    if (variant === 'missing-acquired-axis') delete wire.decisions.withOriginalBodies[0]!.evidenceAdequacy;
+    if (variant === 'extra-unread-axis') wire.decisions.withoutOriginalBodies[0]!.subjectComparison = {
+      status: 'UNRESOLVED', indexedSubject: fixture.unread.title, currentSubject: null,
+      rationale: 'This neutral extra is still forbidden when the original body is unread.',
+      descriptorRefs: [fixture.descriptor(fixture.unread)], fetchedRefs: [],
+    };
+    assert.throws(() => fixture.program.next(wire), (error: unknown) => error instanceof Error
+      && (error.message === 'ATT_MODEL_COMPARISON_ITEM_INVALID' || error.name === 'ZodError'),
+    `${variant} is rejected before semantic review`);
+    assert.equal(fixture.artifacts['attention-comparison-lead-review-prompt'], undefined,
+      `${variant} never reaches the independent review`);
+  };
+  malformed('wrong-group');
+  malformed('missing-acquired-axis');
+  malformed('extra-unread-axis');
+
+  const coherent = makeFixture(true);
+  const coherentRows = coherent.valid.decisions.withOriginalBodies;
+  const originalBodyRef = { sourceId: coherent.acquired.sourceIds[0]!, spanId: sourceSpans(coherent.acquired.sourceIds[0]!,
+    'The acquired original project body remains available for its own subject comparison.')[0]!.id };
+  (coherentRows[0] as unknown as Record<string, unknown>).subjectComparison = {
+    status: 'MISMATCH', indexedSubject: 'An indexed prior subject', currentSubject: 'A different subject in the fetched original body',
+    rationale: 'The indexed and fetched subject descriptions differ.', descriptorRefs: [coherent.descriptor(coherent.acquired)], fetchedRefs: [originalBodyRef],
+  };
+  assert.equal(coherent.initial.schema.safeParse(coherent.valid).success, true,
+    'the coherent-subject marker permits a resolved mismatch only with a current subject and own fetched-body citation');
+  const coherentReview = coherent.program.next(coherent.valid);
+  assert.equal(coherentReview.done, false, 'the valid resolved comparison reaches its independent review');
+  if (coherentReview.done) assert.fail('valid resolved subject evidence must reach review');
+  assert.equal(coherentReview.value.id, 'attention-comparison-lead-review');
+
+  const nullMismatch = makeFixture(true);
+  (nullMismatch.valid.decisions.withOriginalBodies[0] as unknown as Record<string, unknown>).subjectComparison = {
+    status: 'MISMATCH', indexedSubject: 'An indexed subject', currentSubject: null,
+    rationale: 'The fetched body does not identify a current subject.', descriptorRefs: [nullMismatch.descriptor(nullMismatch.acquired)], fetchedRefs: [],
+  };
+  assert.equal(nullMismatch.initial.schema.safeParse(nullMismatch.valid).success, false,
+    'a resolved MISMATCH with null currentSubject and no own body ref is rejected by the coherent-subject schema');
+  assert.throws(() => nullMismatch.program.next(nullMismatch.valid), (error: unknown) => error instanceof Error
+    && error.name === 'ZodError');
+  assert.equal(nullMismatch.artifacts['attention-comparison-lead-review-prompt'], undefined,
+    'the invalid resolved comparison is rejected before the independent review');
+});
+
+test('fresh v3 repairs a recovered API citation misused as original subject evidence', async () => {
+  const pool = '51E2z8VjR5MBoa2gehiP9ai1eAPVSZLfDnUnB5UZAx45';
+  const baseMint = 'D2hwH8rPnR3yeCdMxg9EiDS2nQhV9SMeLUVAnKrBxvUR';
+  const quoteMint = 'So11111111111111111111111111111111111111112';
+  const poolUrl = `https://www.geckoterminal.com/solana/pools/${pool}`;
+  const apiUrl = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}?include=base_token,quote_token`;
+  const apiSourceId = 'attention-origin-page-14';
+  const apiText = JSON.stringify({
+    data: { type: 'pool', id: `solana_${pool}`, attributes: { address: pool },
+      relationships: {
+        base_token: { data: { type: 'token', id: `solana_${baseMint}` } },
+        quote_token: { data: { type: 'token', id: `solana_${quoteMint}` } },
+      } },
+    included: [
+      { type: 'token', id: `solana_${baseMint}`, attributes: { address: baseMint, name: 'RecursiveSelfInu' } },
+      { type: 'token', id: `solana_${quoteMint}`, attributes: { address: quoteMint, name: 'Wrapped SOL' } },
+    ],
+  });
+  const targetText = `${'Directory listing and token metadata are retained as a current public index record. '.repeat(65)}River Lantern uses ${TOKEN.address} for a neighborhood fee-burning project.`;
+  const leads = [
+    comparisonLead('comparison-lead-1', 0, 'https://public.example/source', 'River Lantern project token',
+      `The target token ${TOKEN.address} uses a neighborhood fee-burning mechanism.`, 'ACQUIRED', ['page-1']),
+    comparisonLead('comparison-lead-2', 1, poolUrl, 'RecursiveSelfInu Solana trading pool',
+      `GeckoTerminal market listing for RecursiveSelfInu pool ${pool}.`, 'FAILED'),
+  ];
+  const read = ledgerComparisonRead(leads, targetText);
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+    results: [{ url: leads[0]!.url, final_url: leads[0]!.url, text: targetText }], errors: [],
+  });
+  read.sources.push({ id: apiSourceId, url: apiUrl, text: apiText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+  read.comparisonSourceIds = ['page-1', apiSourceId];
+  read.originRecovery = { aliases: [], comparisonSupplementIds: [apiSourceId] };
+  read.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify({
+    results: [{ url: apiUrl, final_url: apiUrl, text: apiText.replace(/_/g, '\\_') }], errors: [],
+  });
+
+  const fullText = completeComparisonResponder();
+  const mock = mockModel(packet => {
+    const scope = packet.scope as Record<string, unknown> | undefined;
+    if (packet.manifest || typeof scope?.batch === 'number') return fullText(packet);
+    if (packet.entryTask && packet.mergeTask
+      || Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) return fullText(packet);
+    if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) return fullText(packet);
+    if (Array.isArray(packet.operands)) {
+      const operands = packet.operands as Array<{ leadId: string; indexedDescriptorId: string; originalBodyIds: string[];
+        literalOptions: Array<{ id: string; token: { chain: string; address: string }; sourceId: string; spanId: string }> }>;
+      if (packet.proposal) {
+        return { decisions: Object.fromEntries(operands.map(operand => [operand.leadId, {
+          accounting: { accepted: true, rationale: 'The indexed item accounting is reviewed independently from the unread original page.' },
+          representation: { accepted: true, rationale: 'The unresolved target relation does not assert a fetched-page identity.' },
+          subjectComparison: { accepted: true, rationale: 'The code-owned unread-body state is accurate and makes no comparison claim.' },
+          evidenceAdequacy: { accepted: true, rationale: 'The unread original page is not used to infer factual adequacy.' },
+        }])) };
+      }
+      return { decisions: Object.fromEntries(operands.map(operand => {
+        const descriptor = { sourceId: operand.indexedDescriptorId,
+          spanId: metadataSpanId(packet, operand.indexedDescriptorId, operand.leadId === leads[0]!.id ? TOKEN.address : pool) };
+        if (operand.leadId === leads[0]!.id) {
+          const original = { sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) };
+          const literal = operand.literalOptions.find(option => option.token.address === TOKEN.address && option.sourceId === 'page-1');
+          assert.ok(literal, 'the acquired target has a code-owned literal mint option from its own original page');
+          return [operand.leadId, {
+            accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The own indexed project item is supported by its actually fetched original page.', descriptorRefs: [descriptor], corroboratingRefs: [original] },
+            representation: { status: 'BOUND', literalObservationId: literal.id, rationale: 'The original body connects the exact token to the target narrative.', associationRefs: [original] },
+            subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern project token', currentSubject: 'River Lantern fee-burning project',
+              rationale: 'The original fetched body describes the indexed target project.', descriptorRefs: [descriptor], fetchedRefs: [original] },
+            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target lead supplies no positive inadequacy finding.', citations: [] },
+          }];
+        }
+        return [operand.leadId, {
+          accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+            rationale: 'The unread original market item remains factually unresolved.', descriptorRefs: [descriptor], corroboratingRefs: [] },
+          representation: { status: 'UNRESOLVED', rationale: 'The separate Gecko response does not establish the indexed pool’s target relation.', citations: [descriptor] },
+        }];
+      })) };
+    }
+    if (packet.selectedLeadIds) {
+      const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+      return { leads: Object.fromEntries(selected.map(lead => [lead.id, {
+        queries: ['RecursiveSelfInu Solana indexed pool record'],
+        rationale: 'Recover independent descriptive context for the original market pool item.',
+        metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: metadataSpanId(packet, lead.metadataEvidenceId, 'RecursiveSelfInu') }],
+      }])) };
+    }
+    if (scope?.mode === 'qualified-identified-leads-v3' && packet.initialInvalidProposal) {
+      const invalid = packet.initialInvalidProposal as { decisions: Array<{ leadId: string; subjectComparison: { fetchedRefs: unknown[] };
+        representation: { citations: Array<{ sourceId: string; spanId: string }> } }> };
+      const corrected = structuredClone(invalid);
+      const market = corrected.decisions.find(item => item.leadId === 'comparison-lead-2');
+      assert.ok(market);
+      market.subjectComparison.fetchedRefs = [];
+      market.representation = { status: 'UNRESOLVED', unresolvedKind: 'PUBLIC_SUPPORT_GAP', token: null,
+        rationale: 'The indexed market source and recovered API do not establish a target narrative association.',
+        citations: market.representation.citations } as typeof market.representation;
+      return corrected;
+    }
+    if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
+      const proposal = packet.proposal as { decisions: Record<string, unknown> };
+      return { decisions: Object.keys(proposal.decisions).map(leadId => ({ leadId,
+        accounting: { accepted: true, rationale: 'The selected accounting status matches the retained original and own recovery evidence.' },
+        representation: { accepted: true, rationale: 'The selected representation status is separately grounded and does not overstate the target link.' },
+        subjectComparison: { accepted: true, rationale: 'Only original fetched bodies support currentSubject and fetchedRefs.' },
+        evidenceAdequacy: { accepted: true, rationale: 'The adequacy assessment preserves uncertainty where the original body is unread.' },
+      })) };
+    }
+    if (scope?.mode === 'qualified-identified-leads-v3') {
+      const indexedLeads = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+      return { decisions: indexedLeads.map(lead => {
+        const descriptor = { sourceId: lead.metadataEvidenceId,
+          spanId: metadataSpanId(packet, lead.metadataEvidenceId, lead.id === 'comparison-lead-1' ? TOKEN.address : pool) };
+        if (lead.id === 'comparison-lead-1') {
+          const original = { sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) };
+          return { leadId: lead.id,
+            accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The retained original target body matches its own indexed project item.', descriptorRefs: [descriptor], corroboratingRefs: [original] },
+            representation: { status: 'BOUND', unresolvedKind: 'NONE', token: TOKEN, rationale: 'The original target text binds the exact token to the project narrative.', citations: [original] },
+            subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern project token', currentSubject: 'River Lantern fee-burning project',
+              rationale: 'The original fetched body matches the indexed target subject.', descriptorRefs: [descriptor], fetchedRefs: [original] },
+            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target lead does not establish an inadequate public representation.', citations: [] },
+          };
+        }
+        const api = { sourceId: apiSourceId, spanId: spanId(packet, apiSourceId, baseMint) };
+        return { leadId: lead.id,
+          accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+            rationale: 'The indexed pool is identified but its original page remains unavailable.', descriptorRefs: [descriptor], corroboratingRefs: [api] },
+          representation: { status: 'BOUND', unresolvedKind: 'NONE', token: { chain: 'solana', address: baseMint },
+            rationale: 'The indexed metadata names a market pool and is mistakenly used as a literal fetched mint citation.', citations: [descriptor] },
+          subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'RecursiveSelfInu market pool', currentSubject: null,
+            rationale: 'The exact original pool page was not fetched; the API is a separate recovered entity record.', descriptorRefs: [descriptor], fetchedRefs: [api] },
+          evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'A recovered API record cannot stand in for the unread original page.', citations: [descriptor] },
+        };
+      }) };
+    }
+    return packet.proposal ? reviewWire(packet, true) : proposalWire(packet, { claims: [{
+      id: 'claim-target-narrative', feature: 'A01', value: true,
+      summary: 'River Lantern uses the exact token in a neighborhood fee-burning project.',
+      citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }],
+    }] });
+  });
+  const webAndModelFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      return new Response(JSON.stringify({ results: [{
+        url: 'https://independent.example/recursive-self-inu', title: 'RecursiveSelfInu pool',
+        snippet: 'A Solana market record for RecursiveSelfInu.',
+      }] }));
+    }
+    if (url.startsWith('https://api.fetch.tinyfish.ai/')) {
+      const requested = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+      return new Response(JSON.stringify({ results: requested.map(item => ({
+        url: item, final_url: item, text: 'RecursiveSelfInu is a Solana market listing. No launch or project narrative is described.',
+      })), errors: [] }));
+    }
+    return mock.fetcher(input, init);
+  };
+  const noOriginalSchema = comparisonAccountingWireFor([leads[1]!]);
+  assert.equal(noOriginalSchema.safeParse({ decisions: [{
+    leadId: leads[1]!.id,
+    accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+      rationale: 'The indexed item is retained but its original body is unavailable.',
+      descriptorRefs: [{ sourceId: leads[1]!.metadataEvidenceId, spanId: 'metadata-span' }], corroboratingRefs: [] },
+    representation: { status: 'UNRESOLVED', token: null, rationale: 'The target relationship remains unresolved.', citations: [] },
+    subjectComparison: {
+      status: 'UNRESOLVED', indexedSubject: 'RecursiveSelfInu', currentSubject: null, rationale: 'Original body is unread.',
+      descriptorRefs: [{ sourceId: leads[1]!.metadataEvidenceId, spanId: 'metadata-span' }],
+      fetchedRefs: [{ sourceId: apiSourceId, spanId: 'forbidden-original-ref' }],
+    }, evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The unread body gives no adequacy result.', citations: [] },
+  }] }).success, false, 'when every lead lacks an original page, the hosted schema forbids fetchedRefs instead of inviting an API-to-original substitution');
+
+  const markedSchema = comparisonAccountingWireFor([leads[1]!], true);
+  const markedDecision = (status: 'BOUND' | 'UNRELATED' | 'INADEQUATE' | 'UNRESOLVED',
+    unresolvedKind: 'NONE' | 'PUBLIC_SUPPORT_GAP', token: unknown = null) => ({
+    leadId: leads[1]!.id,
+    accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'MARKET_OR_INDEX_RECORD',
+      rationale: 'The original indexed market record remains factually unresolved.',
+      descriptorRefs: [{ sourceId: leads[1]!.metadataEvidenceId, spanId: 'metadata-span' }], corroboratingRefs: [] },
+    representation: { status, unresolvedKind, token,
+      rationale: 'This separately reviewed representation status retains its explicit public-support kind.',
+      citations: [{ sourceId: leads[1]!.metadataEvidenceId, spanId: 'metadata-span' }] },
+    subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'RecursiveSelfInu', currentSubject: null,
+      rationale: 'The original body was not fetched.', descriptorRefs: [{ sourceId: leads[1]!.metadataEvidenceId, spanId: 'metadata-span' }], fetchedRefs: [] },
+    evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The original body remains unread.', citations: [] },
+  });
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('UNRESOLVED', 'PUBLIC_SUPPORT_GAP')] }).success, true,
+    'marked wire accepts an explicitly unresolved public-support gap');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('INADEQUATE', 'NONE')] }).success, true,
+    'marked wire accepts a resolved inadequacy classification only with NONE');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('INADEQUATE', 'PUBLIC_SUPPORT_GAP')] }).success, false,
+    'a resolved representation cannot carry a non-NONE unresolved kind');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('UNRESOLVED', 'NONE')] }).success, false,
+    'an unresolved representation cannot be silently normalized to NONE');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('BOUND', 'NONE', { chain: 'solana', address: baseMint })] }).success, true,
+    'a bound representation carries its nonnull token');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('BOUND', 'NONE')] }).success, false,
+    'a bound representation without a token is rejected by the hosted schema');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('UNRELATED', 'NONE')] }).success, true,
+    'unrelated is a resolved status with a null token');
+  assert.equal(markedSchema.safeParse({ decisions: [markedDecision('UNRELATED', 'NONE', { chain: 'solana', address: baseMint })] }).success, false,
+    'a non-bound status cannot carry a token');
+
+  const result = await qualifyAttention(read, TOKEN, KEY, webAndModelFetch, async () => {}, {
+    tinyfishKey: 'tinyfish-recovery-test-key', now: () => CUTOFF, representationScreen: true,
+  });
+  const recoveredMarketFacts = comparisonPublicScopeFacts(result.scope!, CUTOFF).find(fact => fact.leadId === leads[1]!.id);
+  assert.equal(recoveredMarketFacts?.recoveryComplete, true,
+    'the public-scope validator reverses TinyFish underscore escaping only for the retained origin Fetch body before matching its source');
+  assert.deepEqual(geckoPoolBinding({ url: apiUrl, text: apiText }, poolUrl), { chain: 'solana', address: baseMint });
+  const wrongPoolBody = JSON.parse(apiText) as { data: { attributes: { address: string } } };
+  wrongPoolBody.data.attributes.address = '11111111111111111111111111111111';
+  assert.equal(geckoPoolBinding({ url: apiUrl, text: JSON.stringify(wrongPoolBody) }, poolUrl), null,
+    'a response for a different pool cannot be treated as this lead’s base-token binding');
+  const batchPacket = mock.requests.find(request => typeof (request.packet.scope as { batch?: unknown } | undefined)?.batch === 'number' && !request.packet.proposal)!.packet;
+  const apiObservationAddresses = [...new Set((batchPacket.exactContractObservations as Array<{ sourceId: string; token: { address: string } }>)
+    .filter(item => item.sourceId === apiSourceId).map(item => item.token.address))].sort();
+  assert.deepEqual(apiObservationAddresses, [baseMint],
+    'literal observations in the verified pool API expose the actual base mint, never the pool or quote mint');
+  const initialPrompt = JSON.parse(result.rawArtifacts['attention-comparison-lead-proposal-prompt']!) as {
+    operands: Array<{ leadId: string; originalBodyIds: string[]; recoveryBodyIds: string[] }>;
+  };
+  const proposalEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-lead-proposal-response']!) as {
+    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+  };
+  const proposalResponse = JSON.parse(proposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
+    decisions: {
+      withOriginalBodies: Array<{ leadId: string; [key: string]: unknown }>;
+      withoutOriginalBodies: Array<{ leadId: string; [key: string]: unknown }>;
+    };
+  };
+  const qualification = JSON.parse(result.rawArtifacts['comparison-lead-qualification']!) as {
+    wireMethod: string; accountingComplete: boolean; decisions: Array<{ leadId: string; accounted: boolean;
+      representation: { status: string }; subjectComparison: { status: string; currentSubject: string | null; fetchedRefs: Array<{ sourceId: string }> } }>;
+  };
+  assert.equal(qualification.wireMethod, 'comparison-lead-tasks-v5');
+  const marketOperand = initialPrompt.operands.find(operand => operand.leadId === leads[1]!.id);
+  assert.ok(marketOperand);
+  assert.deepEqual(marketOperand.originalBodyIds, [], 'a failed original remains absent from the task-owned body list');
+  assert.ok(marketOperand.recoveryBodyIds.includes(apiSourceId), 'the Gecko API remains a separately identified recovered source');
+  const marketProposal = proposalResponse.decisions.withoutOriginalBodies.find(decision => decision.leadId === leads[1]!.id)!;
+  assert.equal(Object.hasOwn(marketProposal, 'subjectComparison'), false,
+    'the task schema omits unread original-body comparisons rather than inviting an API substitution');
+  assert.equal(Object.hasOwn(marketProposal, 'evidenceAdequacy'), false,
+    'the task schema omits unread original-body adequacy judgments');
+  assert.equal(qualification.accountingComplete, false);
+  const marketDecision = qualification.decisions.find(item => item.leadId === leads[1]!.id)!;
+  assert.equal(marketDecision.accounted, false);
+  assert.equal(marketDecision.representation.status, 'UNRESOLVED');
+  assert.equal(marketDecision.subjectComparison.status, 'UNRESOLVED');
+  assert.equal(marketDecision.subjectComparison.currentSubject, null);
+  assert.deepEqual(marketDecision.subjectComparison.fetchedRefs, [], 'the API source is never inserted into the original body comparison');
+  assert.equal(result.rawArtifacts['attention-comparison-lead-review-response'] !== undefined, true,
+    'the canonical unread-body unknowns are independently reviewed');
+  assert.equal(result.scope?.comparisonComplete, false, 'unread original market identity remains unresolved');
+  assert.ok(mock.requests.some(request => Array.isArray(request.packet.operands)), 'the fresh path uses the common-row task packet');
 });
 
 test('compact V2 lead arrays keep ten original IDs and reject missing, duplicate, foreign, and ineligible references', () => {
@@ -1496,11 +3804,12 @@ test('a positively reviewed unrelated lead is accounted for without being counte
     'a positively accounted unrelated subject does not become a target representation');
 });
 
-test('different-host indexed subject evidence can qualify without a contract, while rejected uncertainty stays unresolved', async t => {
+test('different-host recovery accounts an indexed subject without authenticating its unread original page', async t => {
   const targetText = `Token ${TOKEN.address} uses a host-token fee-burning mechanism as its defining project design.`;
   const targetLeadUrl = 'https://public.example/source';
   const failedLeadUrl = 'https://index.example/lunar-cat';
   const independentDescriptorUrl = 'https://encyclopedia.example/lunar-cat';
+  const footerUrl = 'https://www.youtube.com/about';
   const ownTitle = 'Lunar Cat pink-eyed feline art project';
   const ownSnippet = 'A Solana community art project focused on illustrated pink-eyed cats and collectible artwork.';
   const independentTitle = 'Lunar Cat is a feline art collective';
@@ -1511,20 +3820,24 @@ test('different-host indexed subject evidence can qualify without a contract, wh
       comparisonLead('comparison-lead-2', 1, failedLeadUrl, ownTitle, ownSnippet, 'FAILED'),
     ];
     const read = ledgerComparisonRead(leads, targetText);
+    read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+      results: [{ url: targetLeadUrl, final_url: targetLeadUrl, text: targetText }], errors: [],
+    });
     const recoveredHits = [
-      ...Array.from({ length: 8 }, (_, index) => ({
-        url: `https://index.example/search-result-${index + 1}`,
-        title: `Lunar Cat search index result ${index + 1}`,
-        snippet: 'A generic search landing page without a project contract or added identity information.',
-      })),
       { url: independentDescriptorUrl, title: independentTitle, snippet: independentSnippet },
+      { url: footerUrl, title: 'YouTube About', snippet: 'About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy' },
     ];
     const fullText = completeComparisonResponder({
       candidates: () => [{ id: 'target-fulltext', token: TOKEN, sourceMatch: 'host-token fee-burning' }],
+      batchComplete: () => true,
       sourceDispositions: packet => Object.fromEntries((packet.sources as PacketSource[]).map(source => [
         source.id,
-        source.spans.some(span => span.text.includes(TOKEN.address)) ? 'RELEVANT' : 'CONTEXT',
-      ])) as Record<string, 'RELEVANT' | 'CONTEXT'>,
+        source.spans.some(span => span.text.includes(TOKEN.address)) ? 'RELEVANT'
+          : source.spans.some(span => span.text.includes('About Press Copyright')) ? 'INSUFFICIENT' : 'CONTEXT',
+      ])) as Record<string, 'RELEVANT' | 'CONTEXT' | 'INSUFFICIENT'>,
+      sourceInsufficiencyKinds: packet => Object.fromEntries((packet.sources as PacketSource[])
+        .filter(source => source.spans.some(span => span.text.includes('About Press Copyright')))
+        .map(source => [source.id, 'NO_SUBSTANTIVE_CONTENT'])),
     });
     const searchCalls: string[] = [];
     const fetched: string[][] = [];
@@ -1532,44 +3845,114 @@ test('different-host indexed subject evidence can qualify without a contract, wh
     const mock = mockModel(packet => {
       const scope = packet.scope as Record<string, unknown> | undefined;
       if (packet.manifest || typeof scope?.batch === 'number') return fullText(packet);
+      if (packet.entryTask && packet.mergeTask
+        || Array.isArray(packet.bodyObservations) && Array.isArray(packet.leadContexts) && Array.isArray(packet.sourceRequirements)) return fullText(packet);
+      if (Array.isArray(packet.requiredLeadIds) && Array.isArray(packet.requiredSourceIds) && Array.isArray(packet.requiredBatchIds)) return fullText(packet);
       if (packet.selectedLeadIds) {
-        return { leads: [{
-          leadId: 'comparison-lead-2', queries: ['Lunar Cat pink-eyed feline art subject'],
+        const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+        return { leads: Object.fromEntries(selected.map(lead => [lead.id, {
+          queries: ['Lunar Cat pink-eyed feline art subject'],
           rationale: 'Find an independent descriptive source for the exact indexed art subject.',
-          metadataRefs: [{ sourceId: 'comparison-lead-2-metadata', spanId: metadataSpanId(packet, 'comparison-lead-2-metadata', 'pink-eyed feline art') }],
-        }] };
-      }
-      if (scope?.mode === 'qualified-identified-leads-v1' && packet.proposal) {
-        const proposal = packet.proposal as { decisions: Record<string, { disposition: string }> };
-        return { decisions: Object.fromEntries(Object.entries(proposal.decisions).map(([id, decision]) => [id, {
-          accepted: id === 'comparison-lead-2' && decision.disposition === 'UNRESOLVED' ? false : true,
-          rationale: decision.disposition === 'UNRESOLVED'
-            ? 'The supplied independent description positively identifies a feline art subject, so the stated missing-contract reason ignores available evidence.'
-            : 'The exact independent description supports the distinct indexed art subject against the cited target mechanism.',
+          metadataRefs: [{ sourceId: lead.metadataEvidenceId, spanId: metadataSpanId(packet, lead.metadataEvidenceId, 'pink-eyed feline art') }],
         }])) };
       }
-      if (scope?.mode === 'qualified-identified-leads-v1') {
-        const indexedLeads = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+      if (Array.isArray(packet.operands)) {
+        const operands = packet.operands as Array<{ leadId: string; indexedDescriptorId: string; originalBodyIds: string[];
+          recoveryBodyIds: string[]; literalOptions: Array<{ id: string; token: { chain: string; address: string }; sourceId: string; spanId: string }> }>;
+        const catalog = packet.sources as Array<{ id: string; url?: string; spans: Span[] }>;
+        if (packet.proposal) {
+          const decisions = Object.fromEntries(operands.map(operand => [operand.leadId, {
+            accounting: { accepted: true, rationale: 'The indexed item accounting is independently checked from its own evidence.' },
+            representation: { accepted: !(operand.leadId === 'comparison-lead-2' && proposeUnresolved), rationale: proposeUnresolved && operand.leadId === 'comparison-lead-2'
+              ? 'The independent fetched description identifies the indexed feline-art subject, so the proposed unresolved relation is rejected.'
+              : 'The target binding or unrelated-subject relation follows its own retained source evidence.' },
+            subjectComparison: { accepted: true, rationale: 'The original acquisition state is distinct from any recovery description.' },
+            evidenceAdequacy: { accepted: true, rationale: 'A failed original fetch alone does not prove factual inadequacy.' },
+          }]));
+          return { decisions };
+        }
+        return { decisions: Object.fromEntries(operands.map(operand => {
+          const descriptor = { sourceId: operand.indexedDescriptorId,
+            spanId: metadataSpanId(packet, operand.indexedDescriptorId, operand.leadId === 'comparison-lead-1' ? TOKEN.address : 'pink-eyed feline art') };
+          if (operand.leadId === 'comparison-lead-1') {
+            const original = catalog.find(source => operand.originalBodyIds.includes(source.id));
+            assert.ok(original, 'the target task has its own acquired original page');
+            const body = { sourceId: original.id, spanId: spanId(packet, original.id, TOKEN.address) };
+            const literal = operand.literalOptions.find(option => option.token.address === TOKEN.address && option.sourceId === original.id);
+            assert.ok(literal, 'the target has an own-page literal token selector');
+            return [operand.leadId, {
+              accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+                rationale: 'The original fetched target page identifies the own indexed project.', descriptorRefs: [descriptor], corroboratingRefs: [body] },
+              representation: { status: 'BOUND', literalObservationId: literal.id,
+                rationale: 'The exact token is bound to the target narrative by the original project page.', associationRefs: [body] },
+              subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern target project', currentSubject: 'River Lantern neighborhood project',
+                rationale: 'The original acquired body describes the indexed target project.', descriptorRefs: [descriptor], fetchedRefs: [body] },
+              evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target source does not establish inadequate factual representation.', citations: [] },
+            }];
+          }
+          const recovered = catalog.find(source => source.url === independentDescriptorUrl && operand.recoveryBodyIds.includes(source.id));
+          assert.ok(recovered, 'the lead task retains only its own different-host corroborating page');
+          const body = { sourceId: recovered.id, spanId: spanId(packet, recovered.id, 'pink-eyed cat collectibles') };
+          return [operand.leadId, {
+            accounting: { status: 'ACCOUNTED', basis: 'RECOVERED_ENTITY', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The independently fetched different-host page describes the indexed feline-art entity.', descriptorRefs: [descriptor], corroboratingRefs: [body] },
+            representation: { status: proposeUnresolved ? 'UNRESOLVED' : 'UNRELATED',
+              rationale: 'The recovered feline-art project is distinct from the target digital-parasite narrative.', citations: [descriptor, body] },
+          }];
+        })) };
+      }
+      if (scope?.mode === 'qualified-identified-leads-v3' && packet.proposal) {
+        const proposed = packet.proposal as { decisions: Record<string, { representation: { status: string } }> };
+        return { decisions: Object.keys(proposed.decisions).map(leadId => {
+          const rejected = leadId === 'comparison-lead-2' && proposeUnresolved;
+          return { leadId,
+            accounting: { accepted: true, rationale: 'The reviewer checks the original acquisition outcome independently from representation status.' },
+            representation: { accepted: !rejected, rationale: rejected
+              ? 'The unresolved representation judgment is rejected because the retained independent description identifies the lead subject.'
+              : 'The cited original or recovery evidence supports the proposed representation classification.' },
+            subjectComparison: { accepted: true, rationale: 'The original fetched body is unread, so its current subject remains correctly unresolved.' },
+            evidenceAdequacy: { accepted: true, rationale: 'No positive original-source mismatch establishes inadequate factual representation in this fixture.' },
+          };
+        }) };
+      }
+      if (scope?.mode === 'qualified-identified-leads-v3') {
+        const indexedLeads = packet.leads as Array<{ id: string; metadataEvidenceId: string; acquisitionStatus: string }>;
         const catalog = packet.sources as Array<{ id: string; url: string; spans: Span[] }>;
         const independent = catalog.find(item => item.url === independentDescriptorUrl && item.id.includes('metadata'));
-        assert.ok(independent, 'the unselected search descriptor is still present in the identical lead packet');
-        assert.equal(independent.spans.some(span => span.text.includes(TOKEN.address)), false,
+        const fetchedIndependent = catalog.find(item => item.url === independentDescriptorUrl && !item.id.includes('metadata'));
+        assert.ok(independent, 'the search descriptor is retained in the lead packet');
+        assert.ok(fetchedIndependent, 'the positively corroborating page is actually fetched and retained');
+        assert.equal(fetchedIndependent.spans.some(span => span.text.includes(TOKEN.address)), false,
           'the other-subject descriptor does not supply a contract address');
         const eligible = (packet.eligibleCorroboration as Array<{ leadId: string; sourceIds: string[] }>).find(item => item.leadId === 'comparison-lead-2');
-        assert.ok(eligible?.sourceIds.includes(independent.id), 'different-host metadata is available only as indexed corroboration');
-        return { decisions: Object.fromEntries(indexedLeads.map(lead => [lead.id, lead.id === 'comparison-lead-1' ? {
-          disposition: 'ACQUIRED', rationale: 'The target lead page is acquired and binds its own indexed subject.',
-          descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: spanId(packet, lead.metadataEvidenceId, '') }],
-          corroboratingRefs: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) }], token: null,
-        } : proposeUnresolved ? {
-          disposition: 'UNRESOLVED', rationale: 'The failed original page lacks another contract address.',
-          descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: spanId(packet, lead.metadataEvidenceId, 'pink-eyed feline art') }],
-          corroboratingRefs: [], token: null,
-        } : {
-          disposition: 'UNRELATED_INDEXED_SUBJECT', rationale: 'Both exact descriptions positively identify a pink-eyed feline art project, distinct from the cited host-token fee-burning design.',
-          descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: spanId(packet, lead.metadataEvidenceId, 'pink-eyed feline art') }],
-          corroboratingRefs: [{ sourceId: independent.id, spanId: spanId(packet, independent.id, 'pink-eyed cat collectibles') }], token: null,
-        }])) };
+        assert.ok(eligible?.sourceIds.includes(fetchedIndependent.id), 'the different-host fetched page is eligible as corroboration');
+        return { decisions: indexedLeads.map(lead => {
+          const descriptor = { sourceId: lead.metadataEvidenceId, spanId: metadataSpanId(packet, lead.metadataEvidenceId, lead.id === 'comparison-lead-1' ? '' : 'pink-eyed feline art') };
+          if (lead.id === 'comparison-lead-1') {
+            const target = { sourceId: 'page-1', spanId: spanId(packet, 'page-1', TOKEN.address) };
+            return { leadId: lead.id,
+              accounting: { status: 'ACCOUNTED', basis: 'ORIGINAL_TEXT', role: 'PROJECT_OR_PUBLICATION',
+                rationale: 'The target indexed entity and its original fetched page are retained separately.',
+                descriptorRefs: [descriptor], corroboratingRefs: [target] },
+              representation: { status: 'BOUND', unresolvedKind: 'NONE', token: TOKEN, rationale: 'The original target page binds the exact token to the target narrative.', citations: [target] },
+              subjectComparison: { status: 'CONSISTENT', indexedSubject: 'River Lantern fee-burning target project', currentSubject: 'River Lantern fee-burning target project',
+                rationale: 'The indexed target descriptor and original fetched target page agree.', descriptorRefs: [descriptor], fetchedRefs: [target] },
+              evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The target lead does not establish an inadequate public representation.', citations: [] },
+            };
+          }
+          const corroboration = { sourceId: fetchedIndependent.id, spanId: spanId(packet, fetchedIndependent.id, 'pink-eyed cat collectibles') };
+          return { leadId: lead.id,
+            accounting: { status: 'ACCOUNTED', basis: 'RECOVERED_ENTITY', role: 'PROJECT_OR_PUBLICATION',
+              rationale: 'The independent different-host description positively identifies the same indexed art subject.',
+              descriptorRefs: [descriptor], corroboratingRefs: [corroboration] },
+            representation: { status: proposeUnresolved ? 'UNRESOLVED' : 'UNRELATED', unresolvedKind: proposeUnresolved ? 'MEANINGFUL_ASSOCIATION_CONFLICT' : 'NONE', token: null,
+              rationale: 'The retained independent description identifies a distinct feline art project rather than the target mechanism.',
+              citations: [descriptor, corroboration] },
+            subjectComparison: { status: 'UNRESOLVED', indexedSubject: 'Lunar Cat pink-eyed feline art project', currentSubject: null,
+              rationale: 'The original indexed page remains unread despite the separate fetched description.', descriptorRefs: [descriptor], fetchedRefs: [] },
+            evidenceAdequacy: { verdict: 'UNRESOLVED', rationale: 'The failed original project page does not establish poor public support.', citations: [descriptor] },
+          };
+        }) };
       }
       return packet.proposal ? reviewWire(packet, true) : proposalWire(packet, { claims: [{
         id: 'claim-target-narrative', feature: 'A01', value: true,
@@ -1589,7 +3972,10 @@ test('different-host indexed subject evidence can qualify without a contract, wh
         return new Response(JSON.stringify({
           results: requested.map(item => ({
             url: item, final_url: item,
-            text: item === independentDescriptorUrl ? '' : 'A generic search landing page with no project contract.',
+            text: item === independentDescriptorUrl
+              ? 'Lunar Cat is an illustrated pink-eyed feline art collective on Solana. Its project centers on pink-eyed cat collectibles and community illustration, not a host-token fee-burning mechanism.'
+              : item === footerUrl ? 'About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy.'
+                : 'A generic search landing page with no project contract.',
           })),
           errors: [],
         }));
@@ -1598,16 +3984,17 @@ test('different-host indexed subject evidence can qualify without a contract, wh
       catch (error) { responderError = error instanceof Error ? error.stack ?? error.message : String(error); throw error; }
     };
     const result = await qualifyAttention(read, TOKEN, KEY, webAndModelFetch, async () => {}, {
-      tinyfishKey: 'tinyfish-recovery-test-key', now: () => CUTOFF,
+      tinyfishKey: 'tinyfish-recovery-test-key', now: () => CUTOFF, representationScreen: true,
     });
     return { read, result, mock, searchCalls, fetched, responderError, recoveredHits };
   };
 
-  await t.test('a positive different-host description resolves an indexed-only subject without either contract address', async () => {
+  await t.test('a different-host description accounts its indexed entity while preserving the unread original page as unresolved', async () => {
     const { read, result, mock, searchCalls, fetched, responderError, recoveredHits } = await run(false);
     const qualification = JSON.parse(result.rawArtifacts['comparison-lead-qualification']!) as {
-      originalAcquisitionComplete: boolean; complete: boolean;
-      decisions: Array<{ leadId: string; disposition: string; qualified: boolean; provenance: string; token: unknown; originalAcquisitionStatus: string }>;
+      mode: string; originalAcquisitionComplete: boolean; accountingComplete: boolean; unresolvedLeadIds: string[];
+      decisions: Array<{ leadId: string; accounted: boolean; qualified: boolean; accounting: { status: string; basis: string };
+        representation: { status: string; token: unknown }; subjectComparison: { status: string }; review: { representation: { accepted: boolean } }; originalAcquisitionStatus: string }>;
     };
     const prompt = result.rawArtifacts['attention-comparison-lead-proposal-prompt']!;
     const reviewPrompt = result.rawArtifacts['attention-comparison-lead-review-prompt']!;
@@ -1617,59 +4004,98 @@ test('different-host indexed subject evidence can qualify without a contract, wh
     };
 
     assert.equal(qualification.originalAcquisitionComplete, false);
+    assert.equal(qualification.mode, 'qualified-identified-leads-v3');
     assert.equal(read.comparisonComplete, false, 'the original failed page remains unacquired');
-    assert.equal(qualification.complete, true, JSON.stringify({ qualification, codes: result.scope?.codes,
-      artifactKeys: Object.keys(result.rawArtifacts),
-      responderError,
-      planResponse: result.rawArtifacts['attention-comparison-recovery-plan-response'],
-      proposalResponse: result.rawArtifacts['attention-comparison-lead-proposal-response'],
-      reviewResponse: result.rawArtifacts['attention-comparison-lead-review-response'] }));
-    assert.deepEqual(qualification.decisions.map(item => [item.disposition, item.qualified, item.provenance]), [
-      ['ACQUIRED', true, 'FETCHED_SOURCE'], ['UNRELATED_INDEXED_SUBJECT', true, 'INDEXED_LEAD_ONLY'],
+    assert.equal(responderError, undefined);
+    assert.equal(qualification.accountingComplete, true, JSON.stringify({ qualification, codes: result.scope?.codes }));
+    assert.deepEqual(qualification.decisions.map(item => [item.accounting.status, item.accounted, item.representation.status, item.qualified]), [
+      ['ACCOUNTED', true, 'BOUND', true], ['ACCOUNTED', true, 'UNRELATED', true],
     ]);
-    assert.equal(qualification.decisions[1]?.token, null);
-    assert.equal(qualification.decisions[1]?.originalAcquisitionStatus, 'FAILED');
-    assert.equal(result.scope?.comparisonComplete, true);
+    assert.equal(qualification.decisions[1]?.accounting.basis, 'RECOVERED_ENTITY');
+    assert.equal(qualification.decisions[1]?.representation.token, null);
+    assert.equal(read.comparisonAcquisition?.leads[1]?.acquisitionStatus, 'FAILED');
+    assert.equal(qualification.decisions[1]?.subjectComparison.status, 'UNRESOLVED',
+      'recovered entity evidence does not become the unread original page body');
+    assert.equal(qualification.decisions[1]?.review.representation.accepted, true,
+      'the independent description supports an unrelated representation judgment');
+    assert.deepEqual(qualification.unresolvedLeadIds, []);
+    assert.equal(result.scope?.comparisonComplete, true, JSON.stringify({
+      codes: result.scope?.codes, responderError, rawArtifactIds: Object.keys(result.rawArtifacts),
+      coverage: result.rawArtifacts['attention-comparison-coverage'] ? JSON.parse(result.rawArtifacts['attention-comparison-coverage']) : null,
+      publicSupport: result.rawArtifacts['attention-comparison-public-support'] ? JSON.parse(result.rawArtifacts['attention-comparison-public-support']) : null,
+      mergedCandidates: result.proposal?.competitors.map(candidate => candidate.token.address),
+      requests: mock.requests.map((request, index) => ({ keys: Object.keys(request.packet), scope: request.packet.scope,
+        responseKeys: Object.keys((mock.responses[index] ?? {}) as object) })),
+    }));
     assert.deepEqual(result.proposal?.competitors.map(candidate => candidate.token.address), [TOKEN.address],
       'indexed metadata never becomes a candidate or source page');
-    assert.equal(result.sources?.some(source => source.id.startsWith('attention-recovery-comparison-lead-')), false);
+    const independentPage = result.sources?.find(source => source.url === independentDescriptorUrl);
+    const footerPage = result.sources?.find(source => source.url === footerUrl);
+    assert.ok(independentPage, 'the different-host fetched description is retained as actual corroboration');
+    assert.ok(footerPage, 'the unused recovery footer remains in the full retained comparison corpus');
     assert.equal(searchCalls.length, 1);
-    assert.ok(fetched[0]?.includes(independentDescriptorUrl), 'the page was tried and correctly remained unavailable when its body was blank');
+    assert.ok(fetched[0]?.includes(independentDescriptorUrl), 'the bounded recovery fetch includes the distinct-host corroboration');
+    assert.ok(fetched[0]?.includes(footerUrl), 'the bounded recovery fetch also retains the unrelated footer');
     assert.equal(selection.method, 'fair-parent-query-v1');
     assert.equal(selection.maxUrls, 8);
     assert.ok(selection.selectedUrls.includes(independentDescriptorUrl));
     assert.deepEqual(selection.selection.find(item => item.url === independentDescriptorUrl), {
-      parentId: 'comparison-lead-2', queryId: 'attention-recovery-search-1', collectorQueryId: 'attention-search-1', resultIndex: 8,
+      parentId: 'comparison-lead-2', queryId: 'attention-recovery-search-1', collectorQueryId: 'attention-search-1', resultIndex: 0,
       url: independentDescriptorUrl, selected: true, reused: false,
     }, 'persisted selection points to the renamed search artifact and retains its collector-local ID');
     assert.equal(result.rawArtifacts['attention-recovery-search-1'], JSON.stringify({ results: recoveredHits }),
       'renaming the selected query artifact leaves the original provider response unchanged');
-    assert.match(prompt, /UNRELATED_INDEXED_SUBJECT requires NEITHER the target CA NOR another CA/);
-    assert.match(reviewPrompt, /trying to disprove unsupported resolution AND unjustified uncertainty/);
+    const coverage = JSON.parse(result.rawArtifacts['attention-comparison-coverage']!) as {
+      sourceRequirements: Array<{ sourceId: string; obligation: string; parentLeadIds: string[]; reasons: string[] }>;
+      batches: Array<{ rawComplete: boolean; effectiveComplete: boolean; blockingSourceIds: string[] }>;
+      complete: boolean;
+    };
+    const footerRequirement = coverage.sourceRequirements.find(item => item.sourceId === footerPage.id);
+    assert.deepEqual(footerRequirement, {
+      sourceId: footerPage.id, obligation: 'OPTIONAL_UNUSABLE_SUPPLEMENT',
+      parentLeadIds: ['comparison-lead-2'], reasons: ['UNUSED_UNRELATED_RECOVERY_SUPPLEMENT'],
+    }, 'only the positively reviewed unrelated parent makes this unused footer optional');
+    assert.equal(coverage.batches[0]?.rawComplete, true);
+    assert.equal(coverage.batches[0]?.effectiveComplete, true);
+    assert.deepEqual(coverage.batches[0]?.blockingSourceIds, []);
+    assert.equal(coverage.complete, true, 'recovered own-entity accounting and a fully reviewed unrelated disposition complete this bounded comparison sample');
+    assert.match(prompt, /UNRELATED needs positive distinct subject\/mechanism, never address inequality/);
+    assert.match(reviewPrompt, /CODE_UNOBSERVABLE records an unread body and makes no semantic claim/);
     assert.match(result.rawArtifacts['attention-recovery-search-1-intent']!, /Identify and corroborate the indexed entity/);
-    assert.equal(result.rawArtifacts['attention-comparison-lead-repair-review-prompt'], undefined,
+    assert.equal(result.rawArtifacts['attention-comparison-lead-repair-proposal-prompt'], undefined,
       'lead dispositions get one proposal and one independent review, with no feedback loop');
     assert.equal(JSON.stringify(result).includes('tinyfish-recovery-test-key'), false);
-    assert.ok(mock.requests.some(request => request.packet.metadata), 'the indexed-only evidence is reviewed in the lead packets');
+    assert.ok(mock.requests.some(request => Array.isArray(request.packet.operands)
+      && (request.packet.operands as Array<{ leadId: string }>).some(operand => operand.leadId === 'comparison-lead-2')),
+    'the task-v2 packet retains the failed original lead and its own recovery evidence');
+    assert.ok(mock.requests.some(request => Array.isArray(request.packet.sources)
+      && (request.packet.sources as Array<{ id: string }>).some(source => source.id === 'comparison-lead-2-metadata')),
+    'the indexed-only evidence remains in the actual comparison source catalog');
   });
 
   await t.test('an independent reviewer rejection cannot promote an unjustified UNRESOLVED lead', async () => {
     const { result, mock } = await run(true);
     const qualification = JSON.parse(result.rawArtifacts['comparison-lead-qualification']!) as {
-      complete: boolean; unresolvedLeadIds: string[];
-      decisions: Array<{ leadId: string; disposition: string; qualified: boolean; review: { accepted: boolean } }>;
+      mode: string; accountingComplete: boolean; unresolvedLeadIds: string[];
+      decisions: Array<{ leadId: string; accounting: { status: string }; representation: { status: string }; accounted: boolean;
+        subjectComparison: { status: string }; qualified: boolean; review: { representation: { accepted: boolean } } }>;
     };
     assert.ok(Array.isArray(qualification.decisions), JSON.stringify({ qualification, codes: result.scope?.codes }));
     const lead = qualification.decisions.find(item => item.leadId === 'comparison-lead-2')!;
 
-    assert.equal(mock.requests.filter(request => request.packet.scope &&
-      (request.packet.scope as { mode?: string }).mode === 'qualified-identified-leads-v1' && request.packet.proposal).length, 1,
+    assert.equal(mock.requests.filter(request => Array.isArray(request.packet.operands) && request.packet.proposal).length, 1,
     'the proposed unresolved judgment receives one independent review');
-    assert.equal(lead.disposition, 'UNRESOLVED');
-    assert.equal(lead.review.accepted, false);
+    assert.equal(qualification.mode, 'qualified-identified-leads-v3');
+    assert.equal(lead.accounting.status, 'ACCOUNTED');
+    assert.equal(lead.accounted, false,
+      'a rejected unrelated disposition cannot use its own corroborating page as accepted recovered-entity accounting');
+    assert.equal(lead.representation.status, 'UNRESOLVED');
+    assert.equal(lead.review.representation.accepted, false);
+    assert.equal(lead.subjectComparison.status, 'UNRESOLVED');
     assert.equal(lead.qualified, false);
     assert.deepEqual(qualification.unresolvedLeadIds, ['comparison-lead-2']);
-    assert.equal(qualification.complete, false);
+    assert.equal(qualification.accountingComplete, false,
+      'rejected representation review preserves the failed lead as unresolved');
     assert.equal(result.scope?.comparisonComplete, false,
       'review rejection preserves unknown scope instead of silently changing the disposition');
   });
@@ -1887,6 +4313,67 @@ test('recovery metadata can corroborate only its own parent lead', async t => {
   });
 });
 
+test('a Gecko pool API supplement has one parent and binds ALTERNATIVE_BOUND only to the actual base token', () => {
+  const pool = '51E2z8VjR5MBoa2gehiP9ai1eAPVSZLfDnUnB5UZAx45';
+  const base = 'D2hwH8rPnR3yeCdMxg9EiDS2nQhV9SMeLUVAnKrBxvUR';
+  const quote = 'So11111111111111111111111111111111111111112';
+  const target = { chain: 'solana', address: 'DYGVA5qwt9fHbJb6Ve4Vsn1F3BhKPP99GcPRP7ZKpump' } as const;
+  const poolUrl = `https://www.geckoterminal.com/solana/pools/${pool}`;
+  const apiUrl = `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pool}?include=base_token,quote_token`;
+  const body = JSON.stringify({
+    data: {
+      id: `solana_${pool}`, type: 'pool', attributes: { address: pool },
+      relationships: { base_token: { data: { id: `solana_${base}`, type: 'token' } } },
+    },
+    included: [
+      { id: `solana_${base}`, type: 'token', attributes: { address: base, name: 'Recursive Self Inu' } },
+      { id: `solana_${quote}`, type: 'token', attributes: { address: quote, name: 'Wrapped SOL' } },
+    ],
+  });
+  const apiSource = {
+    id: 'attention-origin-page-3', url: apiUrl, text: body, kind: 'PAGE' as const,
+    availableAt: CUTOFF, authorId: null, publishedAt: null,
+  };
+  const leads = [
+    comparisonLead('comparison-lead-1', 0, poolUrl, 'Recursive Self Inu / SOL pool',
+      'A Solana liquidity pool for the Recursive Self Inu token.', 'FAILED'),
+    comparisonLead('comparison-lead-2', 1, 'https://www.geckoterminal.com/solana/pools/So11111111111111111111111111111111111111112',
+      'Wrapped SOL pool', 'A different Solana pool lead.', 'FAILED'),
+  ];
+  const read = ledgerComparisonRead(leads);
+  read.sources.push(apiSource);
+  read.originRecovery = { aliases: [], comparisonSupplementIds: [apiSource.id] };
+  read.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify({
+    results: [{ url: apiUrl, final_url: apiUrl, text: body }], errors: [],
+  });
+
+  const lineage = comparisonSourceLineage(read);
+  assert.deepEqual(lineage.map(item => item.recoverySourceIds), [[apiSource.id], []],
+    'the retained API record is eligible only for the exact failed pool lead that produced it');
+  const preparedLead = { ...leads[0]!, recoverySourceIds: lineage[0]!.recoverySourceIds };
+  const metadata = [{ id: preparedLead.metadataEvidenceId, url: poolUrl,
+    text: `${preparedLead.title}\n${preparedLead.snippet}`, leadId: preparedLead.id }];
+  const qualifies = (address: string, accepted = true) => comparisonLeadIsQualified(preparedLead, {
+    leadId: preparedLead.id, disposition: 'ALTERNATIVE_BOUND', qualified: false,
+    token: { chain: 'solana', address }, descriptorRefs: [],
+    corroboratingRefs: [{ sourceId: apiSource.id, quote: body }], review: { accepted },
+  }, read.sources, metadata, target, true);
+
+  assert.equal(qualifies(base), true);
+  assert.equal(qualifies(target.address), false, 'the API base token is not silently rewritten to the target mint');
+  assert.equal(qualifies(pool), false, 'the pool address is not the base-token address');
+  assert.equal(qualifies(quote), false, 'the quote-token address is not the base-token address');
+  assert.equal(qualifies(base, false), false, 'an independent reviewer rejection still blocks qualification');
+
+  const otherLead = { ...leads[1]!, recoverySourceIds: lineage[1]!.recoverySourceIds };
+  const wrongParent = comparisonLeadIsQualified(otherLead, {
+    leadId: otherLead.id, disposition: 'ALTERNATIVE_BOUND', qualified: false,
+    token: { chain: 'solana', address: base }, descriptorRefs: [],
+    corroboratingRefs: [{ sourceId: apiSource.id, quote: body }], review: { accepted: true },
+  }, read.sources, metadata, target, true);
+  assert.equal(wrongParent, false, 'another lead cannot borrow this pool source or its base-token binding');
+});
+
 test('incomplete, rejected, invalid, and overflowed comparison batches cannot produce complete scope', async t => {
   const rival = { chain: 'base', address: '0x2222222222222222222222222222222222222222' } as const;
   const makeRead = (count = 1): AttentionRead => {
@@ -1958,19 +4445,25 @@ test('incomplete, rejected, invalid, and overflowed comparison batches cannot pr
     assert.equal(result.proposal?.competitors.filter(item => item.token.address === rival.address).length, 1, 'duplicate contracts merge once after batch review');
   });
 
-  await t.test('an invalid comparison span fails closed', async () => {
+  await t.test('numeric span shorthand fails closed while preserving accepted base claims', async () => {
     const read = makeRead();
     const responder = completeComparisonResponder({ candidates: () => specs });
     const mock = mockModel((packet, call) => {
       if ((packet.scope as { batch?: number } | undefined)?.batch === 1 && !packet.proposal && call === 3) {
-        return { competitors: [{ id: 'bad-span', token: rival, sourceId: 'page-1', spanId: 'missing:span:0' }], posts: {} };
+        const required = packet.requiredPostSourceIds as string[];
+        return {
+          competitors: [{ id: 'bad-observation', observationId: 'observation-999999' }],
+          posts: Object.fromEntries(required.map(id => [id, { spanId: spanId(packet, id), role: 'NEWS' }])),
+        };
       }
       return responder(packet);
     });
     const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
     assert.equal(result.code, undefined, 'the already-qualified base narrative remains available');
     assert.equal(result.scope?.comparisonComplete, false);
-    assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_SPAN_INVALID'));
+    assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_INVALID'));
+    assert.ok(result.proposal?.claims.some(claim => claim.id === 'claim-1' && claim.feature === 'A01'),
+      'an invalid complete-text candidate cannot erase the accepted base narrative claim');
     assert.equal(result.review?.candidateSet?.complete, false);
   });
 
@@ -2121,7 +4614,7 @@ test('batch review repairs one grounded omitted representation with one independ
   assert.ok(result.rawArtifacts['attention-comparison-1-repair-review-prompt']);
   assert.ok(result.rawArtifacts['attention-comparison-1-repair-review-response']);
   assert.deepEqual(reviewProperties.sourceDecisions?.required, ['page-1']);
-  assert.deepEqual(sourceSchema.required.sort(), ['disposition', 'rationale'].sort());
+  assert.deepEqual(sourceSchema.required.sort(), ['disposition', 'insufficiencyKind', 'rationale'].sort());
   assert.deepEqual(sourceSchema.properties.disposition?.enum, ['RELEVANT', 'CONTEXT', 'UNRELATED', 'INSUFFICIENT']);
   assert.equal((reviewProperties.missingRepresentations as { type?: string }).type, 'array');
   assert.deepEqual(missingSchema.items?.properties?.observationId?.enum, repairObservations.map(item => item.observationId),
@@ -2157,7 +4650,37 @@ test('comparison review schema stays bounded as literal observations grow and em
     assert.ok(Buffer.byteLength(JSON.stringify(schema)) < 100_000, 'the exact-ID schema stays below 100 KB for this bounded batch');
   });
 
-  await t.test('an empty literal-observation set cannot be filled by a model-selected sentinel', async () => {
+  await t.test('an empty literal-observation set omits the missing list and normalizes it locally', async () => {
+    const read = sourceRead(`Token ${TOKEN.address}. ${NARRATIVE}`);
+    read.sources.push({ id: 'comparison-context', url: 'https://public.example/context',
+      text: `A related community discussion has no contract address. ${'context '.repeat(800)}`,
+      publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    read.comparisonComplete = true;
+    read.comparisonSourceIds = ['comparison-context'];
+    const mock = mockModel(completeComparisonResponder({
+      sourceDispositions: () => ({ 'comparison-context': 'CONTEXT' }),
+    }));
+    const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+    const reviewRequest = mock.requests.find(request => typeof (request.packet.scope as { batch?: number } | undefined)?.batch === 'number' && request.packet.proposal)!;
+    const body = JSON.parse(String(reviewRequest.init.body)) as { generationConfig: { responseJsonSchema: Record<string, unknown> } };
+    const schema = body.generationConfig.responseJsonSchema;
+    const properties = schema.properties as Record<string, { items?: { properties?: Record<string, { enum?: string[] }> } }>;
+
+    assert.deepEqual(reviewRequest.packet.exactContractObservations, []);
+    assert.equal(Object.hasOwn(properties, 'missingRepresentations'), false,
+      'the independent-review schema has no missing list when the literal catalog is empty');
+    assert.equal(result.scope?.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')), false,
+      `an omitted optional wire field should normalize successfully; got ${JSON.stringify(result.scope?.codes)}`);
+    assert.ok(result.proposal?.claims.some(claim => claim.id === 'claim-1' && claim.feature === 'A01'),
+      'the qualified base narrative remains available');
+    const finalRequest = mock.requests.find(request => Boolean(request.packet.manifest))!;
+    const finalPacket = finalRequest.packet as { batchReviews: Array<{ missingRepresentations: unknown[] }> };
+    assert.deepEqual(finalPacket.batchReviews[0]?.missingRepresentations, [],
+      'the local normalizer restores the omitted field as an empty list');
+    assert.equal(mock.requests.some(request => request.packet.repair === true), false);
+  });
+
+  await t.test('an empty catalog rejects a NO_OBSERVATIONS placeholder while preserving accepted base claims', async () => {
     const read = sourceRead(`Token ${TOKEN.address}. ${NARRATIVE}`);
     read.sources.push({ id: 'comparison-context', url: 'https://public.example/context',
       text: `A related community discussion has no contract address. ${'context '.repeat(800)}`,
@@ -2172,16 +4695,48 @@ test('comparison review schema stays bounded as literal observations grow and em
     const reviewRequest = mock.requests.find(request => typeof (request.packet.scope as { batch?: number } | undefined)?.batch === 'number' && request.packet.proposal)!;
     const body = JSON.parse(String(reviewRequest.init.body)) as { generationConfig: { responseJsonSchema: Record<string, unknown> } };
     const schema = body.generationConfig.responseJsonSchema;
-    const properties = schema.properties as Record<string, { items?: { properties?: Record<string, { enum?: string[] }> } }>;
+    const properties = schema.properties as Record<string, unknown>;
 
     assert.deepEqual(reviewRequest.packet.exactContractObservations, []);
-    assert.deepEqual(properties.missingRepresentations?.items?.properties?.observationId?.enum, ['NO_OBSERVATIONS']);
+    assert.equal(Object.hasOwn(properties, 'missingRepresentations'), false);
     assert.equal(result.scope?.comparisonComplete, false);
     assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_INVALID'),
-      `the local schema rejects a sentinel selection because no observation ID exists; got ${JSON.stringify(result.scope?.codes)}`);
+      `the local schema rejects the invented placeholder; got ${JSON.stringify(result.scope?.codes)}`);
+    assert.ok(result.proposal?.claims.some(claim => claim.id === 'claim-1' && claim.feature === 'A01'),
+      'the invalid comparison response cannot erase the independently accepted base claim');
     assert.equal(mock.requests.some(request => request.packet.repair === true), false);
     assert.equal(mock.requests.some(request => Boolean(request.packet.manifest)), false);
   });
+});
+
+test('an invalid initial insufficiency decision cannot be rescued by omission repair', async () => {
+  const read = comparisonRead(`Target representation ${TOKEN.address}. ${NARRATIVE}\n${'x'.repeat(6100)}`);
+  const validResponder = completeComparisonResponder({ candidates: () => [] });
+  const mock = mockModel(packet => {
+    const response = validResponder(packet) as Record<string, unknown>;
+    const scope = packet.scope as { batch?: number } | undefined;
+    if (scope?.batch === 1 && packet.proposal && packet.repair !== true) return {
+      ...response,
+      candidateSet: { complete: false, rationale: 'The exact target observation still needs proposal and review.' },
+      sourceDecisions: {
+        'page-1': { disposition: 'INSUFFICIENT', insufficiencyKind: 'NONE', rationale: 'The initial source decision is inconsistent.' },
+      },
+      missingRepresentations: [{
+        observationId: comparisonObservationId(packet, TOKEN, 'page-1'),
+        rationale: 'The exact target observation was omitted and needs the normal bounded repair.',
+      }],
+    };
+    return response;
+  });
+
+  const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+
+  assert.equal(result.scope?.comparisonComplete, false);
+  assert.ok(result.scope?.codes.includes('ATT_MODEL_COMPARISON_FAILED:ATT_MODEL_COMPARISON_REVIEW_INVALID'));
+  assert.equal(mock.requests.length, 4, 'the invalid initial review stops before omission repair or global merge');
+  assert.equal(mock.requests.some(request => request.packet.repair === true), false);
+  assert.ok(result.proposal?.claims.some(claim => claim.id === 'claim-1' && claim.feature === 'A01'),
+    'a malformed comparison review cannot erase the accepted base claim');
 });
 
 test('batch repair appends a second exact observation for the same token before chain-qualified merge', async () => {
@@ -2255,7 +4810,11 @@ test('missing-representation IDs are code-owned and invalid selection cannot for
         ...response,
         candidateSet: { complete: scenario.candidateSetComplete ?? false, rationale: 'The omitted contract requires an exact source and association check.' },
         sourceDecisions: {
-          'page-1': { disposition: scenario.disposition ?? 'RELEVANT', rationale: 'The source judgment is explicit for this comparison page.' },
+          'page-1': {
+            disposition: scenario.disposition ?? 'RELEVANT',
+            insufficiencyKind: (scenario.disposition ?? 'RELEVANT') === 'INSUFFICIENT' ? 'UNRESOLVED_MEANING_OR_ASSOCIATION' : 'NONE',
+            rationale: 'The source judgment is explicit for this comparison page.',
+          },
         },
         missingRepresentations: [{
           observationId: scenario.unknownObservationId ? 'observation-999999' : comparisonObservationId(packet, rival, 'page-1'),
@@ -2501,9 +5060,11 @@ test('each Gemini pass keeps its own ninety-second timeout', async () => {
 
 test('Gemini retries a 503 proposal through the third attempt with the same body and distinct raw responses', async () => {
   const bodies: string[] = [];
+  const urls: string[] = [];
   const successfulResponses: string[] = [];
   const waits: number[] = [];
-  const fetcher: typeof fetch = async (_input, init) => {
+  const fetcher: typeof fetch = async (input, init) => {
+    urls.push(String(input));
     const body = String(init?.body);
     bodies.push(body);
     if (bodies.length <= 2) return new Response(`temporary proposal overload ${bodies.length}`, { status: 503 });
@@ -2520,6 +5081,12 @@ test('Gemini retries a 503 proposal through the third attempt with the same body
   assert.equal(bodies.length, 4, 'two proposal retries plus the independent review request');
   assert.equal(bodies[0], bodies[1], 'the retried proposal preserves the serialized request body');
   assert.equal(bodies[1], bodies[2], 'the third proposal attempt preserves the serialized request body');
+  assert.deepEqual(urls, [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+  ]);
   assert.deepEqual(waits, [30_000, 60_000]);
   assert.equal(result.rawArtifacts['attention-proposal-response-attempt-1'], 'temporary proposal overload 1');
   assert.equal(result.rawArtifacts['attention-proposal-response-attempt-2'], 'temporary proposal overload 2');
@@ -2527,20 +5094,63 @@ test('Gemini retries a 503 proposal through the third attempt with the same body
   assert.equal(result.rawArtifacts['attention-proposal-response'], successfulResponses[0]);
   assert.equal(result.proposal?.claims[0]?.id, 'claim-1');
   const proposalAttempt1 = transportReceipt(result.rawArtifacts, 'attention-proposal', 1);
-  assert.deepEqual(Object.keys(proposalAttempt1).sort(), ['attempt', 'budgetMs', 'code', 'elapsedMs', 'kind', 'phase', 'willRetry']);
+  assert.deepEqual(Object.keys(proposalAttempt1).sort(), ['attempt', 'budgetMs', 'code', 'elapsedMs', 'kind', 'model', 'phase', 'willRetry']);
   assert.equal(proposalAttempt1.kind, 'LOCAL_MODEL_TRANSPORT');
   assert.equal(proposalAttempt1.attempt, 1);
   assert.equal(proposalAttempt1.phase, 'RESPONSE_BODY');
   assert.ok(Number.isFinite(proposalAttempt1.elapsedMs) && proposalAttempt1.elapsedMs >= 0);
   assert.equal(proposalAttempt1.budgetMs, 90_000);
+  assert.equal(proposalAttempt1.model, geminiSettings.model);
   assert.equal(proposalAttempt1.code, 'ATT_MODEL_HTTP_503');
   assert.equal(proposalAttempt1.willRetry, true);
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).code, 'ATT_MODEL_HTTP_503');
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).willRetry, true);
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).code, 'ATT_MODEL_HTTP_200');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).model, geminiSettings.fallbackModel,
+    'only the third transient attempt uses the stable fallback model');
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).willRetry, false);
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-review', 1).code, 'ATT_MODEL_HTTP_200',
     'successful first attempts also retain a transport receipt');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-review', 1).model, geminiSettings.model,
+    'the independent review starts on the primary model');
+});
+
+test('timeout then HTTP 500 uses the third bounded attempt for fallback and still accepts the independent review', async () => {
+  const requests: Request[] = [];
+  const waits: number[] = [];
+  const timeout = Object.assign(new Error('private transport detail'), { name: 'TimeoutError' });
+  const fetcher: typeof fetch = async (input, init) => {
+    const body = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
+    const packet = JSON.parse(body.contents[0]!.parts[0]!.text) as Record<string, unknown>;
+    requests.push({ url: String(input), init: init ?? {}, packet });
+    if (requests.length === 1) throw timeout;
+    if (requests.length === 2) return new Response('temporary upstream overload', { status: 500 });
+    return envelope(packet.proposal ? reviewWire(packet) : proposalWire(packet));
+  };
+
+  const result = await qualifyAttention(sourceRead(), TOKEN, KEY, fetcher, async milliseconds => { waits.push(milliseconds); });
+
+  assert.equal(result.code, undefined);
+  assert.equal(requests.length, 4, 'one logical retry sequence uses three attempts, followed by one independent review');
+  assert.deepEqual(requests.slice(0, 3).map(request => request.url), [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+  ]);
+  assert.equal(requests[3]!.url, `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`);
+  assert.equal(requests[0]!.init.body, requests[1]!.init.body);
+  assert.equal(requests[1]!.init.body, requests[2]!.init.body, 'the fallback receives the exact serialized proposal request');
+  assert.deepEqual(waits, [30_000, 60_000]);
+  assert.equal(result.rawArtifacts['attention-proposal-response-attempt-2'], 'temporary upstream overload');
+  assert.ok(result.proposal && result.review, 'the accepted proposal and its separately accepted review are retained');
+  assert.equal(result.proposal.claims[0]?.id, 'claim-1');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).code, 'ATT_MODEL_TIMEOUT');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).model, geminiSettings.model);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).code, 'ATT_MODEL_HTTP_500');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).model, geminiSettings.model);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).code, 'ATT_MODEL_HTTP_200');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).model, geminiSettings.fallbackModel);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-review', 1).model, geminiSettings.model);
 });
 
 test('Gemini retries a 503 review once with the same body and retains both responses', async () => {
@@ -2592,6 +5202,75 @@ test('a repeated Gemini 503 stops after the third attempt and retains every raw 
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).willRetry, true);
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).willRetry, true);
   assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).willRetry, false);
+});
+
+test('a timeout followed by HTTP 500 uses the same three-attempt proposal budget before independent review', async () => {
+  const bodies: string[] = [];
+  const packetKinds: string[] = [];
+  const waits: number[] = [];
+  const fetcher: typeof fetch = async (_input, init) => {
+    const body = String(init?.body);
+    bodies.push(body);
+    const requestBody = JSON.parse(body) as { contents: Array<{ parts: Array<{ text: string }> }> };
+    const packet = JSON.parse(requestBody.contents[0]!.parts[0]!.text) as Record<string, unknown>;
+    packetKinds.push(packet.proposal ? 'review' : 'proposal');
+
+    if (bodies.length === 1) throw Object.assign(new Error('temporary local timeout'), { name: 'TimeoutError' });
+    if (bodies.length === 2) return new Response('temporary provider internal error', { status: 500 });
+    return envelope(packet.proposal ? reviewWire(packet) : proposalWire(packet));
+  };
+
+  const result = await qualifyAttention(sourceRead(), TOKEN, KEY, fetcher, async milliseconds => { waits.push(milliseconds); });
+
+  assert.equal(result.code, undefined);
+  assert.equal(bodies.length, 4, 'three proposal attempts are followed by one independent review request');
+  assert.deepEqual(packetKinds, ['proposal', 'proposal', 'proposal', 'review']);
+  assert.equal(bodies[0], bodies[1]);
+  assert.equal(bodies[1], bodies[2], 'the HTTP 500 does not reset or alter the original request');
+  assert.notEqual(bodies[2], bodies[3], 'the independent review is a distinct second pass');
+  assert.deepEqual(waits, [30_000, 60_000]);
+  assert.equal(result.rawArtifacts['attention-proposal-response-attempt-1'], undefined,
+    'a thrown timeout has a receipt but no fabricated response body');
+  assert.equal(result.rawArtifacts['attention-proposal-response-attempt-2'], 'temporary provider internal error');
+  assert.ok(result.rawArtifacts['attention-proposal-response']);
+  assert.notEqual(result.rawArtifacts['attention-proposal-response-attempt-2'], result.rawArtifacts['attention-proposal-response']);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).code, 'ATT_MODEL_TIMEOUT');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).willRetry, true);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).code, 'ATT_MODEL_HTTP_500');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).willRetry, true);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).code, 'ATT_MODEL_HTTP_200');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).willRetry, false);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-review', 1).code, 'ATT_MODEL_HTTP_200');
+  assert.equal(result.proposal?.claims[0]?.id, 'claim-1');
+  assert.ok(result.review?.decisions.length);
+  assert.ok(result.review?.decisions.every(decision => decision.accepted), 'the separate review accepts the recovered proposal');
+  const rows = deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['source', 'proposal', 'review']);
+  assert.equal(rows.find(row => row.id === 'A01')?.quality, 'KNOWN');
+});
+
+test('a persistent Gemini HTTP 500 stops after three attempts with distinct raw failures and no qualification', async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const result = await qualifyAttention(sourceRead(), TOKEN, KEY, async () => {
+    calls++;
+    return new Response(`provider internal error ${calls}`, { status: 500 });
+  }, async milliseconds => { waits.push(milliseconds); });
+
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [30_000, 60_000]);
+  assert.equal(result.code, 'ATT_MODEL_HTTP_500');
+  assert.equal(result.proposal, null);
+  assert.equal(result.review, null);
+  assert.equal(result.rawArtifacts['attention-proposal-response-attempt-1'], 'provider internal error 1');
+  assert.equal(result.rawArtifacts['attention-proposal-response-attempt-2'], 'provider internal error 2');
+  assert.equal(result.rawArtifacts['attention-proposal-response'], 'provider internal error 3');
+  assert.notEqual(result.rawArtifacts['attention-proposal-response-attempt-1'], result.rawArtifacts['attention-proposal-response-attempt-2']);
+  assert.notEqual(result.rawArtifacts['attention-proposal-response-attempt-2'], result.rawArtifacts['attention-proposal-response']);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 1).willRetry, true);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 2).willRetry, true);
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).code, 'ATT_MODEL_HTTP_500');
+  assert.equal(transportReceipt(result.rawArtifacts, 'attention-proposal', 3).willRetry, false);
+  assert.equal(result.rawArtifacts['attention-review-prompt'], undefined, 'a failed proposal never starts independent review');
 });
 
 test('a local Gemini timeout retries once with an identical body, fresh request signals, and a safe receipt', async () => {

@@ -1,3 +1,4 @@
+import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { VersionedMessage } from '@solana/web3.js';
@@ -9,13 +10,16 @@ import { baselineIds, deriveBaseline, validateResearch } from '../domain/baselin
 import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
 import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema } from '../domain/social.js';
-import { deriveAttention,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
-import { decodeComparisonLeadArray } from '../providers/attention-model.js';
-import { normalizeAttentionSearchUrl } from '../providers/attention.js';
+import { deriveAttention,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
+import { comparisonRequiredRecoveryPlan, decodeComparisonLeadTasks, comparisonReferenceRepairDetails, decodeNarrativePublicSupport, decodeSubmittedAttention, comparisonTargetContext, comparisonInstruction, decodeComparisonLeadArray, decodeComparisonLeadAccounting, comparisonScopeV3Schema, comparisonLeadIsAccounted, comparisonAccountingComplete, comparisonAccountingContext, comparisonAccountingInstruction, comparisonAccountingReviewInstruction, comparisonAccountingReferenceRepairInstruction, comparisonAccountingArraySchema, comparisonLeadSupportInstruction, comparisonLeadSupportRepairEligible, comparisonLeadSupportRepairValid, leadershipEntryCriterion, decodeBinaryEntryDecisions, binaryLeadershipReviewSchema, scopedLeadershipReviewSchema, decodeLeadershipSupport, leadershipSupportProposalSchema, leadershipSupportReviewSchema, decodeComparisonCoverage, comparisonSourceLineage, comparisonLeadIsQualified } from '../providers/attention-model.js';
+import { normalizeAttentionSearchUrl, type AttentionRead } from '../providers/attention.js';
+import { geckoPoolBinding } from '../providers/origin-recovery.js';
 import { validateSocialRepair,validateSocialWire } from '../providers/social-model.js';
-import { parseSourceResponse } from '../providers/source-model.js';
-import { decodeSharedAudit,validSharedReassessment } from '../providers/shared-model.js';
-import { deriveShared,expireSharedWitnesses,sharedClaims,type SharedInputs } from '../domain/shared.js';
+import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
+import { validateCurveBundle } from '../providers/pumpcurve.js';
+import { decodeTokenMetadataUri } from '../providers/token-discovery.js';
+import { decodeSharedAuditProof } from '../providers/shared-model.js';
+import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,type SharedInputs } from '../domain/shared.js';
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
 
 function validateFeeRecovery(b:LiveBundle){
@@ -158,7 +162,7 @@ export class Service {
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
         if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -171,6 +175,7 @@ export class Service {
       if (Date.parse(o.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_OBSERVATION');
     }
     if (b.analysisKind === 'LIVE') {
+      validateCurveBundle(b);
       validateDexRecovery(b);
       validateFeeRecovery(b);
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
@@ -192,8 +197,14 @@ export class Service {
             const {qualifiedAt:derivationTime,...derivationScope}=read;
             if(decisionHash(normalized.proposal)!==decisionHash(proposal)||decisionHash(normalized.review)!==decisionHash(review)||decisionHash(receiptScope)!==decisionHash(derivationScope))throw new Error('SOCIAL_PROOF_INVALID');
             if(normalized.wireMethod!==undefined&&normalized.wireMethod!=='social-line-span-v2')throw new Error('SOCIAL_PROOF_INVALID');
+            if(normalized.identityCitationMethod!==undefined&&(!['assessment-citation-closure-v1','identity-citation-closure-v2'].includes(normalized.identityCitationMethod)||normalized.wireMethod!=='social-line-span-v2'))throw new Error('SOCIAL_PROOF_INVALID');
             const hasRepair=Object.keys(b.rawArtifacts).some(id=>id.startsWith('social-repair-'));
             if((normalized.repairSelectionId!==undefined&&normalized.repairSelectionId!==(hasRepair?'social-repair-selection':null))||hasRepair&&!b.rawArtifacts['social-repair-selection'])throw new Error('SOCIAL_PROOF_INVALID');
+            const selectorRepairIds=Object.keys(b.rawArtifacts).filter(id=>/^social-selector-repair-(?:prompt|response)$/.test(id));
+            if(selectorRepairIds.length){
+              if(normalized.wireMethod!=='social-line-span-v2'||selectorRepairIds.length!==2)throw new Error('SOCIAL_PROOF_INVALID');
+              for(const id of selectorRepairIds)if(!packet.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw new Error('SOCIAL_PROOF_REQUIRED');
+            }
             if(normalized.wireMethod==='social-line-span-v2')validateSocialWire(b.rawArtifacts,read,b.token,proposal,review);
             if(hasRepair){
               const repair=b.evidence.find(e=>e.id==='social-repair-selection'&&e.sourceId==='social-collector'&&e.accessMode==='LOCAL_DERIVED');
@@ -210,6 +221,7 @@ export class Service {
           const proof=b.evidence.find(e=>e.id==='shared-derivation'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');
           if(!proof)throw new Error('SHARED_PROOF_REQUIRED');
           const packet=JSON.parse(b.rawArtifacts[proof.id]) as SharedInputs;
+          if(packet.qualityMode!==undefined&&packet.qualityMode!=='ENTRY_GATES_V1'||packet.qualityMode!==proof.scope.qualityMode)throw Error('SHARED_PROOF_INVALID');
           const effective=expireSharedWitnesses(packet);
           const withoutShared=(fs:FeatureResult[])=>fs.filter(f=>!['C03','C04','C05','C06'].includes(f.id));
           if(tokenKey(packet.token)!==tokenKey(b.token)||packet.cutoff!==b.cutoff||decisionHash(packet.profile)!==decisionHash(b.profile)||decisionHash(withoutShared(effective.features))!==decisionHash(withoutShared(b.features))||decisionHash(packet.observations)!==decisionHash(b.observations)||decisionHash(packet.social??null)!==decisionHash(details.social??null)||decisionHash(packet.claims)!==decisionHash(sharedClaims(packet.baseline,details.social))||decisionHash(packet.evidence)!==decisionHash(b.evidence.filter(e=>e.id!==proof.id)))throw new Error('SHARED_PROOF_INVALID');
@@ -232,7 +244,83 @@ export class Service {
           if(decisionHash(packet.semanticReceiptIds)!==decisionHash(receiptIds))throw new Error('SHARED_PROOF_INVALID');
           if(attentionRecord){
             const receipt=JSON.parse(b.rawArtifacts[attentionRecord.id]);
+            const binaryMode=receipt.read.comparisonQualification?.entryDecisionMethod==='binary-public-support-v1';
+            if(receipt.review?.entryDecisions){
+              if(!binaryMode)throw Error('SHARED_PROOF_INVALID');
+              for(const id of ['attention-leadership-proposal-response','attention-leadership-review-response'])if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw Error('SHARED_PROOF_REQUIRED');
+              const fullRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+              if(decisionHash(decodeBinaryEntryDecisions(fullRead,receipt.proposal,receipt.review,b.token,receipt.cutoff,b.rawArtifacts))!==decisionHash(receipt.review.entryDecisions))throw Error('SHARED_PROOF_INVALID');
+            }
+            if(binaryMode&&b.rawArtifacts['attention-leadership-review-response']){let completed=false;try{completed=(receipt.read.comparisonQualification?.entryCitationMethod==='single-required-citation-v1'?scopedLeadershipReviewSchema:receipt.read.comparisonQualification?.entryScopeMethod==='code-owned-origin-scope-v1'?binaryLeadershipReviewSchema.omit({sourceIds:true}):binaryLeadershipReviewSchema).safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-review-response'])).success;}catch{}if(completed&&!receipt.review?.entryDecisions)throw Error('SHARED_PROOF_REQUIRED');}
+            if(receipt.read.comparisonQualification?.wireMethod==='comparison-lead-tasks-v5'&&b.rawArtifacts['attention-leadership-proposal-response']&&b.rawArtifacts['attention-leadership-review-response']){
+              let completed=false;try{completed=leadershipSupportProposalSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-proposal-response'])).success&&leadershipSupportReviewSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-review-response'])).success;}catch{/* An honest malformed/interrupted review is not a completed proof. */}
+              if(completed&&receipt.review?.leadershipScreening?.method!=='reviewed-public-support-v2')throw Error('SHARED_PROOF_REQUIRED');
+            }
+            if(receipt.review?.leadershipScreening){
+              const screening=receipt.review.leadershipScreening;
+              for(const id of ['attention-leadership-proposal-response','attention-leadership-review-response'])if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw new Error('SHARED_PROOF_REQUIRED');
+              if(screening.method==='reviewed-public-support-v2'){
+                const fullRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+                if(decisionHash(decodeLeadershipSupport(fullRead,receipt.proposal,receipt.review,b.token,receipt.cutoff,b.rawArtifacts))!==decisionHash(screening))throw Error('SHARED_PROOF_INVALID');
+              }else{
+              const selected=parseSourceResponse(b.rawArtifacts['attention-leadership-proposal-response']),independent=parseSourceResponse(b.rawArtifacts['attention-leadership-review-response']);
+              const normalized=normalizeComparisonRefs(selected,receipt.read.sources);
+              if(decisionHash(screening)!==decisionHash({method:'reviewed-public-support-v1',...normalized as object,review:independent}))throw new Error('SHARED_PROOF_INVALID');
+              const prompt=JSON.parse(b.rawArtifacts['attention-leadership-proposal-prompt']),reviewPrompt=JSON.parse(b.rawArtifacts['attention-leadership-review-prompt']);
+              if(decisionHash(prompt.entryCriterion)!==decisionHash(leadershipEntryCriterion({...receipt.read,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))},receipt.proposal,receipt.review,b.token,receipt.cutoff))||decisionHash(reviewPrompt.entryCriterion)!==decisionHash(prompt.entryCriterion))throw new Error('SHARED_PROOF_INVALID');
+              const fullSources=receipt.read.sources.filter((s:{id:string})=>receipt.read.originScope?.sourceIds.includes(s.id)).map((s:{id:string;text:string})=>{const {text,...info}=s;return {...info,spans:sourceSpans(s.id,b.rawArtifacts[s.id]??text)};});
+              if(tokenKey(prompt.token)!==tokenKey(b.token)||tokenKey(reviewPrompt.token)!==tokenKey(b.token)||decisionHash(prompt.comparisonQualification)!==decisionHash(receipt.read.comparisonQualification)||decisionHash(reviewPrompt.comparisonQualification)!==decisionHash(receipt.read.comparisonQualification)||decisionHash(prompt.originEvidenceScope)!==decisionHash(receipt.read.originScope)||decisionHash(prompt.sources)!==decisionHash(fullSources)||decisionHash(reviewPrompt.sources)!==decisionHash(fullSources)||decisionHash(reviewPrompt.screening)!==decisionHash(selected)||decisionHash(reviewPrompt.originEvidenceScope)!==decisionHash(receipt.read.originScope))throw new Error('SHARED_PROOF_INVALID');
+              }
+            }
+            if(receipt.read.originRecovery){
+              const marker=b.evidence.find(e=>e.id==='attention-origin-recovery-scope'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED');
+              if(!marker||decisionHash(JSON.parse(b.rawArtifacts[marker.id]))!==decisionHash(receipt.read.originRecovery))throw new Error('SHARED_PROOF_INVALID');
+              const recovery=receipt.read.originRecovery;
+              if(!Array.isArray(recovery.aliases)||recovery.aliases.length>1||!Array.isArray(recovery.comparisonSupplementIds)||recovery.comparisonSupplementIds.length>2)throw new Error('SHARED_PROOF_INVALID');
+              const sources=receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}));
+              if(recovery.aliases.some((a:Parameters<typeof verifyOriginAlias>[0])=>!verifyOriginAlias(a,sources,b.rawArtifacts)))throw new Error('SHARED_PROOF_INVALID');
+              for(const id of recovery.comparisonSupplementIds){const source=sources.find((s:{id:string})=>s.id===id),response=JSON.parse(b.rawArtifacts['attention-origin-fetch-1']),url=`https://api.dexscreener.com/token-pairs/v1/${b.token.chain}/${b.token.address}`;
+                const result=response.results?.find((r:{url:string;final_url?:string;text?:string})=>r.url===source?.url&&(r.final_url??r.url)===r.url&&typeof r.text==='string');
+                if(!source||source.kind!=='PAGE'||source.authorId!==null||source.publishedAt!==null||!result||source.text!==result.text.replace(/\\_/g,'_'))throw new Error('SHARED_PROOF_INVALID');
+                if(source.url===url){const pairs=JSON.parse(source.text);if(!Array.isArray(pairs)||!pairs.some(p=>p.chainId===b.token.chain&&(p.baseToken?.address===b.token.address||p.quoteToken?.address===b.token.address)))throw new Error('SHARED_PROOF_INVALID');}
+                else if(b.token.chain!=='solana'||!receipt.read.comparisonAcquisition?.leads.some((lead:{url:string|null;acquisitionStatus:string})=>lead.acquisitionStatus!=='ACQUIRED'&&geckoPoolBinding(source,lead.url)))throw new Error('SHARED_PROOF_INVALID');
+              }
+            }
+            if(receipt.read.originExclusions){
+              const marker=b.evidence.find(e=>e.id==='attention-origin-exclusion-scope'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED');
+              for(const item of receipt.read.originExclusions){const prefix=`attention-origin-role-${item.index}`;for(const suffix of ['proposal-response','review-response','search','fetch']){const id=prefix+'-'+suffix;if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.accessMode==='FREE_ACCOUNT'&&e.sourceId===(suffix==='search'?'tinyfish-search':suffix==='fetch'?'tinyfish-fetch':'gemini')))throw new Error('SHARED_PROOF_REQUIRED');}}
+              const full={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+              if(!marker||decisionHash(JSON.parse(b.rawArtifacts[marker.id]))!==decisionHash(receipt.read.originExclusions)||!Array.isArray(receipt.read.originExclusions)||receipt.read.originExclusions.length>2||receipt.read.originExclusions.some((item:Parameters<typeof verifiedOriginExclusion>[1])=>!verifiedOriginExclusion(full,item,b.token)))throw new Error('SHARED_PROOF_INVALID');
+            }
+            if(receipt.read.metadataLinks){
+              const metadata=b.evidence.find(e=>e.id==='discovery-token-metadata'&&e.sourceId==='token-metadata-discovery'&&e.accessMode==='PUBLIC_API'&&e.scope.mint===b.token.address);
+              if(!metadata||decodeTokenMetadataUri(b.rawArtifacts[metadata.id],b.token.address).uri!==receipt.read.metadataUri||!receipt.read.discoveryUrls.includes(receipt.read.metadataUri))throw new Error('SHARED_SOURCE_INVALID');
+              for(const source of receipt.read.sources.filter((s:{discoveredFrom?:string})=>s.discoveredFrom))if(b.evidence.find(e=>e.id===source.id)?.scope.discoveredFrom!==source.discoveredFrom)throw new Error('SHARED_SOURCE_INVALID');
+            }
             if(tokenKey(receipt.token)!==tokenKey(b.token)||Date.parse(receipt.cutoff)>Date.parse(b.cutoff)||!Array.isArray(receipt.evidenceIds)||receipt.evidenceIds.some((id:string)=>!ids.has(id)))throw new Error('SHARED_PROOF_INVALID');
+            if(receipt.read.originScope){
+              for(const id of ['attention-search-1','attention-search-2']){const search=b.evidence.find(e=>e.id===id&&e.sourceId==='tinyfish-search'&&e.accessMode==='FREE_ACCOUNT');if(search&&(decisionHash(search.scope.discoveryUrls??[])!==decisionHash(receipt.read.discoveryUrls??[])||decisionHash(search.scope.queries??[])!==decisionHash(receipt.read.queries??[])))throw new Error('SHARED_PROOF_INVALID');}
+              if(decisionHash(receipt.read.originScope)!==decisionHash(originSourceScope({...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))},b.token)))throw new Error('SHARED_PROOF_INVALID');
+            }
+            {
+              const full:AttentionRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((source:{id:string;text:string})=>({...source,text:b.rawArtifacts[source.id]??source.text}))};
+              let decoded:ReturnType<typeof decodeNarrativePublicSupport>|undefined;
+              const marked=receipt.read.narrativePublicSupport!==undefined||b.rawArtifacts['attention-narrative-public-support']!==undefined;
+              try{if(b.rawArtifacts['attention-narrative-support-proposal-response']&&b.rawArtifacts['attention-narrative-support-review-response']){const base=decodeSubmittedAttention(full,b.rawArtifacts);decoded=decodeNarrativePublicSupport(full,b.token,base.proposal,base.review,b.rawArtifacts);}}catch{if(marked)throw Error('SHARED_PROOF_INVALID');}
+              if(marked||decoded){
+                if(!decoded||!receipt.read.narrativePublicSupport||!b.rawArtifacts['attention-narrative-public-support'])throw Error('SHARED_PROOF_REQUIRED');
+                for(const id of decoded.responseIds)if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw Error('SHARED_PROOF_REQUIRED');
+                if(!b.evidence.some(e=>e.id==='attention-narrative-public-support'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED')||decisionHash(decoded.receipt)!==decisionHash(receipt.read.narrativePublicSupport)||decisionHash(decoded.receipt)!==decisionHash(JSON.parse(b.rawArtifacts['attention-narrative-public-support'])))throw Error('SHARED_PROOF_INVALID');
+              }
+            }
+            for(const claim of receipt.proposal?.claims?.filter((c:{originBasis?:string})=>c.originBasis==='PUBLIC_EVIDENCE_INADEQUATE')??[]){
+              const wire=parseSourceResponse(b.rawArtifacts['attention-proposal-response']) as {claims:Array<Record<string,unknown>>};
+              const reviewer=parseSourceResponse(b.rawArtifacts['attention-review-response']) as {decisions:Record<string,unknown>;originScopeReview?:unknown};
+              const candidate=wire.claims.find(c=>c.id===claim.id),stored=receipt.review?.decisions.find((d:{id:string})=>d.id===claim.id);
+              if(!candidate||!stored||decisionHash(reviewer.originScopeReview??null)!==decisionHash(receipt.review.originScopeReview??null)||decisionHash(reviewer.decisions[claim.id])!==decisionHash({accepted:stored.accepted,rationale:stored.rationale}))throw new Error('SHARED_PROOF_INVALID');
+              const citations=(candidate.citations as Array<{sourceId:string;spanId:string}>).map(ref=>{const source=receipt.read.sources.find((s:{id:string})=>s.id===ref.sourceId),span=source&&sourceSpans(source.id,source.text.slice(0,6000)).find(s=>s.id===ref.spanId);if(!span)throw new Error('SHARED_PROOF_INVALID');return {sourceId:ref.sourceId,quote:span.text};});
+              if(decisionHash({...candidate,citations})!==decisionHash(claim))throw new Error('SHARED_PROOF_INVALID');
+            }
             const localEmptyAttention=receipt.read.sources.length===0&&['claims','posts','competitors'].every(key=>Array.isArray(receipt.proposal?.[key])&&receipt.proposal[key].length===0)&&Array.isArray(receipt.review?.decisions)&&receipt.review.decisions.length===0&&receipt.review.candidateSet?.complete!==true&&(!receipt.review.originRelationship||receipt.review.originRelationship.status==='UNKNOWN');
             if(receipt.proposal&&receipt.review&&!localEmptyAttention&&!['attention-proposal-response','attention-review-response'].every(id=>receipt.evidenceIds.includes(id)&&b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_REQUIRED');
             if(receipt.read.comparisonComplete&&receipt.proposal&&receipt.review&&!b.evidence.some(e=>e.id==='attention-comparison-final-review-response'&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw new Error('SHARED_PROOF_REQUIRED');
@@ -241,10 +329,12 @@ export class Service {
               const lead=receipt.read.comparisonAcquisition?.leads.find((l:{id:string})=>l.id===receipt.read.comparisonQualification.evidenceAdequacy.leadId);
               if(!lead||lead.recoveryQueryIds.some((id:string)=>!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='tinyfish-search'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_REQUIRED');
             }
-            if(receipt.read.comparisonQualification?.mode==='qualified-identified-leads-v2'){
-              const parsedScope=comparisonScopeV2Schema.safeParse(receipt.read.comparisonQualification);
+            if(['qualified-identified-leads-v2','qualified-identified-leads-v3'].includes(receipt.read.comparisonQualification?.mode)){
+              const fresh=receipt.read.comparisonQualification.mode==='qualified-identified-leads-v3';
+              const parsedScope=(fresh?comparisonScopeV3Schema:comparisonScopeV2Schema).safeParse(receipt.read.comparisonQualification);
               if(!parsedScope.success)throw new Error('SHARED_PROOF_INVALID');
               const q=parsedScope.data;
+              if(fresh){const marker=b.evidence.find(e=>e.id==='comparison-lead-qualification'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED');if(!marker||!receipt.evidenceIds.includes(marker.id))throw new Error('SHARED_PROOF_REQUIRED');if(decisionHash(JSON.parse(b.rawArtifacts[marker.id]))!==decisionHash(receipt.read.comparisonQualification))throw new Error('SHARED_PROOF_INVALID');}
               for(const lead of receipt.read.comparisonAcquisition.leads){
                 const e=b.evidence.find(e=>e.id===lead.metadataEvidenceId&&e.sourceId==='attention-collector'&&e.sourceType==='INDEXED_LEAD'&&e.accessMode==='LOCAL_DERIVED'),d=e?JSON.parse(b.rawArtifacts[e.id]):null;
                 const search=b.evidence.find(e=>e.id===lead.searchArtifactId&&e.sourceId==='tinyfish-search'&&e.accessMode==='FREE_ACCOUNT'),row=search?JSON.parse(b.rawArtifacts[search.id]).results?.[lead.resultIndex]:null;
@@ -255,32 +345,87 @@ export class Service {
               const metadata=b.evidence.filter(e=>receipt.evidenceIds.includes(e.id)&&e.sourceId==='attention-collector'&&e.sourceType==='INDEXED_LEAD').map(e=>{const d=JSON.parse(b.rawArtifacts[e.id]);return {id:e.id,text:d.title+'\n'+d.snippet,url:d.normalizedUrl??d.url,leadId:d.originalLeadId};});
               const catalog=[...receipt.read.sources.map((s:{id:string;text:string})=>({id:s.id,text:s.text.slice(0,6000)})),...metadata];
               const originalWire=response('attention-comparison-lead-proposal-response'),reviewWire=response('attention-comparison-lead-review-response');
-              const compact=q.wireMethod==='comparison-lead-array-v1';
+              let original:any,review:any;
+              const taskRoute=q.wireMethod==='comparison-lead-tasks-v2'||q.wireMethod==='comparison-lead-tasks-v3'||q.wireMethod==='comparison-lead-tasks-v4'||q.wireMethod==='comparison-lead-tasks-v5';
+              if(taskRoute){
+                if(!['comparison-lead-support-scope-v3','comparison-lead-support-scope-v4'].includes(String(q.supportScopeMethod))||q.supportScopeMethod==='comparison-lead-support-scope-v4'&&q.wireMethod!=='comparison-lead-tasks-v3'&&q.wireMethod!=='comparison-lead-tasks-v4'&&q.wireMethod!=='comparison-lead-tasks-v5'||(q.wireMethod==='comparison-lead-tasks-v4'||q.wireMethod==='comparison-lead-tasks-v5')&&q.supportScopeMethod!=='comparison-lead-support-scope-v4'||q.targetContextMethod!=='comparison-target-context-v1'||q.supportSelection)throw Error('SHARED_PROOF_INVALID');
+                const full={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+                const base=decodeSubmittedAttention(full,b.rawArtifacts),target=comparisonTargetContext(full,base.proposal,base.review,b.token,receipt.cutoff);
+                if(decisionHash(q.targetContext??null)!==decisionHash(target))throw Error('SHARED_PROOF_INVALID');
+                const selected=decodeComparisonLeadTasks(full,b.token,target,b.rawArtifacts,q.wireMethod==='comparison-lead-tasks-v5'?'comparison-lead-tasks-v5':q.wireMethod==='comparison-lead-tasks-v4'?'comparison-lead-tasks-v4':q.wireMethod==='comparison-lead-tasks-v3'?'comparison-lead-tasks-v3':'comparison-lead-tasks-v2');
+                for(const id of selected.responseIds)response(id);
+                if(q.proposalResponseId!==selected.proposalResponseId)throw Error('SHARED_PROOF_INVALID');
+                original=selected.proposal;review=selected.review;
+              }else{
+                if(q.supportScopeMethod==='comparison-lead-support-scope-v3'||q.supportScopeMethod==='comparison-lead-support-scope-v4')throw Error('SHARED_PROOF_INVALID');
+              const compact=q.wireMethod==='comparison-lead-array-v1'||fresh;
+              const scopeV2=q.supportScopeMethod==='comparison-lead-support-scope-v2';
+              const newScope=scopeV2||q.supportScopeMethod==='comparison-lead-support-scope-v1';
+              const decode=fresh?((value:unknown,leads:Parameters<typeof decodeComparisonLeadAccounting>[1],sources:Parameters<typeof decodeComparisonLeadAccounting>[2],metadata:Parameters<typeof decodeComparisonLeadAccounting>[3],review=false)=>decodeComparisonLeadAccounting(value,leads,sources,metadata,review,newScope,scopeV2)):decodeComparisonLeadArray;
               let selectedWire=originalWire;
               if(q.proposalResponseId){
                 const marker=b.evidence.find(e=>e.id==='comparison-lead-wire-repair'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED');
                 if(!compact||!marker||!receipt.evidenceIds.includes(marker.id))throw new Error('SHARED_PROOF_REQUIRED');
                 const selection=JSON.parse(b.rawArtifacts[marker.id]);
                 if(selection.method!=='comparison-lead-reference-repair-v1'||selection.code!=='ATT_MODEL_COMPARISON_LEAD_REF_INVALID'||selection.originalResponseId!=='attention-comparison-lead-proposal-response'||selection.selectedResponseId!==q.proposalResponseId)throw new Error('SHARED_PROOF_INVALID');
-                let invalid=false;try{decodeComparisonLeadArray(originalWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata);}catch(error){invalid=error instanceof Error&&error.message==='ATT_MODEL_COMPARISON_LEAD_REF_INVALID';}
+                let invalid=false;try{decode(originalWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata);}catch(error){invalid=error instanceof Error&&error.message==='ATT_MODEL_COMPARISON_LEAD_REF_INVALID';}
                 if(!invalid)throw new Error('SHARED_PROOF_INVALID');
-                selectedWire=response(q.proposalResponseId);
+                if(typeof q.proposalResponseId!=='string')throw new Error('SHARED_PROOF_INVALID');selectedWire=response(q.proposalResponseId);
               }
-              const original=compact?decodeComparisonLeadArray(selectedWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata):selectedWire;
-              const review=compact?decodeComparisonLeadArray(reviewWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata,true):reviewWire;
+              original=compact?decode(selectedWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata):selectedWire;
+              review=compact?decode(reviewWire,receipt.read.comparisonAcquisition.leads,receipt.read.sources,metadata,true):reviewWire;
+              if(fresh){
+                const full={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+                const initial=parseSourceResponse(b.rawArtifacts['attention-proposal-response']) as {claims:Array<{id:string;feature:string;value:boolean}>};
+                const initialReview=parseSourceResponse(b.rawArtifacts['attention-review-response']) as {decisions:Record<string,{accepted:boolean}>};
+                const narrative=initial.claims.filter(c=>c.feature==='A01'&&c.value&&initialReview.decisions[c.id]?.accepted).map(c=>attentionProposalSchema.shape.claims.element.parse(normalizeComparisonRefs(c,full.sources.map((s:{id:string;text:string})=>({...s,text:s.text.slice(0,6000)})))));
+                const base=newScope?decodeSubmittedAttention(full,b.rawArtifacts):undefined;
+                const target=newScope?comparisonTargetContext(full,base!.proposal,base!.review,b.token,receipt.cutoff):undefined;
+                if(newScope&&(q.targetContextMethod!=='comparison-target-context-v1'||decisionHash(q.targetContext??null)!==decisionHash(target)))throw Error('SHARED_PROOF_INVALID');
+                const context=comparisonAccountingContext(full,b.token,newScope?target!.narrativeClaims:narrative,target,scopeV2?'comparison-lead-support-scope-v2':'comparison-lead-support-scope-v1');
+                if(q.proposalResponseId&&b.rawArtifacts['attention-comparison-lead-repair-proposal-prompt']!==JSON.stringify({instruction:comparisonInstruction(comparisonAccountingReferenceRepairInstruction,newScope,scopeV2),...context,initialInvalidProposal:comparisonAccountingArraySchema.parse(originalWire),localError:'ATT_MODEL_COMPARISON_LEAD_REF_INVALID',...(newScope?{referenceObligations:comparisonReferenceRepairDetails(originalWire,full.comparisonAcquisition.leads,q.literalSelectorRepairMethod==='bound-literal-options-v1'?context.eligibleCorroboration:undefined)}:{})}))throw new Error('SHARED_PROOF_INVALID');
+                let selected=false;
+                const repairIds=['attention-comparison-lead-support-proposal-response','attention-comparison-lead-support-review-response'];
+                if(repairIds.every(id=>b.rawArtifacts[id])&&comparisonLeadSupportRepairEligible(original,review)&&receipt.read.comparisonAcquisition.searchSucceeded&&receipt.read.comparisonAcquisition.descriptorComplete&&!q.recoveryCapped&&q.recoveryQueries.every(r=>['OBSERVED','NO_RESULTS'].includes(r.state)&&r.descriptorComplete)){
+                  try{
+                    const repaired=decodeComparisonLeadAccounting(response(repairIds[0]),full.comparisonAcquisition.leads,full.sources,metadata,false,newScope,scopeV2),checked=decodeComparisonLeadAccounting(response(repairIds[1]),full.comparisonAcquisition.leads,full.sources,metadata,true,newScope);
+                    if(b.rawArtifacts['attention-comparison-lead-support-proposal-prompt']!==JSON.stringify({instruction:comparisonInstruction(comparisonLeadSupportInstruction,newScope,scopeV2),...context,initialProposal:original,initialReview:review})||b.rawArtifacts['attention-comparison-lead-support-review-prompt']!==JSON.stringify({instruction:comparisonInstruction(comparisonAccountingReviewInstruction,newScope,scopeV2),...context,proposal:repaired}))throw new Error('SHARED_PROOF_INVALID');
+                    if(comparisonLeadSupportRepairValid(original,review,repaired,checked)){selected=true;}
+                    if(selected!== (q.supportSelection===true))throw new Error('SHARED_PROOF_INVALID');
+                    // Check the original prompts before selecting the replacement below.
+                  }catch(error){if(q.supportSelection===true||error instanceof Error&&/^SHARED_/.test(error.message))throw error;}
+                }
+                if(q.supportSelection===true&&!selected)throw new Error('SHARED_PROOF_REQUIRED');
+                if(b.rawArtifacts['attention-comparison-lead-proposal-prompt']!==JSON.stringify({instruction:comparisonInstruction(comparisonAccountingInstruction,newScope,scopeV2),...context})||b.rawArtifacts['attention-comparison-lead-review-prompt']!==JSON.stringify({instruction:comparisonInstruction(comparisonAccountingReviewInstruction,newScope,scopeV2),...context,proposal:original}))throw new Error('SHARED_PROOF_INVALID');
+                if(selected){original=decodeComparisonLeadAccounting(response(repairIds[0]),full.comparisonAcquisition.leads,full.sources,metadata,false,newScope,scopeV2);review=decodeComparisonLeadAccounting(response(repairIds[1]),full.comparisonAcquisition.leads,full.sources,metadata,true,newScope);}
+              }
+              }
               const normalized=normalizeComparisonRefs(original,catalog) as {decisions:Record<string,Record<string,unknown>>};
               const stored=receipt.read.comparisonQualification;
               if(decisionHash(normalized)!==decisionHash(stored.proposal)||decisionHash(review)!==decisionHash(stored.review)||decisionHash(Object.keys(normalized.decisions).sort())!==decisionHash(q.decisions.map(d=>d.leadId).sort())||decisionHash(Object.keys(review.decisions).sort())!==decisionHash(q.decisions.map(d=>d.leadId).sort()))throw new Error('SHARED_PROOF_INVALID');
               for(const d of q.decisions){const p=normalized.decisions[d.leadId],actual=Object.fromEntries(Object.keys(p).map(k=>[k,d[k]]));if(decisionHash(actual)!==decisionHash(p)||decisionHash(d.review)!==decisionHash(review.decisions[d.leadId]))throw new Error('SHARED_PROOF_INVALID');}
+              let expectedQueries:Array<{parentLeadId:string;query:string}>;
+              if(q.supportScopeMethod==='comparison-lead-support-scope-v4'){
+                const full={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+                const base=decodeSubmittedAttention(full,b.rawArtifacts),target=comparisonTargetContext(full,base.proposal,base.review,b.token,receipt.cutoff),plan=comparisonRequiredRecoveryPlan(full,b.token,target.narrativeClaims);
+                if(decisionHash(q.selectedLeadIds)!==decisionHash(plan.selectedLeadIds)||q.deferredLeadIds.length)throw Error('SHARED_PROOF_INVALID');
+                if(plan.selectedLeadIds.length){
+                  if(b.rawArtifacts['attention-comparison-recovery-plan-prompt']!==JSON.stringify(plan.packet))throw Error('SHARED_PROOF_INVALID');
+                  const decoded=plan.decode(response('attention-comparison-recovery-plan-response'));
+                  expectedQueries=decoded.queries.map((query,i)=>({query,parentLeadId:decoded.queryParents[i]}));
+                }else expectedQueries=[];
+              }else{
               const planned=q.selectedLeadIds.length?response('attention-comparison-recovery-plan-response').leads:{};
               if(decisionHash(Object.keys(planned).sort())!==decisionHash([...q.selectedLeadIds].sort()))throw new Error('SHARED_PROOF_INVALID');
-              const expectedQueries=q.selectedLeadIds.flatMap(parentLeadId=>{const item=planned[parentLeadId],lead=receipt.read.comparisonAcquisition.leads.find((l:{id:string})=>l.id===parentLeadId);if(!item||!lead||!Array.isArray(item.queries)||item.queries.length<1||item.queries.length>2||!item.metadataRefs.length||item.metadataRefs.some(ref=>ref.sourceId!==lead.metadataEvidenceId))throw new Error('SHARED_PROOF_INVALID');normalizeComparisonRefs(item.metadataRefs,metadata);return item.queries.map(query=>({parentLeadId,query}));});
+                expectedQueries=q.selectedLeadIds.flatMap(parentLeadId=>{const item=planned[parentLeadId],lead=receipt.read.comparisonAcquisition.leads.find((l:{id:string})=>l.id===parentLeadId);if(!item||!lead||!Array.isArray(item.queries)||item.queries.length<1||item.queries.length>2||!item.metadataRefs.length||item.metadataRefs.some(ref=>ref.sourceId!==lead.metadataEvidenceId))throw new Error('SHARED_PROOF_INVALID');normalizeComparisonRefs(item.metadataRefs,metadata);return item.queries.map(query=>({parentLeadId,query}));});
+
+              }
               if(expectedQueries.length!==q.recoveryQueries.length||new Set(expectedQueries.map(q=>q.query)).size!==expectedQueries.length)throw new Error('SHARED_PROOF_INVALID');
               for(const [i,query] of q.recoveryQueries.entries()){
                 if(query.queryId!==`attention-recovery-search-${i+1}`||query.parentLeadId!==expectedQueries[i].parentLeadId||query.query!==expectedQueries[i].query)throw new Error('SHARED_PROOF_INVALID');
                 if(['OBSERVED','NO_RESULTS'].includes(query.state)){
                   const e=b.evidence.find(e=>e.id===query.queryId&&e.sourceId==='tinyfish-search'&&e.accessMode==='FREE_ACCOUNT'),raw=e?JSON.parse(b.rawArtifacts[e.id]):null;
-                  if(!e||!receipt.evidenceIds.includes(e.id)||e.availableAt!==query.availableAt||!Array.isArray(raw?.results)||raw.results.length!==query.resultCount||query.state!==(raw.results.length?'OBSERVED':'NO_RESULTS')||!query.descriptorComplete||raw.results.some((r:{url?:unknown})=>!r||typeof r.url!=='string'))throw new Error('SHARED_PROOF_INVALID');
+                  if(!e||!receipt.evidenceIds.includes(e.id)||e.availableAt!==query.availableAt||!Array.isArray(raw?.results)||raw.error||raw.errors&&(!Array.isArray(raw.errors)||raw.errors.length)||raw.results.length!==query.resultCount||query.state!==(raw.results.length?'OBSERVED':'NO_RESULTS')||!query.descriptorComplete||raw.results.some((r:{url?:unknown})=>!r||typeof r.url!=='string'))throw new Error('SHARED_PROOF_INVALID');
                 }
               }
               const capture=b.evidence.find(e=>e.id==='live-state-capture'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');
@@ -289,12 +434,51 @@ export class Service {
               if(c.method!=='late-state-capture-v1'||tokenKey(c.token)!==tokenKey(b.token)||decisionHash(c.canonical)!==decisionHash(canonical)||c.discoveryId!==(b.evidence.some(e=>e.id==='dex-discovery')?'dex-discovery':null)||c.rpcState!==b.collection.rpc.state||c.dexState!==b.collection.dex.state||!Number.isFinite(Date.parse(c.startedAt))||!Number.isFinite(Date.parse(c.endedAt))||Date.parse(c.startedAt)>Date.parse(c.endedAt)||Date.parse(c.endedAt)>Date.parse(b.cutoff)||canonical.some(e=>Date.parse(e.retrievedAt)<Date.parse(c.startedAt)||Date.parse(e.retrievedAt)>Date.parse(c.endedAt))||b.evidence.some(e=>e.sourceId==='gemini'&&e.sourceType==='MODEL_RESPONSE'&&Date.parse(e.availableAt)>Date.parse(c.startedAt)))throw new Error('SHARED_PROOF_INVALID');
             }
             for(const source of receipt.read.sources){const e=b.evidence.find(e=>e.id===source.id);if(!e||e.sourceId!=='tinyfish-fetch'||e.accessMode!=='FREE_ACCOUNT'||!b.rawArtifacts[e.id].startsWith(source.text)||e.scope.url!==source.url||e.availableAt!==source.availableAt||e.scope.kind!==source.kind||e.scope.authorId!==source.authorId||e.scope.publishedAt!==source.publishedAt)throw new Error('SHARED_SOURCE_INVALID');}
+            let completedAccounting=false;try{const p=parseSourceResponse(b.rawArtifacts['attention-comparison-lead-proposal-response']),r=parseSourceResponse(b.rawArtifacts['attention-comparison-lead-review-response']);completedAccounting=!!comparisonScopeV3Schema.safeParse(JSON.parse(b.rawArtifacts['comparison-lead-qualification']??'null')).success||!!(Array.isArray((p as {decisions?:unknown}).decisions)&&Array.isArray((r as {decisions?:unknown}).decisions)&&(r as {decisions:Array<{accounting?:unknown}>}).decisions.length&&(r as {decisions:Array<{accounting?:unknown}>}).decisions.every(d=>d.accounting));}catch{/* Failed/invalid requests may save honest UNKNOWN; a completed marked path cannot downgrade. */}
+            const v3Artifacts=completedAccounting||!!b.rawArtifacts['attention-comparison-public-support']||Object.entries(b.rawArtifacts).some(([id,raw])=>/^(?:attention-comparison-\d+-proposal-|attention-comparison-manifest$)/.test(id)&&/comparison-lead-accounting-v1|comparison-lead-tasks-v2|comparison-lead-tasks-v3|comparison-lead-tasks-v4|comparison-lead-tasks-v5|sourceSupport|bodyObservations/.test(raw));
+            if(v3Artifacts&&receipt.read.comparisonQualification?.mode!=='qualified-identified-leads-v3')throw new Error('SHARED_PROOF_REQUIRED');
+            const markedComparison=receipt.read.comparisonCoverage!==undefined||b.rawArtifacts['attention-comparison-coverage']!==undefined||receipt.read.comparisonComplete===true&&Object.entries(b.rawArtifacts).some(([id,raw])=>/^attention-comparison-\d+-(?:repair-)?review-response$/.test(id)&&raw.includes('insufficiencyKind'));
+            if(markedComparison){
+              const fullRead:AttentionRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
+              const marker=b.evidence.find(e=>e.id==='attention-comparison-coverage'&&e.sourceId==='attention-collector'&&e.accessMode==='LOCAL_DERIVED');
+              if(!marker||!receipt.read.comparisonCoverage)throw new Error('SHARED_PROOF_REQUIRED');
+              if(decisionHash(JSON.parse(b.rawArtifacts[marker.id]))!==decisionHash(receipt.read.comparisonCoverage))throw new Error('SHARED_PROOF_INVALID');
+              const acquisition=fullRead.comparisonAcquisition,qualification=fullRead.comparisonQualification as {mode?:string;complete?:boolean;decisions?:Array<Parameters<typeof comparisonLeadIsQualified>[1]>;recoveryCapped?:boolean;accountingComplete?:boolean}|undefined;
+              if(acquisition){
+                const original=JSON.parse(b.rawArtifacts['attention-search-3']);
+                if(!Array.isArray(original.results)||original.results.length!==acquisition.leads.length||acquisition.leadCount!==acquisition.leads.length)throw new Error('SHARED_SOURCE_INVALID');
+                const metadata=b.evidence.filter(e=>receipt.evidenceIds.includes(e.id)&&e.sourceId==='attention-collector'&&e.sourceType==='INDEXED_LEAD').map(e=>{const d=JSON.parse(b.rawArtifacts[e.id]);return {id:e.id,text:d.title+'\n'+d.snippet,url:d.normalizedUrl??d.url,leadId:d.originalLeadId};});
+                const lineage=comparisonSourceLineage(fullRead);
+                for(const lead of acquisition.leads){
+                  const actual=lineage.find(l=>l.leadId===lead.id)!;
+                  if(decisionHash([...lead.sourceIds].sort())!==decisionHash([...actual.sourceIds].sort())||decisionHash([...lead.recoverySourceIds].sort())!==decisionHash([...actual.recoverySourceIds].sort()))throw new Error('SHARED_SOURCE_INVALID');
+                  const d=qualification?.decisions?.find(d=>d.leadId===lead.id);
+                  if(!d||('accounting'in d&&d.accounted!==comparisonLeadIsAccounted(lead,d,fullRead,metadata))||d.qualified!==comparisonLeadIsQualified(lead,d,fullRead.sources,metadata,b.token,qualification?.mode==='qualified-identified-leads-v2'||qualification?.mode==='qualified-identified-leads-v3',fullRead))throw new Error('SHARED_PROOF_INVALID');
+                  // Successful original fetches remain part of the corpus even if a local receipt deletes their source.
+                  for(const [id,raw] of Object.entries(b.rawArtifacts))if(/^attention-fetch-\d+(?:-retry-\d+)?$/.test(id))try{
+                    for(const r of JSON.parse(raw).results??[])if(normalizeAttentionSearchUrl(r.url)===lead.url&&typeof r.text==='string'&&r.text.trim()&&r.text.trim().toLowerCase()!=='safety check'){
+                      const record=b.evidence.find(e=>e.sourceId==='tinyfish-fetch'&&e.scope.url===normalizeAttentionSearchUrl(r.final_url??r.url)&&r.text.startsWith(b.rawArtifacts[e.id]??'')&&!!b.rawArtifacts[e.id]);
+                      if(!record||!actual.sourceIds.includes(record.id)||!fullRead.comparisonSourceIds?.includes(record.id))throw new Error('SHARED_SOURCE_INVALID');
+                    }
+                  }catch(error){if(error instanceof Error&&error.message==='SHARED_SOURCE_INVALID')throw error;}
+                }
+                const expectedComplete=acquisition.searchSucceeded&&acquisition.descriptorComplete&&acquisition.leadCount===acquisition.leads.length&&acquisition.leads.length>0&&!qualification?.recoveryCapped&&!fullRead.codes.some(c=>/ATT_(?:PAGE|DESCRIPTOR)_CAP/.test(c))&&qualification?.decisions?.every(d=>d.qualified)===true;
+                if(qualification?.mode==='qualified-identified-leads-v3'){const decisions=qualification.decisions as Parameters<typeof comparisonAccountingComplete>[1];if(qualification.accountingComplete!==comparisonAccountingComplete(fullRead,decisions)||qualification.decisions?.some(d=>!('accounting'in d)))throw new Error('SHARED_PROOF_INVALID');}else if(qualification?.complete!==expectedComplete)throw new Error('SHARED_PROOF_INVALID');
+              }
+              let reconstructed:ReturnType<typeof decodeComparisonCoverage>;
+              try{reconstructed=decodeComparisonCoverage(fullRead,b.token,b.rawArtifacts);}catch(error){if(error instanceof Error&&/^SHARED_/.test(error.message))throw error;throw new Error('SHARED_PROOF_INVALID');}
+              for(const id of reconstructed.responseIds)if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw new Error('SHARED_PROOF_REQUIRED');
+              const {leadershipScreening,entryDecisions,...comparisonReview}=receipt.review;
+              if(decisionHash(reconstructed.publicSupport??null)!==decisionHash(receipt.read.comparisonPublicSupport??null)||decisionHash(reconstructed.coverage)!==decisionHash(receipt.read.comparisonCoverage)||decisionHash(reconstructed.proposal)!==decisionHash(receipt.proposal)||decisionHash(reconstructed.review)!==decisionHash(comparisonReview)||receipt.read.comparisonComplete!==reconstructed.coverage.complete)throw new Error('SHARED_PROOF_INVALID');
+            }
             for(const length of receipt.read.comparisonQualification?.adequacySourceLengths??[]){const source=receipt.read.sources.find((s:{id:string})=>s.id===length.id);if(!source||!Number.isSafeInteger(length.retainedLength)||b.rawArtifacts[length.id]?.length!==length.retainedLength)throw new Error('SHARED_SOURCE_INVALID');}
             const fixedPosts=receipt.read.sources.filter((s:{id:string;kind:string})=>s.kind==='POST'&&(!receipt.read.postSampleSourceIds||receipt.read.postSampleSourceIds.includes(s.id)));
             const expectedSample={method:'fixed-query-sample-v1',sourceIds:fixedPosts.map((s:{id:string})=>s.id),queries:receipt.read.queries,complete:!!(receipt.read.postSampleComplete??receipt.read.complete)&&fixedPosts.every((s:{id:string;text:string;publishedAt:string|null})=>!!s.publishedAt&&Date.parse(s.publishedAt)<Date.parse(receipt.read.start)||b.rawArtifacts[s.id]===s.text)};
             if(decisionHash(receipt.read.growthSample)!==decisionHash(expectedSample))throw new Error('SHARED_PROOF_INVALID');
-            const derived=deriveAttention(receipt.read,receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true);
+            const derived=deriveAttention({...receipt.read,rawArtifacts:b.rawArtifacts},receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true);
             if(derived.some(a=>decisionHash(a)!==decisionHash(packet.baseline.find(x=>x.id===a.id))))throw new Error('SHARED_ATTENTION_INVALID');
+            const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1'].includes((a.data as {method?:string}).method??''));
+            if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};const expected={kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'};if(decisionHash(b.semantic.claims.filter(c=>c.kind==='ORIGIN'))!==decisionHash([expected]))throw Error('SHARED_ATTENTION_INVALID');}
             const socialRecord=b.evidence.find(e=>e.id==='social-derivation');
             const socialSources=socialRecord?JSON.parse(b.rawArtifacts[socialRecord.id]).read.sources:[];
             const metadataIds=packet.claims.flatMap(c=>c.citations.map(ref=>ref.sourceId)).filter(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='attention-collector'&&e.sourceType==='INDEXED_LEAD'));
@@ -306,16 +490,13 @@ export class Service {
             const receipt=JSON.parse(b.rawArtifacts[e.id]);
             if(tokenKey(receipt.token)!==tokenKey(b.token)||decisionHash(receipt.claims)!==decisionHash(packet.claims)||decisionHash(receipt.sources)!==decisionHash(packet.sources)||decisionHash(receipt.audit)!==decisionHash(packet.audit)||!['shared-proposal-response','shared-review-response'].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
             if(receipt.wireMethod===undefined&&b.evidence.some(e=>e.id.startsWith('shared-repair-')))throw new Error('SHARED_PROOF_INVALID');
+            const repair=receipt.wireMethod!==undefined&&receipt.proposalResponseId==='shared-repair-proposal-response';
             if(receipt.wireMethod!==undefined){
-              if(receipt.wireMethod!=='shared-audit-wire-v2')throw new Error('SHARED_PROOF_INVALID');
-              const repair=receipt.proposalResponseId==='shared-repair-proposal-response';
-              if(receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response')||![receipt.proposalResponseId,receipt.reviewResponseId].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
-              try{
-                const initial=decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts['shared-proposal-response'],b.rawArtifacts['shared-review-response']);
-                const selected=repair?decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts[receipt.proposalResponseId],b.rawArtifacts[receipt.reviewResponseId]):initial;
-                if(decisionHash(selected)!==decisionHash(receipt.audit)||repair&&!validSharedReassessment(initial,selected))throw new Error('SHARED_PROOF_INVALID');
-              }catch{throw new Error('SHARED_PROOF_INVALID');}
+              if(receipt.wireMethod!=='shared-audit-wire-v2'||receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response'))throw new Error('SHARED_PROOF_INVALID');
             }
+            const stages=['proposal','review',...(repair?['repair-proposal','repair-review']:[])];
+            if(stages.some(stage=>['prompt','response'].some(suffix=>!b.evidence.some(e=>e.id==='shared-'+stage+'-'+suffix&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))))throw new Error('SHARED_PROOF_REQUIRED');
+            try{if(decisionHash(decodeSharedAuditProof(packet.claims,packet.sources,b.token,b.rawArtifacts,repair))!==decisionHash(receipt.audit))throw Error('SHARED_PROOF_INVALID');}catch{throw new Error('SHARED_PROOF_INVALID');}
           }
           const derived=deriveShared(effective);
           if(decisionHash(derived.facts)!==decisionHash(details.shared)||derived.assessments.some(a=>decisionHash(a)!==decisionHash(details.baseline.find(x=>x.id===a.id))||decisionHash(a.projection)!==decisionHash(b.features.find(f=>f.id===a.id))))throw new Error('SHARED_FACTS_INVALID');
@@ -351,10 +532,10 @@ export class Service {
     return {version:1,profile:b.profile,thesis,origins:{profile:'FROZEN_INPUT'},stageInputs:stageInputs(b),baseline:deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:policyFeatures(b),evidence:b.evidence,observations:b.observations,thesis:thesis??undefined,research:b.analysisKind==='USER_IMPORT'?importedResearch(b):undefined})};
   }
   private analyzeCore(b: Bundle | LiveBundle): EntrySnapshot {
-    this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared);
+    this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined,entryComparison=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(b.details.baseline):undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.shared?'research-screen-shared-v1':social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.shared?(entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -456,7 +637,7 @@ export class Service {
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features, evidence:semantic.evidence??[] } as Bundle | LiveBundle;
     const effective=semantic.schemaVersion===1?legacyPolicyFeatures(replayBundle):semantic.policyFeatures;
     if(!Array.isArray(effective))throw new Error('UNSUPPORTED_SNAPSHOT_VERSION');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,semantic.policyVersion==='research-screen-shared-v1'?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,semantic.policyVersion==='research-screen-shared-v1') : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2'].includes(semantic.policyVersion),semantic.policyVersion==='research-screen-shared-v2'?semantic.entryComparison:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

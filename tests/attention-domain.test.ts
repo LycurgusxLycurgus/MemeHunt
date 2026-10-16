@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, fixtureBundle, illustrativeFixtureThesis, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 import { decisionHash, Service } from '../src/app/service.js';
-import { deriveAttention } from '../src/domain/attention.js';
+import { deriveAttention, narrativeSourceBound, originSourceScope, type NarrativePublicSupport } from '../src/domain/attention.js';
 import { deriveBaseline, type BaselineAssessment } from '../src/domain/baseline.js';
 import type { FeatureResult, LiveBundle, Profile, TokenRef } from '../src/domain/contracts.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -169,6 +169,35 @@ function assessment(fixture: Fixture, overrides: (f: Fixture) => void = () => {}
   return deriveAttention(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF, ['evidence-sources', 'evidence-proposal', 'evidence-review']);
 }
 
+function inadequateOriginFixture(): Fixture {
+  const fixture = makeFixture();
+  const proposal = fixture.proposal as { claims: Array<{ id: string; feature: string; value: boolean; summary: string; citations: Array<{ sourceId: string; quote: string }>; originBasis?: string }> };
+  const origin = proposal.claims.find(claim => claim.feature === 'A03');
+  assert.ok(origin);
+  origin.value = false;
+  origin.summary = 'The bounded public sample does not establish this token project origin or catalyst.';
+  origin.citations = [{ sourceId: 'claim-page', quote: `Synthetic source explicitly calls ${TOKEN.address} an original primary origin.` }];
+  origin.originBasis = 'PUBLIC_EVIDENCE_INADEQUATE';
+  fixture.read.queries = [
+    `"${TOKEN.address}" base narrative origin catalyst`,
+    `"${TOKEN.address}" (site:x.com OR site:twitter.com)`,
+  ];
+  fixture.read.rawArtifacts['attention-search-1'] = JSON.stringify({ results: [{ url: 'https://public.example/claims' }] });
+  fixture.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [{ url: 'https://public.example/claims' }] });
+  const claimSource = fixture.read.sources.find(source => source.id === 'claim-page');
+  assert.ok(claimSource);
+  fixture.read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+    results: [{ url: claimSource.url, final_url: claimSource.url, text: claimSource.text }], errors: [],
+  });
+  fixture.read.discoveryUrls = ['https://public.example/claims'];
+  fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+  (fixture.review as { originScopeReview?: unknown }).originScopeReview = {
+    complete: true, sourceIds: [...fixture.read.originScope.sourceIds],
+    rationale: 'Every retained original source was inspected for exact-token origin and catalyst evidence.',
+  };
+  return fixture;
+}
+
 function fixedGrowthAssessment(fixture: Fixture): BaselineAssessment[] {
   const postSources = fixture.read.sources.filter(source => source.kind === 'POST');
   fixture.read.growthSample = {
@@ -178,6 +207,48 @@ function fixedGrowthAssessment(fixture: Fixture): BaselineAssessment[] {
   return deriveAttention(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF,
     ['evidence-sources', 'evidence-proposal', 'evidence-review'], true);
 }
+
+test('linked narrative references bind one hop for A01 while A03 stays literal-contract-only', () => {
+  const fixture = makeFixture();
+  const parentUrl = 'https://metadata.example/token.json';
+  const childUrl = 'https://community.example/narrative';
+  const quote = 'River Lantern describes a neighborhood story through shared local art.';
+  fixture.read.sources.push(
+    { id: 'token-metadata-json', url: parentUrl, text: JSON.stringify({ mint: TOKEN.address, website: childUrl }), publishedAt: null, authorId: null, availableAt: FRESH, kind: 'PAGE' },
+    { id: 'linked-reference', url: childUrl, text: quote, publishedAt: null, authorId: null, availableAt: FRESH, kind: 'PAGE', discoveredFrom: parentUrl },
+  );
+  fixture.read.discoveryUrls = [parentUrl];
+  fixture.read.metadataLinks = true;
+  fixture.read.metadataUri = parentUrl;
+  const claims = (fixture.proposal as { claims: Array<{ feature: string; citations: Array<{ sourceId: string; quote: string }> }> }).claims;
+  for (const feature of ['A01', 'A03']) {
+    const claim = claims.find(item => item.feature === feature)!;
+    claim.citations = [{ sourceId: 'linked-reference', quote }];
+  }
+
+  assert.equal(narrativeSourceBound(fixture.read, 'linked-reference', TOKEN), true);
+  const rows = assessment(fixture);
+  assert.equal(row(rows, 'A01').quality, 'KNOWN', 'the exact linked child describes the narrative after independent review');
+  assert.equal(row(rows, 'A03').quality, 'MISSING', 'a source-described reference does not establish primary origin');
+  assert.equal(row(rows, 'A03').causes[0]?.code, 'ATT_CITATION_BINDING_INVALID');
+
+  const invalidReads: Array<[string, (read: AttentionRead) => void]> = [
+    ['missing metadata-link flag', read => { delete read.metadataLinks; }],
+    ['metadata URI is not the parent', read => { read.metadataUri = 'https://other.example/token.json'; }],
+    ['parent not in discovery URLs', read => { read.discoveryUrls = []; }],
+    ['forged parent relationship', read => { read.sources.find(source => source.id === 'linked-reference')!.discoveredFrom = 'https://elsewhere.example/token.json'; }],
+    ['unlinked child target', read => { read.sources.find(source => source.id === 'token-metadata-json')!.text = JSON.stringify({ mint: TOKEN.address, website: 'https://other.example/page' }); }],
+  ];
+  for (const [name, mutate] of invalidReads) {
+    const copy: AttentionRead = {
+      ...fixture.read,
+      sources: fixture.read.sources.map(source => ({ ...source })),
+      discoveryUrls: [...(fixture.read.discoveryUrls ?? [])],
+    };
+    mutate(copy);
+    assert.equal(narrativeSourceBound(copy, 'linked-reference', TOKEN), false, name);
+  }
+});
 
 function inadequateRepresentationFixture(): Fixture {
   const fixture = makeV2Fixture('UNKNOWN', true);
@@ -275,6 +346,199 @@ test('source-backed fixture resolves the six attention checks and deduplicates o
     ['ATT-01', 'PASS'], ['CAN-01', 'PASS'], ['CAN-02', 'PASS'],
     ['NAR-01', 'PASS'], ['NAR-02', 'PASS'], ['NAR-03', 'PASS'],
   ]);
+});
+
+test('reviewed inadequate origin evidence fails NAR-02 as scoped traceability while preserving other claims', () => {
+  const fixture = inadequateOriginFixture();
+  assert.equal(fixture.read.originScope?.complete, true);
+  assert.deepEqual(fixture.read.originScope?.sourceIds, ['claim-page'], 'only source text in the original acquisition scope is inspected');
+  const rows = assessment(fixture);
+
+  assert.equal(row(rows, 'A03').quality, 'KNOWN');
+  assert.equal(feature(rows, 'A03').value, false);
+  assert.equal((row(rows, 'A03').data as { originBasis: string }).originBasis, 'PUBLIC_EVIDENCE_INADEQUATE');
+  assert.match((row(rows, 'A03').data as { meaning: string }).meaning, /not proof of fraud/);
+  assert.equal(row(rows, 'A01').quality, 'KNOWN', 'a separate accepted narrative claim is retained');
+  assert.equal(feature(rows, 'A01').value, true);
+
+  const features = new Map(completeFixtureEntryFeatures().map(item => [item.id, item]));
+  for (const item of rows) if (item.projection) features.set(item.id, item.projection);
+  const entry = evaluateEntry([...features.values()], illustrativeUncalibratedProfile, CUTOFF, 'QUALIFIED');
+  assert.equal(entry.checks.find(check => check.checkId === 'NAR-02')?.status, 'FAIL',
+    'the reviewed negative A03 is sufficient for the origin/catalyst screening failure');
+
+  const legacy = assessment(makeFixture());
+  assert.equal(row(legacy, 'A03').quality, 'KNOWN');
+  assert.equal(feature(legacy, 'A03').value, true, 'unmarked positive origin evidence keeps its established behavior');
+});
+
+test('inadequate origin evidence stays unknown when its discovery scope or independent review is incomplete', () => {
+  const scenarios: Array<{ name: string; code?: string; change: (fixture: Fixture) => void }> = [
+    { name: 'missing origin-scope review', change: fixture => {
+      delete (fixture.review as { originScopeReview?: unknown }).originScopeReview;
+    } },
+    { name: 'review says the source set was incomplete', change: fixture => {
+      (fixture.review as { originScopeReview: { complete: boolean } }).originScopeReview.complete = false;
+    } },
+    { name: 'review does not inspect every exact source ID', change: fixture => {
+      (fixture.review as { originScopeReview: { sourceIds: string[] } }).originScopeReview.sourceIds.pop();
+    } },
+    { name: 'review adds a source outside the declared scope', change: fixture => {
+      (fixture.review as { originScopeReview: { sourceIds: string[] } }).originScopeReview.sourceIds.push('forged-source');
+    } },
+    { name: 'review rejects the proposed screening grade', code: 'ATT_REVIEW_REJECTED', change: fixture => {
+      (fixture.review as { decisions: Array<{ id: string; accepted: boolean }> }).decisions.find(item => item.id === 'claim-3')!.accepted = false;
+    } },
+    { name: 'a discovery seed was not retained', change: fixture => {
+      fixture.read.discoveryUrls = ['https://public.example/not-retained'];
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+    } },
+    { name: 'one exact-address search failed', change: fixture => {
+      fixture.read.rawArtifacts['attention-search-2'] = JSON.stringify({ error: 'search unavailable', results: [] });
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+    } },
+    { name: 'an exact-token launch URL was blocked after its context page was acquired', change: fixture => {
+      const launch = 'https://public.example/launch';
+      fixture.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [
+        { url: 'https://public.example/claims' }, { url: launch },
+      ] });
+      fixture.read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+        results: [{ url: 'https://public.example/claims', final_url: 'https://public.example/claims', text: fixture.read.sources.find(source => source.id === 'claim-page')!.text }],
+        errors: [{ url: launch, error: 'bot_blocked', status: 403 }],
+      });
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+      assert.deepEqual(fixture.read.originScope.acquisition?.urls.find(item => item.url === launch), {
+        url: launch, sourceId: null, state: 'UNAVAILABLE',
+      });
+      assert.equal((fixture.review as { decisions: Array<{ id: string; accepted: boolean }> }).decisions.find(item => item.id === 'claim-3')?.accepted, true,
+        'the model still accepts the negative claim; incomplete original acquisition keeps it unknown');
+    } },
+    { name: 'an exact-token launch URL omitted from the fetch envelope stays incomplete', change: fixture => {
+      const launch = 'https://public.example/launch';
+      fixture.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [
+        { url: 'https://public.example/claims' }, { url: launch },
+      ] });
+      fixture.read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+        results: [{ url: 'https://public.example/claims', final_url: 'https://public.example/claims', text: fixture.read.sources.find(source => source.id === 'claim-page')!.text }],
+        errors: [],
+      });
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+      assert.equal(fixture.read.originScope.acquisition?.urls.find(item => item.url === launch)?.state, 'OMITTED');
+    } },
+    { name: 'an eligible metadata seed link that failed remains in the original scope', change: fixture => {
+      const seed = 'https://metadata.example/token.json';
+      const linked = 'https://metadata.example/launch';
+      fixture.read.discoveryUrls = [seed];
+      fixture.read.rawArtifacts['attention-search-1'] = JSON.stringify({ results: [{ url: 'https://public.example/claims' }] });
+      fixture.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [] });
+      fixture.read.sources.push({ id: 'metadata-seed', url: seed, text: JSON.stringify({ mint: TOKEN.address, website: linked }),
+        publishedAt: null, authorId: null, availableAt: FRESH, kind: 'PAGE' });
+      fixture.read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+        results: [
+          { url: seed, final_url: seed, text: fixture.read.sources.find(source => source.id === 'metadata-seed')!.text, links: [linked] },
+          { url: 'https://public.example/claims', final_url: 'https://public.example/claims', text: fixture.read.sources.find(source => source.id === 'claim-page')!.text },
+        ],
+        errors: [{ url: linked, error: 'bot_blocked', status: 403 }],
+      });
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+      assert.equal(fixture.read.originScope.acquisition?.urls.find(item => item.url === linked)?.state, 'UNAVAILABLE');
+    } },
+    { name: 'an original source was clipped beyond the bounded review', change: fixture => {
+      fixture.read.sources.find(source => source.id === 'claim-page')!.text += 'x'.repeat(6001);
+      fixture.read.originScope = originSourceScope(fixture.read, TOKEN);
+    } },
+  ];
+
+  for (const scenario of scenarios) {
+    const fixture = inadequateOriginFixture();
+    scenario.change(fixture);
+    const rows = assessment(fixture);
+    assert.equal(row(rows, 'A03').quality, 'MISSING', scenario.name);
+    assert.equal(feature(rows, 'A03').value, null, scenario.name);
+    assert.equal(row(rows, 'A03').causes[0]?.code, scenario.code ?? 'ATT_ORIGIN_EVIDENCE_REVIEW_INCOMPLETE', scenario.name);
+    assert.equal(row(rows, 'A01').quality, 'KNOWN', `${scenario.name}: incomplete origin review does not erase A01`);
+  }
+});
+
+test('reviewed narrative-support gaps fail entry checks without replacing facts or overriding substantive support', () => {
+  const fixture = inadequateOriginFixture();
+  const scope = originSourceScope(fixture.read, TOKEN);
+  assert.equal(scope.complete, true);
+  const source = fixture.read.sources.find(item => item.id === scope.sourceIds[0]);
+  assert.ok(source);
+  const quote = source.text.split('\n')[0]!;
+  const receipt: NarrativePublicSupport = {
+    method: 'narrative-public-support-v1',
+    scope: { method: 'bounded-origin-sources-v1', sourceIds: [...scope.sourceIds] },
+    sourceSupport: scope.sourceIds.map((sourceId): NarrativePublicSupport['sourceSupport'][number] => ({
+      sourceId, status: 'PUBLIC_SUPPORT_GAP', criteria: ['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'],
+      rationale: 'The inspected original source records the token but describes no public narrative or thesis.',
+      citations: [{ sourceId, quote }],
+      review: { accepted: true, inspectionComplete: true, rationale: 'The full retained original source was checked against both support classifications.' },
+    })),
+    judgments: {
+      NARRATIVE_DESCRIPTION: { verdict: 'INADEQUATE', rationale: 'The complete source sample does not explain the token narrative.', citations: [{ sourceId: source.id, quote }], review: { accepted: true, rationale: 'The cited exact-token source supports this bounded gap.' } },
+      EXPLAINABLE_THESIS: { verdict: 'INADEQUATE', rationale: 'The complete source sample does not explain an underlying thesis.', citations: [{ sourceId: source.id, quote }], review: { accepted: true, rationale: 'The cited exact-token source supports this bounded gap.' } },
+    },
+    proposalResponseId: 'attention-narrative-support-proposal-response',
+    reviewResponseId: 'attention-narrative-support-review-response',
+  };
+  const unresolved = structuredClone(fixture);
+  unresolved.read.narrativePublicSupport = structuredClone(receipt);
+  const proposal = unresolved.proposal as { claims: Array<{ id: string; feature: string }> };
+  const removed = new Set(proposal.claims.filter(claim => claim.feature === 'A01' || claim.feature === 'A05').map(claim => claim.id));
+  proposal.claims = proposal.claims.filter(claim => !removed.has(claim.id));
+  const review = unresolved.review as { decisions: Array<{ id: string }> };
+  review.decisions = review.decisions.filter(decision => !removed.has(decision.id));
+  const deriveWithSupport = (input: Fixture) => deriveAttention(input.read, input.proposal, input.review, TOKEN, CUTOFF,
+    ['evidence-sources', 'evidence-proposal', 'evidence-review'], true);
+  const rows = deriveWithSupport(unresolved);
+  for (const [id, criterion] of [['A01', 'NARRATIVE_DESCRIPTION'], ['A05', 'EXPLAINABLE_THESIS']] as const) {
+    const assessed = row(rows, id);
+    assert.equal(assessed.quality, 'KNOWN', `${id} may receive a scoped support grade`);
+    assert.equal(feature(rows, id).value, false);
+    const data = assessed.data as { method: string; entryCriterion: string; factualAssessment: { quality: string; value: unknown }; meaning: string };
+    assert.equal(data.method, 'narrative-public-support-v1');
+    assert.equal(data.entryCriterion, criterion);
+    assert.deepEqual([data.factualAssessment.quality, data.factualAssessment.value], ['MISSING', null]);
+    assert.match(data.meaning, /factual narrative remains unresolved/);
+  }
+
+  const supported = inadequateOriginFixture();
+  supported.read.narrativePublicSupport = receipt;
+  const supportedRows = deriveWithSupport(supported);
+  assert.equal(feature(supportedRows, 'A01').value, true, 'accepted factual narrative takes precedence over the separate inadequacy grade');
+  assert.equal(feature(supportedRows, 'A05').value, true, 'an accepted factual explanation is not inverted by the support grade');
+  assert.equal((row(supportedRows, 'A01').data as { method: string }).method, 'automated-source-review-v1');
+
+  const contrary = structuredClone(unresolved);
+  contrary.read.narrativePublicSupport!.sourceSupport[0] = {
+    ...contrary.read.narrativePublicSupport!.sourceSupport[0]!, status: 'SUBSTANTIVE_SUPPORT', criteria: ['NARRATIVE_DESCRIPTION'],
+  };
+  const contraryRows = deriveWithSupport(contrary);
+  assert.equal(row(contraryRows, 'A01').quality, 'MISSING', 'substantive evidence on the same criterion blocks an inadequate grade');
+
+  const rejected = structuredClone(unresolved);
+  rejected.read.narrativePublicSupport!.sourceSupport[0]!.review.accepted = false;
+  rejected.read.narrativePublicSupport!.sourceSupport[0]!.review.inspectionComplete = false;
+  const rejectedRows = deriveWithSupport(rejected);
+  assert.equal(row(rejectedRows, 'A01').quality, 'MISSING', 'a rejected or incomplete source inspection cannot qualify a narrative gap');
+
+  const badClock = structuredClone(unresolved);
+  badClock.read.sources.find(item => item.id === scope.sourceIds[0])!.availableAt = 'not-a-time';
+  const badClockRows = deriveWithSupport(badClock);
+  assert.equal(row(badClockRows, 'A01').quality, 'MISSING', 'an invalid clock on any source in the inspected scope blocks grading');
+});
+
+test('PUBLIC_EVIDENCE_INADEQUATE marker cannot qualify A01 or alter a positive A03', () => {
+  const fixture = makeFixture();
+  const claims = (fixture.proposal as { claims: Array<{ id: string; originBasis?: string }> }).claims;
+  claims.find(claim => claim.id === 'claim-1')!.originBasis = 'PUBLIC_EVIDENCE_INADEQUATE';
+  const rows = assessment(fixture);
+  assert.equal(row(rows, 'A01').quality, 'MISSING');
+  assert.equal(row(rows, 'A01').causes[0]?.code, 'ATT_ORIGIN_EVIDENCE_REVIEW_INCOMPLETE');
+  assert.equal(row(rows, 'A03').quality, 'KNOWN');
+  assert.equal(feature(rows, 'A03').value, true);
 });
 
 test('A18 reports strict growth only from one complete fixed-query sample split at its exact midpoint', () => {
@@ -475,6 +739,38 @@ test('review decisions must cover every proposal item exactly once', async t => 
 });
 
 test('competitor identity and leadership depend on a complete comparable source sample', async t => {
+  await t.test('coverage accepts reordered exact source membership while preserving ordered requirements', () => {
+    const fixture = makeV2Fixture('UNKNOWN', true);
+    setComparativePattern(fixture, 'TARGET_LEADS');
+    const sourceIds = [...fixture.read.comparisonSourceIds!].reverse();
+    assert.ok(sourceIds.length > 1, 'the fixture can distinguish set membership from order');
+    fixture.read.comparisonCoverage = {
+      method: 'required-comparison-evidence-v1', sourceIds,
+      sourceRequirements: sourceIds.map(sourceId => ({ sourceId, obligation: 'REQUIRED', parentLeadIds: [], reasons: ['ORIGINAL_COMPARISON'] })),
+      batches: [
+        { batch: 1, sourceIds: sourceIds.slice(0, 8), proposalResponseId: 'proposal-1', reviewResponseId: 'review-1', rawComplete: true, effectiveComplete: true, blockingSourceIds: [] },
+        { batch: 2, sourceIds: sourceIds.slice(8), proposalResponseId: 'proposal-2', reviewResponseId: 'review-2', rawComplete: true, effectiveComplete: true, blockingSourceIds: [] },
+      ],
+      finalReviewResponseId: 'final-review', complete: true,
+    };
+
+    const rows = assessment(fixture);
+    assert.equal(row(rows, 'A09').quality, 'KNOWN', JSON.stringify({
+      comparisonComplete: fixture.read.comparisonComplete,
+      readSourceIds: fixture.read.comparisonSourceIds,
+      coverageSourceIds: fixture.read.comparisonCoverage.sourceIds,
+      requirements: fixture.read.comparisonCoverage.sourceRequirements.map(item => item.sourceId),
+      a09: row(rows, 'A09'),
+    }));
+    assert.equal(row(rows, 'A10').quality, 'KNOWN');
+    assert.equal(row(rows, 'A11').quality, 'KNOWN');
+
+    fixture.read.comparisonCoverage!.sourceRequirements.reverse();
+    const reorderedRequirements = assessment(fixture);
+    assert.equal(row(reorderedRequirements, 'A09').quality, 'MISSING',
+      'requirements must stay aligned to coverage source order even though source membership is order independent');
+  });
+
   await t.test('a source association cannot qualify a syntactically invalid chain address', () => {
     const fixture = makeFixture();
     const invalidAddress = `0x${'2'.repeat(39)}g`;
@@ -1172,4 +1468,157 @@ test('public-representation inadequacy remains unknown without accepted, complet
     assert.equal(feature(rows, 'A09').value, null, scenario.name);
     assert.equal(row(rows, 'A10').quality, 'MISSING', scenario.name);
   }
+});
+
+test('leadership entry grades require the complete route and never replace factual origin or measured leadership', () => {
+  const setScreening = (fixture: Fixture, verdict: 'INADEQUATE' | 'UNRESOLVED' = 'INADEQUATE') => {
+    fixture.read.comparisonComplete = true;
+    fixture.read.comparisonSourceIds = [];
+    fixture.read.comparisonRankingSourceIds = [];
+    fixture.read.originScope = {
+      method: 'bounded-origin-sources-v1', complete: true, sourceIds: ['claim-page'],
+      acquisition: fixture.read.originScope?.acquisition,
+    };
+    const review = fixture.review as Record<string, unknown>;
+    review.candidateSet = { complete: false, rationale: 'No complete representation set supports a measured leadership judgment.' };
+    review.originRelationship = { status: 'UNKNOWN', citations: [], rationale: 'No primary-origin relationship is supported.' };
+    review.leadershipScreening = {
+      method: 'reviewed-public-support-v1', verdict,
+      rationale: 'The complete bounded origin and comparison evidence does not support the public entry criterion.',
+      citations: [{ sourceId: 'claim-page', quote: fixture.read.sources.find(source => source.id === 'claim-page')!.text }],
+      sourceIds: ['claim-page'],
+      review: { accepted: true, rationale: 'The independent review accepts the bounded public-support assessment.' },
+    };
+  };
+  const rowsFor = (fixture: Fixture) => deriveAttention(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF,
+    ['evidence-sources', 'evidence-proposal', 'evidence-review']);
+
+  const graded = inadequateOriginFixture();
+  setScreening(graded);
+  const gradedRows = rowsFor(graded);
+  const a14 = row(gradedRows, 'A14');
+  const grade = a14.data as { originRelationship: { status: string }; measuredAttention: { status: string }; leadershipScreening?: unknown; basis: string };
+  assert.equal(a14.quality, 'KNOWN');
+  assert.equal(feature(gradedRows, 'A14').value, false);
+  assert.equal(grade.originRelationship.status, 'UNKNOWN');
+  assert.equal(grade.measuredAttention.status, 'UNKNOWN');
+  assert.ok(grade.leadershipScreening);
+  assert.equal(grade.basis, 'EVIDENCE_INADEQUACY');
+
+  const rejected = inadequateOriginFixture();
+  setScreening(rejected);
+  ((rejected.review as { leadershipScreening: { review: { accepted: boolean } } }).leadershipScreening.review).accepted = false;
+  assert.equal(row(rowsFor(rejected), 'A14').quality, 'MISSING', 'a rejected independent grade stays unknown');
+
+  const unresolved = inadequateOriginFixture();
+  setScreening(unresolved, 'UNRESOLVED');
+  assert.equal(row(rowsFor(unresolved), 'A14').quality, 'MISSING', 'an unresolved grade stays unknown');
+
+  const incompleteOrigin = inadequateOriginFixture();
+  setScreening(incompleteOrigin);
+  incompleteOrigin.read.originScope!.complete = false;
+  assert.equal(row(rowsFor(incompleteOrigin), 'A14').quality, 'MISSING', 'incomplete original evidence cannot produce the grade');
+
+  const incompleteComparison = inadequateOriginFixture();
+  setScreening(incompleteComparison);
+  incompleteComparison.read.comparisonComplete = false;
+  assert.equal(row(rowsFor(incompleteComparison), 'A14').quality, 'MISSING', 'incomplete comparison evidence cannot produce the grade');
+
+  const unboundCitation = inadequateOriginFixture();
+  setScreening(unboundCitation);
+  ((unboundCitation.review as { leadershipScreening: { citations: Array<{ quote: string }> } }).leadershipScreening.citations[0]!).quote = 'A grade citation absent from the original source.';
+  assert.equal(row(rowsFor(unboundCitation), 'A14').quality, 'MISSING', 'a nonliteral grade citation stays unknown');
+
+  const originPrecedence = makeV2Fixture('SUPPORTED');
+  const originSource = originPrecedence.read.sources.find(source => source.id === 'project-profile')!;
+  originPrecedence.read.originScope = { method: 'bounded-origin-sources-v1', complete: true, sourceIds: [originSource.id] };
+  (originPrecedence.review as Record<string, unknown>).leadershipScreening = {
+    method: 'reviewed-public-support-v1', verdict: 'INADEQUATE',
+    rationale: 'Synthetic adverse grade used to verify the separate factual route.',
+    citations: [{ sourceId: originSource.id, quote: originSource.text }], sourceIds: [originSource.id],
+    review: { accepted: true, rationale: 'The synthetic grade receives an independent acceptance.' },
+  };
+  const originRows = rowsFor(originPrecedence);
+  const originGrade = row(originRows, 'A14').data as { originRelationship: { status: string }; leadershipScreening?: unknown; basis: string };
+  assert.equal(feature(originRows, 'A14').value, true);
+  assert.equal(originGrade.originRelationship.status, 'SUPPORTED');
+  assert.equal(originGrade.basis, 'ORIGIN', 'supported factual origin takes precedence over a negative entry grade');
+  assert.equal(originGrade.leadershipScreening, undefined, 'do not carry a contrary entry grade into qualified data');
+
+  const measuredPrecedence = makeV2Fixture('UNKNOWN');
+  setComparativePattern(measuredPrecedence, 'TARGET_LEADS');
+  const measuredSource = measuredPrecedence.read.sources.find(source => source.id === 'project-profile')!;
+  measuredPrecedence.read.originScope = { method: 'bounded-origin-sources-v1', complete: true, sourceIds: [measuredSource.id] };
+  (measuredPrecedence.review as Record<string, unknown>).leadershipScreening = {
+    method: 'reviewed-public-support-v1', verdict: 'INADEQUATE',
+    rationale: 'Synthetic adverse grade used to verify the separate factual route.',
+    citations: [{ sourceId: measuredSource.id, quote: measuredSource.text }], sourceIds: [measuredSource.id],
+    review: { accepted: true, rationale: 'The synthetic grade receives an independent acceptance.' },
+  };
+  const measuredRows = rowsFor(measuredPrecedence);
+  const measuredGrade = row(measuredRows, 'A14').data as { measuredAttention: { status: string }; leadershipScreening?: unknown; basis: string };
+  assert.equal(feature(measuredRows, 'A14').value, true);
+  assert.equal(measuredGrade.measuredAttention.status, 'SUPPORTED');
+  assert.equal(measuredGrade.basis, 'MEASURED_ATTENTION', 'supported measured leadership takes precedence over a negative entry grade');
+  assert.equal(measuredGrade.leadershipScreening, undefined, 'do not carry a contrary entry grade into qualified data');
+});
+
+test('task-v5 keeps reviewed origin traceability and leadership support as independent criteria', () => {
+  const fixtureFor = (trace: 'INADEQUATE' | 'UNRESOLVED', leadership: 'INADEQUATE' | 'UNRESOLVED', accepted = true) => {
+    const fixture = inadequateOriginFixture();
+    const proposal = fixture.proposal as { claims: Array<{ id: string; feature: string }> };
+    const origin = proposal.claims.find(claim => claim.feature === 'A03');
+    assert.ok(origin);
+    proposal.claims = proposal.claims.filter(claim => claim.feature !== 'A03');
+    const review = fixture.review as {
+      decisions: Array<{ id: string; accepted: boolean; rationale: string }>;
+      candidateSet?: { complete: boolean; rationale: string };
+      originRelationship?: { status: string; citations: Array<{ sourceId: string; quote: string }>; rationale: string };
+      leadershipScreening?: unknown;
+    };
+    review.decisions = review.decisions.filter(decision => decision.id !== origin.id);
+    review.candidateSet = { complete: false, rationale: 'The comparison sample is complete enough to review both public-support criteria.' };
+    review.originRelationship = { status: 'UNKNOWN', citations: [], rationale: 'No dated primary-origin relationship is established.' };
+    fixture.read.comparisonComplete = true;
+    fixture.read.comparisonQualification = {
+      mode: 'qualified-identified-leads-v3', wireMethod: 'comparison-lead-tasks-v5',
+      supportScopeMethod: 'comparison-lead-support-scope-v4',
+    };
+    const scope = fixture.read.originScope!;
+    const source = fixture.read.sources.find(item => item.id === scope.sourceIds[0]);
+    assert.ok(source && scope.complete && scope.sourceIds.length > 0);
+    const citation = { sourceId: source.id, quote: source.text };
+    const judgment = (verdict: 'INADEQUATE' | 'UNRESOLVED') => ({ verdict,
+      rationale: 'This criterion is independently assessed against the complete retained original source.', citations: [citation] });
+    const assessmentReview = { accepted, rationale: accepted
+      ? 'The independent review accepts this criterion on its own evidence.'
+      : 'The independent review rejects this criterion on its own evidence.' };
+    review.leadershipScreening = {
+      method: 'reviewed-public-support-v2', verdict: leadership,
+      rationale: 'The leadership criterion is reviewed independently from factual identity and origin traceability.',
+      citations: [citation], sourceIds: [...scope.sourceIds],
+      review: { ...assessmentReview, inspectionComplete: true, sourceIds: [...scope.sourceIds] },
+      originTraceability: { ...judgment(trace), review: assessmentReview },
+    };
+    return fixture;
+  };
+  const rowsFor = (fixture: Fixture) => deriveAttention(fixture.read, fixture.proposal, fixture.review,
+    TOKEN, CUTOFF, ['evidence-sources', 'evidence-proposal', 'evidence-review'], true);
+
+  const traceOnly = rowsFor(fixtureFor('INADEQUATE', 'UNRESOLVED'));
+  assert.equal(row(traceOnly, 'A03').quality, 'KNOWN');
+  assert.equal(feature(traceOnly, 'A03').value, false);
+  assert.equal((row(traceOnly, 'A03').data as { method: string }).method, 'origin-traceability-screen-v2');
+  assert.equal(row(traceOnly, 'A14').quality, 'MISSING', 'origin traceability cannot substitute for leadership evidence');
+
+  const leadershipOnly = rowsFor(fixtureFor('UNRESOLVED', 'INADEQUATE'));
+  assert.equal(row(leadershipOnly, 'A03').quality, 'MISSING', 'a leadership grade cannot settle factual origin traceability');
+  assert.equal(row(leadershipOnly, 'A14').quality, 'KNOWN');
+  assert.equal(feature(leadershipOnly, 'A14').value, false);
+  const leadershipData = row(leadershipOnly, 'A14').data as { leadershipScreening?: { method: string; originTraceability: { verdict: string } } };
+  assert.equal(leadershipData.leadershipScreening?.method, 'reviewed-public-support-v2');
+  assert.equal(leadershipData.leadershipScreening?.originTraceability.verdict, 'UNRESOLVED');
+
+  const rejectedTrace = rowsFor(fixtureFor('INADEQUATE', 'UNRESOLVED', false));
+  assert.equal(row(rejectedTrace, 'A03').quality, 'MISSING', 'a rejected origin-traceability judgment remains unknown');
 });

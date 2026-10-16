@@ -2,8 +2,22 @@ import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildGeminiSemanticRequest, geminiSettings } from './gemini.js';
 import { readLimitedText } from './http.js';
+import { countGeminiInput, type GeminiPacer, type GeminiAdmission } from './gemini-pacing.js';
 
+export type SourceModelRouting={fallbackActive:boolean;pacing?:GeminiPacer};
 export type SourceSpan={id:string;sourceId:string;start:number;end:number;text:string};
+/** Only an explicitly identified minute quota can recover within this run. */
+function minuteQuotaDelay(raw:string,model:string):number|null{
+  try{
+    const error=JSON.parse(raw).error;
+    if(error?.code!==429||error.status!=='RESOURCE_EXHAUSTED'||!Array.isArray(error.details))return null;
+    const violations=error.details.filter((d:{'@type'?:string})=>d['@type']==='type.googleapis.com/google.rpc.QuotaFailure').flatMap((d:{violations?:unknown[]})=>Array.isArray(d.violations)?d.violations:[]);
+    const retry=error.details.find((d:{'@type'?:string})=>d['@type']==='type.googleapis.com/google.rpc.RetryInfo');
+    if(!violations.length||!violations.every((v:{quotaId?:unknown;quotaValue?:unknown;quotaDimensions?:{model?:string}})=>typeof v.quotaId==='string'&&/PerMinute(?:-|$)/.test(v.quotaId)&&Number(v.quotaValue)>0&&v.quotaDimensions?.model===model)||typeof retry?.retryDelay!=='string'||!/^\d+(?:\.\d+)?s$/.test(retry.retryDelay))return null;
+    const ms=Number(retry.retryDelay.slice(0,-1))*1000;
+    return Number.isFinite(ms)&&ms>=0&&ms<=60000?ms:null;
+  }catch{return null;}
+}
 /** Parse only the final non-thought JSON; persistence uses the same response boundary. */
 export function parseSourceResponse(raw:string,prefix='ATT_MODEL'):unknown{
   const envelope=JSON.parse(raw);
@@ -34,7 +48,7 @@ export function sourceSpans(sourceId:string,text:string,prefix='ATT_MODEL'):Sour
   return spans;
 }
 
-export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL'):Promise<{raw:string;value:z.output<S>}>{
+export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL',routing?:SourceModelRouting):Promise<{raw:string;value:z.output<S>}>{
   if(packet.length>300000)throw new Error(`${prefix}_PACKET_LIMIT`);
   const body={...buildGeminiSemanticRequest('attention-source-review'),contents:[{role:'user',parts:[{text:packet}]}]};
   // Gemini's supported subset omits dialect and string-length keywords; Zod still enforces them locally.
@@ -50,17 +64,29 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
   const payload=JSON.stringify({...body,generationConfig:{...body.generationConfig,responseJsonSchema:jsonSchema}});
   const checkRun=()=>{if(signal?.aborted)throw new Error(signal.reason?.name==='TimeoutError'?`${prefix}_RUN_TIMEOUT`:`${prefix}_RUN_ABORTED`);};
   let response:Response,raw:string;
+  const counts=new Map<string,Awaited<ReturnType<typeof countGeminiInput>>>();
   for(let attempt=0;;attempt++){
     checkRun();
-    const local=AbortSignal.timeout(90000),started=Date.now();
-    let phase:'RESPONSE_HEADERS'|'RESPONSE_BODY'='RESPONSE_HEADERS',retrying=false;
-    const receipt=(code:string)=>retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase,elapsedMs:Math.max(0,Date.now()-started),budgetMs:90000,code,willRetry:retrying}),false,attempt+1);
-    try{
-      response=await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,{method:'POST',headers:{'x-goog-api-key':key,'content-type':'application/json'},body:payload,signal:signal?AbortSignal.any([local,signal]):local});
-      phase='RESPONSE_BODY';
-      raw=await readLimitedText(response,400000);
+    if(attempt===2&&routing)routing.fallbackActive=true;
+    const model=routing?.fallbackActive||attempt===2?geminiSettings.fallbackModel:geminiSettings.model;
+    let admission:GeminiAdmission|undefined;
+    if(routing?.pacing){
+      let count=counts.get(model);
+      if(!count){try{count=await countGeminiInput(model,payload,key,fetcher,signal);}catch(error){checkRun();throw error;}counts.set(model,count);}
       checkRun();
-      retrying=[408,503,504].includes(response.status)&&attempt<2;
+      try{admission=await routing.pacing.admit(model,count.tokens,count.method,wait,signal);}catch(error){checkRun();throw error;}
+    }
+    const local=AbortSignal.timeout(90000),started=Date.now();
+    let phase:'RESPONSE_HEADERS'|'RESPONSE_BODY'='RESPONSE_HEADERS',retrying=false,quotaDelay:number|null=null,attemptRaw:string|undefined;
+    const receipt=(code:string)=>retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase,elapsedMs:Math.max(0,Date.now()-started),budgetMs:90000,model,code,willRetry:retrying,...(admission?{pacing:{inputTokens:admission.inputTokens,countMethod:admission.countMethod,waitedMs:admission.waitedMs,inputTokensPerMinute:routing!.pacing!.inputTokensPerMinute,requestsPerMinute:routing!.pacing!.requestsPerMinute}}:{})}),false,attempt+1);
+    try{
+      checkRun();
+      response=await fetcher(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',headers:{'x-goog-api-key':key,'content-type':'application/json'},body:payload,signal:signal?AbortSignal.any([local,signal]):local});
+      phase='RESPONSE_BODY';
+      raw=await readLimitedText(response,400000);attemptRaw=raw;
+      checkRun();
+      quotaDelay=response.status===429?minuteQuotaDelay(raw,model):null;
+      retrying=([408,500,503,504].includes(response.status)||quotaDelay!==null)&&attempt<2;
       retain(raw,retrying,undefined,attempt+1);
       receipt(`${prefix}_HTTP_${response.status}`);
       if(!retrying)break;
@@ -70,9 +96,9 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
       retrying=timeout&&attempt<2;
       receipt(timeout?`${prefix}_TIMEOUT`:error instanceof Error&&error.name==='AbortError'?`${prefix}_ABORTED`:`${prefix}_TRANSPORT`);
       if(!retrying){if(timeout)throw new Error(`${prefix}_TIMEOUT`);throw error;}
-    }
+    }finally{if(admission)routing!.pacing!.settle(admission,attemptRaw);}
     checkRun();
-    const backoff=attempt===0?30000:60000;
+    const backoff=Math.max(attempt===0?30000:60000,quotaDelay??0);
     try{if(wait===delay)await delay(backoff,undefined,{signal});else await wait(backoff);}catch(error){checkRun();throw error;}
     checkRun();
   }

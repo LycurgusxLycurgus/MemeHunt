@@ -21,6 +21,91 @@ function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 }
 
+const METADATA_URI = 'https://ipfs.io/ipfs/QmSyntheticTokenMetadata/token.json';
+
+test('an unavailable optional metadata URI does not poison retained website and social identity roots', async () => {
+  const website: AttentionSource = {
+    id: 'identity-website', url: 'https://project.example/about', text: `The project identifies ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const profile: AttentionSource = {
+    id: 'identity-social', url: 'https://x.com/alice', text: `The project account confirms ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: 'x.com:alice', availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const calls: string[] = [];
+  const unavailableMetadata: typeof fetch = async input => {
+    calls.push(String(input));
+    if (String(input).startsWith('https://api.search.tinyfish.ai/')) return response({ results: [] });
+    throw new Error('The retained roots are complete; optional metadata must not be fetched as a required identity source.');
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, website, profile], {
+    discoveryUrls: [METADATA_URI, website.url, profile.url], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', unavailableMetadata, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { requestedUrls: string[]; selection: Array<{ url: string; required: boolean }> };
+
+  assert.equal(read.identityComplete, true);
+  assert.deepEqual(read.identitySourceIds, [website.id, profile.id]);
+  assert.deepEqual(read.targetPostIds, [POST.id], 'optional metadata discovery does not change the declared participant sample');
+  assert.equal(read.sampleComplete, true);
+  assert.equal(calls.some(url => url.startsWith('https://api.fetch.tinyfish.ai/')), false, 'already-retained identity roots require no supplemental page fetch');
+  assert.equal(calls.some(url => url.includes(new URL(METADATA_URI).hostname)), false, 'the unavailable optional metadata page is never fetched');
+  assert.deepEqual(scope.requestedUrls, []);
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI && item.required), false);
+});
+
+test('a failed required website identity root stays incomplete while metadata remains optional', async () => {
+  const profile: AttentionSource = {
+    id: 'identity-social', url: 'https://x.com/alice', text: `The project account confirms ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: 'x.com:alice', availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const websiteUrl = 'https://project.example/about';
+  const requested: string[] = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === 'https://api.fetch.tinyfish.ai/') {
+      const body = JSON.parse(String(init?.body)) as { urls: string[] };
+      requested.push(...body.urls);
+      return response({ results: [], errors: body.urls.map(sourceUrl => ({ url: sourceUrl, error: 'unavailable' })) });
+    }
+    throw new Error(`Unexpected hosted request: ${url}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, profile], {
+    discoveryUrls: [METADATA_URI, websiteUrl, profile.url], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { selection: Array<{ url: string; required: boolean; status: string }> };
+
+  assert.equal(read.identityComplete, false);
+  assert.deepEqual(requested, [websiteUrl]);
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI), false);
+  assert.ok(scope.selection.some(item => item.url === websiteUrl && item.required && item.status === 'SOC_FETCH_URL_ERROR'));
+});
+
+test('a metadata JSON page alone cannot become a social identity root', async () => {
+  const metadataPage: AttentionSource = {
+    id: 'token-metadata-json', url: METADATA_URI, text: JSON.stringify({ mint: SOCIAL_TOKEN.address, name: 'Synthetic Token' }),
+    publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  let searchCalls = 0;
+  let fetchCalls = 0;
+  const searchOnly: typeof fetch = async input => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) { searchCalls++; return response({ results: [] }); }
+    if (url.startsWith('https://api.fetch.tinyfish.ai/')) { fetchCalls++; return response({ results: [], errors: [] }); }
+    throw new Error(`Unexpected hosted request: ${url}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, metadataPage], {
+    postSampleSourceIds: [], discoveryUrls: [METADATA_URI], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', searchOnly, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { selection: Array<{ url: string }> };
+
+  assert.equal(read.identityComplete, false);
+  assert.deepEqual(read.identitySourceIds, []);
+  assert.equal(read.sources.some(source => source.id === metadataPage.id), false);
+  assert.equal(searchCalls, 1, 'the normal bounded identity search may look for actual public identity pages');
+  assert.equal(fetchCalls, 0, 'the metadata URI itself is never fetched as an identity root');
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI), false);
+});
+
 test('social supplements use their own eight-source budget, exclude comparison pages, and preserve the frozen post sample', async () => {
   const docs = Array.from({ length: 7 }, (_, index) => `https://project.example/docs/about-${index + 1}`);
   const projectPage: AttentionSource = {
