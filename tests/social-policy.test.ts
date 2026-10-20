@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
+import { completeFixtureEntryFeatures, fixtureFeature, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import type { SocialPolicyFacts } from '../src/domain/contracts.js';
 import { SOCIAL_AVAILABLE, SOCIAL_CUTOFF, SOCIAL_END, SOCIAL_START, SOCIAL_TOKEN } from './social-fixtures.js';
@@ -88,4 +88,77 @@ test('QUALIFIED_V4 consumes accepted source-qualified judgments for SOC-01 and S
   assert.equal(status(features, 'SOC-02', 'QUALIFIED_V4', facts()).row.status, 'UNKNOWN', 'legacy optional facts do not fall through to V3 for SOC-02');
   assert.equal(status(features, 'SOC-01', 'QUALIFIED_V4', facts({ identityReview: qualifiedJudgment('UNRESOLVED') })).row.status, 'UNKNOWN');
   assert.equal(status(features, 'SOC-01', 'QUALIFIED_V4', facts({ identityReview: qualifiedJudgment('CONTRADICTED'), availableAt: '2026-10-03T23:54:59.999Z' })).row.status, 'UNKNOWN', 'stale judgments stay unusable');
+});
+
+test('QUALIFIED_V4 uses an available third participation judgment and preserves V3 fallback when it is absent', () => {
+  const features = completeFixtureEntryFeatures({ S03: false, S10: false });
+  const belowThreshold = facts({
+    accountUpperBound: null, independentGroupCount: 0, independentCommunityCount: 0,
+    participationReview: qualifiedJudgment('SUPPORTED'),
+  });
+
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', belowThreshold).row.status, 'PASS',
+    'a fresh independently reviewed participation assessment can resolve an otherwise unknown third judgment');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V3', belowThreshold).row.status, 'UNKNOWN',
+    'older policy versions continue to use count facts and do not consume the third assessment');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts({
+    participationReview: qualifiedJudgment('UNRESOLVED'),
+  })).row.status, 'PASS', 'an unresolved extra judgment does not downgrade complete favorable factual evidence');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts({
+    accountUpperBound: 1, independentGroupCount: 0, independentCommunityCount: 0,
+    participationReview: qualifiedJudgment('UNRESOLVED'),
+  })).row.status, 'FAIL', 'an unresolved extra judgment does not erase a complete factual shortfall');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V3', facts({
+    accountUpperBound: 1, independentGroupCount: 0, independentCommunityCount: 0,
+  })).row.status, 'FAIL', 'the count-based known shortfall remains adverse in the prior policy');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts({
+    accountUpperBound: null, independentGroupCount: null, independentCommunityCount: null,
+    participationReview: qualifiedJudgment('CONTRADICTED'),
+  })).row.status, 'FAIL');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts({
+    accountUpperBound: null, independentGroupCount: null, independentCommunityCount: null,
+    participationReview: qualifiedJudgment('UNRESOLVED'),
+  })).row.status, 'UNKNOWN');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts()).row.status, 'PASS',
+    'without a third judgment V4 retains the prior count-based fallback');
+  assert.equal(status(features, 'SOC-03', 'QUALIFIED_V4', facts({
+    accountUpperBound: null, independentGroupCount: null, independentCommunityCount: null,
+    participationReview: qualifiedJudgment('CONTRADICTED'), availableAt: '2026-10-03T23:54:59.999Z',
+  })).row.status, 'UNKNOWN', 'stale third judgments remain unusable');
+});
+
+test('QUALIFIED_V4 uses only the reviewed community-breadth judgment to resolve unknown ATT-02', () => {
+  const unknownCommunity = completeFixtureEntryFeatures({ A18: false });
+  const s10 = unknownCommunity.find(feature => feature.id === 'S10');
+  assert.ok(s10);
+  Object.assign(s10, fixtureFeature('S10', null, { quality: 'MISSING' }));
+  const negative = facts({
+    independentCommunityCount: null,
+    communityBreadthReview: qualifiedJudgment('CONTRADICTED'),
+  });
+  assert.equal(status(unknownCommunity, 'ATT-02', 'QUALIFIED_V4', negative).row.status, 'FAIL',
+    'an accepted inadequate-breadth judgment resolves an otherwise unknown three-community check');
+  assert.equal(status(unknownCommunity, 'ATT-02', 'QUALIFIED_V3', negative).row.status, 'UNKNOWN',
+    'the prior policy does not consume the v3 community judgment');
+
+  const supported = facts({
+    independentCommunityCount: null,
+    communityBreadthReview: qualifiedJudgment('SUPPORTED'),
+  });
+  assert.equal(status(unknownCommunity, 'ATT-02', 'QUALIFIED_V4', supported).row.status, 'PASS');
+
+  const growthPasses = completeFixtureEntryFeatures({ A18: true });
+  const unknownGrowthS10 = growthPasses.find(feature => feature.id === 'S10');
+  assert.ok(unknownGrowthS10);
+  Object.assign(unknownGrowthS10, fixtureFeature('S10', null, { quality: 'MISSING' }));
+  assert.equal(status(growthPasses, 'ATT-02', 'QUALIFIED_V4', negative).row.status, 'PASS',
+    'the separate A18 positive path still satisfies ATT-02');
+
+  const knownShortfall = completeFixtureEntryFeatures({ A18: false, S10: false });
+  assert.equal(status(knownShortfall, 'ATT-02', 'QUALIFIED_V4', supported).row.status, 'FAIL',
+    'a known factual S10 shortfall is not overwritten by a semantic review');
+  assert.equal(status(unknownCommunity, 'ATT-02', 'QUALIFIED_V4', facts({
+    communityBreadthReview: qualifiedJudgment('CONTRADICTED'),
+    availableAt: '2026-10-03T23:54:59.999Z',
+  })).row.status, 'UNKNOWN', 'stale community review is not usable');
 });

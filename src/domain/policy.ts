@@ -93,7 +93,8 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
       const judgment=d.checkId==='SOC-01'?social?.identityReview:social?.integrityReview;
       status=!socialUsable||!judgment||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';
     }
-    if (d.checkId === 'ATT-02') { const a = boolRule(features,['A18'],cutoff), s = boolRule(features,['S10'],cutoff); status = a === 'PASS' || s === 'PASS' ? 'PASS' : a === 'FAIL' && s === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
+    if(attentionPolicy==='QUALIFIED_V4'&&d.checkId==='SOC-03'&&status==='UNKNOWN'&&social?.participationReview){const judgment=social.participationReview;status=!socialUsable||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';}
+    if (d.checkId === 'ATT-02') { const a = boolRule(features,['A18'],cutoff), s = boolRule(features,['S10'],cutoff); const reviewedCommunity=attentionPolicy==='QUALIFIED_V4'&&socialUsable?social?.communityBreadthReview:undefined;const community=s==='UNKNOWN'&&reviewedCommunity&&reviewedCommunity.verdict!=='UNRESOLVED'?(reviewedCommunity.verdict==='SUPPORTED'?'PASS':'FAIL'):s;status = a === 'PASS' || community === 'PASS' ? 'PASS' : a === 'FAIL' && community === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
     if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL' && !(shared&&d.checkId.startsWith('DAT-')||attentionPolicy!=='LEGACY'&&d.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL')) status = 'UNKNOWN';
     if (d.role === 'ADVISORY' && d.featureIds.length === 0) status = 'UNKNOWN';
     const evidenceRefs = [...new Set(ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];

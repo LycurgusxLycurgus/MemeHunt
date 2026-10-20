@@ -11,8 +11,8 @@ import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs 
 import { reduceLedger } from '../domain/ledger.js';
 import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema } from '../domain/social.js';
 import { deriveAttention,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
-import { comparisonRequiredRecoveryPlan, decodeComparisonLeadTasks, comparisonReferenceRepairDetails, decodeNarrativePublicSupport, decodeSubmittedAttention, comparisonTargetContext, comparisonInstruction, decodeComparisonLeadArray, decodeComparisonLeadAccounting, comparisonScopeV3Schema, comparisonLeadIsAccounted, comparisonAccountingComplete, comparisonAccountingContext, comparisonAccountingInstruction, comparisonAccountingReviewInstruction, comparisonAccountingReferenceRepairInstruction, comparisonAccountingArraySchema, comparisonLeadSupportInstruction, comparisonLeadSupportRepairEligible, comparisonLeadSupportRepairValid, leadershipEntryCriterion, decodeBinaryEntryDecisions, binaryLeadershipReviewSchema, scopedLeadershipReviewSchema, decodeLeadershipSupport, leadershipSupportProposalSchema, leadershipSupportReviewSchema, decodeComparisonCoverage, comparisonSourceLineage, comparisonLeadIsQualified } from '../providers/attention-model.js';
-import { normalizeAttentionSearchUrl, type AttentionRead } from '../providers/attention.js';
+import { emptyAttentionQualification, comparisonRequiredRecoveryPlan, decodeComparisonLeadTasks, comparisonReferenceRepairDetails, decodeNarrativePublicSupport, decodeSubmittedAttention, comparisonTargetContext, comparisonInstruction, decodeComparisonLeadArray, decodeComparisonLeadAccounting, comparisonScopeV3Schema, comparisonLeadIsAccounted, comparisonAccountingComplete, comparisonAccountingContext, comparisonAccountingInstruction, comparisonAccountingReviewInstruction, comparisonAccountingReferenceRepairInstruction, comparisonAccountingArraySchema, comparisonLeadSupportInstruction, comparisonLeadSupportRepairEligible, comparisonLeadSupportRepairValid, leadershipEntryCriterion, decodeBinaryEntryDecisions, resolvePublicEntryDecision, binaryLeadershipReviewSchema, scopedLeadershipReviewSchema, decodeLeadershipSupport, leadershipSupportProposalSchema, leadershipSupportReviewSchema, decodeComparisonCoverage, comparisonSourceLineage, comparisonLeadIsQualified } from '../providers/attention-model.js';
+import { attentionSourceText, normalizeAttentionSearchUrl, type AttentionRead } from '../providers/attention.js';
 import { geckoPoolBinding } from '../providers/origin-recovery.js';
 import { validateSocialRepair,validateSocialWire } from '../providers/social-model.js';
 import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
@@ -155,14 +155,15 @@ export class Service {
     for (const e of b.evidence) if (Date.parse(e.availableAt) > Date.parse(b.cutoff) || Date.parse(e.retrievedAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EVIDENCE');
     if (b.rawArtifacts && Object.keys(b.rawArtifacts).some(id => !ids.has(id))) throw new Error('UNREFERENCED_ARTIFACT');
     if ((b.analysisKind === 'USER_IMPORT' || b.analysisKind === 'LIVE') && b.evidence.some(e => b.rawArtifacts?.[e.id] === undefined)) throw new Error('RAW_ARTIFACT_REQUIRED');
-    let artifactBytes = 0;
+    let artifactBytes = 0,populationBytes=0;
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
-      const raw = b.rawArtifacts[e.id]; artifactBytes += Buffer.byteLength(raw);
-      if (artifactBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
+      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
+      if(b.analysisKind==='LIVE'&&e.id==='rpc-holder-population'&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
+      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'solana-rpc-diagnostics':'LOCAL_DERIVED', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
         if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -196,6 +197,11 @@ export class Service {
             const {qualifiedAt:receiptTime,...receiptScope}=socialInputSchema.parse(normalized.read);
             const {qualifiedAt:derivationTime,...derivationScope}=read;
             if(decisionHash(normalized.proposal)!==decisionHash(proposal)||decisionHash(normalized.review)!==decisionHash(review)||decisionHash(receiptScope)!==decisionHash(derivationScope))throw new Error('SOCIAL_PROOF_INVALID');
+            const acquisition=b.rawArtifacts['social-acquisition-scope']?JSON.parse(b.rawArtifacts['social-acquisition-scope']):null;
+            const submitted=b.rawArtifacts['social-proposal-prompt']?JSON.parse(b.rawArtifacts['social-proposal-prompt']):null;
+            if(read.entryDecisionMethod||acquisition?.read?.entryDecisionMethod||submitted?.scope?.entryDecisionMethod||proposal.participationAssessment||proposal.communityBreadthAssessment){
+              if(!['public-support-v2','public-support-v3'].includes(read.entryDecisionMethod??'')||(read.entryDecisionMethod==='public-support-v3'?!proposal.communityBreadthAssessment:!!proposal.communityBreadthAssessment)||normalized.wireMethod!=='social-line-span-v2'||!proposal.participationAssessment||decisionHash(acquisition?.read)!==decisionHash(receiptScope))throw Error('SOCIAL_PROOF_INVALID');
+            }
             if(normalized.wireMethod!==undefined&&normalized.wireMethod!=='social-line-span-v2')throw new Error('SOCIAL_PROOF_INVALID');
             if(normalized.identityCitationMethod!==undefined&&(!['assessment-citation-closure-v1','identity-citation-closure-v2'].includes(normalized.identityCitationMethod)||normalized.wireMethod!=='social-line-span-v2'))throw new Error('SOCIAL_PROOF_INVALID');
             const hasRepair=Object.keys(b.rawArtifacts).some(id=>id.startsWith('social-repair-'));
@@ -244,14 +250,16 @@ export class Service {
           if(decisionHash(packet.semanticReceiptIds)!==decisionHash(receiptIds))throw new Error('SHARED_PROOF_INVALID');
           if(attentionRecord){
             const receipt=JSON.parse(b.rawArtifacts[attentionRecord.id]);
-            const binaryMode=receipt.read.comparisonQualification?.entryDecisionMethod==='binary-public-support-v1';
+            const binaryMode=receipt.read.entryEvidenceMethod==='public-support-v2'||receipt.read.comparisonQualification?.entryDecisionMethod==='binary-public-support-v1';
+            const acquisitionMode=JSON.parse(b.rawArtifacts['attention-acquisition-scope']??'{}').entryEvidenceMethod,submittedMode=JSON.parse(b.rawArtifacts['attention-proposal-prompt']??'{}').scope?.entryEvidenceMethod;
+            if(receipt.read.entryEvidenceMethod||acquisitionMode||submittedMode||receipt.review?.entryDecisions?.method==='binary-public-support-v2'){const empty=emptyAttentionQualification(receipt.read),localEmpty=!receipt.read.sources.length&&decisionHash({proposal:receipt.proposal,review:receipt.review})===decisionHash({proposal:empty.proposal,review:empty.review});const submitted=!!b.rawArtifacts['attention-proposal-prompt']||!!b.rawArtifacts['attention-proposal-response']||!localEmpty&&(!!receipt.proposal||!!receipt.review);if(receipt.read.entryEvidenceMethod!=='public-support-v2'||acquisitionMode!=='public-support-v2'||(submitted&&submittedMode!=='public-support-v2'))throw Error('SHARED_PROOF_INVALID');}
             if(receipt.review?.entryDecisions){
               if(!binaryMode)throw Error('SHARED_PROOF_INVALID');
               for(const id of ['attention-leadership-proposal-response','attention-leadership-review-response'])if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw Error('SHARED_PROOF_REQUIRED');
               const fullRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
               if(decisionHash(decodeBinaryEntryDecisions(fullRead,receipt.proposal,receipt.review,b.token,receipt.cutoff,b.rawArtifacts))!==decisionHash(receipt.review.entryDecisions))throw Error('SHARED_PROOF_INVALID');
             }
-            if(binaryMode&&b.rawArtifacts['attention-leadership-review-response']){let completed=false;try{completed=(receipt.read.comparisonQualification?.entryCitationMethod==='single-required-citation-v1'?scopedLeadershipReviewSchema:receipt.read.comparisonQualification?.entryScopeMethod==='code-owned-origin-scope-v1'?binaryLeadershipReviewSchema.omit({sourceIds:true}):binaryLeadershipReviewSchema).safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-review-response'])).success;}catch{}if(completed&&!receipt.review?.entryDecisions)throw Error('SHARED_PROOF_REQUIRED');}
+            if(binaryMode&&b.rawArtifacts['attention-leadership-review-response']){let completed=false;try{const response=parseSourceResponse(b.rawArtifacts['attention-leadership-review-response']);if(receipt.read.entryEvidenceMethod){resolvePublicEntryDecision(response,{...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))},b.token,receipt.cutoff);completed=true;}else completed=(receipt.read.comparisonQualification?.entryCitationMethod==='single-required-citation-v1'?scopedLeadershipReviewSchema:receipt.read.comparisonQualification?.entryScopeMethod==='code-owned-origin-scope-v1'?binaryLeadershipReviewSchema.omit({sourceIds:true}):binaryLeadershipReviewSchema).safeParse(response).success;}catch{}if(completed&&!receipt.review?.entryDecisions)throw Error('SHARED_PROOF_REQUIRED');}
             if(receipt.read.comparisonQualification?.wireMethod==='comparison-lead-tasks-v5'&&b.rawArtifacts['attention-leadership-proposal-response']&&b.rawArtifacts['attention-leadership-review-response']){
               let completed=false;try{completed=leadershipSupportProposalSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-proposal-response'])).success&&leadershipSupportReviewSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-review-response'])).success;}catch{/* An honest malformed/interrupted review is not a completed proof. */}
               if(completed&&receipt.review?.leadershipScreening?.method!=='reviewed-public-support-v2')throw Error('SHARED_PROOF_REQUIRED');
@@ -318,7 +326,7 @@ export class Service {
               const reviewer=parseSourceResponse(b.rawArtifacts['attention-review-response']) as {decisions:Record<string,unknown>;originScopeReview?:unknown};
               const candidate=wire.claims.find(c=>c.id===claim.id),stored=receipt.review?.decisions.find((d:{id:string})=>d.id===claim.id);
               if(!candidate||!stored||decisionHash(reviewer.originScopeReview??null)!==decisionHash(receipt.review.originScopeReview??null)||decisionHash(reviewer.decisions[claim.id])!==decisionHash({accepted:stored.accepted,rationale:stored.rationale}))throw new Error('SHARED_PROOF_INVALID');
-              const citations=(candidate.citations as Array<{sourceId:string;spanId:string}>).map(ref=>{const source=receipt.read.sources.find((s:{id:string})=>s.id===ref.sourceId),span=source&&sourceSpans(source.id,source.text.slice(0,6000)).find(s=>s.id===ref.spanId);if(!span)throw new Error('SHARED_PROOF_INVALID');return {sourceId:ref.sourceId,quote:span.text};});
+              const citations=(candidate.citations as Array<{sourceId:string;spanId:string}>).map(ref=>{const source=receipt.read.sources.find((s:{id:string})=>s.id===ref.sourceId),span=source&&sourceSpans(source.id,attentionSourceText(receipt.read,source.text)).find(s=>s.id===ref.spanId);if(!span)throw new Error('SHARED_PROOF_INVALID');return {sourceId:ref.sourceId,quote:span.text};});
               if(decisionHash({...candidate,citations})!==decisionHash(claim))throw new Error('SHARED_PROOF_INVALID');
             }
             const localEmptyAttention=receipt.read.sources.length===0&&['claims','posts','competitors'].every(key=>Array.isArray(receipt.proposal?.[key])&&receipt.proposal[key].length===0)&&Array.isArray(receipt.review?.decisions)&&receipt.review.decisions.length===0&&receipt.review.candidateSet?.complete!==true&&(!receipt.review.originRelationship||receipt.review.originRelationship.status==='UNKNOWN');
@@ -477,7 +485,7 @@ export class Service {
             if(decisionHash(receipt.read.growthSample)!==decisionHash(expectedSample))throw new Error('SHARED_PROOF_INVALID');
             const derived=deriveAttention({...receipt.read,rawArtifacts:b.rawArtifacts},receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true);
             if(derived.some(a=>decisionHash(a)!==decisionHash(packet.baseline.find(x=>x.id===a.id))))throw new Error('SHARED_ATTENTION_INVALID');
-            const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1'].includes((a.data as {method?:string}).method??''));
+            const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2'].includes((a.data as {method?:string}).method??''));
             if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};const expected={kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'};if(decisionHash(b.semantic.claims.filter(c=>c.kind==='ORIGIN'))!==decisionHash([expected]))throw Error('SHARED_ATTENTION_INVALID');}
             const socialRecord=b.evidence.find(e=>e.id==='social-derivation');
             const socialSources=socialRecord?JSON.parse(b.rawArtifacts[socialRecord.id]).read.sources:[];

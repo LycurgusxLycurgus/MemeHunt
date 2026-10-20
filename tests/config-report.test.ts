@@ -310,7 +310,7 @@ test('social explanations label synchrony and account history while legacy snaps
   assert.deepEqual(legacyNames, ['S04', 'S05'].map(id => featureMetadata.find(row => row.id === id)?.name ?? id));
 });
 
-test('all four unknown-cause families survive per-check explanation', () => {
+test('unknown kinds come from each row’s causal code and render alongside UNKNOWN status', () => {
   const snapshot = sampleSnapshot();
   const causeRow = (id: string, category: BaselineAssessment['causes'][number]['category']): BaselineAssessment => ({
     id, version: 'baseline-v1', evaluator: 'IMPLEMENTED', collector: 'IMPLEMENTED', quality: 'MISSING', unit: 'bool', data: null,
@@ -329,4 +329,30 @@ test('all four unknown-cause families survive per-check explanation', () => {
   snapshot.result.checks.push(check('SEC-01', 'O05'), check('ATT-01', 'A16'), check('CTX-01', 'C01'));
   const categories = new Set(explainChecks(snapshot).flatMap(row => row.causes.map(cause => cause.category)));
   assert.deepEqual([...categories].sort(), ['CLAIM_UNVALIDATED', 'COLLECTION_UNIMPLEMENTED', 'EVIDENCE_UNAVAILABLE', 'USER_INPUT_MISSING']);
+
+  const typedCauses = [
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'SOC_SEARCH_HTTP_503'],
+    ['COLLECTION', 'EVIDENCE_UNAVAILABLE', 'SOC_TEXT_CAP'],
+    ['MODEL', 'CLAIM_UNVALIDATED', 'SOC_REVIEW_INVALID'],
+    ['IMPLEMENTATION', 'COLLECTION_UNIMPLEMENTED', 'SOC_COLLECTOR_UNIMPLEMENTED'],
+    ['INPUT', 'USER_INPUT_MISSING', 'SOC_PROFILE_FIELD_MISSING'],
+    ['EXECUTION', 'EVIDENCE_UNAVAILABLE', 'PUMP_SIMULATION_SLIPPAGE'],
+    ['DATA', 'EVIDENCE_UNAVAILABLE', 'SOC_PUBLIC_RECORD_MISSING'],
+  ] as const;
+  for (const [kind, category, code] of typedCauses) {
+    const id = `CAUSE_${kind}`;
+    snapshot.details!.baseline.push({
+      id, version: 'baseline-v1', evaluator: 'IMPLEMENTED', collector: 'IMPLEMENTED', quality: 'MISSING', unit: 'bool', data: null,
+      observationIds: [], evidenceIds: [], limitations: [],
+      causes: [{ category, code, featureId: id, evidenceIds: [], action: `Resolve ${code} using its supported workflow.` }],
+    });
+    snapshot.result.checks.push({
+      checkId: `ROW-${kind}`, checklistKind: 'ENTRY', role: 'REQUIRED_EVIDENCE', pillar: 'SOCIAL', required: true,
+      status: 'UNKNOWN', reasonCode: 'FEATURE_UNKNOWN', featureRefs: [id], evidenceRefs: [],
+    });
+  }
+  const rows = new Map(explainChecks(snapshot).map(row => [row.checkId, row]));
+  for (const [kind] of typedCauses) assert.equal(rows.get(`ROW-${kind}`)?.unknownKind, kind);
+  const rendered = renderSnapshot(snapshot);
+  for (const [kind] of typedCauses) assert.match(rendered, new RegExp(`UNKNOWN \\(${kind}\\)\\s+ROW-${kind}`));
 });

@@ -20,7 +20,7 @@ export type SharedInputs={qualityMode?:'ENTRY_GATES_V1';token:TokenRef;cutoff:st
 /** A reviewed entry-support decision does not resolve factual candidate binding. */
 export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|undefined{
  const a=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN'),d=a?.data as {entryDecisionMethod?:string;decision?:{verdict?:string}}|null|undefined;
- return d?.entryDecisionMethod==='binary-public-support-v1'&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
+ return !!d&&['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
 }
 /** Reuse the actual entry evaluator. Remove inputs only when the same decision survives. */
 export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean){
@@ -41,7 +41,7 @@ export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyF
     const data=a.data as {originBasis?:string;summary?:string;citations?:SharedClaim['citations']};
     if(data.summary&&data.citations)claims.push(sharedClaimSchema.parse({id:a.id,statement:data.originBasis==='PUBLIC_EVIDENCE_INADEQUATE'?`Reviewed public origin evidence is inadequate within the declared discovery sample: ${data.summary}. This is a traceability screening grade, not fraud or absence of origin everywhere.`:data.summary,citations:data.citations}));
   }
-  for(const a of baseline.filter(a=>['A09','A14'].includes(a.id)&&a.quality==='KNOWN')){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string;citations:SharedClaim['citations']}};if(d.entryDecisionMethod==='binary-public-support-v1'&&d.decision)claims.push(sharedClaimSchema.parse({id:a.id+':entry',statement:'Entry '+d.entryCriterion+' evidence standard '+d.decision.verdict+': '+d.decision.rationale+'. This is a bounded public-support judgment, not verified factual identity, origin, popularity or fraud.',citations:d.decision.citations}));}
+  for(const a of baseline.filter(a=>['A09','A14'].includes(a.id)&&a.quality==='KNOWN')){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string;citations:SharedClaim['citations']}};if(['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&d.decision)claims.push(sharedClaimSchema.parse({id:a.id+':entry',statement:'Entry '+d.entryCriterion+' evidence standard '+d.decision.verdict+': '+d.decision.rationale+'. This is a bounded public-support judgment, not verified factual identity, origin, popularity or fraud.',citations:d.decision.citations}));}
   const representation=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN');
   for(const a of baseline.filter(a=>['A01','A05'].includes(a.id)&&a.quality==='KNOWN')){
     const data=a.data as {method?:string;publicSupport?:{rationale:string;citations:SharedClaim['citations']}};
@@ -54,7 +54,7 @@ export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyF
   const routes=baseline.find(a=>a.id==='A14'&&a.quality==='KNOWN')?.data as {leadershipScreening?:{rationale:string;citations:SharedClaim['citations']};originRelationship?:{status:string;rationale:string;citations:SharedClaim['citations']}}|undefined;
   if(routes?.originRelationship&&routes.originRelationship.status!=='UNKNOWN')claims.push(sharedClaimSchema.parse({id:'A14:origin',statement:`${routes.originRelationship.status}: ${routes.originRelationship.rationale}`,citations:routes.originRelationship.citations}));
   if(routes?.leadershipScreening)claims.push(sharedClaimSchema.parse({id:'A14:adequacy',statement:`Reviewed public origin/leadership support is inadequate within the declared sample: ${routes.leadershipScreening.rationale}. This entry grade does not establish factual non-origin or lack of real-world popularity.`,citations:routes.leadershipScreening.citations}));
-  for(const [id,judgment] of [['SOC-01',social?.identityReview],['SOC-02',social?.integrityReview]] as const)if(judgment&&judgment.verdict!=='UNRESOLVED')claims.push(sharedClaimSchema.parse({id,statement:`${judgment.verdict}: ${judgment.rationale}. Social sample publication window: ${social!.start} inclusive to ${social!.end} exclusive; retrieval time does not make an older post current.`,citations:judgment.citations}));
+  for(const [id,judgment] of [['SOC-01',social?.identityReview],['SOC-02',social?.integrityReview],['SOC-03',social?.participationReview],['ATT-02',social?.communityBreadthReview]] as const)if(judgment&&judgment.verdict!=='UNRESOLVED')claims.push(sharedClaimSchema.parse({id,statement:`${judgment.verdict}: ${judgment.rationale}. Social sample publication window: ${social!.start} inclusive to ${social!.end} exclusive; retrieval time does not make an older post current.`,citations:judgment.citations}));
   return claims;
 }
 

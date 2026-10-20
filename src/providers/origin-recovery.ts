@@ -67,15 +67,27 @@ export function verifiedOriginExclusion(read:AttentionRead,item:OriginExclusion,
   }catch{return false;}
 }
 
+/** Canonical bounded original recovery selection, also reconstructed by entry proof validation. */
+export function originRecoveryCandidates(read:AttentionRead,acquisition=read.originScope?.acquisition){
+  return acquisition?.urls.filter(u=>['UNAVAILABLE','OMITTED'].includes(u.state)&&originContext(read,u.url).length).slice(0,2)??[];
+}
+/** Fresh recovery researches the indexed token/subject, not just the blocked site's role. */
+export function originRecoveryQuery(read:AttentionRead,token:TokenRef,url:string){
+  const host=new URL(url).hostname;
+  if(!read.entryEvidenceMethod)return '"'+host+'" trading dashboard';
+  const context=originContext(read,url).map(item=>item.text).join(' ').replace(/\s+/g,' ').slice(0,500);
+  return '"'+token.address+'" '+token.chain+' origin project launch announcement '+context+' -site:'+host;
+}
 /** Classify at most two unavailable original leads, using free Search/Fetch and two independent passes. */
 export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,tinyfishKey:string,geminiKey:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,routing?:SourceModelRouting):Promise<AttentionRead>{
-  const missing=read.originScope?.acquisition?.urls.filter(u=>['UNAVAILABLE','OMITTED'].includes(u.state)&&originContext(read,u.url).length).slice(0,2)??[];
+  const missing=originRecoveryCandidates(read);
   const out:AttentionRead={...read,sources:[...read.sources],rawArtifacts:{...read.rawArtifacts},originExclusions:[]};
   for(const [n,lead] of missing.entries()){
     if(out.sources.length>=32)break;
     const index=n+1,id=`attention-origin-role-${index}`;
     try{
-      const searchUrl=new URL('https://api.search.tinyfish.ai/');searchUrl.searchParams.set('query',`"${new URL(lead.url).hostname}" trading dashboard`);
+      const query=originRecoveryQuery(read,token,lead.url);if(read.entryEvidenceMethod)out.rawArtifacts[id+'-search-query']=query;
+      const searchUrl=new URL('https://api.search.tinyfish.ai/');searchUrl.searchParams.set('query',query);
       const search=await fetchReadResponse(searchUrl.toString(),{headers:{'X-API-Key':tinyfishKey}},fetcher,15000),searchRaw=await readLimitedText(search,400000);out.rawArtifacts[id+'-search']=searchRaw;
       const found=JSON.parse(searchRaw);if(!search.ok||found.error||found.errors?.length||!Array.isArray(found.results))continue;
       const urls=[...new Set<string>(found.results.flatMap((r:{url?:string})=>{const u=r.url&&publicHttpsUrl(r.url,true);return u&&new URL(u).hostname!==new URL(lead.url).hostname?[u]:[];}))].slice(0,Math.min(2,32-out.sources.length));

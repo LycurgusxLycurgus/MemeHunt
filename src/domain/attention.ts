@@ -4,7 +4,7 @@ import { PublicKey } from '@solana/web3.js';
 import type { TokenRef } from './contracts.js';
 import { tokenRefSchema } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
-import { requiredComparisonRecoveryParents, normalizeAttentionSearchUrl, reconstructOriginAcquisition, type AttentionRead } from '../providers/attention.js';
+import { requiredComparisonRecoveryParents, normalizeAttentionSearchUrl, reconstructOriginAcquisition, entryEvidenceScope, type AttentionRead } from '../providers/attention.js';
 import { parseSourceResponse, sourceSpans } from '../providers/source-model.js';
 import { comparisonSupplementForLead } from '../providers/origin-recovery.js';
 
@@ -284,7 +284,8 @@ export const attentionProposalSchema=z.object({
   posts:z.array(z.object({id:z.string().min(1),sourceId:z.string(),quote:z.string().min(8).max(1000),role:z.enum(['CALL','NEWS','JOKE','WARNING','RETROSPECTIVE','PRICE_ONLY','OTHER','UNCLEAR'])}).strict()).max(32),
   competitors:z.array(z.object({id:z.string().min(1),token:tokenRefSchema,sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).max(10),
 }).strict();
-export const entryDecisionsSchema=z.object({method:z.literal('binary-public-support-v1'),originTraceability:binaryEntryDecisionSchema,leadership:binaryEntryDecisionSchema,inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(32)}).strict();
+const legacyEntryDecisionsSchema=z.object({method:z.literal('binary-public-support-v1'),originTraceability:binaryEntryDecisionSchema,leadership:binaryEntryDecisionSchema,inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(32)}).strict();
+export const entryDecisionsSchema=z.discriminatedUnion('method',[legacyEntryDecisionsSchema,legacyEntryDecisionsSchema.extend({method:z.literal('binary-public-support-v2'),representations:binaryEntryDecisionSchema}).strict()]);
 export const attentionReviewSchema=z.object({
  entryDecisions:entryDecisionsSchema.optional(),
   decisions:z.array(z.object({id:z.string().min(1),accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()).max(47),
@@ -306,6 +307,8 @@ export function qualifiedOriginScreen(read:AttentionRead,review:z.output<typeof 
   return screen;
 }
 export function qualifiedBinaryEntryDecisions(read:AttentionRead,review:z.output<typeof attentionReviewSchema>,token:TokenRef,cutoff:string){
+ if(read.entryEvidenceMethod){const d=review.entryDecisions,scope=entryEvidenceScope(read,token,cutoff);if(d?.method!=='binary-public-support-v2'||!d.inspectionComplete||!scope.complete||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds))return null;const literal=(c:{sourceId:string;quote:string})=>read.sources.some(s=>s.id===c.sourceId&&s.text.includes(c.quote));if(![d.originTraceability,d.leadership,d.representations].every(g=>g.citations.every(literal)))return null;if(!d.originTraceability.citations.every(c=>scope.originSourceIds.includes(c.sourceId)&&read.sources.some(s=>s.id===c.sourceId&&(token.chain==='solana'?s.text.includes(token.address):s.text.toLowerCase().includes(token.address.toLowerCase())))))return null;return d;}
+
  const d=review.entryDecisions,scope=originSourceScope(read,token);
  if(!d?.inspectionComplete||!scope.complete||!scope.sourceIds.length||JSON.stringify(scope)!==JSON.stringify(read.originScope)||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds)||!comparisonResearchComplete(read,cutoff))return null;
  const sources=read.sources.filter(s=>scope.sourceIds.includes(s.id));
@@ -321,7 +324,8 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
     originRelationship:{status:'UNKNOWN',rationale:'Primary-origin relationship has not been independently qualified.',citations:[]},
     measuredAttention:{status:'UNKNOWN',shares:[]},...(data as Record<string,unknown>),method:'representation-routes-v2',
   }:data;
-  const set=(id:string,value:string|boolean|null,data:unknown,known:boolean,code='ATT_QUALIFICATION_MISSING',unit=typeof value==='string'?'count':'bool')=>output.set(id,{id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality:known?'KNOWN':'MISSING',unit,data:routeData(id,data),observationIds:[],evidenceIds,limitations:['automated-source-review-v1; bounded search sample, not verified reality or exhaustive social coverage'],causes:known?[]:[{category:code.includes('REVIEW')||code.includes('QUALIFICATION')?'CLAIM_UNVALIDATED':'EVIDENCE_UNAVAILABLE',code,featureId:id,evidenceIds,action:'Refresh the bounded attention sources and automated review; inspect retained source and reviewer decisions.'}],projection:{id,value:known?value:null,unit,quality:known?'KNOWN':'MISSING',availableAt:cutoff,evidenceIds,applicability:'APPLICABLE'}});
+  const entryBlocker=read.entryEvidenceMethod?entryEvidenceScope(read,token,cutoff).blockers[0]??read.codes.find(c=>c.startsWith('ATT_MODEL_ENTRY_')):undefined;
+  const set=(id:string,value:string|boolean|null,data:unknown,known:boolean,code='ATT_QUALIFICATION_MISSING',unit=typeof value==='string'?'count':'bool')=>{if(!known&&['A03','A09','A11','A14'].includes(id)&&entryBlocker)code=entryBlocker;return output.set(id,{id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality:known?'KNOWN':'MISSING',unit,data:routeData(id,data),observationIds:[],evidenceIds,limitations:['automated-source-review-v1; bounded search sample, not verified reality or exhaustive social coverage'],causes:known?[]:[{category:code.includes('REVIEW')||code.includes('QUALIFICATION')?'CLAIM_UNVALIDATED':'EVIDENCE_UNAVAILABLE',code,featureId:id,evidenceIds,action:'Refresh the bounded attention sources and automated review; inspect retained source and reviewer decisions.'}],projection:{id,value:known?value:null,unit,quality:known?'KNOWN':'MISSING',availableAt:cutoff,evidenceIds,applicability:'APPLICABLE'}})};
   const activeIds=growth?[...featureIds,'A18']:featureIds;
   for(const id of activeIds)set(id,null,{method:'automated-source-review-v1',codes:read.codes},false,read.codes[0]??'ATT_QUALIFICATION_MISSING');
   const invalid=(code:string)=>{for(const id of activeIds)set(id,null,{method:'automated-source-review-v1',codes:[code,...read.codes]},false,code);return [...output.values()];};
@@ -350,7 +354,7 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
   }
   const factualOrigin=output.get('A03')!;
  const binary=growth?qualifiedBinaryEntryDecisions(read,r.data,token,cutoff):null;
- if(factualOrigin.quality!=='KNOWN'&&binary){const d=binary.originTraceability;set('A03',d.verdict==='PASS',{method:'binary-public-support-v1',entryCriterion:'NAR-02',entryDecisionMethod:'binary-public-support-v1',decision:d,assertion:'MODEL_INFERENCE',summary:'Entry origin/catalyst evidence standard '+d.verdict+': '+d.rationale,citations:d.citations,factualAssessment:{quality:factualOrigin.quality,value:factualOrigin.projection?.value,data:factualOrigin.data},meaning:'Public entry evidence sufficiency; factual provenance is unchanged.'},true);}
+ if(factualOrigin.quality!=='KNOWN'&&binary){const d=binary.originTraceability;set('A03',d.verdict==='PASS',{method:binary.method,entryCriterion:'NAR-02',entryDecisionMethod:binary.method,decision:d,assertion:'MODEL_INFERENCE',summary:'Entry origin/catalyst evidence standard '+d.verdict+': '+d.rationale,citations:d.citations,factualAssessment:{quality:factualOrigin.quality,value:factualOrigin.projection?.value,data:factualOrigin.data},meaning:'Public entry evidence sufficiency; factual provenance is unchanged.'},true);}
   const publicOrigin=growth?qualifiedOriginScreen(read,r.data,token,cutoff):null;
   const trace=publicOrigin?.originTraceability;
   if(factualOrigin.quality!=='KNOWN'&&trace?.verdict==='INADEQUATE'&&trace.review.accepted)set('A03',false,{method:'origin-traceability-screen-v2',entryCriterion:'ORIGIN_TRACEABILITY',originBasis:'PUBLIC_EVIDENCE_INADEQUATE',assertion:'MODEL_INFERENCE',summary:trace.rationale,citations:trace.citations,review:trace.review,publicSupport:trace,factualAssessment:{quality:factualOrigin.quality,value:factualOrigin.projection?.value,data:factualOrigin.data},meaning:'Bounded public traceability grade; factual provenance remains unresolved.'},true);
@@ -364,15 +368,15 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
   const keys=candidates.map(c=>`${c.token.chain}:${c.token.chain==='solana'?c.token.address:c.token.address.toLowerCase()}`);
   const coverage=read.comparisonCoverage===undefined?null:comparisonCoverageSchema.safeParse(read.comparisonCoverage);
   const coverageComplete=coverage===null||coverage.success&&coverage.data.complete&&coverage.data.sourceIds.length===read.comparisonSourceIds?.length&&new Set(coverage.data.sourceIds).size===coverage.data.sourceIds.length&&coverage.data.sourceIds.every(id=>read.comparisonSourceIds?.includes(id))&&JSON.stringify(coverage.data.sourceRequirements.map(s=>s.sourceId))===JSON.stringify(coverage.data.sourceIds);
-  const candidateComplete=coverageComplete&&(v2?read.comparisonComplete&&r.data.candidateSet?.complete===true:read.complete)&&candidates.length===p.data.competitors.length&&new Set(keys).size===keys.length&&candidates.some(c=>same(c.token));
+  const candidateComplete=!entryBlocker&&coverageComplete&&(v2?read.comparisonComplete&&r.data.candidateSet?.complete===true:read.complete)&&candidates.length===p.data.competitors.length&&new Set(keys).size===keys.length&&candidates.some(c=>same(c.token));
   const comparisonCode=read.codes.find(c=>c.startsWith('ATT_MODEL_COMPARISON_'));
   set('A09',true,{queries:read.queries,candidates,review:r.data.candidateSet,scope:read.comparisonQualification?'qualified identified-lead sample; unread original pages and refinement proofs retained; not undiscovered representations':'discovered source-reviewed representations; absence outside this sample is not established',...(read.comparisonQualification?{qualification:read.comparisonQualification}:{})},!!candidateComplete,comparisonCode??'ATT_CANDIDATE_SCOPE_INCOMPLETE');
   set('A10',true,{candidates},!!candidateComplete,'ATT_BINDING_UNRESOLVED');
-  const adequacy=growth&&!candidateComplete?qualifiedComparisonEvidence(read,cutoff,token):null;
+  const adequacy=growth&&!entryBlocker&&!candidateComplete?qualifiedComparisonEvidence(read,cutoff,token):null;
   if(adequacy)set('A09',false,{method:'public-representation-screen-v1',evidenceAdequacy:adequacy,scope:'Reviewed inadequate public representation evidence; not a proven competitor or fraud finding'},true);
  const factualComparison=output.get('A09')!;
- const comparisonDecision=growth&&factualComparison.quality!=='KNOWN'?qualifiedBinaryComparisonDecision(read,cutoff):null;
- if(comparisonDecision)set('A09',comparisonDecision.verdict==='PASS',{method:'binary-public-support-v1',entryDecisionMethod:'binary-public-support-v1',entryCriterion:'CAN-01',decision:comparisonDecision,factualAssessment:{quality:factualComparison.quality,value:factualComparison.projection?.value,data:factualComparison.data},meaning:'Public entry evidence sufficiency; factual representations remain separately qualified.'},true);
+ const comparisonDecision=growth&&!entryBlocker&&factualComparison.quality!=='KNOWN'?(binary?.method==='binary-public-support-v2'?binary.representations:qualifiedBinaryComparisonDecision(read,cutoff)):null;
+ if(comparisonDecision)set('A09',comparisonDecision.verdict==='PASS',{method:binary?.method??'binary-public-support-v1',entryDecisionMethod:binary?.method??'binary-public-support-v1',entryCriterion:'CAN-01',decision:comparisonDecision,factualAssessment:{quality:factualComparison.quality,value:factualComparison.projection?.value,data:factualComparison.data},meaning:'Public entry evidence sufficiency; factual representations remain separately qualified.'},true);
   const posts=read.sources.filter(s=>s.kind==='POST'&&(!read.postSampleSourceIds||read.postSampleSourceIds.includes(s.id)));
   const rankingIds=read.comparisonRankingSourceIds??read.comparisonSourceIds;
   const rankingPosts=read.sources.filter(s=>s.kind==='POST'&&rankingIds?.includes(s.id));
@@ -428,11 +432,11 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
     const originStatus=originBound&&datedPrimary&&primary?origin!.status:'UNKNOWN';
     const measuredStatus=rankingKnown?leader&&ties===1?'SUPPORTED':'CONTRADICTED':'UNKNOWN';
     const screening=r.data.leadershipScreening;
-    const screened=originStatus!=='SUPPORTED'&&measuredStatus!=='SUPPORTED'&&screening?.verdict==='INADEQUATE'&&screening.review.accepted&&read.originScope?.complete===true&&(read.comparisonComplete===true||!!qualifiedComparisonEvidence(read,cutoff))&&screening.sourceIds.length===read.originScope.sourceIds.length&&new Set(screening.sourceIds).size===screening.sourceIds.length&&screening.sourceIds.every(id=>read.originScope!.sourceIds.includes(id))&&screening.citations.every(ref=>!!cite(ref))&&(screening.method==='reviewed-public-support-v2'?!!publicOrigin:factualOrigin.quality==='KNOWN');
+    const screened=!entryBlocker&&originStatus!=='SUPPORTED'&&measuredStatus!=='SUPPORTED'&&screening?.verdict==='INADEQUATE'&&screening.review.accepted&&read.originScope?.complete===true&&(read.comparisonComplete===true||!!qualifiedComparisonEvidence(read,cutoff))&&screening.sourceIds.length===read.originScope.sourceIds.length&&new Set(screening.sourceIds).size===screening.sourceIds.length&&screening.sourceIds.every(id=>read.originScope!.sourceIds.includes(id))&&screening.citations.every(ref=>!!cite(ref))&&(screening.method==='reviewed-public-support-v2'?!!publicOrigin:factualOrigin.quality==='KNOWN');
     const value=originStatus==='SUPPORTED'||measuredStatus==='SUPPORTED'?true:originStatus==='CONTRADICTED'&&measuredStatus==='CONTRADICTED'||screened?false:null;
     const originRationale=origin?.status&&origin.status!=='UNKNOWN'&&originStatus==='UNKNOWN'?`Source review proposed ${origin.status.toLowerCase()}, but primary-account, dated-post or exact-contract citation validation is incomplete. ${origin.rationale}`:origin?.rationale??'Primary-origin relationship has not been independently qualified.';
     set('A14',value,{method:'representation-routes-v2',originRelationship:{status:originStatus,citations:originCitations,rationale:originRationale},measuredAttention:{status:measuredStatus,...ranking},...(screened?{leadershipScreening:screening}:{}),basis:originStatus==='SUPPORTED'?'ORIGIN':measuredStatus==='SUPPORTED'?'MEASURED_ATTENTION':screened?'EVIDENCE_INADEQUACY':null},value!==null,'ATT_REPRESENTATION_ROUTES_UNRESOLVED');
   }
- if(binary&&output.get('A14')?.quality!=='KNOWN'){const prior=output.get('A14')!,d=binary.leadership;set('A14',d.verdict==='PASS',{...(prior.data as object),entryDecisionMethod:'binary-public-support-v1',entryCriterion:'CAN-02',decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Public entry evidence sufficiency; factual origin and measured leadership are separate.'},true);}
+ if(binary&&output.get('A14')?.quality!=='KNOWN'){const prior=output.get('A14')!,d=binary.leadership;set('A14',d.verdict==='PASS',{...(prior.data as object),entryDecisionMethod:binary.method,entryCriterion:'CAN-02',decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Public entry evidence sufficiency; factual origin and measured leadership are separate.'},true);}
   return [...output.values()];
 }

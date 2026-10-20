@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { originSourceScope } from '../src/domain/attention.js';
 import type { AttentionRead, AttentionSource } from '../src/providers/attention.js';
-import { reconstructOriginAcquisition } from '../src/providers/attention.js';
-import { geckoPoolApiUrl, geckoPoolBinding, qualifyOriginExclusions, recoverOriginPages, verifiedOriginExclusion, verifyOriginAlias, type OriginAlias } from '../src/providers/origin-recovery.js';
+import { entryEvidenceScope, reconstructOriginAcquisition } from '../src/providers/attention.js';
+import { geckoPoolApiUrl, geckoPoolBinding, originRecoveryQuery, qualifyOriginExclusions, recoverOriginPages, verifiedOriginExclusion, verifyOriginAlias, type OriginAlias } from '../src/providers/origin-recovery.js';
 
 const TOKEN = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
 const CUTOFF = '2026-10-01T12:00:00.000Z';
@@ -113,6 +113,19 @@ function tinyfishResponse(results: unknown[], errors: unknown[] = []): Response 
 
 function fetchResult(url: string, text: string, finalUrl = url) {
   return { url, final_url: finalUrl, text };
+}
+
+function publicEntryScopeRead(read: AttentionRead, sourceIds: string[]): AttentionRead {
+  return {
+    ...read,
+    entryEvidenceMethod: 'public-support-v2',
+    sources: read.sources.filter(source => sourceIds.includes(source.id)),
+    rawArtifacts: {
+      ...read.rawArtifacts,
+      'attention-search-3': read.rawArtifacts['attention-search-3'] ?? JSON.stringify({ results: [], errors: [] }),
+    },
+    comparisonAcquisition: { originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 0, leads: [] },
+  };
 }
 
 type SourceSpan = { id: string; text: string };
@@ -224,6 +237,7 @@ function originRoleMock(options: OriginRoleOptions = {}) {
 
 test('two-pass corroborated role review excludes only its original unavailable row and retains proof sources', async () => {
   const read = originRoleRead();
+  read.entryEvidenceMethod = 'public-support-v2';
   const { fetcher, calls, originalUrl } = originRoleMock({ searchUrls: [
     'http://markets.example/insecure',
     'https://river.example/another-path',
@@ -237,7 +251,17 @@ test('two-pass corroborated role review excludes only its original unavailable r
   assert.equal(result.originExclusions?.length, 1);
   assert.equal(calls.length, 4, 'one Search, one bounded Fetch, and two independent model passes');
   const searchCall = calls.find(call => call.url.startsWith('https://api.search.tinyfish.ai/'))!;
-  assert.match(new URL(searchCall.url).searchParams.get('query')!, /river\.example/);
+  const query = new URL(searchCall.url).searchParams.get('query')!;
+  assert.equal(result.rawArtifacts['attention-origin-role-1-search-query'], query,
+    'the actual fresh Search query is retained for Service reconstruction');
+  assert.equal(query, originRecoveryQuery(read, TOKEN, originalUrl));
+  assert.ok(query.includes(`"${TOKEN.address}"`), 'fresh recovery searches for the exact token');
+  assert.match(query, /base origin project launch announcement/);
+  assert.match(query, /River Lantern market listing/);
+  assert.match(query, /trading dashboard/);
+  assert.match(query, /-site:river\.example/);
+  assert.equal(query.includes('"river.example" trading dashboard'), false,
+    'the blocked host is excluded rather than used as the only search subject');
   const fetchCall = calls.find(call => call.url === 'https://api.fetch.tinyfish.ai/')!;
   const request = JSON.parse(String(fetchCall.init?.body)) as { urls: string[]; per_url_timeout_ms: number };
   assert.deepEqual(request.urls, ['https://markets.example/river-lantern', 'https://guides.example/river-lantern']);
@@ -279,6 +303,11 @@ test('two-pass corroborated role review excludes only its original unavailable r
   assert.ok(result.originExclusions![0]!.corroboratingSourceIds.every(id => result.sources.some(source => source.id === id)),
     'both full fetched corroborating pages remain retained for the shared audit');
   assert.equal(result.rawArtifacts['attention-fetch-1'], read.rawArtifacts['attention-fetch-1'], 'the original failed fetch stays visible');
+});
+
+test('origin recovery query preserves the legacy host-role search when the fresh-mode marker is absent', () => {
+  assert.equal(originRecoveryQuery(originRoleRead(), TOKEN, 'https://river.example/coin_community'),
+    '"river.example" trading dashboard');
 });
 
 test('literal canonical root-site context qualifies the missing lead while spoof host and path references stay unknown', async t => {
@@ -470,6 +499,29 @@ test('raw CID recovery binds the retained gateway body to the original origin an
     { url: originUrl, state: 'ACQUIRED', sourceId: source.id },
   ]);
   assert.equal(originSourceScope(recovered, TOKEN).complete, true);
+
+  const scopedRead = publicEntryScopeRead(recovered, [source.id]);
+  const scope = entryEvidenceScope(scopedRead, TOKEN, CUTOFF);
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  assert.deepEqual(scope.sourceIds, [source.id]);
+
+  const wrongDigest = structuredClone(scopedRead);
+  const wrongDigestResponse = JSON.parse(wrongDigest.rawArtifacts['attention-origin-fetch-1']!) as { results: Array<{ text: string }> };
+  wrongDigestResponse.results[0]!.text = wrongDigestResponse.results[0]!.text.replace(TOKEN.address, '0x2222222222222222222222222222222222222222');
+  wrongDigest.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(wrongDigestResponse);
+  wrongDigest.sources[0]!.text = wrongDigestResponse.results[0]!.text.replace(/\\_/g, '_');
+  assert.equal(entryEvidenceScope(wrongDigest, TOKEN, CUTOFF).complete, false,
+    'a retained raw gateway body must still hash to its original CID');
+
+  const editedSource = structuredClone(scopedRead);
+  editedSource.sources[0]!.text += ' edited after acquisition';
+  assert.equal(entryEvidenceScope(editedSource, TOKEN, CUTOFF).complete, false,
+    'the source catalog body must equal the normalized retained response');
+
+  const strippedAlias = structuredClone(scopedRead);
+  strippedAlias.originRecovery!.aliases = [];
+  assert.equal(entryEvidenceScope(strippedAlias, TOKEN, CUTOFF).complete, false,
+    'the recovery marker is required to bind the gateway page to the original CID URL');
 });
 
 test('origin aliases reject redirects, different gateways, unsupported CID forms, and content that no longer hashes to the CID', async () => {
@@ -593,6 +645,35 @@ test('DEX supplements require an exact chain and token pair in valid API JSON an
   assert.deepEqual(recovered.comparisonSourceIds, [], 'the supplement is not silently promoted into the original comparison sample');
   assert.deepEqual(recovered.postSampleSourceIds, [], 'the supplement is never a sampled participant');
 
+  const scopedRead = publicEntryScopeRead(recovered, [
+    recovered.originRecovery!.aliases[0]!.sourceId,
+    dexSource.id,
+  ]);
+  const scope = entryEvidenceScope(scopedRead, TOKEN, CUTOFF);
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  assert.deepEqual(scope.sourceIds, [recovered.originRecovery!.aliases[0]!.sourceId, dexSource.id]);
+
+  const editedSource = structuredClone(scopedRead);
+  editedSource.sources.find(source => source.id === dexSource.id)!.text += ' edited after Fetch';
+  assert.equal(entryEvidenceScope(editedSource, TOKEN, CUTOFF).complete, false,
+    'the DEX supplement body must match the retained origin Fetch response');
+
+  const wrongPair = structuredClone(scopedRead);
+  const wrongPairResponse = JSON.parse(wrongPair.rawArtifacts['attention-origin-fetch-1']!) as { results: Array<{ url: string; text: string }> };
+  const wrongPairText = JSON.stringify([{ chainId: TOKEN.chain,
+    baseToken: { address: '0x2222222222222222222222222222222222222222' },
+    quoteToken: { address: '0x3333333333333333333333333333333333333333' } }]);
+  wrongPairResponse.results.find(result => result.url === dexUrl)!.text = wrongPairText;
+  wrongPair.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(wrongPairResponse);
+  wrongPair.sources.find(source => source.id === dexSource.id)!.text = wrongPairText;
+  assert.equal(entryEvidenceScope(wrongPair, TOKEN, CUTOFF).complete, false,
+    'a syntactically valid pair without the exact chain and token does not enter the scope');
+
+  const strippedSupplement = structuredClone(scopedRead);
+  strippedSupplement.originRecovery!.comparisonSupplementIds = [];
+  assert.equal(entryEvidenceScope(strippedSupplement, TOKEN, CUTOFF).complete, false,
+    'the supplement marker must bind the selected source to its accepted recovery path');
+
   for (const [name, bodyText] of [
     ['wrong chain', JSON.stringify([{ chainId: 'solana', baseToken: { address: TOKEN.address }, quoteToken: { address: 'So11111111111111111111111111111111111111112' } }])],
     ['wrong token', JSON.stringify([{ chainId: TOKEN.chain, baseToken: { address: '0x3333333333333333333333333333333333333333' }, quoteToken: { address: '0x4444444444444444444444444444444444444444' } }])],
@@ -646,6 +727,40 @@ test('Gecko pool recovery retains the failed original lead and accepts only its 
   assert.equal(recovered.comparisonAcquisition?.leads[0]?.acquisitionStatus, 'FAILED');
   assert.deepEqual(recovered.comparisonAcquisition?.leads[0]?.sourceIds, [],
     'the failed original source row is retained without a fabricated page source');
+
+  const scopedRead = publicEntryScopeRead(recovered, [source.id]);
+  const lead = { ...recovered.comparisonAcquisition!.leads[0]!,
+    acquisitionStatus: 'FAILED' as const, acquisitionCodes: ['ATT_FETCH_URL_ERROR'],
+    recoveryQueryIds: ['attention-recovery-search-1'], recoverySourceIds: [],
+  };
+  scopedRead.rawArtifacts['attention-fetch-1'] = JSON.stringify({ results: [], errors: [{ url: leadUrl, status: 404, error: 'HTTP 404 not found' }] });
+  scopedRead.rawArtifacts['attention-search-3'] = JSON.stringify({ results: [{ url: leadUrl, title: lead.title, snippet: lead.snippet }], errors: [] });
+  scopedRead.rawArtifacts['attention-recovery-search-1'] = JSON.stringify({ results: [], errors: [] });
+  scopedRead.comparisonAcquisition = { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [lead] };
+  scopedRead.comparisonQualification = { recoveryCapped: false,
+    recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: lead.id, state: 'NO_RESULTS' }] };
+  const scope = entryEvidenceScope(scopedRead, SOLANA_TOKEN, CUTOFF);
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  assert.deepEqual(scope.gaps, [{ url: leadUrl, code: 'TARGET_BLOCKED' }]);
+
+  const editedSource = structuredClone(scopedRead);
+  editedSource.sources[0]!.text += ' edited after Fetch';
+  assert.equal(entryEvidenceScope(editedSource, SOLANA_TOKEN, CUTOFF).complete, false,
+    'the pool source body must match the retained API response');
+
+  const wrongBase = structuredClone(scopedRead);
+  const wrongBaseResponse = JSON.parse(wrongBase.rawArtifacts['attention-origin-fetch-1']!) as { results: Array<{ url: string; text: string }> };
+  const wrongBaseText = JSON.stringify(geckoPoolBody({ baseAddress: GECKO_QUOTE }));
+  wrongBaseResponse.results.find(result => result.url === apiUrl)!.text = wrongBaseText;
+  wrongBase.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(wrongBaseResponse);
+  wrongBase.sources[0]!.text = wrongBaseText;
+  assert.equal(entryEvidenceScope(wrongBase, SOLANA_TOKEN, CUTOFF).complete, false,
+    'a valid pool record must bind its exact pool to the expected Solana base token');
+
+  const strippedSupplement = structuredClone(scopedRead);
+  strippedSupplement.originRecovery!.comparisonSupplementIds = [];
+  assert.equal(entryEvidenceScope(strippedSupplement, SOLANA_TOKEN, CUTOFF).complete, false,
+    'the supplement marker must bind the selected source to its accepted recovery path');
 
   const rejected: Array<{ name: string; resultUrl?: string; finalUrl?: string; text?: string }> = [
     { name: 'wrong pool ID', text: JSON.stringify(geckoPoolBody({ poolId: 'solana_11111111111111111111111111111111' })) },

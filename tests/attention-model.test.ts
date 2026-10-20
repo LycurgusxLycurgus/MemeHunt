@@ -6,7 +6,7 @@ import { comparisonPublicScopeFacts, deriveAttention, originSourceScope, qualifi
 import { evaluateEntry } from '../src/domain/policy.js';
 import type { AttentionRead } from '../src/providers/attention.js';
 import { geminiSettings } from '../src/providers/gemini.js';
-import { comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonSourceLineage, compactComparisonLeadScope, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, qualifyAttention } from '../src/providers/attention-model.js';
+import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, qualifyAttention } from '../src/providers/attention-model.js';
 import { geckoPoolBinding } from '../src/providers/origin-recovery.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 
@@ -75,6 +75,39 @@ function v2OriginRead(): AttentionRead {
   read.comparisonSourceIds = ['post-1'];
   read.queries.push('"River Lantern" base token contract meme narrative');
   return read;
+}
+
+function publicEntryRead(): AttentionRead {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const comparisonUrl = 'https://public.example/river-lantern-comparison';
+  const originText = `The River Lantern project identifies ${TOKEN.address} as a token catalyst.`;
+  const comparisonText = 'The retained comparison source describes the River Lantern project and its public representation.';
+  const source = (id: string, url: string, text: string): AttentionRead['sources'][number] => ({
+    id, url, text, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE',
+  });
+  return {
+    entryEvidenceMethod: 'public-support-v2',
+    sources: [source('origin-source', originUrl, originText), source('comparison-source', comparisonUrl, comparisonText)],
+    rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-3': JSON.stringify({ results: [{ url: comparisonUrl, title: 'River Lantern', snippet: 'A retained comparison result.' }], errors: [] }),
+      'attention-fetch-1': JSON.stringify({ results: [
+        { url: originUrl, final_url: originUrl, text: originText },
+        { url: comparisonUrl, final_url: comparisonUrl, text: comparisonText },
+      ], errors: [] }),
+    },
+    queries: ['exact token origin', 'exact token posts', 'River Lantern representations'], complete: true, codes: [],
+    start: '2026-09-30T12:00:00.000Z', end: CUTOFF,
+    comparisonComplete: true, comparisonSourceIds: ['comparison-source'],
+    comparisonAcquisition: {
+      originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+      leads: [{ id: 'comparison-lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: comparisonUrl,
+        title: 'River Lantern', snippet: 'A retained comparison result.', metadataEvidenceId: 'comparison-lead-1-metadata',
+        sourceIds: ['comparison-source'], acquisitionStatus: 'ACQUIRED', acquisitionCodes: [], recoveryQueryIds: [], recoverySourceIds: [] }],
+    },
+    comparisonQualification: { recoveryCapped: false },
+  };
 }
 
 function comparisonRead(pageText: string): AttentionRead {
@@ -1992,12 +2025,13 @@ test('fresh task-v5 accounts the acquired profile separately from representation
   const title = 'River Lantern neighborhood art project';
   const snippet = 'The indexed project describes a community art token and shared public murals.';
   const currentText = 'The current account now publishes OUSD reserve backing and stablecoin lending updates; these fetched publications do not reflect the indexed River Lantern neighborhood art project.';
+  const batchTwoRival = { chain: 'base', address: '0x2222222222222222222222222222222222222222' } as const;
   const run = async (mode: 'accept' | 'reject' | 'entry-rejected' | 'search-error' | 'one-scope-citation' | 'market-acquired' | 'market-unresolved' | 'market-no-results' | 'market-factual-unresolved' | 'market-source-support-unresolved' | 'market-search-error' | 'project-unresolved'
     | 'market-support-repair' | 'market-support-repair-review-rejected' | 'source-support-repair'
     | 'source-support-repair-nonowner'
     | 'source-support-repair-rationale-changed'
     | 'source-support-repair-inspection-incomplete' | 'source-support-repair-lead-unresolved'
-    | 'source-support-repair-candidate-rejected' | 'source-support-repair-post-rejected', options: { now?: string; includeOriginScope?: boolean; baseNarrative?: boolean; originText?: string; narrativeReviewAccepted?: boolean; malformedGroupedReview?: 'cross-group' | 'duplicate-id' | 'incoherent' | 'zero-claim-decision' | 'page-as-post'; overflowCompetitors?: boolean; malformedDescriptorRef?: 'missing' | 'foreign' | 'bad-span'; publicationRole?: 'known' | 'unresolved'; finalKeyVariant?: 'missing-null-blocker' | 'batch-id-as-decision'; bindingMarketWitness?: boolean; entrySupportOverride?: 'BINDING_EVIDENCE' | 'CONTEXT_ONLY'; forceInadequateGrade?: boolean; gradeUnresolved?: boolean; gradeCitationMismatch?: boolean; otherMarketBody?: boolean; bodyInspectionComplete?: boolean; bodyDecisionAccepted?: boolean; omitLeadOwnContextRefs?: boolean; entryGradeAccepted?: boolean; binaryEntryVerdict?: 'PASS' | 'FAIL'; binaryOriginVerdict?: 'PASS' | 'FAIL'; binaryLeadershipVerdict?: 'PASS' | 'FAIL' } = {}) => {
+    | 'source-support-repair-candidate-rejected' | 'source-support-repair-post-rejected', options: { now?: string; includeOriginScope?: boolean; baseNarrative?: boolean; originText?: string; narrativeReviewAccepted?: boolean; malformedGroupedReview?: 'cross-group' | 'duplicate-id' | 'incoherent' | 'zero-claim-decision' | 'page-as-post'; overflowCompetitors?: boolean; malformedDescriptorRef?: 'missing' | 'foreign' | 'bad-span'; publicationRole?: 'known' | 'unresolved'; finalKeyVariant?: 'missing-null-blocker' | 'batch-id-as-decision'; bindingMarketWitness?: boolean; entrySupportOverride?: 'BINDING_EVIDENCE' | 'CONTEXT_ONLY'; forceInadequateGrade?: boolean; gradeUnresolved?: boolean; gradeCitationMismatch?: boolean; otherMarketBody?: boolean; bodyInspectionComplete?: boolean; bodyDecisionAccepted?: boolean; omitLeadOwnContextRefs?: boolean; entryGradeAccepted?: boolean; binaryEntryVerdict?: 'PASS' | 'FAIL'; binaryOriginVerdict?: 'PASS' | 'FAIL'; binaryLeadershipVerdict?: 'PASS' | 'FAIL'; batchTwoOmission?: boolean } = {}) => {
     const marketUnresolved = mode === 'market-acquired' || mode === 'market-unresolved' || mode === 'entry-rejected' || mode === 'market-no-results' || mode === 'market-search-error' || mode === 'project-unresolved'
       || mode === 'market-factual-unresolved' || mode === 'market-source-support-unresolved'
       || mode === 'market-support-repair' || mode === 'market-support-repair-review-rejected';
@@ -2070,6 +2104,18 @@ test('fresh task-v5 accounts the acquired profile separately from representation
         publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
       assert.deepEqual(comparisonSourceLineage(read)[0]?.sourceIds, [marketSourceId]);
     }
+    if (options.batchTwoOmission) {
+      assert.equal(read.comparisonSourceIds?.length, 1, 'the batch-two fixture starts from one acquired comparison page');
+      for (let index = 0; index < 8; index++) {
+        const id = `batch-two-extra-${index + 1}`;
+        const text = index === 7
+          ? `Target representation ${TOKEN.address}. ${NARRATIVE}\nRival representation ${batchTwoRival.address}.`
+          : `A retained contextual publication discusses the wider River Lantern neighborhood project, without a token contract. ${index + 1}.`;
+        read.sources.push({ id, url: `https://public.example/batch-two/${index + 1}`, text,
+          publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+        read.comparisonSourceIds!.push(id);
+      }
+    }
     if (!marketUnresolved) assert.deepEqual(comparisonSourceLineage(read)[0]?.sourceIds, ['current-profile']);
 
     const reassessBatchSupport = mode === 'source-support-repair' || mode === 'source-support-repair-nonowner' || mode === 'source-support-repair-rationale-changed' || mode === 'source-support-repair-inspection-incomplete'
@@ -2078,6 +2124,9 @@ test('fresh task-v5 accounts the acquired profile separately from representation
     const responder = completeComparisonResponder({
       candidates: options.overflowCompetitors
         ? () => Array.from({ length: 11 }, () => ({ id: 'tokenmint', token: TOKEN }))
+        : options.batchTwoOmission ? packet => (packet.scope as { batch?: number } | undefined)?.batch === 2
+          ? [{ id: 'target-batch-two', token: TOKEN, sourceMatch: 'Target representation' }]
+          : []
         : undefined,
       malformedDescriptorRef: options.malformedDescriptorRef,
       finalKeyVariant: options.finalKeyVariant,
@@ -2102,7 +2151,15 @@ test('fresh task-v5 accounts the acquired profile separately from representation
         leadBlockers: Object.fromEntries(Object.keys(proposed.leadBlockers as Record<string, unknown>).map(id => [id, { accepted: true, rationale: 'The proposed semantic blocker is correctly absent.' }])),
         grade: { accepted: false, rationale: 'The independent reviewer rejects the proposed negative entry grade.' },
       }) : undefined,
-      batchComplete: () => false,
+      batchComplete: packet => options.batchTwoOmission
+        ? (packet.scope as { batch?: number } | undefined)?.batch === 2
+        : false,
+      ...(options.batchTwoOmission ? { missingRepresentations: packet => {
+        const scope = packet.scope as { batch?: number } | undefined;
+        if (scope?.batch !== 2 || packet.repair === true) return [];
+        return [{ observationId: comparisonObservationId(packet, batchTwoRival, 'batch-two-extra-8', batchTwoRival.address),
+          rationale: 'This same River Lantern page contains a second literal exact-contract observation omitted from the first proposal.' }];
+      } } : {}),
       ...(reassessBatchSupport ? {
         candidates: mode === 'source-support-repair-candidate-rejected' ? () => [{ id: 'target-fulltext', token: TOKEN }] : undefined,
         rejectBatchIds: mode === 'source-support-repair-candidate-rejected'
@@ -2394,6 +2451,35 @@ test('fresh task-v5 accounts the acquired profile separately from representation
     assert.equal((rejected.result.scope!.comparisonPublicSupport as { verdict?: string } | undefined)?.verdict, 'UNRESOLVED');
     assert.equal(rejected.result.rawArtifacts['attention-comparison-lead-review-response'] !== undefined, true,
       'the original task response and its rejected independent review remain in the proof');
+  });
+  await t.test('a complete batch review that names an omitted exact observation is retained and independently repaired', async () => {
+    const { result, model } = await run('accept', { binaryEntryVerdict: 'PASS', batchTwoOmission: true });
+    assert.ok(result.scope, JSON.stringify({ code: result.code, codes: result.scope?.codes }));
+    assert.equal(result.scope.codes.some(code => code.startsWith('ATT_MODEL_COMPARISON_FAILED:')), false,
+      'the new binary entry route repairs the supported complete-plus-omission contradiction');
+
+    const secondBatchProposal = model.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 2
+      && !('proposal' in request.packet));
+    assert.ok(secondBatchProposal, 'the retained source catalog produces a second comparison batch');
+    const observationId = comparisonObservationId(secondBatchProposal.packet, batchTwoRival, 'batch-two-extra-8', batchTwoRival.address);
+    const initialReviewEnvelope = JSON.parse(result.rawArtifacts['attention-comparison-2-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const initialReview = JSON.parse(initialReviewEnvelope.candidates[0]!.content.parts[0]!.text) as {
+      candidateSet: { complete: boolean }; missingRepresentations: MissingRepresentation[];
+    };
+    assert.equal(initialReview.candidateSet.complete, true, 'the provider’s contradictory initial judgment remains unmodified');
+    assert.deepEqual(initialReview.missingRepresentations.map(item => item.observationId), [observationId],
+      'the initial raw response retains the exact code-owned rival observation omitted from its proposal');
+
+    const repairedReview = model.requests.find(request => (request.packet.scope as { batch?: number } | undefined)?.batch === 2
+      && request.packet.repair === true);
+    assert.ok(repairedReview, 'the omitted observation triggers one fresh independent review');
+    const repairedProposal = repairedReview.packet.proposal as { competitors: Array<{ token: { chain: string; address: string } }> };
+    assert.deepEqual(repairedProposal.competitors.map(candidate => candidate.token), [TOKEN, batchTwoRival],
+      'the repair packet includes both the original target and the selected rival observation');
+    assert.ok(result.rawArtifacts['attention-comparison-2-repair-review-prompt']);
+    assert.ok(result.rawArtifacts['attention-comparison-2-repair-review-response']);
   });
   await t.test('full reviewed market evidence can qualify poor public support without resolving identity', async () => {
     const deploymentOnly = `Token ${TOKEN.address}. Deployment metadata lists the contract but provides no project description or thesis.`;
@@ -5036,6 +5122,87 @@ test('v2 origin citation schema excludes pages, undated posts, and posts without
   const originCitationBindings = claimSourceSpanBindings(properties.originRelationship?.properties?.citations);
   assert.deepEqual(originCitationBindings.map(item => item.sourceId), ['post-1']);
   assert.equal(originCitationBindings.some(item => ['page-decoy', 'undated-post', 'no-contract-post'].includes(item.sourceId)), false);
+});
+
+test('binary public-support v2 reviews one full catalog with criterion-specific citation scope and independent final grades', () => {
+  const read = publicEntryRead();
+  const run = (options: { wrongOriginSource?: boolean; inventedDraftSpan?: boolean; unfinishedReview?: boolean } = {}) => {
+    const artifacts: Record<string, string> = {};
+    const program = binaryEntryDecisionProgram(read, null, null, TOKEN, CUTOFF, artifacts);
+    let step = program.next();
+    let callCount = 0;
+    while (!step.done) {
+      const call = step.value;
+      const packet = JSON.parse(call.prompt) as {
+        method: string;
+        scope: { sourceIds: string[]; originSourceIds: string[]; gaps: unknown[]; blockers: string[] };
+        sources: PacketSource[];
+        draft?: unknown;
+      };
+      assert.equal(packet.method, 'binary-public-support-v2');
+      assert.deepEqual(packet.scope.sourceIds, ['origin-source', 'comparison-source']);
+      assert.deepEqual(packet.scope.originSourceIds, ['origin-source']);
+      assert.deepEqual(packet.scope.gaps, []);
+      assert.deepEqual(packet.scope.blockers, []);
+      assert.deepEqual(packet.sources.map(source => source.id), ['origin-source', 'comparison-source'],
+        'each pass gets the complete retained catalog');
+      const source = (id: string) => {
+        const found = packet.sources.find(item => item.id === id);
+        assert.ok(found?.spans[0], `the full packet retains a citable span for ${id}`);
+        return { sourceId: id, spanId: found.spans[0]!.id };
+      };
+      const reviewing = packet.draft !== undefined;
+      const originCitation = options.wrongOriginSource && reviewing ? source('comparison-source') : source('origin-source');
+      const comparisonCitation = source('comparison-source');
+      const response = {
+        originTraceability: {
+          verdict: reviewing ? 'PASS' : 'FAIL',
+          rationale: 'The bounded retained source is assessed for exact-token origin traceability.',
+          citation: options.inventedDraftSpan && !reviewing ? { sourceId: 'origin-source', spanId: 'invented-span' } : originCitation,
+        },
+        leadership: {
+          verdict: reviewing ? 'FAIL' : 'PASS',
+          rationale: 'The independent final review weighs the retained comparison body for leadership support.',
+          citation: comparisonCitation,
+        },
+        representations: {
+          verdict: reviewing ? 'PASS' : 'FAIL',
+          rationale: 'The independent final review weighs the retained comparison body for representation support.',
+          citation: comparisonCitation,
+        },
+        inspectionComplete: !(options.unfinishedReview && reviewing),
+      };
+      artifacts[`${call.id}-response`] = JSON.stringify({
+        candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(response) }] } }],
+      });
+      callCount++;
+      step = program.next(response);
+    }
+    return { decisions: step.value, artifacts, callCount };
+  };
+
+  const qualified = run();
+  assert.equal(qualified.callCount, 2, 'the selected proposal and independent review form one bounded pair');
+  assert.equal(qualified.decisions?.method, 'binary-public-support-v2');
+  assert.equal(qualified.decisions?.inspectionComplete, true);
+  assert.deepEqual(qualified.decisions?.sourceIds, ['origin-source', 'comparison-source']);
+  assert.equal(qualified.decisions?.originTraceability.verdict, 'PASS', 'the accepted decision comes from the independent final review');
+  assert.equal(qualified.decisions?.leadership.verdict, 'FAIL');
+  assert.equal(qualified.decisions?.representations.verdict, 'PASS');
+  assert.equal(qualified.decisions?.originTraceability.citations[0]?.sourceId, 'origin-source');
+  assert.equal(qualified.decisions?.leadership.citations[0]?.sourceId, 'comparison-source',
+    'leadership may cite any retained source body');
+  assert.equal(qualified.decisions?.representations.citations[0]?.sourceId, 'comparison-source',
+    'representation review may cite any retained source body');
+  assert.deepEqual(decodeBinaryEntryDecisions(read, null, null, TOKEN, CUTOFF, qualified.artifacts), qualified.decisions,
+    'Service can reconstruct the exact two-prompt proof from retained responses');
+
+  assert.throws(() => run({ inventedDraftSpan: true }), /ATT_MODEL_COMPARISON_LEAD_REF_INVALID/,
+    'a span outside the retained full catalog cannot enter the review pair');
+  assert.throws(() => run({ wrongOriginSource: true }), /ATT_MODEL_ENTRY_INSPECTION_INVALID/,
+    'origin citations stay within original scope even when comparison pages are fully retained');
+  assert.throws(() => run({ unfinishedReview: true }), /ATT_MODEL_ENTRY_INSPECTION_INVALID/,
+    'a missing final inspection cannot qualify any of the three criteria');
 });
 
 test('each Gemini pass keeps its own ninety-second timeout', async () => {

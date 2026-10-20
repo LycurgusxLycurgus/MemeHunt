@@ -13,7 +13,7 @@ const KEY = 'social-model-test-key';
 type Span = { id: string; sourceId: string; start: number; end: number; text: string };
 type PacketSource = { id: string; kind: 'POST' | 'PAGE'; spans: Span[]; lines?: Array<{ id: string; text: string }> };
 type WireCitation = { sourceId: string; spanId: string };
-type ModelPacket = { sources: PacketSource[]; requiredPostIds: string[]; requiredDecisionIds?: string[]; outputContract?: string; invalidProposal?: unknown; proposal?: { posts: Array<{ sourceId: string; body: { sourceId: string; quote: string }; [key: string]: unknown }>; identities: Array<{ id: string; [key: string]: unknown }>; accounts: Array<{ accountId: string; [key: string]: unknown }>; identityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; integrityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> } }; pairs?: Array<{ id: string }> };
+type ModelPacket = { scope?: { entryDecisionMethod?: string }; rubric?: { entrySupport?: string }; sources: PacketSource[]; requiredPostIds: string[]; requiredDecisionIds?: string[]; outputContract?: string; invalidProposal?: unknown; proposal?: { posts: Array<{ sourceId: string; body: { sourceId: string; quote: string }; [key: string]: unknown }>; identities: Array<{ id: string; [key: string]: unknown }>; accounts: Array<{ accountId: string; [key: string]: unknown }>; identityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; integrityAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; participationAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> }; communityBreadthAssessment?: { verdict: string; citations: Array<{ sourceId: string; quote: string }> } }; pairs?: Array<{ id: string }> };
 type CapturedRequest = { payload: Record<string, unknown>; packet: ModelPacket };
 type CitationMode = 'valid' | 'unknown-span' | 'wrong-source' | 'extra-quote' | 'extra-offset';
 type BodyMode = 'complete' | 'body-segment' | 'unresolved' | 'unknown-line' | 'reversed' | 'cross-source';
@@ -66,7 +66,7 @@ function fullText(source: PacketSource): string {
   return [...source.spans].sort((left, right) => left.start - right.start).map(span => span.text).join('');
 }
 
-function proposalWire(packet: ModelPacket, citationMode: CitationMode = 'valid', bodyMode: BodyMode = 'complete', judgmentVerdict: 'CONTRADICTED' | 'UNRESOLVED' = 'UNRESOLVED') {
+function proposalWire(packet: ModelPacket, citationMode: CitationMode = 'valid', bodyMode: BodyMode = 'complete', judgmentVerdict: 'CONTRADICTED' | 'UNRESOLVED' = 'UNRESOLVED', participationVerdict: 'CONTRADICTED' | 'UNRESOLVED' = 'UNRESOLVED') {
   const source = packet.sources.find(row => row.id === packet.requiredPostIds[0]);
   assert.ok(source);
   const span = source.spans.find(row => row.text.includes(SOCIAL_TOKEN.address));
@@ -102,6 +102,18 @@ function proposalWire(packet: ModelPacket, citationMode: CitationMode = 'valid',
         : 'The synthetic one-post sample cannot establish a complete integrity assessment.',
       citations: [assessmentCitation],
     },
+    ...(['public-support-v2', 'public-support-v3'].includes(packet.scope?.entryDecisionMethod ?? '') ? { participationAssessment: {
+      verdict: participationVerdict,
+      rationale: participationVerdict === 'CONTRADICTED'
+        ? 'The completely inspected synthetic scope does not evidence independent participation origins and communities.'
+        : 'The synthetic bounded scope does not establish a complete participation assessment.',
+      citations: [assessmentCitation],
+    } } : {}),
+    ...(packet.scope?.entryDecisionMethod === 'public-support-v3' ? { communityBreadthAssessment: {
+      verdict: 'UNRESOLVED',
+      rationale: 'The synthetic one-post scope cannot establish three independently sourced communities.',
+      citations: [assessmentCitation],
+    } } : {}),
     posts, identities: [], accounts: [],
   };
 }
@@ -113,6 +125,8 @@ function reviewWire(packet: ModelPacket, pairMode: PairMode = 'valid', sourceCom
     decisions: [
       { id: 'assessment:identity', accepted: true, rationale: 'The synthetic identity screening rationale matches its cited public source.' },
       { id: 'assessment:integrity', accepted: true, rationale: 'The synthetic integrity screening rationale matches its cited public source.' },
+      ...(proposal.participationAssessment ? [{ id: 'assessment:participation', accepted: true, rationale: 'The synthetic participation rationale matches its cited public source.' }] : []),
+      ...(proposal.communityBreadthAssessment ? [{ id: 'assessment:communityBreadth', accepted: true, rationale: 'The synthetic community breadth rationale matches its cited public source.' }] : []),
       ...proposal.posts.map(post => ({ id: `post:${post.sourceId}`, accepted: true, rationale: 'The synthetic source supports this complete original-body citation.' })),
       ...proposal.identities.map(identity => ({ id: `identity:${identity.id}`, accepted: true, rationale: 'The synthetic identity record is separately reviewed.' })),
       ...proposal.accounts.map(account => ({ id: `account:${account.accountId}`, accepted: true, rationale: 'The synthetic account fields are separately reviewed.' })),
@@ -141,7 +155,7 @@ function inputWithCopiedPosts(): SocialInput {
   return value;
 }
 
-function mockModel(options: { citationMode?: CitationMode; bodyMode?: BodyMode; pairMode?: PairMode; status?: number; sourceComplete?: boolean; judgmentVerdict?: 'CONTRADICTED' | 'UNRESOLVED'; responder?: (packet: ModelPacket, call: number) => unknown } = {}) {
+function mockModel(options: { citationMode?: CitationMode; bodyMode?: BodyMode; pairMode?: PairMode; status?: number; sourceComplete?: boolean; judgmentVerdict?: 'CONTRADICTED' | 'UNRESOLVED'; participationVerdict?: 'CONTRADICTED' | 'UNRESOLVED'; responder?: (packet: ModelPacket, call: number) => unknown } = {}) {
   const calls: CapturedRequest[] = [];
   const responses: unknown[] = [];
   const fetcher: typeof fetch = async (_url, init) => {
@@ -149,7 +163,7 @@ function mockModel(options: { citationMode?: CitationMode; bodyMode?: BodyMode; 
     calls.push(request);
     if (options.status) return new Response('provider rejected request', { status: options.status });
     const value = options.responder?.(request.packet, calls.length) ?? (calls.length === 1
-      ? proposalWire(request.packet, options.citationMode, options.bodyMode, options.judgmentVerdict)
+      ? proposalWire(request.packet, options.citationMode, options.bodyMode, options.judgmentVerdict, options.participationVerdict)
       : reviewWire(request.packet, options.pairMode, options.sourceComplete));
     responses.push(value);
     return envelope(value);
@@ -693,6 +707,210 @@ test('fresh social wire always carries both source-span judgments and independen
   assert.deepEqual(Object.keys(wire.identityAssessment.citations[0]!).sort(), ['sourceId', 'spanId']);
   assert.deepEqual(Object.keys(wire.posts[0]!.body).sort(), ['firstLineId', 'lastLineId']);
   assert.equal(JSON.stringify(wire).includes('quote'), false, 'fresh proposal selectors never contain model-authored citation text');
+});
+
+test('public-support-v2 separates full post bodies from short citations and requires an independently reviewed participation judgment', async t => {
+  const body = `${SOCIAL_TOKEN.address} ${'Original public post detail. '.repeat(48)}`;
+  const socialInput = input(0, body);
+  socialInput.entryDecisionMethod = 'public-support-v2';
+  socialInput.identityComplete = true;
+  const mock = mockModel({ participationVerdict: 'CONTRADICTED' });
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {});
+
+  assert.equal(result.code, undefined);
+  assert.equal(mock.calls.length, 2);
+  assert.equal(result.read.entryDecisionMethod, 'public-support-v2');
+  assert.equal(result.proposal?.communityBreadthAssessment, undefined, 'v2 keeps its exact three-judgment contract');
+  assert.equal(result.proposal?.posts[0]?.body.quote, body);
+  assert.equal(result.proposal?.posts[0]?.bodyComplete, true);
+  assert.equal(result.review?.sources[0]?.complete, true);
+  assert.deepEqual(result.proposal?.participationAssessment?.verdict, 'CONTRADICTED');
+  assert.deepEqual(result.review?.decisions.filter(row => row.id.startsWith('assessment:')).map(row => row.id), [
+    'assessment:identity', 'assessment:integrity', 'assessment:participation',
+  ]);
+  for (const judgment of [result.proposal?.identityAssessment, result.proposal?.integrityAssessment, result.proposal?.participationAssessment]) {
+    assert.ok(judgment);
+    assert.ok(judgment.citations.every(citation => citation.quote.length <= 1000));
+  }
+  const proposalPacket = JSON.parse(result.rawArtifacts['social-proposal-prompt']!) as { scope: SocialInput; sources: PacketSource[] };
+  const reviewPacket = JSON.parse(result.rawArtifacts['social-review-prompt']!) as { requiredDecisionIds: string[]; sources: PacketSource[]; bodySelectionManifest: Array<{ bodyComplete: boolean; reason: string | null }> };
+  assert.equal(proposalPacket.scope.entryDecisionMethod, 'public-support-v2');
+  assert.equal(fullText(proposalPacket.sources[0]!), body, 'the proposal receives the complete post body');
+  assert.equal(fullText(reviewPacket.sources[0]!), body, 'the independent reviewer receives the same complete post body');
+  assert.deepEqual(reviewPacket.requiredDecisionIds.filter(id => id.startsWith('assessment:')), [
+    'assessment:identity', 'assessment:integrity', 'assessment:participation',
+  ]);
+  assert.deepEqual(reviewPacket.bodySelectionManifest[0], {
+    sourceId: 'post-alice-1', selection: { firstLineId: 'post-alice-1:line:0', lastLineId: 'post-alice-1:line:0' },
+    start: 0, end: body.length, length: body.length, bodyComplete: true, reason: null,
+  });
+  validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+
+  await t.test('canonical packet validation rejects a stripped new-method marker and a missing third reviewer decision', () => {
+    const stripMarker = structuredClone(result.rawArtifacts);
+    for (const id of ['social-proposal-prompt', 'social-review-prompt']) {
+      const packet = JSON.parse(stripMarker[id]!) as { scope: SocialInput };
+      delete packet.scope.entryDecisionMethod;
+      stripMarker[id] = JSON.stringify(packet);
+    }
+    assert.throws(
+      () => validateSocialWire(stripMarker, socialInput, SOCIAL_TOKEN, result.proposal, result.review),
+      /SOCIAL_PROOF_INVALID/,
+    );
+
+    const missingParticipationReview = structuredClone(result.rawArtifacts);
+    const providerResponse = JSON.parse(missingParticipationReview['social-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const review = JSON.parse(providerResponse.candidates[0]!.content.parts[0]!.text) as {
+      decisions: Array<{ id: string }> | Record<string, unknown>;
+    };
+    if (Array.isArray(review.decisions)) review.decisions = review.decisions.filter(decision => decision.id !== 'assessment:participation');
+    else delete review.decisions['assessment:participation'];
+    providerResponse.candidates[0]!.content.parts[0]!.text = JSON.stringify(review);
+    missingParticipationReview['social-review-response'] = JSON.stringify(providerResponse);
+    assert.throws(
+      () => validateSocialWire(missingParticipationReview, socialInput, SOCIAL_TOKEN, result.proposal, result.review),
+      /SOCIAL_PROOF_INVALID/,
+    );
+  });
+
+  await t.test('empty new-mode screening citations get one selector repair and the retained instruction is canonical', async () => {
+    const emptyInput = input(0, body);
+    emptyInput.entryDecisionMethod = 'public-support-v2';
+    emptyInput.identityComplete = true;
+    const mock = mockModel({ responder: (packet, call) => {
+      if (call === 1) {
+        const proposal = proposalWire(packet);
+        proposal.identityAssessment.citations = [];
+        proposal.integrityAssessment.citations = [];
+        proposal.participationAssessment!.citations = [];
+        return proposal;
+      }
+      if (call === 2) {
+        assert.ok(packet.invalidProposal, 'the selector repair is tied to the original empty-citation draft');
+        return proposalWire(packet);
+      }
+      return keyedReviewWire(packet);
+    } });
+    const repaired = await qualifySocial(emptyInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(repaired.code, undefined);
+    assert.equal(mock.calls.length, 3, 'one empty-citation draft, one corrected proposal, and one independent review');
+    assert.ok(repaired.proposal && repaired.review);
+    assert.ok(repaired.proposal.identityAssessment!.citations.length > 0);
+    assert.ok(repaired.proposal.integrityAssessment!.citations.length > 0);
+    assert.ok(repaired.proposal.participationAssessment!.citations.length > 0);
+    const initialEnvelope = JSON.parse(repaired.rawArtifacts['social-proposal-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const initialDraft = JSON.parse(initialEnvelope.candidates[0]!.content.parts[0]!.text) as ReturnType<typeof proposalWire>;
+    assert.deepEqual(initialDraft.identityAssessment.citations, []);
+    assert.deepEqual(initialDraft.integrityAssessment.citations, []);
+    assert.deepEqual(initialDraft.participationAssessment!.citations, []);
+    assert.deepEqual(mock.calls[1]!.packet.invalidProposal, initialDraft,
+      'the repair request retains the exact invalid provider proposal');
+    const originalPrompt = JSON.parse(repaired.rawArtifacts['social-proposal-prompt']!) as Record<string, unknown>;
+    const repairPrompt = JSON.parse(repaired.rawArtifacts['social-selector-repair-prompt']!) as Record<string, unknown>;
+    const { instruction: _originalInstruction, ...originalContext } = originalPrompt;
+    const { instruction: _repairInstruction, invalidProposal, ...repairContext } = repairPrompt;
+    assert.deepEqual(repairContext, originalContext, 'repair reuses the identical token, scope, timeline, inventory, and full catalog');
+    assert.deepEqual(invalidProposal, initialDraft);
+    assert.ok(repaired.rawArtifacts['social-selector-repair-response']);
+    validateSocialWire(repaired.rawArtifacts, emptyInput, SOCIAL_TOKEN, repaired.proposal, repaired.review);
+
+    const tampered = structuredClone(repaired.rawArtifacts);
+    repairPrompt.instruction = `${String(repairPrompt.instruction)} altered`;
+    tampered['social-selector-repair-prompt'] = JSON.stringify(repairPrompt);
+    assert.throws(() => validateSocialWire(tampered, emptyInput, SOCIAL_TOKEN, repaired.proposal!, repaired.review!), /SOCIAL_PROOF_INVALID/,
+      'retained selector-repair instructions are reconstructed and checked');
+  });
+
+  await t.test('the legacy wire still rejects an empty screening citation without selector repair', async () => {
+    const legacyInput = input(0, body);
+    const mock = mockModel({ responder: packet => {
+      const proposal = proposalWire(packet);
+      proposal.identityAssessment.citations = [];
+      return proposal;
+    } });
+    const result = await qualifySocial(legacyInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(mock.calls.length, 1);
+    assert.equal(result.code, 'SOC_MODEL_INVALID');
+    assert.equal(result.proposal, null);
+    assert.equal(result.rawArtifacts['social-selector-repair-prompt'], undefined);
+  });
+
+  const derived = deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(derived.facts.participationReview?.verdict, 'CONTRADICTED', 'complete source inspection can grade inadequate participation evidence negatively');
+
+  const legacy = await qualifySocial(input(0, body), SOCIAL_TOKEN, KEY, mockModel().fetcher, async () => {});
+  assert.equal(legacy.read.entryDecisionMethod, undefined);
+  assert.equal(legacy.proposal?.posts[0]?.bodyComplete, false, 'the absent marker keeps the historical 1,000-character whole-body limit');
+  assert.ok((legacy.proposal?.posts[0]?.body.quote.length ?? Infinity) <= 1000);
+  assert.equal(legacy.proposal?.participationAssessment, undefined, 'legacy inputs do not add a third screening judgment');
+
+  await t.test('the new marker requires a third proposal judgment before review', async () => {
+    const missing = mockModel({ responder: (packet, call) => {
+      if (call !== 1) return reviewWire(packet);
+      const proposal = proposalWire(packet) as Record<string, unknown>;
+      delete proposal.participationAssessment;
+      return proposal;
+    } });
+    const rejected = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, missing.fetcher, async () => {});
+    assert.equal(missing.calls.length, 1);
+    assert.equal(rejected.proposal, null);
+    assert.equal(rejected.code, 'SOC_MODEL_INVALID');
+  });
+
+  await t.test('missing independent participation review coverage remains unresolved', async () => {
+    const missing = mockModel({ responder: (packet, call) => {
+      if (call === 1) return proposalWire(packet);
+      const review = reviewWire(packet);
+      return { ...review, decisions: review.decisions.filter(decision => decision.id !== 'assessment:participation') };
+    } });
+    const unreviewed = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, missing.fetcher, async () => {});
+    assert.ok(unreviewed.proposal && unreviewed.review);
+    const ungraded = deriveSocial(unreviewed.read, unreviewed.proposal, unreviewed.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+    assert.equal(ungraded.facts.participationReview, undefined);
+    assert.ok(ungraded.assessments.find(row => row.id === 'S03')?.causes.some(cause => cause.code === 'SOC_REVIEW_INVALID'));
+  });
+});
+
+test('public-support-v3 adds an independently reviewed community-breadth judgment without changing v2', async () => {
+  const body = `${SOCIAL_TOKEN.address} ${'A retained original body with source-grounded community context. '.repeat(24)}`;
+  const socialInput = input(0, body);
+  socialInput.entryDecisionMethod = 'public-support-v3';
+  socialInput.identityComplete = true;
+  const mock = mockModel();
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {});
+
+  assert.equal(result.code, undefined);
+  assert.equal(mock.calls.length, 2);
+  assert.equal(result.read.entryDecisionMethod, 'public-support-v3');
+  assert.equal(result.proposal?.posts[0]?.body.quote, body, 'v3 retains the full post body for both review passes');
+  assert.equal(result.proposal?.communityBreadthAssessment?.verdict, 'UNRESOLVED');
+  assert.match(result.proposal?.communityBreadthAssessment?.rationale ?? '', /three independently sourced communities/);
+  assert.ok(result.proposal?.communityBreadthAssessment?.citations[0]?.quote.length <= 1000);
+  assert.deepEqual(result.review?.decisions.filter(row => row.id.startsWith('assessment:')).map(row => row.id), [
+    'assessment:identity', 'assessment:integrity', 'assessment:participation', 'assessment:communityBreadth',
+  ]);
+  const proposalPacket = JSON.parse(result.rawArtifacts['social-proposal-prompt']!) as ModelPacket;
+  const reviewPacket = JSON.parse(result.rawArtifacts['social-review-prompt']!) as ModelPacket & { requiredDecisionIds: string[] };
+  assert.equal(proposalPacket.scope?.entryDecisionMethod, 'public-support-v3');
+  assert.match(proposalPacket.rubric?.entrySupport ?? '', /communityBreadthAssessment/);
+  assert.match(proposalPacket.rubric?.entrySupport ?? '', /A18 growth is evaluated separately/);
+  assert.match(result.rawArtifacts['social-review-prompt']!, /assessment:communityBreadth/);
+  assert.deepEqual(reviewPacket.requiredDecisionIds.filter(id => id.startsWith('assessment:')), [
+    'assessment:identity', 'assessment:integrity', 'assessment:participation', 'assessment:communityBreadth',
+  ]);
+  validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+
+  const missingCommunityReview = structuredClone(result.review!);
+  missingCommunityReview.decisions = missingCommunityReview.decisions.filter(row => row.id !== 'assessment:communityBreadth');
+  const unreviewed = deriveSocial(result.read, result.proposal, missingCommunityReview, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(unreviewed.facts.communityBreadthReview, undefined);
+  assert.ok(unreviewed.assessments.find(row => row.id === 'S10')?.causes.some(cause => cause.code === 'SOC_REVIEW_INVALID'));
 });
 
 test('fresh model proposals missing either mandatory judgment remain invalid before independent review', async t => {

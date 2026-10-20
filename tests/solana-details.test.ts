@@ -466,7 +466,7 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
     assert.equal(details.errors.holders, 'RPC_SHAPE');
   });
 
-  await t.test('empty largest-account response is named and bounded', async () => {
+  await t.test('empty complete population preserves its supply mismatch without requesting sample accounts', async () => {
     const rawMint = token2022Mint();
     let multipleCalls = 0;
     const fetcher: typeof fetch = async (_url, init) => {
@@ -481,7 +481,8 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
     };
     const details = await inspectSolanaDetails(mintDescriptor(), MINT, 'https://rpc.example', fetcher);
     assert.equal(details.holders, undefined);
-    assert.equal(details.errors.holders, 'HOLDER_SAMPLE_EMPTY');
+    assert.equal(details.errors.holderPopulation, 'HOLDER_SUPPLY_UNRECONCILED');
+    assert.equal(details.errors.holders, 'HOLDER_SUPPLY_UNRECONCILED');
     assert.equal(multipleCalls, 0);
   });
 });

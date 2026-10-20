@@ -7,6 +7,19 @@ import { canonicalSocialUrl, socialAccount, socialInputSchema, type SocialInput 
 export type SocialRead=SocialInput & {rawArtifacts:Record<string,string>};
 const object=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
 const host=(url:string)=>{try{return new URL(url).hostname;}catch{return null;}};
+function collectionError(error:unknown,operation:'SEARCH'|'FETCH',signal?:AbortSignal):string {
+  const stage='SOC_'+operation+'_',cause=object(error)&&object(error.cause)?error.cause:undefined;
+  const codes=[object(error)?error.code:undefined,cause?.code];
+  if(signal?.aborted||error instanceof Error&&error.message==='COLLECTION_BUDGET')return 'SOC_COLLECTION_BUDGET';
+  if(error instanceof Error&&new RegExp('^'+stage+'(?:HTTP_[0-9]{3}|SHAPE)$').test(error.message))return error.message;
+  if(error instanceof Error&&error.message==='PROVIDER_RESPONSE_LIMIT')return stage+'RESPONSE_LIMIT';
+  if(error instanceof SyntaxError)return stage+'SHAPE';
+  if(error instanceof Error&&error.name==='TimeoutError'||codes.some(code=>['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT'].includes(String(code))))return stage+'TIMEOUT';
+  if(codes.some(code=>['ENOTFOUND','EAI_AGAIN'].includes(String(code))))return stage+'DNS_ERROR';
+  if(codes.some(code=>['EACCES','EPERM'].includes(String(code))))return stage+'NETWORK_ACCESS_DENIED';
+  if(error instanceof TypeError||codes.some(code=>['ECONNRESET','ECONNREFUSED','EPIPE','UND_ERR_SOCKET'].includes(String(code))))return stage+'TRANSPORT';
+  return stage+'UNAVAILABLE';
+}
 /** Supplements preserve the frozen attention sample and its retained evidence. */
 export async function collectSocialSources(token:TokenRef,attention:AttentionRead,key:string,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal):Promise<SocialRead>{
   const retained=attention.sources,rawArtifacts:Record<string,string>={},codes:string[]=[],queries:string[]=[];
@@ -35,13 +48,13 @@ export async function collectSocialSources(token:TokenRef,attention:AttentionRea
   for(const source of sources.filter(s=>identitySourceIds.includes(s.id)&&clippedIds.has(s.id)))add(source.url,'COMPLETE_IDENTITY_TEXT',true);
   for(const lead of selection.filter(l=>l.status==='PENDING')){const prior=sources.find(s=>canonicalSocialUrl(s.url)===lead.url),raw=prior&&fullTexts.get(prior.id);if(prior&&raw)retain(lead,raw.text,raw.url,prior.publishedAt,prior.availableAt);}
   for(const url of (attention.discoveryUrls??[]).filter(url=>url!==attention.metadataUri))add(url,'DEX_DISCOVERY',true);
-  const search=async(query:string,required:boolean)=>{if(aborted()){if(required)requiredFailed=true;codes.push('SOC_COLLECTION_BUDGET');return;}queries.push(query);try{const url=new URL('https://api.search.tinyfish.ai/');url.searchParams.set('query',query);const response=await fetchReadResponse(url.toString(),{headers:{'X-API-Key':key,accept:'application/json'},signal},fetcher,10000);const raw=await readLimitedText(response,100000);rawArtifacts[`social-search-${queries.length}`]=raw;if(!response.ok)throw new Error(`SOC_SEARCH_HTTP_${response.status}`);const result:unknown=JSON.parse(raw);if(!object(result)||!Array.isArray(result.results))throw new Error('SOC_SEARCH_SHAPE');for(const r of result.results)if(object(r))add(r.url,'INDEXED_DISCOVERY_ONLY',required);}catch(error){codes.push(required?error instanceof Error&&/^SOC_/.test(error.message)?error.message:'SOC_SEARCH_UNAVAILABLE':'SOC_ACCOUNT_CONTEXT_UNAVAILABLE');if(required)requiredFailed=true;}};
+  const search=async(query:string,required:boolean)=>{if(aborted()){if(required)requiredFailed=true;codes.push('SOC_COLLECTION_BUDGET');return;}queries.push(query);try{const url=new URL('https://api.search.tinyfish.ai/');url.searchParams.set('query',query);const response=await fetchReadResponse(url.toString(),{headers:{'X-API-Key':key,accept:'application/json'},signal},fetcher,10000);const raw=await readLimitedText(response,100000);rawArtifacts[`social-search-${queries.length}`]=raw;if(!response.ok)throw new Error(`SOC_SEARCH_HTTP_${response.status}`);const result:unknown=JSON.parse(raw);if(!object(result)||!Array.isArray(result.results))throw new Error('SOC_SEARCH_SHAPE');for(const r of result.results)if(object(r))add(r.url,'INDEXED_DISCOVERY_ONLY',required);}catch(error){const code=collectionError(error,'SEARCH',signal);rawArtifacts[`social-collection-search-${queries.length}-error`]=JSON.stringify({method:'social-collection-error-v1',operation:'SEARCH',code,required});codes.push(required?code:'SOC_ACCOUNT_CONTEXT_UNAVAILABLE');if(required)requiredFailed=true;}};
   if(!selection.length&&!identitySourceIds.length)await search(`"${token.address.replace(/["\\]/g,'')}" official project website social account`,true);
   const fetchBatch=async()=>{const leads=selection.filter(l=>l.status==='PENDING');if(!leads.length)return;const urls=leads.map(l=>l.url);requestedUrlsByBatch.push(urls);if(aborted()){for(const l of leads)fail(l,'SOC_COLLECTION_BUDGET');return;}
     try{const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:8000}),signal},fetcher,30000);const raw=await readLimitedText(response,2000000);rawArtifacts[`social-fetch-${requestedUrlsByBatch.length}`]=raw;if(!response.ok)throw new Error(`SOC_FETCH_HTTP_${response.status}`);const result:unknown=JSON.parse(raw);if(!object(result)||!Array.isArray(result.results)||!Array.isArray(result.errors))throw new Error('SOC_FETCH_SHAPE');
       for(const r of result.results){if(!object(r)||typeof r.url!=='string'||typeof r.text!=='string')continue;const requested=publicHttpsUrl(r.url,true),final=publicHttpsUrl(typeof r.final_url==='string'?r.final_url:r.url,true);if(!requested)continue;const lead=leads.find(l=>l.url===canonicalSocialUrl(requested));if(!lead||lead.status!=='PENDING')continue;if(!final||socialAccount(requested)&&socialAccount(requested)!==socialAccount(final)){fail(lead,'SOC_REDIRECT_BINDING');continue;}const date=typeof r.published_date==='string'&&Number.isFinite(Date.parse(r.published_date))?new Date(r.published_date).toISOString():null;retain(lead,r.text,canonicalSocialUrl(final),date,now());}
       for(const l of leads.filter(l=>l.status==='PENDING'))fail(l,result.errors.length?'SOC_FETCH_URL_ERROR':'SOC_FETCH_REQUIRED_MISSING');
-    }catch(error){for(const l of leads.filter(l=>l.status==='PENDING'))fail(l,aborted()?'SOC_COLLECTION_BUDGET':error instanceof Error&&/^SOC_/.test(error.message)?error.message:'SOC_FETCH_UNAVAILABLE');}
+    }catch(error){const code=collectionError(error,'FETCH',signal);rawArtifacts[`social-collection-fetch-${requestedUrlsByBatch.length}-error`]=JSON.stringify({method:'social-collection-error-v1',operation:'FETCH',code,required:leads.some(l=>l.required)});for(const l of leads.filter(l=>l.status==='PENDING'))fail(l,code);}
   };
   await fetchBatch();
   // One observed level only: exact project account links and same-host identity documents.
@@ -51,8 +64,8 @@ export async function collectSocialSources(token:TokenRef,attention:AttentionRea
   await fetchBatch();
   const inheritedComplete=(attention.postSampleComplete??attention.complete)&&!targetPostIds.some(id=>clippedIds.has(id));
   if(clippedIds.size)codes.push('SOC_TEXT_CAP');
-  const identityComplete=identitySourceIds.length>0&&!requiredFailed&&!identitySourceIds.some(id=>clippedIds.has(id));
-  const read=socialInputSchema.parse({schemaVersion:1,sources,start:attention.start,end:attention.end,targetPostIds:[...targetPostIds],identitySourceIds:[...new Set(identitySourceIds)],sampleComplete:inheritedComplete,identityComplete,previousComparable:inheritedComplete,codes:[...new Set(codes)],queries:[...attention.queries,...queries]});
+  const identityComplete=!requiredFailed&&sources.length>0&&!identitySourceIds.some(id=>clippedIds.has(id));
+  const read=socialInputSchema.parse({schemaVersion:1,entryDecisionMethod:'public-support-v3',sources,start:attention.start,end:attention.end,targetPostIds:[...targetPostIds],identitySourceIds:[...new Set(identitySourceIds)],sampleComplete:inheritedComplete,identityComplete,previousComparable:inheritedComplete,codes:[...new Set(codes)],queries:[...attention.queries,...queries]});
   rawArtifacts['social-acquisition-scope']=JSON.stringify({read,selection,requestedUrls:requestedUrlsByBatch.flat(),requestedUrlsByBatch,supplementLimit:8,actualSupplements:additions,socialSourceLimit:32,baseSocialSourceCount,submittedSocialSourceCount:sources.length,budgetBasis:'social-input',clippedSourceIds:originalClipped,remainingClippedSourceIds:[...clippedIds],retainedAttentionSourceCount:retained.length,excludedComparisonSourceIds:retained.filter(s=>!targetPostIds.includes(s.id)&&!identitySourceIds.includes(s.id)).map(s=>s.id),method:'free-social-supplements-v2'});
   return {...read,rawArtifacts};
 }

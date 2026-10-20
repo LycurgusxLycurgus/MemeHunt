@@ -157,7 +157,7 @@ export const socialPolicyFactsSchema = z.object({
   postCorpusObserved:z.boolean(),sampleComplete:z.boolean(),lineageComplete:z.boolean(),
   qualifiedOriginalCount:z.number().int().nonnegative().safe().nullable(),accountUpperBound:z.number().int().nonnegative().safe().nullable(),
   independentGroupCount:z.number().int().nonnegative().safe().nullable(),independentCommunityCount:z.number().int().nonnegative().safe().nullable(),
-  identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),
+  identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),participationReview:socialQualifiedJudgmentSchema.optional(),communityBreadthReview:socialQualifiedJudgmentSchema.optional(),
 }).strict();
 export type SocialPolicyFacts = z.infer<typeof socialPolicyFactsSchema>;
 export const sharedPolicyFactsSchema=z.object({
