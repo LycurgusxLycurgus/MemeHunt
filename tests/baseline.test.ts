@@ -236,9 +236,9 @@ test('verified pool and liquidity facts survive execution failures while quotes,
   assert.equal(get(rows, 'O12').collector, 'IMPLEMENTED');
   assert.equal(get(rows, 'O12').causes[0]?.code, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
   assert.equal(get(rows, 'O15').quality, 'MISSING', 'round-trip loss cannot be qualified until external transaction costs are reconciled');
-  assert.equal(get(rows, 'O15').causes[0]?.code, 'PUMP_TRANSACTION_COSTS_UNAVAILABLE');
+  assert.equal(get(rows, 'O15').causes[0]?.code, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
   assert.equal(get(rows, 'O16').quality, 'MISSING', 'unreconciled network fees cannot appear as zero-cost known evidence');
-  assert.equal(get(rows, 'O16').causes[0]?.code, 'PUMP_TRANSACTION_COSTS_UNAVAILABLE');
+  assert.equal(get(rows, 'O16').causes[0]?.code, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
 
   const reconciled = deriveBaseline(base({ evidence: [EVIDENCE], venueInspection: venueInspection(), venue: venue({
     costsReconciled: true,

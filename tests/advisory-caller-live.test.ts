@@ -47,6 +47,7 @@ function advisoryFixture(url: string, init?: RequestInit): Response {
   return json(value);
 }
 
+let runSequence=0;
 type Variant = { missingSyndication?: string; reviewStatus?: number; releaseAfterReads?: number; categories?: Record<string, string> };
 /** One live run in which every RPC request is held until the caller pipeline reaches its declared point (fallback after 15 s). */
 async function run(variant: Variant = {}) {
@@ -92,11 +93,12 @@ async function run(variant: Variant = {}) {
       if (provider === 'syndication' && variant.missingSyndication === p.id) return json({ error: 'not found' }, 404);
       return json(p[provider]);
     }
-    if (init?.method === 'POST') { held++; await gate; held--; }
+    // Main's optional metadata discovery precedes caller seeding; only historical RPC is held.
+    if (init?.method === 'POST' && JSON.parse(String(init.body)).method !== 'getMultipleAccounts') { held++; await gate; held--; }
     return advisoryFixture(url, init);
   };
   try {
-    const bundle = await collectLiveToken(token, { profile: starterProfile(), semanticEnabled: true, advisoryEnabled: true, tinyfishKey: 'tinyfish-fixture-key', geminiKey: 'gemini-fixture-key', fetcher, now });
+    const bundle = await collectLiveToken(token, { profile: starterProfile(), semanticEnabled: true, advisoryEnabled: true, tinyfishKey: 'tinyfish-fixture-key', geminiKey: `gemini-fixture-key-${++runSequence}`, fetcher, now });
     return { bundle, callerPackets, callerReads, firstCallerTick, heldAtReview, releasedBy };
   } finally { clearTimeout(fallback); }
 }

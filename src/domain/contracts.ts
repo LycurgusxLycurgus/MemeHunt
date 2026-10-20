@@ -198,11 +198,11 @@ export const socialPolicyFactsSchema = z.object({
   postCorpusObserved:z.boolean(),sampleComplete:z.boolean(),lineageComplete:z.boolean(),
   qualifiedOriginalCount:z.number().int().nonnegative().safe().nullable(),accountUpperBound:z.number().int().nonnegative().safe().nullable(),
   independentGroupCount:z.number().int().nonnegative().safe().nullable(),independentCommunityCount:z.number().int().nonnegative().safe().nullable(),
-  identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),
+  identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),participationReview:socialQualifiedJudgmentSchema.optional(),communityBreadthReview:socialQualifiedJudgmentSchema.optional(),
 }).strict();
 export type SocialPolicyFacts = z.infer<typeof socialPolicyFactsSchema>;
 export const sharedPolicyFactsSchema=z.object({
-  method:z.literal('shared-evidence-v1'),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
+  method:z.literal('shared-evidence-v1'),qualityMode:z.literal('ENTRY_GATES_V1').optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
   witnesses:z.array(z.object({checkId:z.string(),status:z.enum(['PASS','FAIL','UNKNOWN']),featureIds:z.array(z.string()),evidenceIds:z.array(z.string()),route:z.string()}).strict()).max(40),
   freshness:z.array(z.object({featureId:z.string(),ttlSeconds:z.number().int().positive(),eventAt:z.string().nullable(),fresh:z.boolean(),evidenceIds:z.array(z.string())}).strict()).max(61),
   unresolved:z.array(z.string()),semanticQualified:z.boolean(),auditQualified:z.boolean(),

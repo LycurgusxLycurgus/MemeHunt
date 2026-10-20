@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { semanticClaimSchema, type SemanticResult } from '../domain/contracts.js';
 export const geminiSettings = {
   model: 'gemini-3.5-flash-lite',
+  fallbackModel: 'gemini-3.1-flash-lite',
   maxOutputTokens: 65536,
   baselineThinkingLevel: 'medium',
   semanticThinkingLevel: 'high',

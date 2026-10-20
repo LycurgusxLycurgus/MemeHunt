@@ -504,6 +504,135 @@ test('independently reviewed inadequate public identity verifiability is a bound
   assert.equal(entry.checks.find(row => row.checkId === 'SOC-01')?.status, 'FAIL');
 });
 
+test('public-support-v2 can review a complete no-account scope, while a failed identity search remains unknown', () => {
+  const complete = makeSocialFixture({ includeIdentity: false });
+  complete.read.entryDecisionMethod = 'public-support-v2';
+  complete.read.identityComplete = true;
+  addSocialJudgments(complete, { identity: 'CONTRADICTED', participation: 'UNRESOLVED' });
+  assert.deepEqual(complete.proposal.identities, [], 'the complete search found no official-account claim to invent');
+  const reviewed = deriveSocial(complete.read, complete.proposal, complete.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(reviewed.facts.identityReview?.verdict, 'CONTRADICTED');
+  assert.equal(assessment(reviewed, 'S01').quality, 'MISSING', 'an empty completed identity search does not invent a positive identity fact');
+  assert.equal(assessment(reviewed, 'S01').projection?.value, null);
+  assert.equal(evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, SOCIAL_CUTOFF, 'QUALIFIED_V4', reviewed.facts)
+    .checks.find(row => row.checkId === 'SOC-01')?.status, 'FAIL');
+
+  const interrupted = makeSocialFixture({ includeIdentity: false });
+  interrupted.read.entryDecisionMethod = 'public-support-v2';
+  interrupted.read.identityComplete = false;
+  interrupted.read.codes = ['SOC_SEARCH_HTTP_503'];
+  addSocialJudgments(interrupted, { identity: 'CONTRADICTED', participation: 'UNRESOLVED' });
+  const unknown = deriveSocial(interrupted.read, interrupted.proposal, interrupted.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(unknown.facts.identityReview?.verdict, 'UNRESOLVED', 'a failed required search cannot support a negative grade');
+  assert.equal(assessment(unknown, 'S01').causes[0]?.code, 'SOC_SEARCH_HTTP_503', 'the row retains the actual collection failure');
+  assert.equal(evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, SOCIAL_CUTOFF, 'QUALIFIED_V4', unknown.facts)
+    .checks.find(row => row.checkId === 'SOC-01')?.status, 'UNKNOWN');
+});
+
+test('public-support-v2 accepts a complete participation negative without inventing lineage and preserves positive guards', () => {
+  const complete = makeSocialFixture({ includeIdentity: false });
+  complete.read.entryDecisionMethod = 'public-support-v2';
+  complete.read.identityComplete = true;
+  for (const post of complete.proposal.posts) {
+    post.origin = null;
+    post.community = null;
+  }
+  addSocialJudgments(complete, { participation: 'CONTRADICTED' });
+  const negative = deriveSocial(complete.read, complete.proposal, complete.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(negative.facts.sampleComplete, true);
+  assert.equal(negative.facts.participationReview?.verdict, 'CONTRADICTED', 'full source inspection can establish inadequate provenance evidence');
+  assert.equal(negative.facts.accountUpperBound, 3, 'the observed account count remains separately represented');
+  assert.equal(negative.facts.independentGroupCount, null, 'unproven origin counts remain unknown');
+  assert.equal(negative.facts.independentCommunityCount, null, 'unproven community counts remain unknown');
+  assert.equal(evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, SOCIAL_CUTOFF, 'QUALIFIED_V4', negative.facts)
+    .checks.find(row => row.checkId === 'SOC-03')?.status, 'FAIL');
+
+  const clipped = makeSocialFixture({ includeIdentity: false });
+  clipped.read.entryDecisionMethod = 'public-support-v2';
+  clipped.read.sampleComplete = false;
+  clipped.read.codes = ['SOC_TEXT_CAP'];
+  addSocialJudgments(clipped, { participation: 'CONTRADICTED' });
+  const blocked = deriveSocial(clipped.read, clipped.proposal, clipped.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(blocked.facts.participationReview?.verdict, 'UNRESOLVED', 'clipped required text blocks the negative judgment');
+  assert.equal(assessment(blocked, 'S03').causes[0]?.code, 'SOC_TEXT_CAP');
+  assert.equal(evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, SOCIAL_CUTOFF, 'QUALIFIED_V4', blocked.facts)
+    .checks.find(row => row.checkId === 'SOC-03')?.status, 'UNKNOWN');
+
+  const positive = makeSocialFixture({ includeIdentity: false });
+  positive.read.entryDecisionMethod = 'public-support-v2';
+  positive.read.identityComplete = true;
+  addSocialJudgments(positive, { participation: 'SUPPORTED' });
+  const supported = deriveSocial(positive.read, positive.proposal, positive.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(supported.facts.accountUpperBound, 3);
+  assert.equal(supported.facts.independentGroupCount, 3);
+  assert.equal(supported.facts.independentCommunityCount, 3);
+  assert.equal(supported.facts.participationReview?.verdict, 'SUPPORTED');
+
+  const unprovenPositive = makeSocialFixture({ includeIdentity: false });
+  unprovenPositive.read.entryDecisionMethod = 'public-support-v2';
+  for (const post of unprovenPositive.proposal.posts) {
+    post.origin = null;
+    post.community = null;
+  }
+  addSocialJudgments(unprovenPositive, { participation: 'SUPPORTED' });
+  const downgraded = deriveSocial(unprovenPositive.read, unprovenPositive.proposal, unprovenPositive.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(downgraded.facts.participationReview?.verdict, 'UNRESOLVED', 'a positive claim still needs the existing complete count and lineage proof');
+});
+
+test('public-support-v3 reviews community breadth independently and keeps factual counts unknown when lineage is absent', () => {
+  const complete = makeSocialFixture({ includeIdentity: false });
+  complete.read.entryDecisionMethod = 'public-support-v3';
+  for (const post of complete.proposal.posts) {
+    post.origin = null;
+    post.community = null;
+    const source = complete.read.sources.find(row => row.id === post.sourceId)!;
+    source.text = source.text.replace(/Origin: [^\n]+\nCommunity: [^\n]+\n/, '');
+  }
+  addSocialJudgments(complete, { participation: 'CONTRADICTED', communityBreadth: 'CONTRADICTED' });
+  const negative = deriveSocial(complete.read, complete.proposal, complete.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(negative.facts.sampleComplete, true);
+  assert.equal(negative.facts.communityBreadthReview?.verdict, 'CONTRADICTED');
+  assert.equal(negative.facts.independentCommunityCount, null, 'missing lineage is not converted to an observed zero');
+  assert.equal(assessment(negative, 'S10').quality, 'MISSING');
+  assert.equal(assessment(negative, 'S10').projection?.value, null);
+
+  const clipped = makeSocialFixture({ includeIdentity: false });
+  clipped.read.entryDecisionMethod = 'public-support-v3';
+  clipped.read.sampleComplete = false;
+  clipped.read.codes = ['SOC_TEXT_CAP'];
+  addSocialJudgments(clipped, { participation: 'UNRESOLVED', communityBreadth: 'CONTRADICTED' });
+  const unresolved = deriveSocial(clipped.read, clipped.proposal, clipped.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(unresolved.facts.communityBreadthReview?.verdict, 'UNRESOLVED', 'an incomplete current sample cannot grade the negative judgment');
+  assert.equal(assessment(unresolved, 'S10').causes[0]?.code, 'SOC_TEXT_CAP');
+});
+
+test('public-support-v3 preserves the three-community positive guard and leaves subthreshold lineage factual', () => {
+  const supported = makeSocialFixture({ includeIdentity: false });
+  supported.read.entryDecisionMethod = 'public-support-v3';
+  addSocialJudgments(supported, { participation: 'UNRESOLVED', communityBreadth: 'SUPPORTED' });
+  const positive = deriveSocial(supported.read, supported.proposal, supported.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(positive.facts.lineageComplete, true);
+  assert.equal(positive.facts.independentCommunityCount, 3);
+  assert.equal(positive.facts.communityBreadthReview?.verdict, 'SUPPORTED');
+
+  const twoCommunities = makeSocialFixture({ includeIdentity: false });
+  twoCommunities.read.entryDecisionMethod = 'public-support-v3';
+  const sharedCommunity = 'https://groups.example/shared';
+  for (const post of twoCommunities.proposal.posts) {
+    if (post.sourceId.startsWith('post-carol-')) continue;
+    const prior = post.community;
+    assert.ok(prior);
+    const source = twoCommunities.read.sources.find(row => row.id === post.sourceId)!;
+    source.text = source.text.replace(`Community: ${prior.key}`, `Community: ${sharedCommunity}`);
+    post.community = { key: sharedCommunity, citation: { sourceId: prior.citation.sourceId, quote: sharedCommunity } };
+  }
+  addSocialJudgments(twoCommunities, { participation: 'UNRESOLVED', communityBreadth: 'SUPPORTED' });
+  const guarded = deriveSocial(twoCommunities.read, twoCommunities.proposal, twoCommunities.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(guarded.facts.independentCommunityCount, 2);
+  assert.equal(guarded.facts.communityBreadthReview?.verdict, 'UNRESOLVED', 'a positive community judgment requires at least three qualified communities');
+  assert.equal(assessment(guarded, 'S10').projection?.value, false, 'the independently known two-community factual shortfall remains separately recorded');
+});
+
 test('a reviewed integrity negative may use missing desired indicators without turning missing metrics into zero', () => {
   const fixture = makeSocialFixture({
     missingMetric: { sourceId: 'post-alice-1', field: 'replies' },

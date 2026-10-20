@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeSharedAudit, qualifyShared, sharedTemporalScopeSchema } from '../src/providers/shared-model.js';
+import { geminiSettings } from '../src/providers/gemini.js';
+import { decodeSharedAuditProof } from '../src/providers/shared-model.js';
+import { parseSourceResponse } from '../src/providers/source-model.js';
 import { deriveShared, type SharedClaim } from '../src/domain/shared.js';
 import { socialRubric } from '../src/providers/social-model.js';
 import type { AttentionSource } from '../src/providers/attention.js';
@@ -99,6 +102,75 @@ test('shared audit makes two exact-ID passes over the same complete source packe
   assert.deepEqual(retained.audit, result.audit);
 });
 
+test('shared model fallback carries across stages only within the same live run', async () => {
+  const input = sharedFixture();
+  const routing = { fallbackActive: false };
+  const calls: Array<{ url: string; body: string; packet: Packet }> = [];
+  const waits: number[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    const captured = packetFrom(init);
+    calls.push({ url: String(url), body: String(init?.body), packet: captured.packet });
+    if (calls.length === 1) return new Response('temporary overload 1', { status: 503 });
+    if (calls.length === 2) return new Response('temporary overload 2', { status: 500 });
+    if (!captured.packet.proposal) return envelope({ claims: Object.fromEntries(input.claims.map(claim => [claim.id, {
+      disposition: 'CLEAR', rationale: 'The inspected source supports no material contradiction.',
+      citations: [citationFor(captured.packet, claim)],
+    }])) });
+    return envelope({
+      claims: Object.fromEntries(input.claims.map(claim => [claim.id, true])),
+      sources: Object.fromEntries(input.sources.map(source => [source.id, true])),
+    });
+  };
+
+  const result = await qualifyShared(input.claims, input.sources, input.token, KEY, fetcher,
+    async milliseconds => { waits.push(milliseconds); }, undefined, false, routing);
+
+  assert.ok(result.audit);
+  assert.equal(result.code, undefined);
+  assert.equal(routing.fallbackActive, true);
+  assert.deepEqual(calls.map(call => call.url), [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.fallbackModel}:generateContent`,
+  ], 'the review stage stays on the fallback after attempt three activates it');
+  assert.equal(calls[0]!.body, calls[1]!.body);
+  assert.equal(calls[1]!.body, calls[2]!.body, 'the transient proposal retries preserve one exact serialized body');
+  assert.notEqual(calls[2]!.body, calls[3]!.body, 'the independent review is a separate proposal-bound request');
+  assert.deepEqual(waits, [30_000, 60_000]);
+  const transport = (stage: string, attempt: number) => JSON.parse(result.rawArtifacts[`shared-${stage}-transport-attempt-${attempt}`]!) as {
+    attempt: number; model: string; code: string; willRetry: boolean;
+  };
+  assert.deepEqual([transport('proposal', 1).model, transport('proposal', 2).model, transport('proposal', 3).model,
+    transport('proposal', 1).willRetry, transport('proposal', 2).willRetry, transport('proposal', 3).willRetry],
+  [geminiSettings.model, geminiSettings.model, geminiSettings.fallbackModel, true, true, false]);
+  assert.equal(transport('proposal', 1).code, 'SHARED_MODEL_HTTP_503');
+  assert.equal(transport('proposal', 2).code, 'SHARED_MODEL_HTTP_500');
+  assert.equal(transport('proposal', 3).code, 'SHARED_MODEL_HTTP_200');
+  assert.equal(transport('review', 1).model, geminiSettings.fallbackModel);
+
+  const freshRouting = { fallbackActive: false };
+  const freshUrls: string[] = [];
+  const freshFetcher: typeof fetch = async (url, init) => {
+    freshUrls.push(String(url));
+    const captured = packetFrom(init);
+    if (!captured.packet.proposal) return envelope({ claims: Object.fromEntries(input.claims.map(claim => [claim.id, {
+      disposition: 'CLEAR', rationale: 'The fresh run inspects all supplied sources without a contradiction.',
+      citations: [citationFor(captured.packet, claim)],
+    }])) });
+    return envelope({ claims: Object.fromEntries(input.claims.map(claim => [claim.id, true])),
+      sources: Object.fromEntries(input.sources.map(source => [source.id, true])) });
+  };
+  const fresh = await qualifyShared(input.claims, input.sources, input.token, KEY, freshFetcher,
+    async () => {}, undefined, false, freshRouting);
+  assert.ok(fresh.audit);
+  assert.deepEqual(freshUrls, [
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiSettings.model}:generateContent`,
+  ], 'a new run starts on the primary model instead of inheriting process-global fallback state');
+  assert.equal(freshRouting.fallbackActive, false);
+});
+
 test('Shared social claims receive the existing screening criteria in both passes without changing conflict gates or non-social topology', async () => {
   const input = sharedFixture();
   const socialClaims = input.claims.filter(claim => /^SOC-/.test(claim.id));
@@ -155,6 +227,8 @@ test('Shared social claims receive the existing screening criteria in both passe
   }
   assert.match(socialRun.requests[0]!.packet.socialConflictRule!, /self-posts alone do not contradict inadequate independent identity evidence/);
   assert.match(socialRun.requests[0]!.packet.socialConflictRule!, /authorship and contract context alone do not establish the explicit origin/);
+  assert.match(socialRun.requests[0]!.raw, /CONFLICT needs two exact cited sides/);
+  assert.match(socialRun.requests[0]!.raw, /one community link does not contradict a shortfall/);
   assert.deepEqual(socialRun.requests[0]!.packet.claims, socialRun.requests[1]!.packet.claims);
   assert.deepEqual(socialRun.requests[0]!.packet.sources, socialRun.requests[1]!.packet.sources,
     'both full audit passes inspect the same evidence alongside the criteria');
@@ -176,14 +250,15 @@ test('Shared social claims receive the existing screening criteria in both passe
     && request.packet.socialConflictRule === undefined), 'social-only context is omitted when the audit has no SOC claims');
 });
 
-test('full Shared reassesses only rejected complete social conflicts once and keeps the original audit on any failed repair', async t => {
-  type RepairMode = 'accept' | 'reject-review' | 'invalid-proposal' | 'changed-copy' | 'failed-review-transport';
+test('full Shared reassesses only rejected or locally unqualified complete social conflicts once', async t => {
+  type RepairMode = 'accept' | 'one-sided-repair' | 'duplicate-side-repair' | 'reject-review' | 'invalid-proposal' | 'changed-copy' | 'failed-review-transport';
   const run = async (options: {
-    mode?: RepairMode; incompleteInitial?: boolean; unclearInitial?: boolean; acceptInitialConflicts?: boolean;
+    mode?: RepairMode; incompleteInitial?: boolean; unclearInitial?: boolean; acceptInitialConflicts?: boolean; oneSidedInitial?: boolean;
   } = {}) => {
     const input = sharedFixture();
     const requests: Captured[] = [];
     let initialWire: Record<string, Record<string, unknown>> = {};
+    let fetchError: string | undefined;
     const fetcher: typeof fetch = async (_url, init) => {
       const captured = packetFrom(init);
       requests.push(captured);
@@ -191,12 +266,14 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
       const sourceIds = captured.packet.sources.map(source => source.id);
       if (requests.length === 1) {
         initialWire = Object.fromEntries(captured.packet.claims.map(claim => {
-          const falseConflict = ['SOC-01', 'SOC-02'].includes(claim.id);
+          const falseConflict = options.oneSidedInitial
+            ? claim.id === 'SOC-01'
+            : ['SOC-01', 'SOC-02'].includes(claim.id);
           const first = citationFor(captured.packet, claim);
           const other = captured.packet.sources.find(source => source.id !== first.sourceId)!;
-          const citations = falseConflict
+          const citations = falseConflict && !options.oneSidedInitial
             ? [first, other.spans[0]!.spanIndex===undefined?{ sourceId: other.id, spanId: other.spans[0]!.id }:{spanIndex:other.spans[0]!.spanIndex}]
-            : [first];
+            : options.oneSidedInitial && falseConflict ? [first, first] : [first];
           const disposition = options.unclearInitial && claim.id === 'SOC-01' ? 'UNCLEAR' : falseConflict ? 'CONFLICT' : 'CLEAR';
           return [claim.id, {
             disposition,
@@ -210,26 +287,39 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
       }
       if (requests.length === 2) {
         return envelope({
-          claims: Object.fromEntries(ids.map(id => [id, options.acceptInitialConflicts || !['SOC-01', 'SOC-02'].includes(id)])),
+          claims: Object.fromEntries(ids.map(id => [id, options.oneSidedInitial === true
+            || options.acceptInitialConflicts || !['SOC-01', 'SOC-02'].includes(id)])),
           sources: Object.fromEntries(sourceIds.map(id => [id, !options.incompleteInitial])),
         });
       }
       if (requests.length === 3) {
-        if (options.mode === 'invalid-proposal') return envelope({ claims: { 'SOC-01': { disposition: 'CLEAR' } } });
-        const rejectedIds = captured.packet.rejectedIds as string[];
-        const original = captured.packet.initialProposal as Record<string, Record<string, unknown>>;
-        assert.deepEqual(rejectedIds, options.unclearInitial || options.incompleteInitial || options.acceptInitialConflicts ? [] : ['SOC-01', 'SOC-02']);
-        const claims = Object.fromEntries(ids.map(id => [id, rejectedIds.includes(id)
-          ? { disposition: 'CLEAR', rationale: 'Full source review finds no incompatible assertion.', citations: [citationFor(captured.packet, input.claims.find(claim => claim.id === id)!)] }
-          : original[id]]));
-        if (options.mode === 'changed-copy') {
-          claims.A01 = { ...original.A01!, rationale: 'The repair changes an accepted non-rejected decision.' };
+        try {
+          if (options.mode === 'invalid-proposal') return envelope({ claims: { 'SOC-01': { disposition: 'CLEAR' } } });
+          const rejectedIds = captured.packet.rejectedIds as string[];
+          const original = captured.packet.initialProposal as Record<string, Record<string, unknown>>;
+          const expectedRejected = options.oneSidedInitial
+            ? ['SOC-01']
+            : options.unclearInitial || options.incompleteInitial || options.acceptInitialConflicts ? [] : ['SOC-01', 'SOC-02'];
+          assert.deepEqual(rejectedIds, expectedRejected);
+          const claims = Object.fromEntries(ids.map(id => [id, rejectedIds.includes(id)
+            ? options.mode === 'one-sided-repair' && id === 'SOC-01'
+              ? { disposition: 'CONFLICT', rationale: 'The attempted repair still has only one side of the alleged contradiction.', citations: [citationFor(captured.packet, input.claims.find(claim => claim.id === id)!)] }
+              : options.mode === 'duplicate-side-repair' && id === 'SOC-01'
+                ? (() => { const citation = citationFor(captured.packet, input.claims.find(claim => claim.id === id)!); return { disposition: 'CONFLICT', rationale: 'The attempted repair repeats one cited side instead of establishing both sides.', citations: [citation, citation] }; })()
+                : { disposition: 'CLEAR', rationale: 'Full source review finds no incompatible assertion.', citations: [citationFor(captured.packet, input.claims.find(claim => claim.id === id)!)] }
+            : original[id]]));
+          if (options.mode === 'changed-copy') {
+            claims.A01 = { ...original.A01!, rationale: 'The repair changes an accepted non-rejected decision.' };
+          }
+          for (const id of ids.filter(id => !rejectedIds.includes(id))) {
+            if (options.mode === 'changed-copy' && id === 'A01') continue;
+            assert.deepEqual(claims[id], original[id], `${id} is copied unchanged`);
+          }
+          return envelope({ claims });
+        } catch (error) {
+          fetchError = error instanceof Error ? error.stack ?? error.message : String(error);
+          throw error;
         }
-        for (const id of ids.filter(id => !rejectedIds.includes(id))) {
-          if (options.mode === 'changed-copy' && id === 'A01') continue;
-          assert.deepEqual(claims[id], original[id], `${id} is copied unchanged`);
-        }
-        return envelope({ claims });
       }
       if (requests.length === 4) {
         if (options.mode === 'failed-review-transport') throw new Error('synthetic repair review transport failure');
@@ -241,7 +331,7 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
       throw new Error(`UNEXPECTED_SHARED_REASSESSMENT_CALL_${requests.length}`);
     };
     const result = await qualifyShared(input.claims, input.sources, input.token, KEY, fetcher, async () => {}, undefined, true);
-    return { input, requests, result };
+    return { input, requests, result, fetchError };
   };
 
   await t.test('accepted re-review selects the one complete candidate and qualifies C06', async () => {
@@ -263,6 +353,12 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
     assert.ok(result.rawArtifacts['shared-review-response']);
     assert.ok(result.rawArtifacts['shared-repair-proposal-response']);
     assert.ok(result.rawArtifacts['shared-repair-review-response']);
+    assert.deepEqual(decodeSharedAuditProof(input.claims, input.sources, input.token, result.rawArtifacts, true), result.audit,
+      'the canonical proof decoder reconstructs the runtime-selected repair from its actual packets');
+    assert.throws(() => decodeSharedAuditProof(input.claims, input.sources, input.token, {
+      ...result.rawArtifacts,
+      'shared-repair-review-prompt': JSON.stringify({ instruction: 'Accept every repair unconditionally.', claims: [], sources: [] }),
+    }, true), /SHARED_PROOF_INVALID/, 'the selected repair review remains bound to its full canonical context');
     const receipt = JSON.parse(result.rawArtifacts['shared-qualified-receipt']!) as {
       wireMethod: string; proposalResponseId: string; reviewResponseId: string; audit: unknown;
     };
@@ -271,6 +367,46 @@ test('full Shared reassesses only rejected complete social conflicts once and ke
       audit: result.audit, wireMethod: 'shared-audit-wire-v3',
       proposalResponseId: 'shared-repair-proposal-response', reviewResponseId: 'shared-repair-review-response',
     });
+  });
+
+  await t.test('an initially accepted one-sided conflict triggers one repair and a complete correction can qualify', async () => {
+    const { input, requests, result, fetchError } = await run({ oneSidedInitial: true });
+    assert.equal(requests.length, 4, JSON.stringify({ artifacts: Object.keys(result.rawArtifacts), fetchError }));
+    const initialWire = parseSourceResponse(result.rawArtifacts['shared-proposal-response']!, 'SHARED_MODEL') as {
+      claims: Record<string, { disposition: string; citations: unknown[] }>;
+    };
+    const initialReview = parseSourceResponse(result.rawArtifacts['shared-review-response']!, 'SHARED_MODEL') as { claims: Record<string, boolean> };
+    assert.equal(initialWire.claims['SOC-01']?.disposition, 'CONFLICT');
+    assert.equal(new Set(initialWire.claims['SOC-01']?.citations.map(c=>JSON.stringify(c))).size, 1);
+    assert.equal(initialReview.claims['SOC-01'], true, 'the local citation rule, not reviewer rejection, triggered reassessment');
+    assert.deepEqual(requests[2]!.packet.rejectedIds, ['SOC-01']);
+    assert.equal(result.audit?.claims.find(claim => claim.id === 'SOC-01')?.disposition, 'CLEAR');
+    assert.ok(result.audit?.review.every(item => item.accepted));
+    assert.equal(deriveShared({ ...input, audit: result.audit }).facts.values.C06, true);
+    const receipt = JSON.parse(result.rawArtifacts['shared-qualified-receipt']!) as { proposalResponseId: string; reviewResponseId: string };
+    assert.deepEqual([receipt.proposalResponseId, receipt.reviewResponseId], ['shared-repair-proposal-response', 'shared-repair-review-response']);
+  });
+
+  await t.test('a second accepted one-sided conflict is not selected or retried', async () => {
+    const { input, requests, result, fetchError } = await run({ oneSidedInitial: true, mode: 'one-sided-repair' });
+    assert.equal(requests.length, 3, JSON.stringify({ artifacts: Object.keys(result.rawArtifacts), fetchError }));
+    assert.equal(result.audit?.claims.find(claim => claim.id === 'SOC-01')?.disposition, 'CONFLICT');
+    assert.equal(result.audit?.review.find(item => item.id === 'SOC-01')?.accepted, true);
+    assert.equal(new Set(result.audit?.claims.find(claim => claim.id === 'SOC-01')?.citations.map(c=>JSON.stringify(c))).size, 1);
+    assert.equal(deriveShared({ ...input, audit: result.audit }).facts.values.C06, null);
+    const receipt = JSON.parse(result.rawArtifacts['shared-qualified-receipt']!) as { proposalResponseId: string; reviewResponseId: string };
+    assert.deepEqual([receipt.proposalResponseId, receipt.reviewResponseId], ['shared-proposal-response', 'shared-review-response']);
+  });
+
+  await t.test('a duplicate citation cannot serve as the second side of a repaired conflict', async () => {
+    const { input, requests, result } = await run({ oneSidedInitial: true, mode: 'duplicate-side-repair' });
+    assert.equal(requests.length, 4, 'the duplicate-side repair is reviewed once and never retried');
+    const repair = parseSourceResponse(result.rawArtifacts['shared-repair-proposal-response']!, 'SHARED_MODEL') as { claims: Record<string, { citations: unknown[] }> };
+    assert.equal(repair.claims['SOC-01']?.citations.length, 2);
+    assert.deepEqual(repair.claims['SOC-01']?.citations[0], repair.claims['SOC-01']?.citations[1]);
+    assert.equal(new Set(result.audit?.claims.find(claim => claim.id === 'SOC-01')?.citations.map(c=>JSON.stringify(c))).size, 1,
+      'the original one-sided audit remains selected');
+    assert.equal(deriveShared({ ...input, audit: result.audit }).facts.values.C06, null);
   });
 
   await t.test('incomplete initial inspection and any UNCLEAR claim do not trigger a repair', async () => {

@@ -13,16 +13,22 @@ export const sharedAuditSchema=z.object({
   sources:z.array(z.object({id:z.string(),complete:z.boolean()}).strict()).max(64),
 }).strict();
 export type SharedAudit=z.infer<typeof sharedAuditSchema>;
+export function hasTwoConflictSides(claim:SharedAudit['claims'][number]){return claim.disposition!=='CONFLICT'||new Set(claim.citations.map(ref=>JSON.stringify([ref.sourceId,ref.quote]))).size>=2;}
 export type SharedSource=Omit<AttentionSource,'kind'>&{kind:'PAGE'|'POST'|'INDEXED_METADATA'};
-export type SharedInputs={token:TokenRef;cutoff:string;profile:Profile;baseline:BaselineAssessment[];features:FeatureResult[];evidence:EvidenceRecord[];observations:Observation[];social?:SocialPolicyFacts;claims:SharedClaim[];sources:SharedSource[];audit:SharedAudit|null;semanticReceiptIds:string[]};
+export type SharedInputs={qualityMode?:'ENTRY_GATES_V1';token:TokenRef;cutoff:string;profile:Profile;baseline:BaselineAssessment[];features:FeatureResult[];evidence:EvidenceRecord[];observations:Observation[];social?:SocialPolicyFacts;claims:SharedClaim[];sources:SharedSource[];audit:SharedAudit|null;semanticReceiptIds:string[]};
 
+/** A reviewed entry-support decision does not resolve factual candidate binding. */
+export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|undefined{
+ const a=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN'),d=a?.data as {entryDecisionMethod?:string;decision?:{verdict?:string}}|null|undefined;
+ return !!d&&['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
+}
 /** Reuse the actual entry evaluator. Remove inputs only when the same decision survives. */
-export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts){
+export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean){
   const mode=social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2';
-  const rows=evaluateEntry(features,profile,cutoff,mode,social).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
+  const rows=evaluateEntry(features,profile,cutoff,mode,social,false,entryComparison).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
   return rows.map(row=>{
     let selected=[...features];
-    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
+    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social,false,entryComparison).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
     const featureIds=row.status==='UNKNOWN'?row.featureRefs:selected.map(f=>f.id);
     const socialIds=row.checkId.startsWith('SOC-')?social?.evidenceIds??[]:[];
     return {checkId:row.checkId,status:row.status as 'PASS'|'FAIL'|'UNKNOWN',featureIds,evidenceIds:[...new Set([...selected.filter(f=>featureIds.includes(f.id)).flatMap(f=>f.evidenceIds),...socialIds])],route:row.checkId.startsWith('SOC-')&&social?'qualified-social':row.checkId==='CAN-02'?'qualified-representation':'entry-policy'};
@@ -32,22 +38,28 @@ export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:
 export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyFacts):SharedClaim[]{
   const claims:SharedClaim[]=[];
   for(const a of baseline.filter(a=>['A01','A02','A03','A04','A05'].includes(a.id)&&a.quality==='KNOWN')){
-    const data=a.data as {summary?:string;citations?:SharedClaim['citations']};
-    if(data.summary&&data.citations)claims.push(sharedClaimSchema.parse({id:a.id,statement:data.summary,citations:data.citations}));
+    const data=a.data as {originBasis?:string;summary?:string;citations?:SharedClaim['citations']};
+    if(data.summary&&data.citations)claims.push(sharedClaimSchema.parse({id:a.id,statement:data.originBasis==='PUBLIC_EVIDENCE_INADEQUATE'?`Reviewed public origin evidence is inadequate within the declared discovery sample: ${data.summary}. This is a traceability screening grade, not fraud or absence of origin everywhere.`:data.summary,citations:data.citations}));
   }
+  for(const a of baseline.filter(a=>['A09','A14'].includes(a.id)&&a.quality==='KNOWN')){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string;citations:SharedClaim['citations']}};if(['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&d.decision)claims.push(sharedClaimSchema.parse({id:a.id+':entry',statement:'Entry '+d.entryCriterion+' evidence standard '+d.decision.verdict+': '+d.decision.rationale+'. This is a bounded public-support judgment, not verified factual identity, origin, popularity or fraud.',citations:d.decision.citations}));}
   const representation=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN');
+  for(const a of baseline.filter(a=>['A01','A05'].includes(a.id)&&a.quality==='KNOWN')){
+    const data=a.data as {method?:string;publicSupport?:{rationale:string;citations:SharedClaim['citations']}};
+    if(data.method==='narrative-public-support-v1'&&data.publicSupport)claims.push(sharedClaimSchema.parse({id:a.id+':adequacy',statement:`Reviewed public ${a.id==='A01'?'narrative':'explainable-thesis'} support is inadequate: ${data.publicSupport.rationale}. The factual narrative remains unresolved; this is an entry support grade, not fraud or a false-story finding.`,citations:data.publicSupport.citations}));
+  }
   const representations=(representation?.projection?.value===true?representation.data:null) as {candidates?:Array<{token:TokenRef;sourceId:string;quote:string}>}|undefined;
   const screening=representation?.data as {evidenceAdequacy?:{rationale:string;citations:SharedClaim['citations']}}|undefined;
   if(representation?.projection?.value===false&&screening?.evidenceAdequacy)claims.push(sharedClaimSchema.parse({id:'A09:adequacy',statement:`Public representation evidence is inadequate: ${screening.evidenceAdequacy.rationale}. This is a bounded evidence screening judgment, not a proven competing token or fraud.`,citations:screening.evidenceAdequacy.citations}));
   for(const [index,candidate] of (representations?.candidates??[]).entries())claims.push(sharedClaimSchema.parse({id:`A09:${index}`,statement:`This acquired source represents ${candidate.token.chain}:${candidate.token.address} as the same project or narrative as the target, within the reviewed comparison scope.`,citations:[{sourceId:candidate.sourceId,quote:candidate.quote}]}));
-  const routes=baseline.find(a=>a.id==='A14'&&a.quality==='KNOWN')?.data as {originRelationship?:{status:string;rationale:string;citations:SharedClaim['citations']}}|undefined;
+  const routes=baseline.find(a=>a.id==='A14'&&a.quality==='KNOWN')?.data as {leadershipScreening?:{rationale:string;citations:SharedClaim['citations']};originRelationship?:{status:string;rationale:string;citations:SharedClaim['citations']}}|undefined;
   if(routes?.originRelationship&&routes.originRelationship.status!=='UNKNOWN')claims.push(sharedClaimSchema.parse({id:'A14:origin',statement:`${routes.originRelationship.status}: ${routes.originRelationship.rationale}`,citations:routes.originRelationship.citations}));
-  for(const [id,judgment] of [['SOC-01',social?.identityReview],['SOC-02',social?.integrityReview]] as const)if(judgment&&judgment.verdict!=='UNRESOLVED')claims.push(sharedClaimSchema.parse({id,statement:`${judgment.verdict}: ${judgment.rationale}`,citations:judgment.citations}));
+  if(routes?.leadershipScreening)claims.push(sharedClaimSchema.parse({id:'A14:adequacy',statement:`Reviewed public origin/leadership support is inadequate within the declared sample: ${routes.leadershipScreening.rationale}. This entry grade does not establish factual non-origin or lack of real-world popularity.`,citations:routes.leadershipScreening.citations}));
+  for(const [id,judgment] of [['SOC-01',social?.identityReview],['SOC-02',social?.integrityReview],['SOC-03',social?.participationReview],['ATT-02',social?.communityBreadthReview]] as const)if(judgment&&judgment.verdict!=='UNRESOLVED')claims.push(sharedClaimSchema.parse({id,statement:`${judgment.verdict}: ${judgment.rationale}. Social sample publication window: ${social!.start} inclusive to ${social!.end} exclusive; retrieval time does not make an older post current.`,citations:judgment.citations}));
   return claims;
 }
 
 export function deriveShared(input:SharedInputs){
-  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
+  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,input.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(input.baseline):undefined),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
   const selected=new Set(witnesses.filter(w=>w.status!=='UNKNOWN').flatMap(w=>w.featureIds));
   const freshness=[...selected].map(id=>{
     const f=input.features.find(f=>f.id===id)!,a=input.baseline.find(a=>a.id===id),data=a?.data as {window?:{end?:string};end?:string}|undefined;
@@ -70,7 +82,7 @@ export function deriveShared(input:SharedInputs){
   const semanticQualified=unresolved.filter(id=>/^(NAR|CAN|ATT|SOC)-/.test(id)).length===0&&input.claims.length>0&&input.claims.every(c=>c.citations.every(literal))&&JSON.stringify(input.claims)===JSON.stringify(sharedClaims(input.baseline,input.social))&&JSON.stringify(input.semanticReceiptIds)===JSON.stringify(['attention-qualified-receipt','social-qualified-receipt'])&&input.semanticReceiptIds.every(id=>input.evidence.some(e=>e.id===id&&e.accessMode==='LOCAL_DERIVED'))&&semanticFeatures.every(id=>input.baseline.find(a=>a.id===id)?.quality==='KNOWN');
   const audit=input.audit&&sharedAuditSchema.safeParse(input.audit);
   const ids=input.claims.map(c=>c.id),unique=(xs:string[])=>new Set(xs).size===xs.length;
-  const auditQualified=semanticQualified&&!!audit?.success&&unique(ids)&&unique(audit.data.claims.map(c=>c.id))&&audit.data.claims.length===ids.length&&audit.data.claims.every(c=>ids.includes(c.id)&&c.disposition!=='UNCLEAR'&&c.citations.every(literal)&&(c.disposition!=='CONFLICT'||c.citations.length>=2))&&unique(audit.data.review.map(c=>c.id))&&audit.data.review.length===ids.length&&audit.data.review.every(c=>ids.includes(c.id)&&c.accepted)&&unique(audit.data.sources.map(s=>s.id))&&audit.data.sources.length===input.sources.length&&audit.data.sources.every(s=>sourceMap.has(s.id)&&s.complete);
+  const auditQualified=semanticQualified&&!!audit?.success&&unique(ids)&&unique(audit.data.claims.map(c=>c.id))&&audit.data.claims.length===ids.length&&audit.data.claims.every(c=>ids.includes(c.id)&&c.disposition!=='UNCLEAR'&&c.citations.every(literal)&&hasTwoConflictSides(c))&&unique(audit.data.review.map(c=>c.id))&&audit.data.review.length===ids.length&&audit.data.review.every(c=>ids.includes(c.id)&&c.accepted)&&unique(audit.data.sources.map(s=>s.id))&&audit.data.sources.length===input.sources.length&&audit.data.sources.every(s=>sourceMap.has(s.id)&&s.complete);
   const conflicts:Array<{field:string;evidenceIds:string[];rationale:string}>=[];
   const groups=new Map<string,Observation[]>();
   for(const o of input.observations.filter(o=>o.quality==='KNOWN')){const key=`${o.subject.chain}:${o.subject.address}:${o.field}:${o.unit}:${o.observedAt}`;groups.set(key,[...(groups.get(key)??[]),o]);}
@@ -78,11 +90,12 @@ export function deriveShared(input:SharedInputs){
   for(const [field,values] of groups)if(new Set(values.map(v=>normalized(v.value))).size>1)conflicts.push({field,evidenceIds:[...new Set(values.flatMap(v=>v.evidenceIds))],rationale:'Different values for the same subject, field, unit and observation instant.'});
   if(auditQualified&&audit?.success)for(const c of audit.data.claims.filter(c=>c.disposition==='CONFLICT'))conflicts.push({field:c.id,evidenceIds:[...new Set(c.citations.map(c=>c.sourceId))],rationale:c.rationale});
   const complete=unresolved.length===0,fresh=freshness.length>0&&freshness.every(f=>f.fresh);
-  const values={C03:complete&&fresh?true:null,C04:complete?true:null,C05:semanticQualified?true:null,C06:complete&&auditQualified?conflicts.length===0:null};
-  const facts=sharedPolicyFactsSchema.parse({method:'shared-evidence-v1',token:input.token,cutoff:input.cutoff,witnesses,freshness,unresolved,semanticQualified,auditQualified,conflicts,values});
+  const gates=input.qualityMode==='ENTRY_GATES_V1';
+  const values=gates?{C03:complete&&fresh,C04:complete,C05:semanticQualified,C06:complete&&auditQualified&&conflicts.length===0}:{C03:complete&&fresh?true:null,C04:complete?true:null,C05:semanticQualified?true:null,C06:complete&&auditQualified?conflicts.length===0:null};
+  const facts=sharedPolicyFactsSchema.parse({method:'shared-evidence-v1',...(gates?{qualityMode:input.qualityMode}:{}),token:input.token,cutoff:input.cutoff,witnesses,freshness,unresolved,semanticQualified,auditQualified,conflicts,values});
   const evidenceIds=[...new Set([...witnesses.flatMap(w=>w.evidenceIds),...input.semanticReceiptIds,...input.evidence.filter(e=>e.id==='shared-qualified-receipt'||/^shared-(proposal|review)-response$/.test(e.id)).map(e=>e.id)])];
   const auditCode=input.evidence.find(e=>e.id==='shared-audit-status')?.scope.code;
-  const assessments:BaselineAssessment[]=Object.entries(values).map(([id,value])=>({id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality:value===null?'MISSING':'KNOWN',unit:'bool',data:{method:'shared-evidence-v1',unresolved,...(id==='C03'?{freshness}:{}),...(id==='C06'?{conflicts}:{})},observationIds:[],evidenceIds,limitations:['Required decision scope; no guarantee of real-world token truth or exhaustive coverage'],causes:value===null?[{category:'EVIDENCE_UNAVAILABLE',code:unresolved.length?'SHARED_REQUIRED_SCOPE_INCOMPLETE':id==='C03'?'SHARED_EVIDENCE_STALE':id==='C05'?'SHARED_SEMANTIC_UNQUALIFIED':(typeof auditCode==='string'&&auditCode!=='SHARED_AUDIT_RECEIVED'?auditCode:'SHARED_CONFLICT_AUDIT_INCOMPLETE'),featureId:id,evidenceIds,action:'Refresh the named required decision scope and its source qualification.'}]:[],projection:{id,value,unit:'bool',quality:value===null?'MISSING':'KNOWN',availableAt:input.cutoff,evidenceIds,applicability:'APPLICABLE'}}));
+  const assessments:BaselineAssessment[]=Object.entries(values).map(([id,value])=>({id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality:value===null?'MISSING':'KNOWN',unit:'bool',data:{method:'shared-evidence-v1',...(gates?{qualityMode:input.qualityMode,meaning:'Entry data-quality standard; a failed or incomplete review is not a false token fact or detected conflict.',...(id==='C06'?{conflictAssessment:auditQualified?'COMPLETED':'INCOMPLETE_REVIEW'}:{})}:{}),unresolved,...(id==='C03'?{freshness}:{}),...(id==='C06'?{conflicts}:{})},observationIds:[],evidenceIds,limitations:['Required decision scope; no guarantee of real-world token truth or exhaustive coverage'],causes:value===null||gates&&value===false?[{category:'EVIDENCE_UNAVAILABLE',code:gates&&id==='C06'&&conflicts.length?'SHARED_CONFLICT_DETECTED':unresolved.length?'SHARED_REQUIRED_SCOPE_INCOMPLETE':id==='C03'?'SHARED_EVIDENCE_STALE':id==='C05'?'SHARED_SEMANTIC_UNQUALIFIED':(typeof auditCode==='string'&&auditCode!=='SHARED_AUDIT_RECEIVED'?auditCode:'SHARED_CONFLICT_AUDIT_INCOMPLETE'),featureId:id,evidenceIds,action:'Refresh the named required decision scope and its source qualification.'}]:[],projection:{id,value,unit:'bool',quality:value===null?'MISSING':'KNOWN',availableAt:input.cutoff,evidenceIds,applicability:'APPLICABLE'}}));
   return {facts,assessments};
 }
 

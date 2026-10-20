@@ -14,8 +14,39 @@ test('shared claims preserve qualified narrative, exact-contract candidate, orig
   for (const claim of claims) assert.deepEqual(sharedClaimSchema.parse(claim), claim);
   assert.equal(claims.find(claim => claim.id === 'A09:0')?.citations[0]?.quote, input.sources[0]?.text.split('\n')[5]);
   assert.equal(claims.find(claim => claim.id === 'A14:origin')?.citations[0]?.quote, input.sources[0]?.text.split('\n')[6]);
+  const socialStatement = claims.find(claim => claim.id === 'SOC-01')?.statement;
+  assert.ok(socialStatement?.includes(`${input.social!.start} inclusive to ${input.social!.end} exclusive`));
+  assert.match(socialStatement!, /retrieval time does not make an older post current/);
   assert.deepEqual(sharedClaims(input.baseline, { ...input.social!, identityReview: { ...input.social!.identityReview!, verdict: 'UNRESOLVED' } })
     .map(claim => claim.id).includes('SOC-01'), false, 'unresolved social judgments do not become claims');
+});
+
+test('shared audit keeps public-support entry grade separate from factual origin', () => {
+  const input = sharedFixture();
+  const row = input.baseline.find(item => item.id === 'A14')!;
+  const source = input.sources[0]!;
+  const originQuote = source.text.split('\n')[6]!;
+  row.data = {
+    originRelationship: { status: 'UNKNOWN', rationale: 'No factual origin relationship is established.', citations: [] },
+    measuredAttention: { status: 'UNKNOWN', shares: [] },
+    leadershipScreening: {
+      method: 'reviewed-public-support-v1', rationale: 'The bounded public evidence does not support the entry grade.',
+      citations: [{ sourceId: source.id, quote: originQuote }],
+    },
+  };
+
+  const claims = sharedClaims(input.baseline, input.social);
+  assert.deepEqual(claims.filter(claim => claim.id.startsWith('A14:')).map(claim => claim.id), ['A14:adequacy']);
+  assert.match(claims.find(claim => claim.id === 'A14:adequacy')!.statement, /does not establish factual non-origin/);
+
+  row.data = {
+    originRelationship: { status: 'SUPPORTED', rationale: 'A separate dated primary source supports origin.', citations: [{ sourceId: source.id, quote: originQuote }] },
+    measuredAttention: { status: 'UNKNOWN', shares: [] },
+  };
+  const separate = sharedClaims(input.baseline, input.social).filter(claim => claim.id.startsWith('A14:'));
+  assert.deepEqual(separate.map(claim => claim.id), ['A14:origin']);
+  assert.match(separate.find(claim => claim.id === 'A14:origin')!.statement, /^SUPPORTED:/);
+  assert.equal(separate.some(claim => claim.id === 'A14:adequacy'), false, 'a supported factual route must not produce a contrary entry-grade claim');
 });
 
 test('complete source-qualified decision coverage produces four known shared results', () => {
@@ -32,6 +63,34 @@ test('complete source-qualified decision coverage produces four known shared res
     assert.equal(row.projection?.quality, row.quality, row.id);
   }
   assert.deepEqual(sharedAuditSchema.parse(input.audit), input.audit);
+});
+
+test('ENTRY_GATES_V1 returns known quality failures without inventing factual conflicts', () => {
+  const complete = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  const passed = deriveShared(complete);
+  assert.deepEqual(passed.facts.values, { C03: true, C04: true, C05: true, C06: true });
+  assert.equal(passed.facts.qualityMode, 'ENTRY_GATES_V1');
+
+  const missingAudit = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const, audit: null };
+  const unaudited = deriveShared(missingAudit);
+  assert.equal(unaudited.facts.values.C06, false);
+  assert.equal(assessment(unaudited.assessments, 'C06').quality, 'KNOWN');
+  assert.equal((assessment(unaudited.assessments, 'C06').data as { conflictAssessment?: string }).conflictAssessment, 'INCOMPLETE_REVIEW');
+  assert.deepEqual(unaudited.facts.conflicts, [], 'a missing audit fails the quality gate but does not claim a contradiction');
+
+  const unqualified = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  unqualified.claims[0]!.statement += ' altered';
+  const unqualifiedResult = deriveShared(unqualified);
+  assert.equal(unqualifiedResult.facts.values.C05, false);
+  assert.equal(assessment(unqualifiedResult.assessments, 'C05').quality, 'KNOWN');
+  assert.equal(unqualifiedResult.facts.conflicts.some(item => item.field === unqualified.claims[0]!.id), false);
+
+  const actualConflict = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  actualConflict.audit = requalifyAudit(actualConflict, 'CONFLICT');
+  const conflicted = deriveShared(actualConflict);
+  assert.equal(conflicted.facts.values.C06, false);
+  assert.equal((assessment(conflicted.assessments, 'C06').data as { conflictAssessment?: string }).conflictAssessment, 'COMPLETED');
+  assert.ok(conflicted.facts.conflicts.length > 0, 'only a completed audit contributes a factual conflict');
 });
 
 test('shared completeness preserves a qualified failure but leaves failed required acquisition unknown', () => {
@@ -88,6 +147,22 @@ test('conflict audit is unknown when incomplete, passes complete clear coverage,
   assert.equal(disputed.facts.values.C06, false, JSON.stringify(disputed.facts));
   assert.equal(assessment(disputed.assessments, 'C06').quality, 'KNOWN');
   assert.equal(disputed.facts.conflicts.some(item => item.field === conflict.claims[0]?.id), true);
+
+  const oneSidedConflict = sharedFixture();
+  oneSidedConflict.audit = requalifyAudit(oneSidedConflict, 'CONFLICT');
+  oneSidedConflict.audit!.claims[0]!.citations = oneSidedConflict.audit!.claims[0]!.citations.slice(0, 1);
+  const oneSided = deriveShared(oneSidedConflict);
+  assert.equal(oneSided.facts.values.C06, null, 'a single citation cannot establish both sides of a contradiction');
+  assert.equal(oneSided.facts.auditQualified, false);
+  assert.equal(oneSided.facts.conflicts.some(item => item.field === oneSidedConflict.claims[0]?.id), false);
+
+  const duplicatedSideConflict = sharedFixture();
+  duplicatedSideConflict.audit = requalifyAudit(duplicatedSideConflict, 'CONFLICT');
+  const firstSide = duplicatedSideConflict.audit!.claims[0]!.citations[0]!;
+  duplicatedSideConflict.audit!.claims[0]!.citations = [firstSide, { ...firstSide }];
+  const duplicatedSide = deriveShared(duplicatedSideConflict);
+  assert.equal(duplicatedSide.facts.values.C06, null, 'repeating the same source and quote does not create a second side');
+  assert.equal(duplicatedSide.facts.auditQualified, false);
 
   const incompleteSource = sharedFixture();
   incompleteSource.audit!.sources[0]!.complete = false;

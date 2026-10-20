@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { collectSocialSources } from '../src/providers/social.js';
+import { deriveSocial } from '../src/domain/social.js';
+import { evaluateEntry } from '../src/domain/policy.js';
+import { explainChecks, renderSnapshot } from '../src/app/report.js';
+import type { EntrySnapshot, FeatureResult } from '../src/domain/contracts.js';
 import type { AttentionRead, AttentionSource } from '../src/providers/attention.js';
-import { SOCIAL_AVAILABLE, SOCIAL_END, SOCIAL_START, SOCIAL_TOKEN } from './social-fixtures.js';
+import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
+import { SOCIAL_AVAILABLE, SOCIAL_CUTOFF, SOCIAL_END, SOCIAL_START, SOCIAL_TOKEN } from './social-fixtures.js';
 
 const POST: AttentionSource = {
   id: 'target-post', url: 'https://x.com/alice/status/100', text: `${SOCIAL_TOKEN.address} has a public note.`,
@@ -20,6 +25,318 @@ function attention(sources: AttentionSource[], overrides: Partial<AttentionRead>
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 }
+
+const METADATA_URI = 'https://ipfs.io/ipfs/QmSyntheticTokenMetadata/token.json';
+
+const PRIVATE_ERROR_MARKER = 'social-private-error-marker-7a9d';
+
+function socialReport(read: Awaited<ReturnType<typeof collectSocialSources>>) {
+  const { rawArtifacts, ...socialInput } = read;
+  assert.ok(rawArtifacts, 'collector receipts are retained before the production input boundary');
+  const social = deriveSocial(socialInput, null, null, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-collection-test']);
+  const socialFeatures = new Map(social.assessments.flatMap(row => row.projection ? [[row.id, row.projection] as const] : []));
+  const features: FeatureResult[] = completeFixtureEntryFeatures().map(feature => socialFeatures.get(feature.id) ?? feature);
+  const result = evaluateEntry(features, illustrativeUncalibratedProfile, SOCIAL_CUTOFF, 'QUALIFIED_V4', social.facts);
+  const snapshot: EntrySnapshot = {
+    id: 'social-collection-test-snapshot', caseId: 'social-collection-test-case', checklistKind: 'ENTRY',
+    token: SOCIAL_TOKEN, cutoff: SOCIAL_CUTOFF, analysisKind: 'FIXTURE', features, evidence: [], result,
+    hash: 'a'.repeat(64),
+    details: {
+      version: 1, profile: illustrativeUncalibratedProfile, thesis: null, baseline: social.assessments,
+      origins: {}, stageInputs: { circulatingMarketCapUsd: null, tokenCreatedAt: null }, social: social.facts,
+    },
+  };
+  return { social, result, snapshot, rows: explainChecks(snapshot), rendered: renderSnapshot(snapshot) };
+}
+
+function assertUnknownIdentity(read: Awaited<ReturnType<typeof collectSocialSources>>, expectedCode: string, expectedKind?: 'INFRA') {
+  const { result, rows, rendered, snapshot } = socialReport(read);
+  const identity = rows.find(row => row.checkId === 'SOC-01');
+  assert.equal(identity?.status, 'UNKNOWN', 'an incomplete identity scope cannot become a policy PASS or FAIL');
+  if (expectedKind) assert.equal(identity?.unknownKind, expectedKind);
+  else assert.notEqual(identity?.unknownKind, 'INFRA', 'a non-transport collection failure cannot be reported as infrastructure');
+  assert.ok(identity?.causes.some(cause => cause.code === expectedCode), `SOC-01 retains ${expectedCode}`);
+  assert.equal(result.classification, 'INSUFFICIENT_DATA');
+  if (expectedKind) assert.match(rendered, new RegExp(`UNKNOWN \\(${expectedKind}\\)\\s+SOC-01`));
+  else assert.doesNotMatch(rendered, /UNKNOWN \(INFRA\)\s+SOC-01/);
+  const detail = renderSnapshot(snapshot, { check: 'SOC-01' });
+  if (expectedKind) assert.match(detail, new RegExp(`SOC-01 .* UNKNOWN \\(${expectedKind}\\)`));
+  else assert.doesNotMatch(detail, /SOC-01 .* UNKNOWN \(INFRA\)/);
+  assert.match(detail, new RegExp(expectedCode));
+  assert.doesNotMatch(JSON.stringify(read.rawArtifacts) + rendered + detail, new RegExp(PRIVATE_ERROR_MARKER));
+}
+
+async function flushSocialRetryMicrotasks() {
+  for (let index = 0; index < 12; index++) await Promise.resolve();
+}
+
+async function exhaustThreeReadAttempts(t: { mock: { timers: { tick: (milliseconds: number) => void } } }, pending: ReturnType<typeof collectSocialSources>) {
+  await flushSocialRetryMicrotasks();
+  t.mock.timers.tick(1000);
+  await flushSocialRetryMicrotasks();
+  t.mock.timers.tick(2000);
+  await flushSocialRetryMicrotasks();
+  return pending;
+}
+
+test('required social Search timeout remains incomplete UNKNOWN infrastructure with a safe retained cause', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(SOCIAL_AVAILABLE) });
+  let requiredAttempts = 0;
+  const fetcher: typeof fetch = async input => {
+    const query = new URL(String(input)).searchParams.get('query') ?? '';
+    if (query.includes('official project website social account')) {
+      requiredAttempts++;
+      throw Object.assign(new Error(`private search request ${PRIVATE_ERROR_MARKER}`), { name: 'TimeoutError' });
+    }
+    return response({ results: [] });
+  };
+  const pending = collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  const read = await exhaustThreeReadAttempts(t, pending);
+
+  assert.equal(requiredAttempts, 3, 'the real bounded transport retry completes before collection records its cause');
+  assert.equal(read.identityComplete, false);
+  assert.ok(read.codes.includes('SOC_SEARCH_TIMEOUT'));
+  const diagnostic = read.rawArtifacts['social-collection-search-1-error'];
+  assert.ok(diagnostic, 'the required-search failure is retained as local derived evidence');
+  assert.deepEqual(JSON.parse(diagnostic), {
+    method: 'social-collection-error-v1', operation: 'SEARCH', code: 'SOC_SEARCH_TIMEOUT', required: true,
+  });
+  assertUnknownIdentity(read, 'SOC_SEARCH_TIMEOUT', 'INFRA');
+});
+
+test('required social Fetch transport failure remains incomplete UNKNOWN infrastructure with a safe retained cause', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(SOCIAL_AVAILABLE) });
+  const requiredUrl = 'https://project.example/about';
+  let requiredAttempts = 0;
+  let optionalProfileFetches = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === 'https://api.search.tinyfish.ai/') return response({ results: [] });
+    if (url !== 'https://api.fetch.tinyfish.ai/') throw new Error(`Unexpected provider: ${url}`);
+    const request = JSON.parse(String(init?.body)) as { urls: string[] };
+    if (request.urls.includes(requiredUrl)) {
+      requiredAttempts++;
+      throw new TypeError(`private fetch transport ${PRIVATE_ERROR_MARKER}`);
+    }
+    optionalProfileFetches++;
+    return response({
+      results: request.urls.map(sourceUrl => ({ url: sourceUrl, final_url: sourceUrl, text: 'Public optional profile context.' })),
+      errors: [],
+    });
+  };
+  const pending = collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [requiredUrl], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  const read = await exhaustThreeReadAttempts(t, pending);
+
+  assert.equal(requiredAttempts, 3, 'the real bounded transport retry completes before collection records its cause');
+  assert.equal(optionalProfileFetches, 1, 'the optional account-context request still runs independently');
+  assert.equal(read.identityComplete, false);
+  assert.ok(read.codes.includes('SOC_FETCH_TRANSPORT'));
+  const diagnostic = read.rawArtifacts['social-collection-fetch-1-error'];
+  assert.ok(diagnostic, 'the required-Fetch failure is retained as local derived evidence');
+  assert.deepEqual(JSON.parse(diagnostic), {
+    method: 'social-collection-error-v1', operation: 'FETCH', code: 'SOC_FETCH_TRANSPORT', required: true,
+  });
+  assertUnknownIdentity(read, 'SOC_FETCH_TRANSPORT', 'INFRA');
+});
+
+test('malformed Search, HTTP 404, blocked pages, and text caps remain collection unknowns', async t => {
+  const searchCases: Array<{ name: string; code: string; response: Response }> = [
+    { name: 'malformed Search JSON', code: 'SOC_SEARCH_SHAPE', response: new Response('{ malformed', { status: 200 }) },
+    { name: 'HTTP 404 Search result', code: 'SOC_SEARCH_HTTP_404', response: new Response('not found', { status: 404 }) },
+  ];
+  for (const scenario of searchCases) await t.test(scenario.name, async () => {
+    const fetcher: typeof fetch = async input => {
+      const query = new URL(String(input)).searchParams.get('query') ?? '';
+      return query.includes('official project website social account') ? scenario.response.clone() : response({ results: [] });
+    };
+    const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+      discoveryUrls: [], postSampleSourceIds: [POST.id],
+    }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+    assert.equal(read.identityComplete, false);
+    assert.ok(read.codes.includes(scenario.code));
+    assertUnknownIdentity(read, scenario.code);
+  });
+
+  const requiredUrl = 'https://project.example/about';
+  const fetchCases: Array<{ name: string; code: string; makeResponse: () => Response }> = [
+    {
+      name: 'blocked required page', code: 'SOC_FETCH_URL_ERROR',
+      makeResponse: () => response({ results: [], errors: [{ url: requiredUrl, error: 'blocked' }] }),
+    },
+    {
+      name: 'required page text cap', code: 'SOC_TEXT_CAP',
+      makeResponse: () => response({ results: [{ url: requiredUrl, final_url: requiredUrl, text: 'x'.repeat(120_001) }], errors: [] }),
+    },
+  ];
+  for (const scenario of fetchCases) await t.test(scenario.name, async () => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url === 'https://api.search.tinyfish.ai/') return response({ results: [] });
+      if (url !== 'https://api.fetch.tinyfish.ai/') throw new Error(`Unexpected provider: ${url}`);
+      const request = JSON.parse(String(init?.body)) as { urls: string[] };
+      if (request.urls.includes(requiredUrl)) return scenario.makeResponse();
+      return response({
+        results: request.urls.map(sourceUrl => ({ url: sourceUrl, final_url: sourceUrl, text: 'Public optional profile context.' })),
+        errors: [],
+      });
+    };
+    const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+      discoveryUrls: [requiredUrl], postSampleSourceIds: [POST.id],
+    }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+    assert.equal(read.identityComplete, false);
+    assert.ok(read.codes.includes(scenario.code));
+    assertUnknownIdentity(read, scenario.code);
+  });
+});
+
+test('optional account-context failure is retained without making the required identity roots incomplete', async () => {
+  const website: AttentionSource = {
+    id: 'retained-identity-website', url: 'https://project.example/about', text: `The project for ${SOCIAL_TOKEN.address} identifies its public scope.`,
+    publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === 'https://api.search.tinyfish.ai/') return response({ results: [] });
+    if (url !== 'https://api.fetch.tinyfish.ai/') throw new Error(`Unexpected provider: ${url}`);
+    const request = JSON.parse(String(init?.body)) as { urls: string[] };
+    assert.ok(request.urls.every(sourceUrl => sourceUrl === 'https://x.com/alice'), 'only optional account context is requested');
+    throw new Error(`private optional account context ${PRIVATE_ERROR_MARKER}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, website], {
+    discoveryUrls: [website.url], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+
+  assert.equal(read.identityComplete, true, 'a retained required identity page stays complete when optional account context fails');
+  assert.ok(read.codes.includes('SOC_ACCOUNT_CONTEXT_UNAVAILABLE'));
+  assert.equal(read.codes.some(code => code.startsWith('SOC_FETCH_')), false, 'the optional error is not promoted to a required Fetch failure');
+  const diagnostic = read.rawArtifacts['social-collection-fetch-1-error'];
+  assert.ok(diagnostic);
+  assert.deepEqual(JSON.parse(diagnostic), {
+    method: 'social-collection-error-v1', operation: 'FETCH', code: 'SOC_FETCH_UNAVAILABLE', required: false,
+  });
+  const { rows, rendered } = socialReport(read);
+  const identity = rows.find(row => row.checkId === 'SOC-01');
+  assert.equal(identity?.status, 'UNKNOWN', 'no model review means the completed scope remains unresolved');
+  assert.notEqual(identity?.unknownKind, 'INFRA', 'the optional provider miss cannot label required identity infrastructure unavailable');
+  assert.doesNotMatch(JSON.stringify(read.rawArtifacts) + rendered, new RegExp(PRIVATE_ERROR_MARKER));
+});
+
+test('a completed identity discovery with no official account claim stays distinct from a failed search', async () => {
+  const completedSearch: typeof fetch = async input => {
+    assert.ok(String(input).startsWith('https://api.search.tinyfish.ai/'));
+    return response({ results: [] });
+  };
+  const complete = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', completedSearch, () => SOCIAL_AVAILABLE);
+
+  assert.equal(complete.entryDecisionMethod, 'public-support-v3');
+  assert.equal(complete.identityComplete, true);
+  assert.deepEqual(complete.identitySourceIds, []);
+  assert.deepEqual(complete.sources.map(source => source.id), [POST.id]);
+  assert.ok(!complete.codes.some(code => code.startsWith('SOC_SEARCH_')),
+    'an optional profile-context miss does not turn successful identity discovery into a required search failure');
+
+  const failedSearch: typeof fetch = async input => {
+    assert.ok(String(input).startsWith('https://api.search.tinyfish.ai/'));
+    return response({ error: 'temporarily unavailable' }, 503);
+  };
+  const failed = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', failedSearch, () => SOCIAL_AVAILABLE);
+
+  assert.equal(failed.entryDecisionMethod, 'public-support-v3');
+  assert.equal(failed.identityComplete, false, 'a failed search cannot be interpreted as an empty official identity scope');
+  assert.deepEqual(failed.identitySourceIds, []);
+  assert.ok(failed.codes.includes('SOC_SEARCH_HTTP_503'));
+});
+
+test('an unavailable optional metadata URI does not poison retained website and social identity roots', async () => {
+  const website: AttentionSource = {
+    id: 'identity-website', url: 'https://project.example/about', text: `The project identifies ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const profile: AttentionSource = {
+    id: 'identity-social', url: 'https://x.com/alice', text: `The project account confirms ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: 'x.com:alice', availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const calls: string[] = [];
+  const unavailableMetadata: typeof fetch = async input => {
+    calls.push(String(input));
+    if (String(input).startsWith('https://api.search.tinyfish.ai/')) return response({ results: [] });
+    throw new Error('The retained roots are complete; optional metadata must not be fetched as a required identity source.');
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, website, profile], {
+    discoveryUrls: [METADATA_URI, website.url, profile.url], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', unavailableMetadata, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { requestedUrls: string[]; selection: Array<{ url: string; required: boolean }> };
+
+  assert.equal(read.identityComplete, true);
+  assert.deepEqual(read.identitySourceIds, [website.id, profile.id]);
+  assert.deepEqual(read.targetPostIds, [POST.id], 'optional metadata discovery does not change the declared participant sample');
+  assert.equal(read.sampleComplete, true);
+  assert.equal(calls.some(url => url.startsWith('https://api.fetch.tinyfish.ai/')), false, 'already-retained identity roots require no supplemental page fetch');
+  assert.equal(calls.some(url => url.includes(new URL(METADATA_URI).hostname)), false, 'the unavailable optional metadata page is never fetched');
+  assert.deepEqual(scope.requestedUrls, []);
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI && item.required), false);
+});
+
+test('a failed required website identity root stays incomplete while metadata remains optional', async () => {
+  const profile: AttentionSource = {
+    id: 'identity-social', url: 'https://x.com/alice', text: `The project account confirms ${SOCIAL_TOKEN.address}.`,
+    publishedAt: null, authorId: 'x.com:alice', availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  const websiteUrl = 'https://project.example/about';
+  const requested: string[] = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url === 'https://api.fetch.tinyfish.ai/') {
+      const body = JSON.parse(String(init?.body)) as { urls: string[] };
+      requested.push(...body.urls);
+      return response({ results: [], errors: body.urls.map(sourceUrl => ({ url: sourceUrl, error: 'unavailable' })) });
+    }
+    throw new Error(`Unexpected hosted request: ${url}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, profile], {
+    discoveryUrls: [METADATA_URI, websiteUrl, profile.url], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { selection: Array<{ url: string; required: boolean; status: string }> };
+
+  assert.equal(read.identityComplete, false);
+  assert.deepEqual(requested, [websiteUrl]);
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI), false);
+  assert.ok(scope.selection.some(item => item.url === websiteUrl && item.required && item.status === 'SOC_FETCH_URL_ERROR'));
+});
+
+test('a metadata JSON page alone cannot become a social identity root', async () => {
+  const metadataPage: AttentionSource = {
+    id: 'token-metadata-json', url: METADATA_URI, text: JSON.stringify({ mint: SOCIAL_TOKEN.address, name: 'Synthetic Token' }),
+    publishedAt: null, authorId: null, availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+  };
+  let searchCalls = 0;
+  let fetchCalls = 0;
+  const searchOnly: typeof fetch = async input => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) { searchCalls++; return response({ results: [] }); }
+    if (url.startsWith('https://api.fetch.tinyfish.ai/')) { fetchCalls++; return response({ results: [], errors: [] }); }
+    throw new Error(`Unexpected hosted request: ${url}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST, metadataPage], {
+    postSampleSourceIds: [], discoveryUrls: [METADATA_URI], metadataLinks: true, metadataUri: METADATA_URI,
+  }), 'synthetic-provider-key', searchOnly, () => SOCIAL_AVAILABLE);
+  const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { selection: Array<{ url: string }> };
+
+  assert.equal(read.identityComplete, false);
+  assert.deepEqual(read.identitySourceIds, []);
+  assert.equal(read.sources.some(source => source.id === metadataPage.id), false);
+  assert.equal(searchCalls, 1, 'the normal bounded identity search may look for actual public identity pages');
+  assert.equal(fetchCalls, 0, 'the metadata URI itself is never fetched as an identity root');
+  assert.equal(scope.selection.some(item => item.url === METADATA_URI), false);
+});
 
 test('social supplements use their own eight-source budget, exclude comparison pages, and preserve the frozen post sample', async () => {
   const docs = Array.from({ length: 7 }, (_, index) => `https://project.example/docs/about-${index + 1}`);

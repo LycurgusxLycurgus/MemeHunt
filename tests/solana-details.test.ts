@@ -466,7 +466,7 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
     assert.equal(details.errors.holders, 'RPC_SHAPE');
   });
 
-  await t.test('empty largest-account response is named and bounded', async () => {
+  await t.test('empty complete population preserves its supply mismatch without requesting sample accounts', async () => {
     const rawMint = token2022Mint();
     let multipleCalls = 0;
     const fetcher: typeof fetch = async (_url, init) => {
@@ -481,7 +481,24 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
     };
     const details = await inspectSolanaDetails(mintDescriptor(), MINT, 'https://rpc.example', fetcher);
     assert.equal(details.holders, undefined);
-    assert.equal(details.errors.holders, 'HOLDER_SAMPLE_EMPTY');
+    assert.equal(details.errors.holderPopulation, 'HOLDER_SUPPLY_UNRECONCILED');
+    assert.equal(details.errors.holders, 'HOLDER_SUPPLY_UNRECONCILED');
     assert.equal(multipleCalls, 0);
   });
+});
+
+test('advisory holder acquisition stays within its replay archive ceiling while ordinary entry accepts main capacity', async () => {
+  const fetcher:typeof fetch=async(_url,init)=>{
+    const request=JSON.parse(String(init?.body));
+    if(request.method==='getAccountInfo'&&request.params[0]===MINT)return rpcResponse(accountResult(token2022Mint(),TOKEN_2022_PROGRAM,SLOT));
+    if(request.method==='getProgramAccounts'){const body=JSON.stringify({result:{context:{slot:SLOT},value:[{pubkey:TOKEN_ACCOUNT,account:{owner:TOKEN_2022_PROGRAM,executable:false,data:[rawTokenAccount(100n).toString('base64'),'base64']}}]}});return new Response(body+' '.repeat(21_000_000-body.length));}
+    if(request.method==='getTokenLargestAccounts')return rpcResponse({context:{slot:SLOT},value:[]});
+    throw new Error('UNAVAILABLE_TEST_RPC');
+  };
+  const ordinary=await inspectSolanaDetails(mintDescriptor(),MINT,'https://rpc.example',fetcher);
+  assert.equal(ordinary.holders?.complete,true);
+  const advisory=await inspectSolanaDetails(mintDescriptor(),MINT,'https://rpc.example',fetcher,undefined,undefined,20_000_000);
+  assert.equal(advisory.holders,undefined);
+  assert.ok(advisory.errors.holderPopulation);
+  assert.equal(advisory.rawArtifacts['rpc-holder-population'],undefined,'an unarchivable body is never retained for advisory replay');
 });

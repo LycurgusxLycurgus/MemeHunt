@@ -168,7 +168,7 @@ const modelText=(raw:string)=>JSON.parse(JSON.parse(raw).candidates[0].content.p
 test('source-model local validation schema relaxes only the local parse; the hosted schema stays the strict requested schema',async()=>{
  const strict=z.object({value:z.string().min(8)}).strict(),local=z.object({value:z.literal('none')}).strict(),hosted:any[]=[];
  const fetcher:typeof fetch=async(_url,init)=>{hosted.push(JSON.parse(String(init?.body)).generationConfig.responseJsonSchema);return new Response(envelope({value:'none'}),{status:200});};
- const relaxed=await requestSourceJson('packet',strict,'test-only',fetcher,()=>{},async()=>{},undefined,'ADV_SEMANTIC',local);
+ const relaxed=await requestSourceJson('packet',strict,'test-only',fetcher,()=>{},async()=>{},undefined,'ADV_SEMANTIC',undefined,local);
  assert.deepEqual(relaxed.value,{value:'none'});
  await assert.rejects(requestSourceJson('packet',strict,'test-only',fetcher,()=>{},async()=>{},undefined,'ADV_SEMANTIC'),(error:unknown)=>Array.isArray((error as {issues?:unknown}).issues));
  assert.deepEqual(hosted[0],hosted[1]);assert.equal(hosted[0].properties.value.enum,undefined,'the local literal never reaches the hosted schema');

@@ -11,13 +11,13 @@ const field=z.object({text:z.string().min(1).max(200),citation}).strict();
 const association=z.object({key:z.string().min(1).max(300),citation}).strict();
 export const socialSourceSchema=z.object({id:z.string().min(1),url:z.string().url(),text:z.string().max(120000),publishedAt:timestamp.nullable(),authorId:z.string().nullable(),availableAt:timestamp,kind:z.enum(['POST','PAGE']),discoveredFrom:z.string().optional()}).strict();
 export const socialInputSchema=z.object({
-  schemaVersion:z.literal(1),sources:z.array(socialSourceSchema).max(32),start:timestamp,end:timestamp,
+  schemaVersion:z.literal(1),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(32),start:timestamp,end:timestamp,
   targetPostIds:z.array(z.string()).max(32),identitySourceIds:z.array(z.string()).max(32),sampleComplete:z.boolean(),identityComplete:z.boolean(),
   previousComparable:z.boolean(),codes:z.array(z.string()).max(200),queries:z.array(z.string()).max(20),qualifiedAt:timestamp.optional(),
 }).strict();
 export const socialProposalSchema=z.object({
-  identityAssessment:socialJudgmentSchema.optional(),integrityAssessment:socialJudgmentSchema.optional(),
-  posts:z.array(z.object({sourceId:z.string(),body:citation,bodyComplete:z.boolean().optional(),role:z.enum(['ORIGINAL','REPOST','COMMENTARY','EXCLUDED','UNCLEAR']),binding:z.enum(['EXACT_CONTRACT','PROVEN_ACCOUNT','UNRELATED','UNCLEAR']),bindingProof:z.array(citation).max(5),
+  identityAssessment:socialJudgmentSchema.optional(),integrityAssessment:socialJudgmentSchema.optional(),participationAssessment:socialJudgmentSchema.optional(),communityBreadthAssessment:socialJudgmentSchema.optional(),
+  posts:z.array(z.object({sourceId:z.string(),body:citation.extend({quote:z.string().min(8).max(120000)}),bodyComplete:z.boolean().optional(),role:z.enum(['ORIGINAL','REPOST','COMMENTARY','EXCLUDED','UNCLEAR']),binding:z.enum(['EXACT_CONTRACT','PROVEN_ACCOUNT','UNRELATED','UNCLEAR']),bindingProof:z.array(citation).max(5),
     parentSourceId:z.string().nullable(),origin:association.nullable(),community:association.nullable(),campaign:association.nullable(),
     metrics:z.object({likes:field.nullable(),replies:field.nullable(),reposts:field.nullable()}).strict(),
   }).strict()).max(32),
@@ -62,6 +62,9 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   const facts:SocialPolicyFacts={version:'social-policy-v1',method:'social-source-review-v1',token,start:read.start,end:read.end,availableAt,evidenceIds:[...new Set(evidenceIds)],postCorpusObserved:read.targetPostIds.length>0,sampleComplete:false,lineageComplete:false,qualifiedOriginalCount:null,accountUpperBound:null,independentGroupCount:null,independentCommunityCount:null};
   const output=new Map<string,BaselineAssessment>();
   const set=(id:typeof ids[number],value:boolean|null,code:string,data:unknown={})=>{
+    const scopeBlocked=value===null&&(['S02','S03','S10'].includes(id)&&!read.sampleComplete||id==='S01'&&!read.identityComplete);
+    const inherited=scopeBlocked?read.codes.find(c=>/SOC_(?:TEXT_CAP|SOURCE_CAP|COLLECTION_BUDGET|FETCH_|SEARCH_)/.test(c)):undefined;
+    code=inherited??code;
     const quality=value===null?'MISSING':'KNOWN';output.set(id,{id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality,unit:'scoped-record',data:{method:'social-source-review-v1',definitionVersion:`${id}-social-v2`,window:{start:read.start,end:read.end},...data as object},observationIds:[],evidenceIds:facts.evidenceIds,limitations:['social-source-review-v1: bounded public-source claims; accounts are not people; no authenticity, organic-traffic or bot verdict'],causes:value===null?[{category:/CITATION|REVIEW|PAIR|FIELD_INVALID|POST_OMITTED|MODEL_INVALID|ASSOCIATION_INVALID|ACCOUNT_INVALID|HISTORY_INVALID/.test(code)?'CLAIM_UNVALIDATED':'EVIDENCE_UNAVAILABLE',code,featureId:id,evidenceIds:facts.evidenceIds,action:'Refresh the named public-source scope automatically; unavailable fields remain missing rather than fabricated.'}]:[],projection:{id,value,unit:'bool',quality,availableAt,evidenceIds:facts.evidenceIds,applicability:'APPLICABLE'}});
   };
   for(const id of ids)set(id,null,read.codes[0]??'SOC_REVIEW_REJECTED');
@@ -72,16 +75,17 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     if(at-Date.parse(read.end)>900000||read.sources.some(s=>at-Date.parse(s.availableAt)>900000))throw new Error('SOC_SOURCE_STALE');
     if(proposalInput===null||reviewInput===null)return finish();
     p=socialProposalSchema.parse(proposalInput);r=socialReviewSchema.parse(reviewInput);
+    if(read.entryDecisionMethod?(!p.participationAssessment||(read.entryDecisionMethod==='public-support-v3'?!p.communityBreadthAssessment:!!p.communityBreadthAssessment)):p.participationAssessment||p.communityBreadthAssessment||p.posts.some(post=>post.body.quote.length>1000))throw Error('SOC_REVIEW_INVALID');
     const cite=(c:z.infer<typeof citation>)=>{const s=byId.get(c.sourceId);if(!s||!s.text.includes(c.quote))throw new Error('SOC_CITATION_INVALID');return s;};
     const unique=(values:string[])=>{if(new Set(values).size!==values.length)throw new Error('SOC_REVIEW_INVALID');};
     unique(p.posts.map(x=>x.sourceId));unique(p.identities.map(x=>x.id));unique(p.accounts.map(x=>x.accountId));unique(r.decisions.map(x=>x.id));unique(r.sources.map(x=>x.sourceId));unique(r.pairs.map(x=>x.id));
-    const expected=[...p.posts.map(x=>`post:${x.sourceId}`),...p.identities.map(x=>`identity:${x.id}`),...p.accounts.map(x=>`account:${x.accountId}`),...(p.identityAssessment?['assessment:identity']:[]),...(p.integrityAssessment?['assessment:integrity']:[])];
+    const expected=[...p.posts.map(x=>`post:${x.sourceId}`),...p.identities.map(x=>`identity:${x.id}`),...p.accounts.map(x=>`account:${x.accountId}`),...(p.identityAssessment?['assessment:identity']:[]),...(p.integrityAssessment?['assessment:integrity']:[]),...(p.participationAssessment?['assessment:participation']:[]),...(p.communityBreadthAssessment?['assessment:communityBreadth']:[])];
     if(r.decisions.length!==expected.length||r.decisions.some(d=>!expected.includes(d.id))||r.sources.length!==read.sources.length||r.sources.some(s=>!byId.has(s.sourceId)))throw new Error('SOC_REVIEW_INVALID');
     if(p.posts.length!==read.sources.filter(s=>s.kind==='POST').length||p.posts.some(x=>byId.get(x.sourceId)?.kind!=='POST'||x.body.sourceId!==x.sourceId))throw new Error('SOC_POST_OMITTED');
     for(const post of p.posts){cite(post.body);for(const c of post.bindingProof)cite(c);for(const assoc of [post.origin,post.community,post.campaign])if(assoc){cite(assoc.citation);if(!assoc.citation.quote.includes(assoc.key))throw new Error('SOC_ASSOCIATION_INVALID');}for(const f of Object.values(post.metrics))if(f){cite(f.citation);if(f.citation.sourceId!==post.sourceId||!f.citation.quote.includes(f.text))throw new Error('SOC_FIELD_INVALID');}}
     for(const claim of p.identities){if(!/^x\.com:[a-z0-9_]+$/.test(claim.accountId))throw new Error('SOC_ACCOUNT_INVALID');for(const c of claim.citations)cite(c);}
     for(const account of p.accounts){if(!/^x\.com:[a-z0-9_]+$/.test(account.accountId))throw new Error('SOC_ACCOUNT_INVALID');if(account.createdAt){const s=cite(account.createdAt.citation);if(socialAccount(s.url)!==account.accountId||!account.createdAt.citation.quote.includes(account.createdAt.text))throw new Error('SOC_FIELD_INVALID');}for(const id of account.historySourceIds)if(!byId.has(id)||socialAccount(byId.get(id)!.url)!==account.accountId)throw new Error('SOC_HISTORY_INVALID');}
-    for(const judgment of [p.identityAssessment,p.integrityAssessment])if(judgment)for(const c of judgment.citations)cite(c);
+    for(const judgment of [p.identityAssessment,p.integrityAssessment,p.participationAssessment,p.communityBreadthAssessment])if(judgment)for(const c of judgment.citations)cite(c);
     const pairs=socialCopyPairs(p,token);if(r.pairs.length!==pairs.length||r.pairs.some(x=>!pairs.some(pair=>pair.id===x.id)))throw new Error('SOC_PAIR_REVIEW_INVALID');
   }catch(error){const code=error instanceof Error&&/^SOC_/.test(error.message)?error.message:'SOC_REVIEW_REJECTED';for(const id of ids)set(id,null,code);return finish();}
   const accepted=(id:string)=>r.decisions.find(d=>d.id===id)?.accepted===true;
@@ -96,7 +100,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   const posts=[...canonicalPosts.values()];
   const accounts=[...new Set(posts.map(post=>byId.get(post.sourceId)!.authorId).filter((a):a is string=>!!a))];
   if(facts.sampleComplete&&facts.postCorpusObserved){facts.qualifiedOriginalCount=posts.length;facts.accountUpperBound=accounts.length;}
-  const identityComplete=read.identityComplete&&read.identitySourceIds.length>0&&read.identitySourceIds.every(reviewed)&&p.identities.every(claim=>accepted(`identity:${claim.id}`));
+  const identityComplete=read.identityComplete&&(read.identitySourceIds.length>0||!!read.entryDecisionMethod&&p.identities.length===0&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id)))&&read.identitySourceIds.every(reviewed)&&p.identities.every(claim=>accepted(`identity:${claim.id}`));
   const identityBinding=(claim:SocialProposal['identities'][number])=>{
     const own=claim.citations.filter(c=>socialAccount(byId.get(c.sourceId)!.url)===claim.accountId&&socialNamesAddress(c.quote,token));
     const primary=claim.citations.filter(c=>socialAccount(byId.get(c.sourceId)!.url)!==claim.accountId&&socialNamesAddress(c.quote,token)&&namesAccount(c.quote,claim.accountId));
@@ -105,7 +109,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   const disavowals=p.identities.filter(c=>accepted(`identity:${c.id}`)&&c.status==='DISAVOWED'&&c.citations.every(ref=>reviewed(ref.sourceId))&&c.citations.some(ref=>socialNamesAddress(ref.quote,token)&&namesAccount(ref.quote,c.accountId)&&socialAccount(byId.get(ref.sourceId)!.url)!==c.accountId));
   const identityConflict=disavowals.some(c=>p.identities.some(other=>other.accountId===c.accountId&&other.status==='PUBLIC_BINDING_SUPPORTED'&&accepted(`identity:${other.id}`)&&identityBinding(other)));
   const incompleteOpposingBinding=disavowals.some(c=>p.identities.some(other=>other.accountId===c.accountId&&other.status==='PUBLIC_BINDING_SUPPORTED'&&accepted(`identity:${other.id}`)&&!identityBinding(other)));
-  const identityKnown=identityComplete&&(p.identities.length===0||p.identities.every(c=>c.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(c)));
+  const identityKnown=identityComplete&&(p.identities.length===0?!read.entryDecisionMethod:p.identities.every(c=>c.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(c)));
   set('S01',identityConflict||incompleteOpposingBinding?null:disavowals.length?false:identityKnown?true:null,identityConflict?'SOC_IDENTITY_CONFLICT':'SOC_IDENTITY_PROOF_UNRESOLVED',{claims:p.identities,scopeComplete:identityComplete,meaning:'Public source binding only; no real-world authenticity guarantee'});
   const parent=new Map(posts.map(post=>[post.sourceId,post.sourceId]));
   const root=(id:string):string=>{let next=id;while(parent.get(next)!==next)next=parent.get(next)!;return next;};
@@ -172,13 +176,13 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   if(output.get('S05')?.quality!=='KNOWN')missingIndicators.push('ACCOUNT_HISTORY');
   if(output.get('S06')?.quality!=='KNOWN')missingIndicators.push('ENGAGEMENT');
   if(output.get('S04')?.quality!=='KNOWN')missingIndicators.push('COMPARABLE_HISTORY');
-  for(const [name,judgment] of [['identity',p.identityAssessment],['integrity',p.integrityAssessment]] as const)if(judgment){
-    const scopeQualified=name==='identity'?identityComplete:read.sampleComplete&&facts.sampleComplete&&facts.postCorpusObserved&&read.sources.every(source=>reviewed(source.id));
+  for(const [name,judgment] of [['identity',p.identityAssessment],['integrity',p.integrityAssessment],['participation',p.participationAssessment],['communityBreadth',p.communityBreadthAssessment]] as const)if(judgment){
+    const scopeQualified=name==='identity'?identityComplete:read.sampleComplete&&(!!read.entryDecisionMethod||facts.sampleComplete&&facts.postCorpusObserved)&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id));
     const sourceQualified=scopeQualified&&accepted(`assessment:${name}`)&&judgment.citations.every(c=>reviewed(c.sourceId));
     const invalidMetric=posts.some(post=>Object.entries(post.metrics).some(([metricName,value])=>value!==null&&metric(value,metricName)===null));
-    const supportQualified=name==='identity'?output.get('S01')?.projection?.value===true&&p.identities.some(claim=>claim.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(claim)&&claim.citations.some(c=>{const source=byId.get(c.sourceId)!;return source.kind==='PAGE'&&socialAccount(source.url)===null&&socialNamesAddress(c.quote,token)&&namesAccount(c.quote,claim.accountId);})):facts.sampleComplete&&facts.lineageComplete&&posts.length>0&&output.get('S02')?.projection?.value===true&&output.get('S04')?.projection?.value!==false&&!invalidMetric;
+    const supportQualified=name==='communityBreadth'?facts.sampleComplete&&facts.lineageComplete&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=3:name==='participation'?facts.sampleComplete&&facts.lineageComplete&&facts.accountUpperBound!==null&&facts.accountUpperBound>=3&&facts.independentGroupCount!==null&&facts.independentGroupCount>=2&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=2:name==='identity'?output.get('S01')?.projection?.value===true&&p.identities.some(claim=>claim.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(claim)&&claim.citations.some(c=>{const source=byId.get(c.sourceId)!;return source.kind==='PAGE'&&socialAccount(source.url)===null&&socialNamesAddress(c.quote,token)&&namesAccount(c.quote,claim.accountId);})):facts.sampleComplete&&facts.lineageComplete&&posts.length>0&&output.get('S02')?.projection?.value===true&&output.get('S04')?.projection?.value!==false&&!invalidMetric;
     const verdict=sourceQualified&&(judgment.verdict!=='SUPPORTED'||supportQualified)?judgment.verdict:'UNRESOLVED';
-    facts[name==='identity'?'identityReview':'integrityReview']={...judgment,verdict,method:'source-transparency-review-v1',missingIndicators:name==='integrity'?missingIndicators:[]};
+    facts[name==='identity'?'identityReview':name==='participation'?'participationReview':name==='communityBreadth'?'communityBreadthReview':'integrityReview']={...judgment,verdict,method:'source-transparency-review-v1',missingIndicators:name==='integrity'?missingIndicators:[]};
   }
   return finish();
 }

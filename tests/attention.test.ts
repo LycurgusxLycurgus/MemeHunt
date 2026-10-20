@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { deriveAttention } from '../src/domain/attention.js';
+import { deriveAttention, originSourceScope } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import { collectAttentionSources, normalizeAttentionSearchUrl, recoverComparisonSources } from '../src/providers/attention.js';
-import { qualifyAttention } from '../src/providers/attention-model.js';
+import { attentionSubmittedSources, collectAttentionSources, comparisonRecoveryFallback, comparisonRecoverySelection, entryEvidenceScope, normalizeAttentionSearchUrl, recoverComparisonSources, type AttentionRead } from '../src/providers/attention.js';
+import { binaryEntryDecisionProgram, qualifyAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
+import { originRecoveryQuery } from '../src/providers/origin-recovery.js';
 
 const token = { chain: 'solana', address: 'MintAddress111111111111111111111111111111111' } as const;
 const KEY = 'attention-test-key';
@@ -30,7 +31,8 @@ const fetchResult = (url: string, text: string, published_date?: string) => ({
 
 const comparisonReviewFields = (packet: Record<string, unknown>) => ({
   sourceDecisions: Object.fromEntries(((packet.sources ?? []) as Array<{ id: string }>).map(source => [source.id, {
-    disposition: 'RELEVANT', rationale: 'The retained source establishes this exact project representation.',
+    disposition: 'RELEVANT', insufficiencyKind: 'NONE',
+    rationale: 'The retained source establishes this exact project representation.',
   }])),
   missingRepresentations: [],
 });
@@ -41,6 +43,16 @@ const indexedSpanId = (packet: Record<string, unknown>, sourceId: string) => {
   assert.ok(source, `the lead packet includes descriptor ${sourceId}`);
   assert.ok(source.spans[0], `descriptor ${sourceId} contains a citable title or snippet`);
   return source.spans[0]!.id;
+};
+
+const comparisonObservationId = (packet: Record<string, unknown>, token: { chain: string; address: string }, sourceId: string) => {
+  const observations = packet.exactContractObservations as Array<{
+    observationId: string; token: { chain: string; address: string }; sourceId: string;
+  }>;
+  const observation = observations.find(item => item.token.chain === token.chain
+    && item.token.address === token.address && item.sourceId === sourceId);
+  assert.ok(observation, `the packet includes a code-owned ${token.chain}:${token.address} observation in ${sourceId}`);
+  return observation.observationId;
 };
 
 test('collector runs bounded mint and name searches, binds public pages, and derives post metadata from provider fields', async () => {
@@ -121,7 +133,8 @@ test('collector runs bounded mint and name searches, binds public pages, and der
   const commonQuery = commonRequest.searchParams.get('query') ?? '';
   const commonIntent = commonRequest.searchParams.get('intent') ?? '';
   assert.ok(searchCalls[2]!.url.length < 2000, 'the named comparison request stays within TinyFish URL limits');
-  assert.match(commonQuery, /"Dove RedCoin" solana token contract meme narrative/);
+  assert.equal(commonQuery, '"Dove RedCoin" solana crypto token contract');
+  assert.equal(commonQuery.includes('meme narrative'), false, 'the common query remains specific and crypto-qualified without broad narrative expansion');
   assert.equal(commonQuery.includes(token.address), false, 'the common-name query does not anchor candidate selection on the target contract');
   assert.match(commonIntent, /Find public sources identifying distinct token contract addresses/);
   assert.match(commonIntent, /Same name alone does not establish association; do not rank by price/);
@@ -140,6 +153,224 @@ test('collector runs bounded mint and name searches, binds public pages, and der
     'comparison-lead-1-metadata', 'comparison-lead-2-metadata', 'comparison-lead-3-metadata', 'comparison-lead-4-metadata',
   ]);
   assert.deepEqual(read.sources.filter(source => source.kind === 'POST' && read.comparisonSourceIds?.includes(source.id)).map(source => source.id), ['attention-page-5']);
+});
+
+test('an empty crypto-qualified comparison query gets one broader retry and stays unknown when that retry is empty', async () => {
+  const primary = { results: [] };
+  const searchQueries: string[] = [];
+  const fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      searchQueries.push(query);
+      return json(primary);
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(item => fetchResult(item, `River Lantern represents ${token.address}.`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+  assert.equal(searchQueries.length, 4, 'only the successful empty primary gets one broader retry');
+  assert.deepEqual(searchQueries, [
+    `"${token.address}" solana narrative origin catalyst`,
+    `"${token.address}" (site:x.com OR site:twitter.com)`,
+    '"River Lantern" solana crypto token contract',
+    '"River Lantern" solana',
+  ]);
+  assert.equal(read.queries[2], '"River Lantern" solana');
+  assert.equal(read.rawArtifacts['attention-search-3-primary-query'], '"River Lantern" solana crypto token contract');
+  assert.equal(read.rawArtifacts['attention-search-3-empty-response'], JSON.stringify(primary), 'the primary empty response is retained separately');
+  assert.equal(read.rawArtifacts['attention-search-3'], JSON.stringify(primary), 'the selected fallback response remains the canonical search result');
+  assert.deepEqual(fetched, []);
+  assert.equal(read.sources.length, 0);
+  assert.equal(read.comparisonAcquisition?.leadCount, 0);
+  assert.equal(read.comparisonAcquisition?.originalComplete, false);
+  assert.equal(read.comparisonComplete, false, 'an empty sample remains unknown rather than proving no representation exists');
+});
+
+test('failed crypto-qualified comparison searches remain unknown without fallback', async t => {
+  await t.test('a successful empty primary response with provider errors does not trigger fallback', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (url.includes('api.search.tinyfish.ai')) {
+        searchCount++;
+        return json(searchCount === 3 ? { results: [], errors: [{ error: 'provider_error' }] } : { results: [] });
+      }
+      return json({ results: [], errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.comparisonComplete, false);
+    assert.equal(read.comparisonAcquisition?.originalComplete, false);
+  });
+
+  await t.test('an embedded primary error does not trigger fallback even with an empty results array', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      return json(searchCount === 3 ? { results: [], error: 'provider_error' } : { results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.comparisonComplete, false);
+  });
+
+  await t.test('HTTP failure on the exact-name query is not retried as a fallback', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      if (searchCount === 3) return new Response('rejected', { status: 400 });
+      return json({ results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.equal(read.rawArtifacts['attention-search-3'], undefined);
+    assert.equal(read.queries[2], '"River Lantern" solana crypto token contract');
+    assert.equal(read.sources.length, 0);
+    assert.equal(read.comparisonComplete, false);
+    assert.ok(read.codes.includes('ATT_SEARCH_HTTP_400'));
+  });
+
+  await t.test('a malformed successful primary response is not retried', async () => {
+    let searchCount = 0;
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      searchCount++;
+      return json(searchCount === 3 ? { results: 'not-an-array' } : { results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.equal(searchCount, 3);
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.ok(read.codes.includes('ATT_SEARCH_SHAPE'));
+    assert.equal(read.comparisonComplete, false);
+  });
+
+  await t.test('a thrown primary transport failure does not trigger the broader fallback', async () => {
+    const searchQueries: string[] = [];
+    const mock = mockFetch(url => {
+      if (!url.includes('api.search.tinyfish.ai')) return json({ results: [], errors: [] });
+      const query = new URL(url).searchParams.get('query') ?? '';
+      searchQueries.push(query);
+      if (query === '"River Lantern" solana crypto token contract') {
+        return Promise.reject(Object.assign(new Error('simulated search timeout'), { name: 'TimeoutError' }));
+      }
+      return json({ results: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
+    assert.ok(searchQueries.length > 3, 'the failed primary may use its existing bounded transport retries');
+    assert.equal(searchQueries.includes('"River Lantern" solana'), false, 'a transport failure never triggers the empty-result fallback');
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], undefined);
+    assert.ok(read.codes.includes('ATT_SEARCH_UNAVAILABLE'));
+    assert.equal(read.comparisonComplete, false);
+  });
+});
+
+test('original origin scope keeps failed and omitted exact-token acquisitions visible', async t => {
+  await t.test('a missing launch result is recorded as omitted', async () => {
+    const seed = 'https://public.example/context';
+    const launch = 'https://public.example/launch';
+    let searchIndex = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search(searchIndex++ === 0 ? [seed] : [launch]);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      return json({ results: requested.filter(item => item === seed).map(item => fetchResult(item, `Token ${token.address}. Original project context.`)), errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+    const scope = originSourceScope(read, token);
+
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === launch)?.state, 'OMITTED');
+  });
+
+  await t.test('an eligible metadata seed link that fails remains in the scope', async () => {
+    const seed = 'https://metadata.example/token.json';
+    const launch = 'https://metadata.example/launch';
+    let fetchIndex = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search([]);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetchIndex++;
+      if (fetchIndex === 1) return json({
+        results: requested.map(item => ({ ...fetchResult(item, JSON.stringify({ mint: token.address })), links: item === seed ? [launch] : [] })),
+        errors: [],
+      });
+      return json({ results: [], errors: [{ url: launch, error: 'bot_blocked', status: 403 }] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+    const scope = originSourceScope(read, token);
+
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === launch)?.state, 'UNAVAILABLE');
+  });
+
+  await t.test('a URL omitted by the first-two-search page cap stays in the scope ledger', async () => {
+    const urls = Array.from({ length: 33 }, (_, index) => `https://public.example/origin-${index + 1}`);
+    let searchIndex = 0;
+    const fetched: string[] = [];
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return search(searchIndex++ === 0 ? urls : []);
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetched.push(...requested);
+      return json({ results: requested.map(item => fetchResult(item, `Token ${token.address}. Original source.`)), errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z');
+    const scope = originSourceScope(read, token);
+
+    assert.equal(fetched.length, 32);
+    assert.equal(scope.complete, false);
+    assert.equal(scope.acquisition.urls.find(item => item.url === urls[32])?.state, 'OMITTED');
+  });
+});
+
+test('a third common-query fetch failure does not make a fully acquired original origin scope incomplete', async () => {
+  const origin = 'https://public.example/origin';
+  const common = 'https://public.example/common-name';
+  let searchIndex = 0;
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const current = searchIndex++;
+      return search(current === 0 ? [origin] : current === 2 ? [common] : []);
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    return json({
+      results: requested.filter(item => item === origin).map(item => fetchResult(item, `Token ${token.address}. Project context, with no dated origin or catalyst.`)),
+      errors: requested.filter(item => item === common).map(item => ({ url: item, error: 'bot_blocked', status: 403 })),
+    });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern', [origin]);
+  const scope = originSourceScope(read, token);
+  read.originScope = scope;
+  assert.equal(read.complete, false, 'the common-query fetch failure remains visible on the overall collection');
+  assert.equal(scope.complete, true, 'origin scope depends on the two exact-token searches and their required pages');
+  assert.deepEqual(scope.acquisition.sourceIds, ['attention-page-1']);
+
+  const quote = `Token ${token.address}.`;
+  const rows = deriveAttention(read, {
+    claims: [{ id: 'screen', feature: 'A03', value: false, summary: 'The reviewed sample lacks public origin proof.',
+      originBasis: 'PUBLIC_EVIDENCE_INADEQUATE', citations: [{ sourceId: 'attention-page-1', quote }] }],
+    posts: [], competitors: [],
+  }, {
+    decisions: [{ id: 'screen', accepted: true, rationale: 'The complete original sample supports this scoped screening grade.' }],
+    candidateSet: { complete: false, rationale: 'The independent common-name comparison scope is incomplete.' },
+    originRelationship: { status: 'UNKNOWN', citations: [], rationale: 'The retained pages do not resolve primary origin.' },
+    originScopeReview: { complete: true, sourceIds: [...scope.sourceIds], rationale: 'Every acquired original source was reviewed in full.' },
+  }, token, '2026-10-01T12:00:00.000Z', []);
+
+  assert.equal(rows.find(row => row.id === 'A03')?.quality, 'KNOWN', JSON.stringify({
+    origin: rows.find(row => row.id === 'A03'), scope, readQueries: read.queries,
+  }));
+  assert.equal(rows.find(row => row.id === 'A03')?.projection?.value, false);
 });
 
 test('TinyFish search redirects normalize only the observed public wrapper and retain original evidence', async t => {
@@ -528,6 +759,492 @@ test('named comparison retention exceeds the ordinary page cap and remains expli
   });
 });
 
+test('public-support-v2 retains and submits full original and comparison bodies while legacy submission stays at six thousand characters', async () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const comparisonUrl = 'https://public.example/river-lantern-comparison';
+  const originText = `Original source for ${token.address}. ${'Acquired origin detail. '.repeat(1200)}`.slice(0, 23_704);
+  const comparisonText = `Comparison source for ${token.address}. ${'Acquired comparison detail. '.repeat(1000)}`.slice(0, 19_893);
+  assert.equal(originText.length, 23_704);
+  assert.equal(comparisonText.length, 19_893);
+  const makeFetcher = () => mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      if (query.includes('River Lantern')) return json({ results: [{ url: comparisonUrl, title: 'River Lantern token origin', snippet: 'A comparison result.' }] });
+      return search([originUrl]);
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    return json({ results: requested.map(requestedUrl => fetchResult(requestedUrl,
+      requestedUrl === originUrl ? originText : comparisonText)), errors: [] });
+  });
+  const now = () => '2026-10-19T18:30:00.000Z';
+
+  const freshRead = await collectAttentionSources(token, KEY, makeFetcher().fetcher, now, 'River Lantern', [], undefined, 'public-support-v2');
+  assert.equal(freshRead.entryEvidenceMethod, 'public-support-v2');
+  assert.deepEqual(freshRead.sources.map(source => source.text.length), [23_704, 19_893]);
+  assert.deepEqual(attentionSubmittedSources(freshRead).map(source => source.text), [originText, comparisonText]);
+  const scope = entryEvidenceScope(freshRead, token, now());
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  assert.deepEqual(scope.sourceIds, freshRead.sources.map(source => source.id), 'the full retained catalog remains the reviewed catalog');
+  assert.deepEqual(scope.originSourceIds, [freshRead.sources[0]!.id], 'only the two original exact-token searches establish origin scope');
+
+  const legacyRead = await collectAttentionSources(token, KEY, makeFetcher().fetcher, now, 'River Lantern');
+  assert.equal(legacyRead.entryEvidenceMethod, undefined);
+  assert.deepEqual(attentionSubmittedSources(legacyRead).map(source => source.text.length), [6_000, 6_000],
+    'method-absent historical packet reconstruction keeps its original six-thousand-character submitted prefix');
+});
+
+test('public-support scope accepts only explicit permanent blocks after each comparison recovery query succeeds', () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const blockedUrl = 'https://public.example/river-lantern-comparison';
+  const originText = `Original source for ${token.address}.`;
+  const read: AttentionRead = {
+    entryEvidenceMethod: 'public-support-v2',
+    sources: [{ id: 'origin-source', url: originUrl, text: originText, publishedAt: null, authorId: null,
+      availableAt: '2026-10-19T18:30:00.000Z', kind: 'PAGE' }],
+    rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-3': JSON.stringify({ results: [{ url: blockedUrl, title: 'River Lantern', snippet: 'Candidate token source.' }], errors: [] }),
+      'attention-recovery-search-1': JSON.stringify({ results: [], errors: [] }),
+      'attention-fetch-1': JSON.stringify({ results: [{ url: originUrl, final_url: originUrl, text: originText }], errors: [{ url: blockedUrl, error: 'HTTP 404 not found' }] }),
+    },
+    queries: ['mint origin', 'mint x.com', 'named comparison'], complete: false, codes: ['ATT_FETCH_URL_ERROR'],
+    start: '2026-10-18T18:30:00.000Z', end: '2026-10-19T18:30:00.000Z', comparisonSourceIds: [],
+    comparisonComplete: false,
+    comparisonAcquisition: {
+      originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+      leads: [{ id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: blockedUrl,
+        title: 'River Lantern', snippet: 'Candidate token source.', metadataEvidenceId: 'lead-1-metadata', sourceIds: [],
+        acquisitionStatus: 'FAILED', acquisitionCodes: [], recoveryQueryIds: ['attention-recovery-search-1'], recoverySourceIds: [] }],
+    },
+    comparisonQualification: { recoveryCapped: false, recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', state: 'NO_RESULTS', descriptorComplete: true }] },
+  };
+
+  const permitted = entryEvidenceScope(read, token, '2026-10-19T18:30:00.000Z');
+  assert.equal(permitted.complete, true, JSON.stringify(permitted));
+  assert.deepEqual(permitted.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }]);
+  assert.deepEqual(permitted.blockers, []);
+
+  const incompleteRecovery = structuredClone(read);
+  (incompleteRecovery.comparisonQualification as { recoveryQueries: Array<{ state: string }> }).recoveryQueries[0]!.state = 'UNAVAILABLE';
+  const blockedWithoutRecovery = entryEvidenceScope(incompleteRecovery, token, '2026-10-19T18:30:00.000Z');
+  assert.equal(blockedWithoutRecovery.complete, false);
+  assert.ok(blockedWithoutRecovery.blockers.includes('ATT_ENTRY_COMPARISON_RECOVERY_INCOMPLETE'));
+  assert.deepEqual(blockedWithoutRecovery.gaps, []);
+
+  for (const failure of ['HTTP 429 rate limit', 'HTTP 503 transport failure', 'timeout']) {
+    const interrupted = structuredClone(read);
+    const fetch = JSON.parse(interrupted.rawArtifacts['attention-fetch-1']!) as { errors: Array<{ url: string; error: string }> };
+    fetch.errors[0]!.error = failure;
+    interrupted.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetch);
+    interrupted.codes = [failure.includes('429') ? 'ATT_FETCH_HTTP_429' : failure.includes('503') ? 'ATT_FETCH_HTTP_503' : 'ATT_FETCH_TIMEOUT'];
+    const scope = entryEvidenceScope(interrupted, token, '2026-10-19T18:30:00.000Z');
+    assert.equal(scope.complete, false, `${failure} is an unresolved collection boundary`);
+    assert.deepEqual(scope.gaps, [], `${failure} cannot be recorded as a permanent public-access gap`);
+  }
+});
+
+test('public-support scope requires completed recovery for blocked original sources and reuses only matching comparison recovery', () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const blockedUrl = 'https://public.example/river-lantern-launch';
+  const alternateUrl = 'https://independent.example/river-lantern-launch';
+  const originText = `River Lantern token ${token.address}; the project launch page is ${blockedUrl}.`;
+  const alternateText = `An independent public index describes the River Lantern launch and token ${token.address}.`;
+  const cutoff = '2026-10-19T18:30:00.000Z';
+  const blockedOriginal = (): AttentionRead => ({
+    entryEvidenceMethod: 'public-support-v2',
+    sources: [{ id: 'origin-source', url: originUrl, text: originText, publishedAt: null, authorId: null,
+      availableAt: cutoff, kind: 'PAGE' }],
+    rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: [{ url: originUrl }, { url: blockedUrl }], errors: [] }),
+      'attention-search-2': JSON.stringify({ results: [{ url: originUrl }, { url: blockedUrl }], errors: [] }),
+      'attention-search-3': JSON.stringify({ results: [], errors: [] }),
+      'attention-fetch-1': JSON.stringify({ results: [{ url: originUrl, final_url: originUrl, text: originText }],
+        errors: [{ url: blockedUrl, status: 404, error: 'HTTP 404 not found' }] }),
+    },
+    queries: ['original source', 'original account', 'comparison search'], complete: false,
+    codes: ['ATT_FETCH_URL_ERROR'], start: '2026-10-18T18:30:00.000Z', end: cutoff,
+    discoveryUrls: [originUrl, blockedUrl], comparisonSourceIds: [], comparisonComplete: false,
+    comparisonAcquisition: { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 0, leads: [] },
+  });
+  const unresolved = entryEvidenceScope(blockedOriginal(), token, cutoff);
+  assert.equal(unresolved.complete, false, 'a permanent original-page denial stays unknown before alternate research');
+  assert.ok(unresolved.blockers.includes('ATT_ENTRY_ORIGIN_RECOVERY_INCOMPLETE'));
+  assert.deepEqual(unresolved.gaps, []);
+
+  const ownRecovery = blockedOriginal();
+  ownRecovery.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(ownRecovery, token, blockedUrl);
+  ownRecovery.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+  ownRecovery.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({
+    results: [{ url: alternateUrl, final_url: alternateUrl, text: alternateText }], errors: [],
+  });
+  ownRecovery.sources.push({ id: 'attention-origin-role-page-2', url: alternateUrl, text: alternateText,
+    publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' });
+  const eligible = entryEvidenceScope(ownRecovery, token, cutoff);
+  assert.equal(eligible.complete, true, JSON.stringify(eligible));
+  assert.deepEqual(eligible.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }]);
+
+  const emptySearch = blockedOriginal();
+  emptySearch.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(emptySearch, token, blockedUrl);
+  emptySearch.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [], errors: [] });
+  const emptySearchScope = entryEvidenceScope(emptySearch, token, cutoff);
+  assert.equal(emptySearchScope.complete, true, JSON.stringify(emptySearchScope));
+  assert.deepEqual(emptySearchScope.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }],
+    'a successful bounded search with no alternate results is a completed attempt');
+
+  const terminalAlternate = blockedOriginal();
+  terminalAlternate.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(terminalAlternate, token, blockedUrl);
+  terminalAlternate.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+  terminalAlternate.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({
+    results: [], errors: [{ url: alternateUrl, status: 404, error: 'HTTP 404 not found' }],
+  });
+  const terminalAlternateScope = entryEvidenceScope(terminalAlternate, token, cutoff);
+  assert.equal(terminalAlternateScope.complete, true, JSON.stringify(terminalAlternateScope));
+  assert.deepEqual(terminalAlternateScope.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }],
+    'a completed different-host Fetch that ends in a terminal access gap is eligible');
+
+  const matchingComparison = blockedOriginal();
+  matchingComparison.rawArtifacts['attention-search-3'] = JSON.stringify({
+    results: [{ url: blockedUrl, title: 'River Lantern launch', snippet: 'Original launch page.' }], errors: [],
+  });
+  matchingComparison.rawArtifacts['attention-recovery-search-1'] = JSON.stringify({
+    results: [{ url: alternateUrl, title: 'River Lantern launch record', snippet: 'Independent index.' }], errors: [],
+  });
+  matchingComparison.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify({
+    results: [{ url: alternateUrl, final_url: alternateUrl, text: alternateText }], errors: [],
+  });
+  const matchingSelection = comparisonRecoverySelection(
+    [{ searchArtifactId: 'attention-search-1', resultIndex: 0, url: alternateUrl }],
+    [{ leadId: 'lead-1', originalUrl: blockedUrl }], [originUrl, blockedUrl], 8,
+  );
+  matchingComparison.rawArtifacts['attention-recovery-selection-scope'] = JSON.stringify({
+    ...matchingSelection,
+    selection: matchingSelection.selection.map(row => ({
+      ...row, collectorQueryId: row.queryId, queryId: row.queryId.replace('attention-', 'attention-recovery-'),
+    })),
+  });
+  matchingComparison.sources.push({ id: 'attention-recovery-page-2', url: alternateUrl, text: alternateText,
+    publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' });
+  matchingComparison.comparisonAcquisition = { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+    leads: [{ id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: blockedUrl,
+      title: 'River Lantern launch', snippet: 'Original launch page.', metadataEvidenceId: 'lead-1-metadata', sourceIds: [],
+      acquisitionStatus: 'FAILED', acquisitionCodes: ['ATT_LEAD_FAILED'], recoveryQueryIds: ['attention-recovery-search-1'],
+      recoverySourceIds: ['attention-recovery-page-2'] }] };
+  matchingComparison.comparisonQualification = { recoveryCapped: false,
+    recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', state: 'OBSERVED' }] };
+  const reused = entryEvidenceScope(matchingComparison, token, cutoff);
+  assert.equal(reused.complete, true, JSON.stringify(reused));
+  assert.deepEqual(reused.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }]);
+  assert.equal(matchingComparison.rawArtifacts['attention-origin-role-1-search'], undefined,
+    'the completed same-URL comparison recovery is reused without another search');
+
+  const invalidRecoveryCases: Array<[string, (read: AttentionRead) => void]> = [
+    ['recovery for another candidate slot', read => {
+      read.rawArtifacts['attention-origin-role-2-search'] = JSON.stringify({ results: [], errors: [] });
+    }],
+    ['same-host result only', read => {
+      read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: 'https://public.example/other' }], errors: [] });
+    }],
+    ['missing selected Fetch result', read => {
+      read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+    }],
+    ['failed selected Fetch result', read => {
+      read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+      read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [], errors: [{ url: alternateUrl, status: 429, error: 'HTTP 429 rate limit' }] });
+    }],
+    ['failed Search response', read => {
+      read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ error: 'HTTP 503 transport failure' });
+    }],
+    ['completed comparison recovery belongs to another URL', read => {
+      const otherUrl = 'https://public.example/another-launch';
+      const otherAlternate = 'https://independent.example/another-launch-record';
+      const otherText = `An independent page records the separate launch for ${token.address}.`;
+      read.rawArtifacts['attention-search-3'] = JSON.stringify({
+        results: [{ url: otherUrl, title: 'Another launch', snippet: 'A different page.' }], errors: [],
+      });
+      const firstFetch = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: Array<Record<string, unknown>> };
+      firstFetch.errors.push({ url: otherUrl, status: 404, error: 'HTTP 404 not found' });
+      read.rawArtifacts['attention-fetch-1'] = JSON.stringify(firstFetch);
+      read.rawArtifacts['attention-recovery-search-1'] = JSON.stringify({ results: [{ url: otherAlternate }], errors: [] });
+      read.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify({
+        results: [{ url: otherAlternate, final_url: otherAlternate, text: otherText }], errors: [],
+      });
+      read.sources.push({ id: 'other-recovery-source', url: otherAlternate, text: otherText,
+        publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' });
+      read.comparisonAcquisition = { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+        leads: [{ id: 'other-lead', searchArtifactId: 'attention-search-3', resultIndex: 0, url: otherUrl,
+          title: 'Another launch', snippet: 'A different page.', metadataEvidenceId: 'other-lead-metadata', sourceIds: [],
+          acquisitionStatus: 'FAILED', acquisitionCodes: ['ATT_LEAD_FAILED'], recoveryQueryIds: ['attention-recovery-search-1'],
+          recoverySourceIds: ['other-recovery-source'] }] };
+      read.comparisonQualification = { recoveryCapped: false,
+        recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: 'other-lead', state: 'OBSERVED', descriptorComplete: true }] };
+    }],
+    ['claimed comparison recovery has no successful Search receipt', read => {
+      read.rawArtifacts['attention-search-3'] = JSON.stringify({
+        results: [{ url: blockedUrl, title: 'River Lantern launch', snippet: 'Original launch page.' }], errors: [],
+      });
+      read.comparisonAcquisition = { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+        leads: [{ id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: blockedUrl,
+          title: 'River Lantern launch', snippet: 'Original launch page.', metadataEvidenceId: 'lead-1-metadata', sourceIds: [],
+          acquisitionStatus: 'FAILED', acquisitionCodes: ['ATT_LEAD_FAILED'], recoveryQueryIds: ['attention-recovery-search-1'],
+          recoverySourceIds: [] }] };
+      read.comparisonQualification = { recoveryCapped: false,
+        recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', state: 'OBSERVED' }] };
+    }],
+  ];
+  for (const [name, apply] of invalidRecoveryCases) {
+    const read = blockedOriginal();
+    read.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(read, token, blockedUrl);
+    apply(read);
+    const scope = entryEvidenceScope(read, token, cutoff);
+    assert.equal(scope.complete, false, `${name}: ${JSON.stringify(scope)}`);
+    assert.ok(scope.blockers.includes('ATT_ENTRY_ORIGIN_RECOVERY_INCOMPLETE'), name);
+    assert.equal(scope.gaps.some(gap => gap.url === blockedUrl), false, name);
+  }
+});
+
+test('public-support scope requires an effective Fetch outcome for each actual selected comparison URL', async () => {
+  const cutoff = '2026-10-20T12:00:00.000Z';
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const leadUrl = 'https://index.example/river-lantern-market';
+  const selectedUrl = 'https://independent.example/river-lantern-market-record';
+  const unselectedUrl = 'https://another.example/river-lantern-market-record';
+  const sameHostAlternateUrl = 'https://independent.example/river-lantern-market-alternate';
+  const differentHostAlternateUrl = 'https://another.example/river-lantern-market-alternate';
+  const nextPageUrl = 'https://third.example/river-lantern-market-alternate';
+  const wrongParentUrl = 'https://other-parent.example/river-lantern-market-alternate';
+  const query = 'Find independent sources for the indexed River Lantern market record';
+  const originText = `The River Lantern origin page identifies ${token.address}.`;
+  const selectedText = 'An independent source describes the indexed River Lantern market record.';
+  const origin: AttentionRead['sources'][number] = {
+    id: 'attention-page-1', url: originUrl, text: originText, publishedAt: null, authorId: null,
+    availableAt: cutoff, kind: 'PAGE',
+  };
+
+  const collectRecovery = async (
+    hits: string[],
+    responses: Array<{ results: unknown[]; errors: unknown[] }>,
+    initialSources: AttentionRead['sources'] = [origin],
+  ) => {
+    let fetchCall = 0;
+    const requested: string[][] = [];
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return json({
+        results: hits.map((hit, resultIndex) => ({ url: hit, title: `Indexed result ${resultIndex + 1}`, snippet: 'A public market index record.' })),
+        errors: [],
+      });
+      requested.push((JSON.parse(String(init.body)) as { urls: string[] }).urls);
+      return json(responses[fetchCall++] ?? { results: [], errors: [] });
+    });
+    const skipUrls = [...initialSources.map(source => source.url), leadUrl];
+    const recovery = await recoverComparisonSources(token, KEY, [query], skipUrls,
+      Math.min(8, 32 - initialSources.length), mock.fetcher, () => cutoff,
+      [{ leadId: 'lead-1', originalUrl: leadUrl }], true, 'public-support-v2');
+    return { recovery, requested };
+  };
+
+  const makeRead = (recovery: Awaited<ReturnType<typeof recoverComparisonSources>>,
+    initialSources: AttentionRead['sources'] = [origin]): AttentionRead => {
+    const rawArtifacts: Record<string, string> = {
+      'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-3': JSON.stringify({ results: [{ url: leadUrl, title: 'River Lantern market', snippet: 'Indexed market record.' }], errors: [] }),
+    };
+    for (let offset = 0; offset < initialSources.length; offset += 10) {
+      const batch = Math.floor(offset / 10) + 1;
+      const sources = initialSources.slice(offset, offset + 10);
+      rawArtifacts[`attention-fetch-${batch}`] = JSON.stringify({
+        results: sources.map(source => ({ url: source.url, final_url: source.url, text: source.text })),
+        errors: batch === 1 ? [{ url: leadUrl, status: 404, error: 'not_found' }] : [],
+      });
+    }
+    for (const [id, raw] of Object.entries(recovery.rawArtifacts)) {
+      if (id === 'attention-selection-scope') {
+        const selection = JSON.parse(raw) as { selection: Array<Record<string, unknown> & { queryId: string }> };
+        rawArtifacts['attention-recovery-selection-scope'] = JSON.stringify({
+          ...selection,
+          selection: selection.selection.map(row => ({
+            ...row, collectorQueryId: row.queryId, queryId: row.queryId.replace('attention-', 'attention-recovery-'),
+          })),
+        });
+      } else if (id.startsWith('attention-')) rawArtifacts[id.replace(/^attention-/, 'attention-recovery-')] = raw;
+      else if (id.startsWith('comparison-lead-')) rawArtifacts[`attention-recovery-${id}`] = raw;
+    }
+    const recoveredSources = recovery.sources.map(source => ({
+      ...source, id: source.id.replace(/^attention-/, 'attention-recovery-'),
+    }));
+    const search = JSON.parse(recovery.rawArtifacts['attention-search-1']!) as { results: unknown[] };
+    return {
+      entryEvidenceMethod: 'public-support-v2', sources: [...initialSources, ...recoveredSources], rawArtifacts,
+      queries: ['exact token origin', 'exact token account', 'named comparison'], complete: false,
+      codes: ['ATT_FETCH_URL_ERROR'], start: '2026-10-19T12:00:00.000Z', end: cutoff,
+      discoveryUrls: [originUrl], comparisonSourceIds: [], comparisonComplete: false,
+      comparisonAcquisition: { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [{
+        id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: leadUrl,
+        title: 'River Lantern market', snippet: 'Indexed market record.', metadataEvidenceId: 'lead-1-metadata',
+        sourceIds: [], acquisitionStatus: 'FAILED', acquisitionCodes: ['ATT_LEAD_FAILED'],
+        recoveryQueryIds: ['attention-recovery-search-1'], recoverySourceIds: [],
+      }] },
+      comparisonQualification: { recoveryCapped: false, recoveryQueries: [{
+        queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', query,
+        state: 'OBSERVED', descriptorComplete: true, resultCount: search.results.length, availableAt: cutoff,
+      }] },
+    };
+  };
+
+  const omitted = await collectRecovery([selectedUrl], [
+    { results: [], errors: [] }, { results: [], errors: [] },
+  ]);
+  assert.deepEqual(omitted.requested, [[selectedUrl], [selectedUrl]], 'an omitted selected URL receives one bounded retry');
+  assert.ok(omitted.recovery.rawArtifacts['attention-fetch-1']);
+  assert.ok(omitted.recovery.rawArtifacts['attention-fetch-1-retry-1']);
+  const omittedRead = makeRead(omitted.recovery);
+  const omittedScope = entryEvidenceScope(omittedRead, token, cutoff);
+  assert.equal(omittedScope.complete, false, JSON.stringify(omittedScope));
+  assert.ok(omittedScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+  assert.throws(() => resolvePublicEntryDecision({}, omittedRead, token, cutoff), /ATT_MODEL_ENTRY_SCOPE_INCOMPLETE/,
+    'a selected omission cannot produce a binary public-entry decision');
+  const entryProgram = binaryEntryDecisionProgram(omittedRead, {}, {}, token, cutoff, {});
+  assert.deepEqual(entryProgram.next(), { value: null, done: true }, 'incomplete acquisition yields no entry grade');
+
+  const missingSelection = structuredClone(omittedRead);
+  delete missingSelection.rawArtifacts['attention-recovery-selection-scope'];
+  const missingSelectionScope = entryEvidenceScope(missingSelection, token, cutoff);
+  assert.ok(missingSelectionScope.blockers.includes('ATT_ENTRY_RECOVERY_SELECTION_MISSING'));
+  assert.ok(missingSelectionScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+
+  const editedSelection = structuredClone(omittedRead);
+  editedSelection.rawArtifacts['attention-recovery-selection-scope'] = JSON.stringify({
+    method: 'fair-parent-query-v1', maxUrls: 0, selectedUrls: [], selection: [],
+  });
+  const editedSelectionScope = entryEvidenceScope(editedSelection, token, cutoff);
+  assert.ok(editedSelectionScope.blockers.includes('ATT_ENTRY_RECOVERY_SELECTION_INVALID'));
+  assert.ok(editedSelectionScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+
+  const retry = await collectRecovery([selectedUrl], [
+    { results: [], errors: [{ url: selectedUrl, status: 429, error: 'HTTP 429 rate limit' }] },
+    { results: [{ url: selectedUrl, final_url: selectedUrl, text: selectedText }], errors: [] },
+  ]);
+  const retryRead = makeRead(retry.recovery);
+  const retryScope = entryEvidenceScope(retryRead, token, cutoff);
+  assert.equal(retryScope.complete, true, JSON.stringify(retryScope));
+  assert.equal(retryScope.gaps.some(gap => gap.url === selectedUrl), false,
+    'a validated full-body retry replaces its original transient error');
+
+  const selectedSuccess = await collectRecovery([selectedUrl], [
+    { results: [{ url: selectedUrl, final_url: selectedUrl, text: selectedText }], errors: [] },
+  ]);
+  const movedSuccessRead = makeRead(selectedSuccess.recovery);
+  const movedSuccessPacket = movedSuccessRead.rawArtifacts['attention-recovery-fetch-1']!;
+  movedSuccessRead.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify({ results: [], errors: [] });
+  movedSuccessRead.rawArtifacts['attention-recovery-fetch-99'] = movedSuccessPacket;
+  const movedSuccessScope = entryEvidenceScope(movedSuccessRead, token, cutoff);
+  assert.ok(movedSuccessRead.sources.some(source => source.url === selectedUrl),
+    'the moved-body case keeps the actual retained source intact');
+  assert.ok(movedSuccessRead.rawArtifacts['attention-recovery-selection-scope'],
+    'the moved-body case keeps the canonical selection receipt intact');
+  assert.equal(movedSuccessScope.complete, false, JSON.stringify(movedSuccessScope));
+  assert.ok(movedSuccessScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+  assert.ok(movedSuccessScope.blockers.includes('ATT_ENTRY_RECOVERY_SELECTION_INVALID'),
+    'a full body moved out of its owning batch cannot satisfy the selected URL');
+
+  const terminal = await collectRecovery([selectedUrl], [
+    { results: [], errors: [{ url: selectedUrl, status: 404, error: 'not_found' }] },
+  ]);
+  const terminalScope = entryEvidenceScope(makeRead(terminal.recovery), token, cutoff);
+  assert.equal(terminalScope.complete, true, JSON.stringify(terminalScope));
+  assert.ok(terminalScope.gaps.some(gap => gap.url === selectedUrl && gap.code === 'TARGET_BLOCKED'),
+    'an explicit terminal response for the selected alternate remains an eligible documented gap');
+
+  const movedTerminalRead = makeRead(terminal.recovery);
+  const movedTerminalPacket = JSON.parse(movedTerminalRead.rawArtifacts['attention-recovery-fetch-1']!) as {
+    results: unknown[]; errors: unknown[];
+  };
+  movedTerminalRead.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify({ results: [], errors: [] });
+  movedTerminalRead.rawArtifacts['attention-recovery-fetch-99'] = JSON.stringify(movedTerminalPacket);
+  const movedTerminalScope = entryEvidenceScope(movedTerminalRead, token, cutoff);
+  assert.equal(movedTerminalScope.complete, false, JSON.stringify(movedTerminalScope));
+  assert.ok(movedTerminalScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+  assert.equal(movedTerminalScope.gaps.some(gap => gap.url === selectedUrl && gap.code === 'TARGET_BLOCKED'), false,
+    'a terminal error moved outside its owning batch cannot make an omission gradable');
+
+  const fullInitialSources: AttentionRead['sources'] = Array.from({ length: 31 }, (_, index) => index === 0 ? origin : ({
+    id: `attention-page-${index + 1}`, url: `https://public.example/initial-${index + 1}`,
+    text: `Retained initial source ${index + 1}.`, publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' as const,
+  }));
+  const twoRound = await collectRecovery([selectedUrl, sameHostAlternateUrl, differentHostAlternateUrl, nextPageUrl], [
+    { results: [], errors: [{ url: selectedUrl, status: 404, error: 'not_found' }] },
+    { results: [], errors: [{ url: differentHostAlternateUrl, status: 404, error: 'not_found' }] },
+    { results: [{ url: sameHostAlternateUrl, final_url: sameHostAlternateUrl, text: selectedText }], errors: [] },
+  ], fullInitialSources);
+  assert.deepEqual(twoRound.requested, [[selectedUrl], [differentHostAlternateUrl], [sameHostAlternateUrl]],
+    'each additional Fetch round tries the next same-parent result and prefers a different host');
+  const twoRoundRead = makeRead(twoRound.recovery, fullInitialSources);
+  const twoRoundScope = entryEvidenceScope(twoRoundRead, token, cutoff);
+  assert.equal(twoRoundScope.complete, true, JSON.stringify(twoRoundScope));
+  assert.equal(twoRoundRead.sources.length, 32, 'alternate recovery keeps retained pages at the 32-source cap');
+  assert.deepEqual(twoRoundScope.gaps.filter(gap => gap.code === 'RECOVERED_ALTERNATE').map(gap => gap.url).sort(),
+    [selectedUrl, differentHostAlternateUrl].sort(), 'an acquired second-round page resolves both earlier omissions while retaining their gaps');
+  const fallbackReceipt = JSON.parse(twoRoundRead.rawArtifacts['attention-recovery-fallback-scope']!) as {
+    rounds: Array<{ batch: number; selections: Array<{ failedUrl: string; parentId: string; url: string }> }>;
+  };
+  assert.deepEqual(fallbackReceipt.rounds.map(round => round.batch), [2, 3]);
+  assert.deepEqual(fallbackReceipt.rounds.map(round => round.selections[0]?.url), [differentHostAlternateUrl, sameHostAlternateUrl]);
+
+  const missingFallback = structuredClone(twoRoundRead);
+  delete missingFallback.rawArtifacts['attention-recovery-fallback-scope'];
+  const missingFallbackScope = entryEvidenceScope(missingFallback, token, cutoff);
+  assert.equal(missingFallbackScope.complete, false, JSON.stringify(missingFallbackScope));
+  assert.ok(missingFallbackScope.blockers.some(code => /ATT_ENTRY_RECOVERY_SELECTION_(?:MISSING|INVALID)/.test(code)),
+    'removing the fallback receipt cannot hide available same-parent alternates');
+
+  const editedFallback = structuredClone(twoRoundRead);
+  const editedReceipt = JSON.parse(editedFallback.rawArtifacts['attention-recovery-fallback-scope']!) as typeof fallbackReceipt;
+  editedReceipt.rounds[0]!.selections[0]!.parentId = 'another-lead';
+  editedFallback.rawArtifacts['attention-recovery-fallback-scope'] = JSON.stringify(editedReceipt);
+  const editedFallbackScope = entryEvidenceScope(editedFallback, token, cutoff);
+  assert.equal(editedFallbackScope.complete, false, JSON.stringify(editedFallbackScope));
+  assert.ok(editedFallbackScope.blockers.includes('ATT_ENTRY_RECOVERY_SELECTION_INVALID'),
+    'a forged replacement parent cannot be reconciled as the selected lead’s alternate');
+
+  const exhausted = await collectRecovery([selectedUrl, sameHostAlternateUrl, differentHostAlternateUrl, nextPageUrl], [
+    { results: [], errors: [{ url: selectedUrl, status: 404, error: 'not_found' }] },
+    { results: [], errors: [{ url: differentHostAlternateUrl, status: 404, error: 'not_found' }] },
+    { results: [], errors: [{ url: sameHostAlternateUrl, status: 404, error: 'not_found' }] },
+  ], fullInitialSources);
+  const exhaustedScope = entryEvidenceScope(makeRead(exhausted.recovery, fullInitialSources), token, cutoff);
+  assert.equal(exhausted.requested.some(batch => batch.includes(nextPageUrl)), false,
+    'the collector stops after the two bounded alternate Fetch rounds');
+  assert.equal(exhaustedScope.complete, true, JSON.stringify(exhaustedScope));
+  assert.ok([selectedUrl, differentHostAlternateUrl, sameHostAlternateUrl].every(url => exhaustedScope.gaps.some(gap => gap.url === url && gap.code === 'TARGET_BLOCKED')),
+    'exhausted explicit permanent blocks remain reviewable gaps');
+
+  const ownParentFallback = comparisonRecoveryFallback([{ parentId: 'lead-1', url: selectedUrl }], [
+    { searchArtifactId: 'attention-search-1', resultIndex: 1, url: sameHostAlternateUrl },
+    { searchArtifactId: 'attention-search-1', resultIndex: 2, url: nextPageUrl },
+    { searchArtifactId: 'attention-search-2', resultIndex: 0, url: wrongParentUrl },
+  ], [{ leadId: 'lead-1', originalUrl: leadUrl }, { leadId: 'lead-2', originalUrl: null }],
+  [leadUrl, selectedUrl, sameHostAlternateUrl], new Set());
+  assert.deepEqual(ownParentFallback, [{ failedUrl: selectedUrl, parentId: 'lead-1', url: nextPageUrl }],
+    'fallback skips already tried URLs and never borrows a result owned by another lead');
+
+  const bounded = await collectRecovery([selectedUrl, unselectedUrl], [
+    { results: [{ url: selectedUrl, final_url: selectedUrl, text: selectedText }], errors: [] },
+  ], fullInitialSources);
+  assert.deepEqual(bounded.requested, [[selectedUrl]], 'only the selected URL is fetched when one recovery slot remains');
+  assert.ok(bounded.recovery.codes.includes('ATT_PAGE_CAP'), 'the fixture has an actual unselected search hit');
+  const boundedRead = makeRead(bounded.recovery, fullInitialSources);
+  const boundedScope = entryEvidenceScope(boundedRead, token, cutoff);
+  assert.equal(boundedScope.complete, true, JSON.stringify(boundedScope));
+  const boundedReceipt = JSON.parse(boundedRead.rawArtifacts['attention-recovery-selection-scope']!) as {
+    maxUrls: number; selectedUrls: string[]; selection: Array<{ url: string; selected: boolean }>;
+  };
+  assert.equal(boundedReceipt.maxUrls, 1);
+  assert.deepEqual(boundedReceipt.selectedUrls, [selectedUrl]);
+  assert.equal(boundedReceipt.selection.find(item => item.url === unselectedUrl)?.selected, false,
+    'unselected bounded hits do not become required Fetch outcomes');
+});
+
 test('safe discovery seeds lead the fetch queue and only approved one-level links are followed', async () => {
   const seedProfile = 'https://x.com/community';
   const seedWebsite = 'https://official.example/';
@@ -584,6 +1301,78 @@ test('safe discovery seeds lead the fetch queue and only approved one-level link
   assert.equal(read.complete, true);
   assert.equal(fetchBatches.flat().length, 10);
   assert.ok(fetchBatches.flat().length <= 20);
+});
+
+test('five eligible project posts linked from an original profile complete the origin ledger within the shared page cap', async () => {
+  const profile = 'https://x.com/river_lantern';
+  const linkedPosts = Array.from({ length: 5 }, (_, index) => `https://x.com/river_lantern/status/${810 + index}`);
+  const fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({
+      results: requested.map(requestedUrl => ({
+        ...fetchResult(requestedUrl, `River Lantern's original project update names ${token.address} and explains its token-bound mechanism.`, '2026-10-01T10:00:00Z'),
+        ...(requestedUrl === profile ? { links: linkedPosts } : {}),
+      })),
+      errors: [],
+    });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [profile]);
+  const scope = originSourceScope(read, token);
+  const originalFetches = Object.entries(read.rawArtifacts)
+    .filter(([id]) => /^attention-fetch-\d+$/.test(id))
+    .map(([, raw]) => JSON.parse(raw) as { results: Array<{ url: string; links?: string[] }>; errors: unknown[] });
+
+  assert.deepEqual(fetched, [profile, ...linkedPosts], 'all five original posts are fetched after the profile seed');
+  assert.equal(read.sources.length, 6);
+  assert.equal(read.sources.filter(source => source.kind === 'POST').length, 5);
+  assert.equal(read.sources.length < 32, true, 'all required original pages fit within the shared page cap');
+  assert.equal(read.complete, true);
+  assert.deepEqual(read.codes, [], 'successful collection does not carry an outage or omission code');
+  assert.deepEqual(Object.keys(read.rawArtifacts).sort(), ['attention-fetch-1', 'attention-fetch-2', 'attention-search-1', 'attention-search-2']);
+  assert.deepEqual(originalFetches.flatMap(response => response.results.map(source => source.url)), [profile, ...linkedPosts]);
+  assert.deepEqual(originalFetches[0]?.results[0]?.links, linkedPosts, 'the fetched profile link list remains in the original raw receipt');
+  assert.ok(originalFetches.every(response => response.errors.length === 0), 'both retained Fetch receipts show successful acquisition');
+  assert.equal(scope.complete, true);
+  assert.equal(scope.acquisition.complete, true);
+  assert.equal(scope.acquisition.urls.length, 6);
+  assert.ok(scope.acquisition.urls.every(item => item.state === 'ACQUIRED'));
+  assert.deepEqual(scope.sourceIds, read.sources.map(source => source.id));
+});
+
+test('a metadata JSON seed follows safe public links within the shared page cap and retains parent lineage', async () => {
+  const seed = 'https://metadata.example/token.json';
+  const linked = [
+    'https://narrative.example/one',
+    'https://project.example/two',
+    'https://images.example/hero.png',
+    'http://127.0.0.1/private',
+    'https://narrative.example/three',
+    'https://narrative.example/four',
+    'https://narrative.example/five',
+  ];
+  const nested = 'https://elsewhere.example/deeper.json';
+  let fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(requestedUrl => fetchResult(requestedUrl,
+      requestedUrl === seed ? JSON.stringify({ mint: token.address, references: linked }) : `A linked public reference. ${nested}`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [seed]);
+
+  const retainedChildren = [linked[0]!, linked[1]!, linked[4]!, linked[5]!, linked[6]!];
+  assert.deepEqual(fetched, [seed, ...retainedChildren], 'every safe non-image link is fetched while it fits the shared 32-source cap');
+  assert.equal(read.sources.length, 6);
+  for (const url of retainedChildren) assert.equal(read.sources.find(source => source.url === url)?.discoveredFrom, seed);
+  assert.equal(read.sources.some(source => source.url === nested), false, 'a child JSON page cannot trigger a second hop');
+  assert.equal(read.sources.some(source => source.url === linked[2]), false, 'image links are not narrative sources');
+  assert.equal(read.sources.some(source => source.url === linked[3]), false, 'private and non-HTTPS targets are rejected');
 });
 
 test('a direct status seed is retained as a POST but cannot expand into other posts', async () => {
@@ -772,6 +1561,93 @@ test('collector retries only transient missing comparison URLs once and retains 
   });
 });
 
+test('public-support scope uses successful Fetch retries and keeps unresolved timeout or rate-limit failures unknown', async t => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const comparisonUrl = 'https://index.example/river-lantern-market';
+  const originText = `River Lantern token ${token.address} is listed on its project page.`;
+  const comparisonText = `The River Lantern market record lists ${token.address} and pair data.`;
+  const cutoff = '2026-10-19T18:30:00.000Z';
+
+  for (const scenario of [
+    { name: 'successful retry after HTTP 429', initial: { status: 429, error: 'HTTP 429 rate limit' }, retry: 'success' as const },
+    { name: 'unresolved HTTP 429 retry', initial: { status: 429, error: 'HTTP 429 rate limit' }, retry: '429' as const },
+    { name: 'unresolved timeout retry', initial: { error: 'timeout' }, retry: 'timeout' as const },
+  ]) {
+    await t.test(scenario.name, async () => {
+      let fetchAttempt = 0;
+      const mock = mockFetch((url, init) => {
+        if (url.includes('api.search.tinyfish.ai')) {
+          const query = new URL(url).searchParams.get('query') ?? '';
+          return search(query.includes('River Lantern') ? [comparisonUrl] : [originUrl]);
+        }
+        fetchAttempt++;
+        const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+        if (fetchAttempt === 1) {
+          assert.deepEqual(requested, [originUrl, comparisonUrl]);
+          return json({ results: [fetchResult(originUrl, originText)], errors: [{ url: comparisonUrl, ...scenario.initial }] });
+        }
+        assert.deepEqual(requested, [comparisonUrl], 'the retry fetches only the unresolved URL');
+        if (scenario.retry === 'success') return json({ results: [fetchResult(comparisonUrl, comparisonText)], errors: [] });
+        return json({ results: [], errors: [{ url: comparisonUrl, ...(scenario.retry === '429'
+          ? { status: 429, error: 'HTTP 429 rate limit' } : { error: 'timeout' }) }] });
+      });
+
+      const read = await collectAttentionSources(token, KEY, mock.fetcher, () => cutoff, 'River Lantern', [], undefined, 'public-support-v2');
+      const scope = entryEvidenceScope(read, token, cutoff);
+      assert.equal(fetchAttempt, 2);
+      assert.ok(read.rawArtifacts['attention-fetch-1']?.includes(scenario.initial.error));
+      assert.ok(read.rawArtifacts['attention-fetch-1-retry-1']);
+      if (scenario.retry === 'success') {
+        assert.equal(read.complete, true);
+        assert.equal(read.codes.includes('ATT_FETCH_URL_ERROR'), false);
+        assert.equal(scope.complete, true, JSON.stringify(scope));
+        assert.deepEqual(read.sources.map(source => source.text), [originText, comparisonText]);
+      } else {
+        assert.equal(read.complete, false);
+        assert.equal(scope.complete, false, JSON.stringify(scope));
+        assert.deepEqual(scope.gaps, [], 'transient fetch errors are never reported as target blocks');
+      }
+    });
+  }
+
+  await t.test('a silently omitted alternate can be reconciled from its completed recovery Search receipt', async () => {
+    const alternateUrl = 'https://archive.example/river-lantern-token-record';
+    const alternateText = `The River Lantern token record identifies ${token.address} and its launch.`;
+    let fetchAttempt = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) {
+        const query = new URL(url).searchParams.get('query') ?? '';
+        return search(query.includes('River Lantern') ? [comparisonUrl] : [originUrl]);
+      }
+      fetchAttempt++;
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      if (fetchAttempt === 1) {
+        assert.deepEqual(requested, [alternateUrl, originUrl, comparisonUrl]);
+        return json({ results: [fetchResult(originUrl, originText), fetchResult(comparisonUrl, comparisonText)], errors: [] });
+      }
+      assert.deepEqual(requested, [alternateUrl], 'only the silently omitted URL is retried');
+      return json({ results: [fetchResult(alternateUrl, alternateText)], errors: [] });
+    });
+
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => cutoff, 'River Lantern', [alternateUrl], undefined, 'public-support-v2');
+    const initial = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<{ url: string }>; errors: unknown[] };
+    const retry = JSON.parse(read.rawArtifacts['attention-fetch-1-retry-1']!) as { results: Array<{ url: string; text: string }>; errors: unknown[] };
+    assert.equal(fetchAttempt, 2);
+    assert.deepEqual(initial.errors, [], 'the original response has no error entry for the omitted URL');
+    assert.equal(initial.results.some(result => result.url === alternateUrl), false);
+    assert.deepEqual(retry.results, [fetchResult(alternateUrl, alternateText)]);
+
+    // The production recovery merge stores this successful Search response under
+    // its recovery receipt ID; the URL must be justified by that receipt alone.
+    read.rawArtifacts['attention-recovery-search-1'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+    read.discoveryUrls = [];
+    const scope = entryEvidenceScope(read, token, cutoff);
+    assert.equal(read.sources.some(source => source.url === alternateUrl && source.text === alternateText), true);
+    assert.equal(scope.complete, true, JSON.stringify(scope));
+    assert.equal(scope.blockers.length, 0, JSON.stringify(scope));
+  });
+});
+
 test('a genuinely empty bounded search leaves qualified attention unknown without hosted calls', async () => {
   const mock = mockFetch(url => {
     assert.ok(url.includes('api.search.tinyfish.ai'));
@@ -907,8 +1783,8 @@ test('collector to complete comparison batches derives the rival beyond the pref
       assert.ok(source, 'the full-text batch contains the target representation');
       return modelResponse({
         competitors: [
-          { id: 'target-fulltext', token: target, sourceId: source.id, spanId: sourceSpan(source.id, target.address) },
-          { id: 'rival-tail', token: { chain: 'base', address: rival }, sourceId: source.id, spanId: sourceSpan(source.id, rival) },
+          { id: 'target-fulltext', observationId: comparisonObservationId(packet, target, source.id) },
+          { id: 'rival-tail', observationId: comparisonObservationId(packet, { chain: 'base', address: rival }, source.id) },
         ],
         posts: Object.fromEntries((requiredPostIds ?? []).map(id => [id, { spanId: sourceSpan(id, target.address), role: 'NEWS' }])),
       });
@@ -1037,13 +1913,19 @@ test('comparison completeness requires a named successful nonempty common result
     assert.equal(read.comparisonComplete, false);
   });
 
-  await t.test('empty common result set', async () => {
+  await t.test('an empty crypto-qualified query uses the broader result as its selected comparison sample', async () => {
     let searchIndex = 0;
     const mock = mockFetch(url => url.includes('api.search.tinyfish.ai')
       ? search(searchIndex++ === 2 ? [] : ['https://public.example/origin'])
       : json({ results: [fetchResult('https://public.example/origin', 'Origin page')], errors: [] }));
     const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern');
-    assert.equal(read.comparisonComplete, false);
+    assert.equal(searchIndex, 4, 'the successful empty primary is followed by one broader search');
+    assert.equal(read.queries[2], '"River Lantern" solana');
+    assert.equal(read.rawArtifacts['attention-search-3-primary-query'], '"River Lantern" solana crypto token contract');
+    assert.equal(read.rawArtifacts['attention-search-3-empty-response'], JSON.stringify({ results: [] }));
+    assert.equal(read.rawArtifacts['attention-search-3'], JSON.stringify({ results: [{ url: 'https://public.example/origin' }] }),
+      'the selected search artifact is the fallback response, while the primary empty response remains retained');
+    assert.equal(read.comparisonAcquisition?.leadCount, 1);
   });
 
   await t.test('common search failure', async () => {

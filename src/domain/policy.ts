@@ -79,11 +79,14 @@ export function resolveStage(cap: string | null, tokenCreatedAt: string | null, 
   return { capBand, ageBand };
 }
 
-export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false,advisory?:AdvisoryFacts): EntryResult {
+export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false,advisory?:AdvisoryFacts|boolean,entryComparison?:boolean): EntryResult {
+  if(typeof advisory==='boolean'){entryComparison=advisory;advisory=undefined;}
   if(advisory){advisory=advisoryFactsSchema.parse(advisory);if(advisory.cutoff!==cutoff)throw new Error('ADVISORY_POLICY_TIME_INVALID');}
   const socialUsable=(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&social&&Date.parse(social.availableAt)<=Date.parse(cutoff)&&Date.parse(social.end)<=Date.parse(cutoff)&&Date.parse(social.start)<Date.parse(social.end)&&Date.parse(cutoff)-Date.parse(social.availableAt)<=900000;
   const checks: EntryCheckResult[] = entryDefinitions.map(d => {
-    let status: EntryCheckResult['status'] = boolRule(features, d.featureIds, cutoff);
+    const ruleIds=d.checkId==='CAN-01'&&entryComparison!==undefined?['A09']:d.featureIds;
+    let status: EntryCheckResult['status'] = boolRule(features, ruleIds, cutoff);
+    if(d.checkId==='CAN-01'&&entryComparison!==undefined&&lookup(features,'A09',cutoff)?.value!==entryComparison)status='UNKNOWN';
     if (d.checkId === 'CTX-01') status = !profile.sizeUsd || !profile.horizonSeconds || ['maxTransferFeeBps','maxDirectControlShare','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps','maxRemovableLiquidityShare'].some(k => profile.risk[k] === undefined) ? 'UNKNOWN' : status;
     if (d.checkId === 'CAP-01' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false)) status = 'UNKNOWN';
     if (d.checkId === 'SEC-04') status = numericLimit(features, 'O07', profile.risk.maxTransferFeeBps, 'bps', cutoff);
@@ -108,14 +111,15 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
       const judgment=d.checkId==='SOC-01'?social?.identityReview:social?.integrityReview;
       status=!socialUsable||!judgment||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';
     }
-    if (d.checkId === 'ATT-02') { const a = boolRule(features,['A18'],cutoff), s = boolRule(features,['S10'],cutoff); status = a === 'PASS' || s === 'PASS' ? 'PASS' : a === 'FAIL' && s === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
+    if(attentionPolicy==='QUALIFIED_V4'&&d.checkId==='SOC-03'&&status==='UNKNOWN'&&social?.participationReview){const judgment=social.participationReview;status=!socialUsable||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';}
+    if (d.checkId === 'ATT-02') { const a = boolRule(features,['A18'],cutoff), s = boolRule(features,['S10'],cutoff); const reviewedCommunity=attentionPolicy==='QUALIFIED_V4'&&socialUsable?social?.communityBreadthReview:undefined;const community=s==='UNKNOWN'&&reviewedCommunity&&reviewedCommunity.verdict!=='UNRESOLVED'?(reviewedCommunity.verdict==='SUPPORTED'?'PASS':'FAIL'):s;status = a === 'PASS' || community === 'PASS' ? 'PASS' : a === 'FAIL' && community === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
     if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL' && !(shared&&d.checkId.startsWith('DAT-')||attentionPolicy!=='LEGACY'&&d.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL')) status = 'UNKNOWN';
     if (d.role === 'ADVISORY' && d.featureIds.length === 0) status = 'UNKNOWN';
     const group=advisory?.groups.find(group=>group.checkId===d.checkId);
     if(group)status=group.known===group.total?'PASS':'UNKNOWN';
-    const evidenceRefs = [...new Set(group?advisory!.metrics.filter(metric=>d.featureIds.includes(metric.id)).flatMap(metric=>metric.evidenceIds):d.featureIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
+    const evidenceRefs = [...new Set(group?advisory!.metrics.filter(metric=>d.featureIds.includes(metric.id)).flatMap(metric=>metric.evidenceIds):ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
     const reasonCode = group?(status==='PASS'?'ADVISORY_CONTEXT_MEASURED':'ADVISORY_METRICS_INCOMPLETE'):d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
-    return { checkId: d.checkId, checklistKind: 'ENTRY' as const, role: d.role, pillar: d.pillar, required: d.required, status, reasonCode, featureRefs: d.featureIds, evidenceRefs };
+    return { checkId: d.checkId, checklistKind: 'ENTRY' as const, role: d.role, pillar: d.pillar, required: d.required, status, reasonCode, featureRefs: ruleIds, evidenceRefs };
   }).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const required = checks.filter(c => c.required && c.status !== 'NOT_APPLICABLE');
   const has = (role: EntryCheckResult['role'], status: EntryCheckResult['status']) => checks.some(c => c.required && c.role === role && c.status === status);

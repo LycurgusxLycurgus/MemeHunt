@@ -33,8 +33,12 @@ export type SocialFixtureOptions = {
 export type SocialJudgmentOverrides = {
   identity?: 'SUPPORTED' | 'CONTRADICTED' | 'UNRESOLVED';
   integrity?: 'SUPPORTED' | 'CONTRADICTED' | 'UNRESOLVED';
+  participation?: 'SUPPORTED' | 'CONTRADICTED' | 'UNRESOLVED';
+  communityBreadth?: 'SUPPORTED' | 'CONTRADICTED' | 'UNRESOLVED';
   identitySourceId?: string;
   integritySourceId?: string;
+  participationSourceId?: string;
+  communityBreadthSourceId?: string;
 };
 
 /** Entirely synthetic public-source records for bounded social derivation tests. */
@@ -194,5 +198,33 @@ export function addSocialJudgments(fixture: SocialFixture, overrides: SocialJudg
     { id: 'assessment:identity', accepted: true, rationale: 'The synthetic identity screening rationale matches the cited public source.' },
     { id: 'assessment:integrity', accepted: true, rationale: 'The synthetic integrity screening rationale matches the cited public source.' },
   );
+  if (overrides.participation) {
+    const participationCitation = citation(overrides.participationSourceId ?? 'post-alice-1');
+    fixture.proposal.participationAssessment = {
+      verdict: overrides.participation,
+      rationale: overrides.participation === 'CONTRADICTED'
+        ? 'The fully inspected synthetic public sources do not evidence the required independent origins and communities.'
+        : 'The synthetic public sources support a separately assessed participation-evidence judgment.',
+      citations: [participationCitation],
+    };
+    fixture.review.decisions.push({
+      id: 'assessment:participation', accepted: true,
+      rationale: 'The synthetic participation judgment is independently reviewed against the cited source.',
+    });
+  }
+  if (overrides.communityBreadth) {
+    const communityCitation = citation(overrides.communityBreadthSourceId ?? 'post-alice-1');
+    fixture.proposal.communityBreadthAssessment = {
+      verdict: overrides.communityBreadth,
+      rationale: overrides.communityBreadth === 'CONTRADICTED'
+        ? 'The fully inspected synthetic public sources do not evidence three independently identifiable communities.'
+        : 'The synthetic public sources support a separately assessed community breadth judgment.',
+      citations: [communityCitation],
+    };
+    fixture.review.decisions.push({
+      id: 'assessment:communityBreadth', accepted: true,
+      rationale: 'The synthetic community breadth judgment is independently reviewed against its cited source.',
+    });
+  }
   return fixture;
 }
