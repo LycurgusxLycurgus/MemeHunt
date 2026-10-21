@@ -5,8 +5,8 @@ import { PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgr
 import { AccountLayout, MintLayout, getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { PUMP_AMM_SDK, OFFLINE_PUMP_AMM_PROGRAM, PUMP_AMM_PROGRAM_ID, PUMP_FEE_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, pumpPoolAuthorityPda, poolPda, lpMintPda, buyQuoteInput, buyBaseInput, sellBaseInput, type SwapSolanaState } from '@pump-fun/pump-swap-sdk';
 import type { ControlFacts, HolderFacts, VenueFacts, VenueInspection } from '../domain/baseline.js';
-import type { Profile, TokenRef } from '../domain/contracts.js';
-import { dexArtifacts, fetchDexPairs, type DexArtifact, type DexRead, type DexRecoveryOptions } from './dexscreener.js';
+import type { LiveBundle, Profile, TokenRef } from '../domain/contracts.js';
+import { dexArtifacts, fetchDexPairs, parseDexPairs, type DexArtifact, type DexRead, type DexRecoveryOptions } from './dexscreener.js';
 import { solanaRpc, safeRpcCode, PUBLIC_SOLANA_RPC, decodeProgramHeader, resolveProgramData, decodeRawMintControls } from './solana.js';
 
 export type PumpSwapRead={inspection:VenueInspection;controls?:ControlFacts;venue?:VenueFacts;rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;marketEvidence?:Record<string,DexArtifact>};
@@ -24,7 +24,84 @@ function vault(info:AccountInfo<Buffer>,program:PublicKey,mint:PublicKey,pool:Pu
 }
 
 /** Only read RPCs and unsigned simulation. No signer or send/broadcast method exists here. */
-export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s})):Promise<PumpSwapRead>{
+/** Full runs recapture all coupled state once after a program-confirmed slippage failure. */
+export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s}),allowSlippageRefresh=false):Promise<PumpSwapRead>{
+ const first=await inspectPumpSwapOnce(token,profile,controls,holders,minSlot,url,fetcher,now,signal,recovery,wait);
+ if(!allowSlippageRefresh||signal?.aborted||first.inspection.errors.simulation!=='PUMP_SIMULATION_SLIPPAGE')return first;
+ let floor:number;
+ try{floor=verifyPumpSlippage(first.rawArtifacts,token).slot;}catch{return first;}
+ const second=await inspectPumpSwapOnce(token,profile,controls,holders,Math.max(minSlot,floor),url,fetcher,now,signal,recovery,wait);
+ const id='pump-slippage-refresh';
+ second.rawArtifacts[id]=JSON.stringify({method:'pump-slippage-refresh-v1',token,minSlot,nextMinSlot:Math.max(minSlot,floor),first:{rawArtifacts:Object.fromEntries(['pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'].map(id=>[id,first.rawArtifacts[id]])),retrievedAt:Object.fromEntries(['pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'].map(id=>[id,first.retrievedAt[id]]))}});
+ second.retrievedAt[id]=now();second.inspection.evidenceIds.push(id);if(second.venue)second.venue.evidenceIds.push(id);
+ if(second.venue&&second.inspection.errors.simulation==='PUMP_SIMULATION_SLIPPAGE')try{
+  verifyPumpSlippage(second.rawArtifacts,token);
+  second.venue.executionFailure={method:'pump-budget-rejection-v1',code:'PUMP_SIMULATION_SLIPPAGE'};
+  const calc=JSON.parse(second.rawArtifacts['pump-quote-calculation']);calc.executionFailure=second.venue.executionFailure;second.rawArtifacts['pump-quote-calculation']=JSON.stringify(calc);
+ }catch{/* A failed or unbound simulation cannot grade the execution criterion. */}
+ return second;
+}
+
+/** A numeric error alone is insufficient: bind the rejected instruction to the actual unsigned Pump buy. */
+export function verifyPumpSlippage(raw:Record<string,string>,token:TokenRef):{slot:number;stateSlot:number}{
+ const request=JSON.parse(raw['pump-simulation-request']),calc=JSON.parse(raw['pump-quote-calculation']),response=JSON.parse(raw['pump-roundtrip-simulation']);
+ const tx=VersionedTransaction.deserialize(Buffer.from(request.wireBase64,'base64')),keys=tx.message.staticAccountKeys.map(k=>k.toBase58()),sim=response.result;
+ const mint=new PublicKey(token.address),pool=poolPda(0,pumpPoolAuthorityPda(mint),mint,NATIVE_MINT).toBase58();
+ const error=sim?.value?.err?.InstructionError,ix=Array.isArray(error)&&Number.isSafeInteger(error[0])?tx.message.compiledInstructions[error[0]]:undefined;
+ if(token.chain!=='solana'||request.method!=='pump-unsigned-simulation-v1'||request.token!==token.address||request.pool!==pool||calc.pool!==pool||!Number.isSafeInteger(calc.slot)||calc.slot<0||request.minContextSlot!==calc.slot||!Number.isSafeInteger(sim?.context?.slot)||sim.context.slot<calc.slot||response.error||!ix||error[1]?.Custom!==6004||keys[ix.programIdIndex]!==PUMP_AMM_PROGRAM_ID.toBase58()||tx.message.addressTableLookups.length||tx.message.header.numRequiredSignatures!==1||tx.signatures.some(s=>s.some(b=>b!==0)))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const bytes=Buffer.from(ix.data),descriptor=OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix=>ix.name==='buy');
+ if(!descriptor||bytes.length<24||!bytes.subarray(0,8).equals(Buffer.from(descriptor.discriminator))||bytes.readBigUInt64LE(8).toString()!==calc.acquiredAtomic||bytes.readBigUInt64LE(16).toString()!==calc.actualEntryAtomic||keys[ix.accountKeyIndexes[0]]!==pool||keys[ix.accountKeyIndexes[3]]!==token.address||!Array.isArray(sim.value.logs))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const stack:string[]=[];let boundError=false;
+ for(const line of sim.value.logs){if(typeof line!=='string')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');const invoke=/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[\d+\]$/.exec(line),done=/^Program ([1-9A-HJ-NP-Za-km-z]+) (?:success|failed:)/.exec(line);if(invoke)stack.push(invoke[1]);else if(done){if(stack.pop()!==done[1])throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}else if(stack.at(-1)===PUMP_AMM_PROGRAM_ID.toBase58()&&line.includes('Error Code: ExceededSlippage. Error Number: 6004.'))boundError=true;}
+ if(!boundError||stack.length)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return {slot:sim.context.slot,stateSlot:calc.slot};
+}
+
+function verifyPumpBudgetQuote(raw:Record<string,string>,token:TokenRef,profile:Profile){
+ const calc=JSON.parse(raw['pump-quote-calculation']),response=JSON.parse(raw['pump-mints-vaults']),mint=new PublicKey(token.address),poolKey=poolPda(0,pumpPoolAuthorityPda(mint),mint,NATIVE_MINT);
+ if(response.error||response.result?.context?.slot!==calc.slot||!Array.isArray(response.result?.value)||response.result.value.length!==8)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const [poolInfo,globalInfo,feeInfo,baseInfo,quoteInfo,baseVaultInfo,quoteVaultInfo]=response.result.value.map(account);
+ owned(poolInfo,PUMP_AMM_PROGRAM_ID);owned(globalInfo,PUMP_AMM_PROGRAM_ID);owned(feeInfo,PUMP_FEE_PROGRAM_ID);
+ const pool=PUMP_AMM_SDK.decodePool(poolInfo),globalConfig=PUMP_AMM_SDK.decodeGlobalConfig(globalInfo),feeConfig=PUMP_AMM_SDK.decodeFeeConfig(feeInfo);
+ if(pool.index!==0||!pool.baseMint.equals(mint)||!pool.quoteMint.equals(NATIVE_MINT)||!pool.creator.equals(pumpPoolAuthorityPda(mint))||pool.isMayhemMode||![TOKEN_PROGRAM_ID.toBase58(),TOKEN_2022_PROGRAM_ID.toBase58()].includes(baseInfo.owner.toBase58()))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ owned(quoteInfo,TOKEN_PROGRAM_ID);const baseMintAccount=MintLayout.decode(baseInfo.data),base=vault(baseVaultInfo,baseInfo.owner,mint,poolKey),quoteVault=vault(quoteVaultInfo,TOKEN_PROGRAM_ID,NATIVE_MINT,poolKey);
+ const price=parseDexPairs(JSON.parse(raw['pump-sol-usd']),'solana',NATIVE_MINT.toBase58()).pairs.find(p=>p.baseAddress===NATIVE_MINT.toBase58()&&p.quoteAddress===USDC&&p.priceUsd!==null)?.priceUsd;
+ if(!price||!profile.sizeUsd||calc.nativeUsd!==price||calc.requestedUsd!==profile.sizeUsd)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const quote=new BN(new Decimal(profile.sizeUsd).div(price).mul(1e9).floor().toFixed(0)),args={baseReserve:new BN(base.amount.toString()),quoteReserve:new BN(quoteVault.amount.toString()),virtualQuoteReserves:pool.virtualQuoteReserves,globalConfig,baseMintAccount,baseMint:mint,coinCreator:pool.coinCreator,creator:pool.creator,feeConfig,quoteMint:NATIVE_MINT,isMayhemMode:pool.isMayhemMode,creatorFeeBps:pool.creatorFeeBps,slippage:0};
+ const buy=buyQuoteInput({...args,quote}),actual=buyBaseInput({...args,base:buy.base});
+ if(calc.quoteAtomic!==quote.toString()||calc.acquiredAtomic!==buy.base.toString()||calc.actualEntryAtomic!==actual.uiQuote.toString())throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+}
+
+/** Recovery provenance is admitted independently from the ordinary venue receipt. */
+export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
+ const raw=bundle.rawArtifacts,marker=raw['pump-slippage-refresh'],request=raw['pump-simulation-request'];
+ const negative=bundle.features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===false)||bundle.details?.baseline.some(a=>['O12','O16'].includes(a.id)&&(a.data as {method?:string}|null)?.method==='pump-budget-rejection-v1');
+ if(!marker&&!request&&!raw['pump-quote-calculation']&&!negative)return;
+ const calc=raw['pump-quote-calculation']?JSON.parse(raw['pump-quote-calculation']):null;
+ if(!marker&&!request&&!calc?.executionFailure&&!negative)return;
+ const evidence=(id:string)=>{const e=bundle.evidence.find(e=>e.id===id);if(!e||!Number.isFinite(Date.parse(e.retrievedAt))||Date.parse(e.retrievedAt)>Date.parse(bundle.cutoff))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return e;};
+ const derived=(id:string)=>{const e=evidence(id);if(e.sourceId!=='pumpswap-derived'||e.accessMode!=='LOCAL_DERIVED'||e.sourceType!=='CALCULATION')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return e;};
+ if(request){const q=JSON.parse(request),calc=JSON.parse(raw['pump-quote-calculation']??'null');derived('pump-simulation-request');if(q.method!=='pump-unsigned-simulation-v1'||q.token!==bundle.token.address||!calc||q.pool!==calc.pool||q.minContextSlot!==calc.slot)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');if(calc.simulationProof&&calc.simulationProof.wireBase64!==q.wireBase64)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+ const marked=calc?.executionFailure;
+ if(marked||negative){
+  if(!marker||!request||marked?.method!=='pump-budget-rejection-v1'||marked.code!=='PUMP_SIMULATION_SLIPPAGE')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+  verifyPumpSlippage(raw,bundle.token);
+  verifyPumpBudgetQuote(raw,bundle.token,bundle.profile);
+  const bank=evidence('pump-mints-vaults'),price=evidence('pump-sol-usd'),end=Date.parse(bundle.cutoff),expiry=Math.min(Date.parse(bank.retrievedAt),Date.parse(price.retrievedAt))+30000;
+  if(end>expiry)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+  for(const id of ['O12','O16']){const feature=bundle.features.find(f=>f.id===id),assessment=bundle.details?.baseline.find(a=>a.id===id);if(!feature||feature.value!==false||feature.quality!=='KNOWN'||feature.unit!=='bool'||!assessment||assessment.quality!=='KNOWN'||JSON.stringify(assessment.data)!==JSON.stringify({method:'pump-budget-rejection-v1',code:'PUMP_SIMULATION_SLIPPAGE',meaning:'The simulated buy exceeded its exact quoted spending limit; execution cost verification failed. Monetary costs and sellability are not established.'}))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+  if(bundle.features.find(f=>f.id==='O15')?.quality==='KNOWN')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ }
+ if(!marker)return;
+ const receipt=JSON.parse(marker),record=derived('pump-slippage-refresh');
+ if(receipt.method!=='pump-slippage-refresh-v1'||receipt.token?.chain!==bundle.token.chain||receipt.token?.address!==bundle.token.address||!Number.isSafeInteger(receipt.minSlot)||receipt.minSlot<0||!receipt.first?.rawArtifacts||!receipt.first?.retrievedAt)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const verified=verifyPumpSlippage(receipt.first.rawArtifacts,bundle.token);
+ if(verified.stateSlot<receipt.minSlot||receipt.nextMinSlot!==Math.max(receipt.minSlot,verified.slot))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ const times=['pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'].map(id=>Date.parse(receipt.first.retrievedAt[id]));
+ if(times.some(t=>!Number.isFinite(t)||t>Date.parse(record.retrievedAt))||times[0]>times[1]||times[1]>times[2])throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+ for(const id of ['pump-pool-config','pump-mints-vaults']){if(!raw[id])continue;const e=evidence(id),r=JSON.parse(raw[id]);if(r.error||!Number.isSafeInteger(r.result?.context?.slot)||r.result.context.slot<receipt.nextMinSlot||Date.parse(e.retrievedAt)<times[2])throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+}
+
+async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s})):Promise<PumpSwapRead>{
   const mint=new PublicKey(token.address),poolKey=poolPda(0,pumpPoolAuthorityPda(mint),mint,NATIVE_MINT);
   const rawArtifacts:Record<string,string>={},retrievedAt:Record<string,string>={},errors:Record<string,string>={};
   let solMarket:DexRead|undefined;
@@ -106,7 +183,7 @@ export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:Co
     let simulationProof:Record<string,unknown>|undefined;
     try{
       const rankedOwners=[...(holders?.accounts??[])].filter(a=>BigInt(a.amount)>0n).sort((a,b)=>BigInt(a.amount)>BigInt(b.amount)?-1:BigInt(a.amount)<BigInt(b.amount)?1:0);
-      let candidates=[...new Set(rankedOwners.map(a=>a.owner))].slice(0,5).map(a=>new PublicKey(a));
+      let candidates=[...new Set([...rankedOwners.map(a=>a.owner).slice(0,20),pool.coinCreator.toBase58()])].filter(a=>a!==PublicKey.default.toBase58()).slice(0,21).map(a=>new PublicKey(a));
       let payerInfos=candidates.length?await multiple('pump-simulation-payers',candidates):[];
       const funded=(a:AccountInfo<Buffer>|null)=>!!a&&!a.executable&&a.owner.equals(PublicKey.default)&&BigInt(a.lamports)>=BigInt(quote.toString())+30_000_000n;
       const choose=async(id:string)=>{
@@ -163,6 +240,7 @@ export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:Co
       venue.exitExternalCostUsd=exitFee.div(1e9).mul(price).toFixed();
       const combined=[ComputeBudgetProgram.setComputeUnitLimit({units:1_400_000}),...buys,...sells],tx=new VersionedTransaction(message(combined));
       const wire=Buffer.from(tx.serialize());if(wire.length>1232)throw new Error('PUMP_SIMULATION_TRANSACTION_TOO_LARGE');
+      rawArtifacts['pump-simulation-request']=JSON.stringify({method:'pump-unsigned-simulation-v1',token:token.address,pool:poolKey.toBase58(),wireBase64:wire.toString('base64'),minContextSlot:stateSlot});retrievedAt['pump-simulation-request']=now();inspection.evidenceIds.push('pump-simulation-request');
       const sim=await read('pump-roundtrip-simulation','simulateTransaction',[wire.toString('base64'),{encoding:'base64',sigVerify:false,replaceRecentBlockhash:true,commitment:'finalized',minContextSlot:stateSlot,accounts:{encoding:'base64',addresses:[user.toBase58(),baseAta.toBase58(),quoteAta.toBase58()]}}]);
       if(!obj(sim)||!obj(sim.context)||!Number.isSafeInteger(sim.context.slot)||Number(sim.context.slot)<stateSlot)throw new Error('PUMP_SIMULATION_STATE_CHANGED');
       if(!obj(sim.value)||sim.value.err!==null){const v=obj(sim.value)?sim.value:null,err=v&&obj(v.err)?v.err:null,instruction=err?.InstructionError;const slippage=Array.isArray(instruction)&&obj(instruction[1])&&instruction[1].Custom===6004&&Array.isArray(v?.logs)&&v.logs.some((line:unknown)=>typeof line==='string'&&line.includes('Error Code: ExceededSlippage. Error Number: 6004.'));throw new Error(slippage?'PUMP_SIMULATION_SLIPPAGE':'PUMP_SIMULATION_REJECTED');}

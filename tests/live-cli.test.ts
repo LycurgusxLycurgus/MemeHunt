@@ -255,7 +255,7 @@ test('partial Solana uses live collection; bundle imports remain offline and can
     assert.equal(existsSync(join(directory, 'artifacts', pumpConfig.contentHash)), true, 'the direct RPC artifact is accepted and persisted by the trusted live path');
     assert.equal(mock.rpcMethods.includes('getProgramAccounts'), true);
     assert.equal(mock.rpcMethods.includes('getMultipleAccounts'), true);
-    assert.equal(mock.calls.length, 8);
+    assert.equal(mock.calls.length, 10, 'the bounded holder reconciliation refresh adds one mint and one population read');
 
     const fixturePath = join(directory, 'fixture.json');
     const fixture = fixtureBundle();
@@ -616,7 +616,7 @@ test('a live full run keeps source-bound narrative through partial collection an
     assert.equal(output.exitCode, 0);
     assert.equal(output.stdout.trim().split('\n').length, 1);
     const snapshot = JSON.parse(output.stdout) as EntrySnapshot;
-    assert.deepEqual(snapshot.collection?.rpc, { state: 'UNAVAILABLE', code: 'RPC_TIMEOUT' });
+    assert.deepEqual(snapshot.collection?.rpc, { state: 'UNAVAILABLE', code: 'LIVE_PHASE_DEADLINE' });
     assert.deepEqual(snapshot.collection?.web, { state: 'TRUNCATED', code: 'ATT_FETCH_URL_ERROR', count: 1 });
     assert.equal(snapshot.semantic?.status, 'VALIDATED');
     assert.equal(snapshot.semantic?.claims.length, 1);
@@ -636,19 +636,28 @@ test('a live full run keeps source-bound narrative through partial collection an
     assert.equal(snapshot.features.find(row => row.id === 'A01')?.quality, 'KNOWN');
     assert.equal(snapshot.features.find(row => row.id === 'A01')?.value, true);
     assert.equal(snapshot.features.find(row => row.id === 'A02')?.quality, 'MISSING');
-    assert.equal(rpcCalls, 4, 'full collection uses the same three-fast plus one-delayed timeout recovery');
+    assert.equal(rpcCalls, 5, 'four bounded preflight timeout attempts are followed by the independently budgeted final canonical request');
     const researchRequests = requestOrder.flatMap((role, index) => role === 'research' ? [index] : []);
     assert.ok(researchRequests.length > 0);
-    assert.ok(Math.max(...researchRequests) < requestOrder.indexOf('canonical'),
-      `all source searches, source fetches, and model judgments precede the first canonical RPC capture; the genesis handshake is tracked separately (${JSON.stringify(requestOrder)})`);
+    assert.ok(Math.max(...researchRequests) < requestOrder.lastIndexOf('canonical'),
+      `source searches, fetches, and model judgments precede the final canonical RPC capture; discovery-only preflight is separate (${JSON.stringify(requestOrder)})`);
     assert.ok(provider.calls.some(url => url.includes('api.search.tinyfish.ai')));
     assert.ok(provider.calls.some(url => url.includes('api.fetch.tinyfish.ai')));
     assert.ok(provider.calls.some(url => url.includes('generativelanguage.googleapis.com')));
-    assert.match(output.stderr, /RPC_TIMEOUT/);
+    assert.match(output.stderr, /LIVE_PHASE_DEADLINE/);
     assert.match(output.stderr, /4\/27/);
     assert.equal(output.stdout.includes('rpc-secret'), false);
     assert.equal(output.stdout.includes('tinyfish-secret'), false);
     assert.equal(output.stdout.includes('gemini-secret'), false);
+    const runEvidence = snapshot.evidence.find(item => item.id === 'live-run-scope');
+    assert.ok(runEvidence);
+    const runReceipt = JSON.parse(readFileSync(join(directory, 'artifacts', runEvidence.contentHash), 'utf8')) as {
+      stages: Array<{ phase: string; status: string; origin?: string; code?: string }>;
+    };
+    const finalizeStage = runReceipt.stages.find(stage => stage.phase === 'FINALIZE');
+    assert.deepEqual([finalizeStage?.status, finalizeStage?.origin, finalizeStage?.code],
+      ['CANCELLED', 'PHASE_DEADLINE', 'LIVE_PHASE_DEADLINE'],
+      'the receipt records that this run stopped at its own final-stage deadline');
     assert.equal(output.stderr.includes('rpc-secret'), false);
     assert.equal(output.stderr.includes('tinyfish-secret'), false);
     assert.equal(output.stderr.includes('gemini-secret'), false);
@@ -790,7 +799,7 @@ test('Solana analysis requires visible full or partial intent, and key presence 
       assert.match(result.stderr, /GEMINI_API_KEY/);
       assert.match(result.stderr, /Read-Host 'Gemini API key' -AsSecureString/);
       assert.match(result.stderr, /--partial/);
-      assert.equal(mock.calls.length, 8);
+      assert.equal(mock.calls.length, 10, 'missing semantic keys do not add provider calls after the prior partial collection');
     });
 
     await t.test('--full explicitly runs both optional providers without relying on legacy consent', async () => {
@@ -1250,7 +1259,7 @@ test('full CLI retains attention and social qualification proofs and replays the
       if (url.endsWith(':countTokens')) return new Response(JSON.stringify({ totalTokens: 100 }), { headers: { 'content-type': 'application/json' } });
       const request = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
       const packet = JSON.parse(request.contents[0]?.parts[0]?.text ?? '{}') as Record<string, unknown>;
-      if (packet.method === 'binary-public-support-v2') {
+      if (packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4') {
         entryModelCalls++;
         entryPackets.push(packet);
         const scope = packet.scope as { originSourceIds: string[] };
@@ -1266,16 +1275,22 @@ test('full CLI retains attention and social qualification proofs and replays the
         const grade = (verdict: 'PASS' | 'FAIL', citation: { sourceId: string; spanId: string }, rationale: string) => ({ verdict, rationale, citation });
         const originCitation = sourceFor(scope.originSourceIds, true);
         const generalCitation = sourceFor(sources.map(source => source.id), false);
+        const explainableIds = packet.explainableCitationSourceIds as string[];
+        const explainableCitation = sourceFor(explainableIds, true);
         const value = {
           originTraceability: grade(final ? 'FAIL' : 'PASS', originCitation, final
             ? 'The retained bounded sources do not establish a verifiable exact-token origin or catalyst.'
             : 'The retained source provides a proposed origin-support judgment for independent review.'),
-          leadership: grade(final ? 'FAIL' : 'PASS', generalCitation, final
+          leadership: { ...grade(packet.method === 'binary-public-support-v4' || final ? 'FAIL' : 'PASS', generalCitation, final
             ? 'The inspected public record does not establish adequate leadership or measured attention support.'
             : 'The retained source provides a proposed leadership judgment for independent review.'),
+            ...(packet.method === 'binary-public-support-v4' ? { basis: 'EVIDENCE_INADEQUACY' } : {}) },
           representations: grade(final ? 'FAIL' : 'PASS', generalCitation, final
             ? 'The inspected comparison catalog does not establish adequate exact-token representation support.'
             : 'The retained source provides a proposed representation judgment for independent review.'),
+          explainableThesis: grade(final ? 'FAIL' : 'PASS', explainableCitation, final
+            ? 'The retained sources do not adequately explain the narrative interest and its relationship to this exact token.'
+            : 'The retained source provides a proposed plain-language thesis judgment for independent review.'),
           inspectionComplete: true,
         };
         return new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(value) }] } }] }), { headers: { 'content-type': 'application/json' } });
@@ -1349,8 +1364,8 @@ test('full CLI retains attention and social qualification proofs and replays the
           value = {
             ...initial,
             identityAssessment: {
-              verdict: 'UNRESOLVED',
-              rationale: 'No official-account identity claim is established by this historical post sample.',
+              verdict: 'CONTRADICTED',
+              rationale: 'The complete inspected public-source sample contains no independent binding from this token to an official account; this is inadequate public identity evidence, not proof of impersonation.',
               citations: [{ sourceId: firstPost.sourceId, spanId: attentionSpanId(packet, firstPost.sourceId) }],
             },
             integrityAssessment: {
@@ -1446,10 +1461,10 @@ test('full CLI retains attention and social qualification proofs and replays the
         evidenceId: 'attention-page-1', quote: text.narrative, assertion: 'MODEL_INFERENCE' },
     ]);
     assert.equal(attentionModelCalls, 2, 'attention extraction and review retain their two calls');
-    assert.equal(entryModelCalls, 2, 'the three public-entry criteria receive a draft and an independent final review');
+    assert.equal(entryModelCalls, 2, 'the four public-entry criteria receive a draft and an independent final review');
     assert.equal(socialModelCalls, 5, 'one invalid metric selector receives one correction before review and one combined screening repair');
     assert.equal(entryPackets.length, 2);
-    assert.deepEqual(entryPackets.map(packet => packet.method), ['binary-public-support-v2', 'binary-public-support-v2']);
+    assert.deepEqual(entryPackets.map(packet => packet.method), ['binary-public-support-v4', 'binary-public-support-v4']);
     assert.ok((entryPackets[0]?.scope as { originSourceIds: string[] }).originSourceIds.length > 0);
     assert.equal(socialPackets.length, 5);
     for (const packet of socialPackets.slice(1)) assert.deepEqual(packet.sources, socialPackets[0]?.sources);
@@ -1468,10 +1483,10 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.ok(initialReviewEvidence);
     const initialReviewEnvelope = JSON.parse(readFileSync(join(directory, 'artifacts', initialReviewEvidence.contentHash), 'utf8')) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
     const initialReviewRaw = JSON.parse(initialReviewEnvelope.candidates[0]!.content.parts[0]!.text) as { decisions: Record<string, { accepted: boolean }> };
-    assert.equal(initialReviewRaw.decisions['assessment:identity']?.accepted, true, 'the unasserted identity stays outside screening repair');
+    assert.equal(initialReviewRaw.decisions['assessment:identity']?.accepted, true, 'the independent reviewer accepts the bounded negative identity assessment');
     assert.equal(initialReviewRaw.decisions['assessment:integrity']?.accepted, false, 'the original time-invalid current-integrity judgment remains rejected');
     assert.equal(initialReviewRaw.decisions['assessment:participation']?.accepted, true, 'the third evidence-sufficiency judgment receives its own independent review');
-    assert.equal(initialReviewRaw.decisions['assessment:communityBreadth']?.accepted, true, 'the v3 community-breadth judgment receives its own independent review');
+    assert.equal(initialReviewRaw.decisions['assessment:communityBreadth']?.accepted, true, 'the community-breadth judgment receives its own independent review');
     const repairReviewEvidence = snapshot.evidence.find(item => item.id === 'social-repair-review-response');
     assert.ok(repairReviewEvidence);
     const repairReviewEnvelope = JSON.parse(readFileSync(join(directory, 'artifacts', repairReviewEvidence.contentHash), 'utf8')) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
@@ -1479,24 +1494,24 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.equal(repairReviewRaw.decisions['assessment:identity']?.accepted, true, 'the unselected identity judgment stays accepted unchanged');
     assert.equal(repairReviewRaw.decisions['assessment:integrity']?.accepted, true, 'a fresh full review accepts the corrected bounded historical-post judgment');
     assert.equal(repairReviewRaw.decisions['assessment:participation']?.accepted, true, 'the independent participation assessment remains in the full repair review');
-    assert.equal(repairReviewRaw.decisions['assessment:communityBreadth']?.accepted, true, 'the v3 community-breadth judgment remains in the full repair review');
+    assert.equal(repairReviewRaw.decisions['assessment:communityBreadth']?.accepted, true, 'the community-breadth judgment remains in the full repair review');
     assert.equal(snapshot.details?.social?.method, 'social-source-review-v1');
-    assert.equal(snapshot.details?.social?.identityReview?.verdict, 'UNRESOLVED');
+    assert.equal(snapshot.details?.social?.identityReview?.verdict, 'CONTRADICTED');
     assert.equal(snapshot.details?.social?.integrityReview?.verdict, 'CONTRADICTED');
     assert.equal(snapshot.details?.social?.participationReview?.verdict, 'CONTRADICTED');
     assert.equal(snapshot.details?.social?.communityBreadthReview?.verdict, 'CONTRADICTED');
     assert.deepEqual(snapshot.details?.social?.integrityReview?.missingIndicators, ['ACCOUNT_HISTORY', 'ENGAGEMENT', 'COMPARABLE_HISTORY']);
-    assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-01')?.status, 'UNKNOWN');
+    assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-01')?.status, 'FAIL');
     assert.equal(snapshot.result.checks.find(row => row.checkId === 'SOC-02')?.status, 'FAIL');
     assert.ok(snapshot.evidence.some(item => item.id === 'social-qualified-receipt'));
     const attentionReceiptEvidence = snapshot.evidence.find(item => item.id === 'attention-qualified-receipt');
     const socialReceiptEvidence = snapshot.evidence.find(item => item.id === 'social-qualified-receipt');
     assert.ok(attentionReceiptEvidence && socialReceiptEvidence);
     const savedAttentionReceipt = JSON.parse(readFileSync(join(directory, 'artifacts', attentionReceiptEvidence.contentHash), 'utf8')) as {
-      read: AttentionRead; review: { entryDecisions?: { method?: string; originTraceability?: { verdict: string }; leadership?: { verdict: string }; representations?: { verdict: string } } };
+      read: AttentionRead; review: { entryDecisions?: { method?: string; originTraceability?: { verdict: string }; leadership?: { verdict: string }; representations?: { verdict: string }; explainableThesis?: { verdict: string } } };
     };
     assert.equal(savedAttentionReceipt.read.entryEvidenceMethod, 'public-support-v2');
-    assert.equal(savedAttentionReceipt.review.entryDecisions?.method, 'binary-public-support-v2');
+    assert.equal(savedAttentionReceipt.review.entryDecisions?.method, 'binary-public-support-v4');
     assert.equal(savedAttentionReceipt.read.comparisonAcquisition?.searchSucceeded, true);
     assert.equal(savedAttentionReceipt.read.comparisonAcquisition?.descriptorComplete, true);
     assert.equal(savedAttentionReceipt.read.comparisonComplete, false,
@@ -1504,7 +1519,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     const savedAttentionRead = {
       ...savedAttentionReceipt.read,
       rawArtifacts: Object.fromEntries(snapshot.evidence
-        .filter(item => /^attention-(?:search-\d+|fetch-\d+(?:-retry-\d+)?|recovery-fetch-\d+|origin-role-\d+-fetch)$/.test(item.id))
+        .filter(item => /^attention-(?:http-outcomes|recovery-http-outcomes|origin-http-outcomes|search-\d+|fetch-\d+(?:-retry-\d+)?|recovery-fetch-\d+|origin-role-\d+-fetch)$/.test(item.id))
         .map(item => [item.id, readFileSync(join(directory, 'artifacts', item.contentHash), 'utf8')])),
     };
     assert.equal(entryEvidenceScope(savedAttentionRead, token, snapshot.cutoff).complete, true,
@@ -1531,11 +1546,13 @@ test('full CLI retains attention and social qualification proofs and replays the
       savedAttentionReceipt.review.entryDecisions?.originTraceability?.verdict,
       savedAttentionReceipt.review.entryDecisions?.leadership?.verdict,
       savedAttentionReceipt.review.entryDecisions?.representations?.verdict,
-    ], ['FAIL', 'FAIL', 'FAIL']);
+      savedAttentionReceipt.review.entryDecisions?.explainableThesis?.verdict,
+    ], ['FAIL', 'FAIL', 'FAIL', 'FAIL']);
     const savedSocialReceipt = JSON.parse(readFileSync(join(directory, 'artifacts', socialReceiptEvidence.contentHash), 'utf8')) as {
       read: SocialInput; proposal: { communityBreadthAssessment?: { verdict: string } }; review: SocialReview;
     };
     assert.equal(savedSocialReceipt.read.entryDecisionMethod, 'public-support-v3');
+    assert.equal(savedSocialReceipt.read.reviewCriterionMethod, 'verdict-aware-v4');
     assert.equal(savedSocialReceipt.proposal.communityBreadthAssessment?.verdict, 'CONTRADICTED');
     assert.ok(savedSocialReceipt.review.decisions.some(row => row.id === 'assessment:communityBreadth' && row.accepted));
     assert.ok(snapshot.evidence.some(item => item.id === 'social-proposal-response' && item.sourceId === 'gemini' && item.accessMode === 'FREE_ACCOUNT'));
@@ -1550,7 +1567,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     const repairMarker = snapshot.evidence.find(item => item.id === 'social-repair-selection');
     assert.ok(repairMarker);
     assert.deepEqual(JSON.parse(readFileSync(join(directory, 'artifacts', repairMarker.contentHash), 'utf8')), {
-      method: 'social-screening-repair-v2', selectedAssessmentIds: ['assessment:integrity'], applied: true,
+      method: 'social-screening-repair-v4', selectedAssessmentIds: ['assessment:integrity'], applied: true,
     });
     assert.ok(searchQueries.includes('"River Lantern" base crypto token contract'), 'the named-project comparison query is part of the retained public search run');
     const sourceFetches = fetchRequests.filter(request => request.format !== 'html');
@@ -1573,12 +1590,12 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.equal(baseline.get('A01')?.quality, 'KNOWN');
     assert.equal(baseline.get('A01')?.projection?.value, true);
     assert.equal(baseline.get('A03')?.quality, 'KNOWN', 'the complete public-entry review produces its own origin grade');
-    assert.equal((baseline.get('A03')?.data as { entryDecisionMethod?: string; decision?: { verdict?: string } })?.entryDecisionMethod, 'binary-public-support-v2');
+    assert.equal((baseline.get('A03')?.data as { entryDecisionMethod?: string; decision?: { verdict?: string } })?.entryDecisionMethod, 'binary-public-support-v4');
     assert.equal((baseline.get('A03')?.data as { decision?: { verdict?: string } })?.decision?.verdict, 'FAIL');
     assert.equal(baseline.get('A04')?.quality, 'MISSING', 'an injection-shaped source does not become factual origin detail');
     assert.equal(baseline.get('A04')?.projection?.value, null);
     assert.equal(baseline.get('A09')?.quality, 'KNOWN', 'the independent representation entry grade is retained');
-    assert.equal((baseline.get('A09')?.data as { entryDecisionMethod?: string; decision?: { verdict?: string } })?.entryDecisionMethod, 'binary-public-support-v2');
+    assert.equal((baseline.get('A09')?.data as { entryDecisionMethod?: string; decision?: { verdict?: string } })?.entryDecisionMethod, 'binary-public-support-v4');
     assert.equal((baseline.get('A09')?.data as { decision?: { verdict?: string } })?.decision?.verdict, 'FAIL');
     assert.equal(baseline.get('A15')?.quality, 'KNOWN');
     assert.equal((baseline.get('A15')?.data as { raw?: number })?.raw, 3);
@@ -1615,7 +1632,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     assert.deepEqual(JSON.parse(shown.stdout), snapshot);
     assert.deepEqual(JSON.parse(replayed.stdout), snapshot);
     assert.equal(identityExplanation.exitCode, 0);
-    assert.match(identityExplanation.stdout, /Public-evidence review: UNRESOLVED/);
+    assert.match(identityExplanation.stdout, /Public-evidence review: CONTRADICTED/);
     assert.equal(integrityExplanation.exitCode, 0);
     assert.match(integrityExplanation.stdout, /Desired indicators unavailable: ACCOUNT_HISTORY, ENGAGEMENT, COMPARABLE_HISTORY/);
     assert.match(integrityExplanation.stdout, /visibility risks, not proof of fraud, bots or manipulation/);
@@ -1653,6 +1670,9 @@ test('full CLI retains attention and social qualification proofs and replays the
       const verifiedProof = proofService.analyzeLive(proofBundle);
       assert.equal(verifiedProof.details?.baseline.find(row => row.id === 'A03')?.quality, 'KNOWN');
       assert.equal(verifiedProof.details?.baseline.find(row => row.id === 'A09')?.quality, 'KNOWN');
+      assert.equal(verifiedProof.details?.social?.identityReview?.verdict, 'CONTRADICTED',
+        'Service independently reconstructs the accepted v4 negative from the complete identity scope');
+      assert.equal(verifiedProof.result.checks.find(row => row.checkId === 'SOC-01')?.status, 'FAIL');
     } finally {
       proofService.close();
     }
@@ -1674,6 +1694,26 @@ test('full CLI retains attention and social qualification proofs and replays the
     try { assert.throws(() => attentionReviewVerifier.analyzeLive(missingAttentionCriterion), /SHARED_PROOF_INVALID/); }
     finally { attentionReviewVerifier.close(); }
 
+    const missingExplainableThesis = structuredClone(proofBundle);
+    const missingThesisEnvelope = JSON.parse(missingExplainableThesis.rawArtifacts[attentionFinalId]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+    const missingThesis = JSON.parse(missingThesisEnvelope.candidates[0]!.content.parts[0]!.text) as Record<string, unknown>;
+    delete missingThesis.explainableThesis;
+    missingThesisEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(missingThesis);
+    replaceRawArtifact(missingExplainableThesis, attentionFinalId, JSON.stringify(missingThesisEnvelope));
+    const thesisVerifier = new Service(':memory:');
+    try { assert.throws(() => thesisVerifier.analyzeLive(missingExplainableThesis), /SHARED_PROOF_INVALID/); }
+    finally { thesisVerifier.close(); }
+
+    const wrongThesisAnchor = structuredClone(proofBundle);
+    const wrongAnchorEnvelope = JSON.parse(wrongThesisAnchor.rawArtifacts[attentionFinalId]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+    const wrongAnchorWire = JSON.parse(wrongAnchorEnvelope.candidates[0]!.content.parts[0]!.text) as { explainableThesis: { citation: { sourceId: string; spanId: string } } };
+    wrongAnchorWire.explainableThesis.citation = { sourceId: 'unretained-competitor-source', spanId: 'unretained-span' };
+    wrongAnchorEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(wrongAnchorWire);
+    replaceRawArtifact(wrongThesisAnchor, attentionFinalId, JSON.stringify(wrongAnchorEnvelope));
+    const anchorVerifier = new Service(':memory:');
+    try { assert.throws(() => anchorVerifier.analyzeLive(wrongThesisAnchor), /SHARED_PROOF_INVALID/); }
+    finally { anchorVerifier.close(); }
+
     const missingCommunityDecision = structuredClone(proofBundle);
     const socialFinalId = 'social-review-response';
     const socialFinalEnvelope = JSON.parse(missingCommunityDecision.rawArtifacts[socialFinalId]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
@@ -1686,7 +1726,7 @@ test('full CLI retains attention and social qualification proofs and replays the
     try { assert.throws(() => communityReviewVerifier.analyzeLive(missingCommunityDecision), /SOCIAL_PROOF_INVALID/); }
     finally { communityReviewVerifier.close(); }
 
-    for (const tamper of ['repair-catalog', 'invalid-selector-trigger', 'identity-closure-marker'] as const) {
+    for (const tamper of ['repair-catalog', 'invalid-selector-trigger', 'identity-closure-marker', 'social-review-criterion-marker'] as const) {
       const candidate = structuredClone(proofBundle);
       if (tamper === 'repair-catalog') {
         const id = 'social-selector-repair-prompt';
@@ -1702,11 +1742,17 @@ test('full CLI retains attention and social qualification proofs and replays the
         original.posts[0]!.metrics.replies!.citation.spanId = source.spans[0]!.id;
         response.candidates[0]!.content.parts[0]!.text = JSON.stringify(original);
         replaceRawArtifact(candidate, id, JSON.stringify(response));
-      } else {
+      } else if (tamper === 'identity-closure-marker') {
         const id = 'social-qualified-receipt';
         const receipt = JSON.parse(candidate.rawArtifacts[id]!) as Record<string, unknown>;
-        assert.equal(receipt.identityCitationMethod, 'identity-citation-closure-v2');
+        assert.equal(receipt.identityCitationMethod, 'identity-citation-closure-v3');
         receipt.identityCitationMethod = 'forged-closure';
+        replaceRawArtifact(candidate, id, JSON.stringify(receipt));
+      } else {
+        const id = 'social-qualified-receipt';
+        const receipt = JSON.parse(candidate.rawArtifacts[id]!) as { read: SocialInput };
+        assert.equal(receipt.read.reviewCriterionMethod, 'verdict-aware-v4');
+        receipt.read.reviewCriterionMethod = 'verdict-aware-v3';
         replaceRawArtifact(candidate, id, JSON.stringify(receipt));
       }
       const verifier = new Service(':memory:');
@@ -1739,6 +1785,30 @@ test('full CLI retains attention and social qualification proofs and replays the
       assert.throws(() => repairVerifier.analyzeLive(forgedRepairBundle), /SOCIAL_PROOF_INVALID/);
     } finally {
       repairVerifier.close();
+    }
+
+    for (const tamper of ['repair-selection-fields', 'repair-derived-checks'] as const) {
+      const forgedRepairEvidence = structuredClone(proofBundle);
+      if (tamper === 'repair-selection-fields') {
+        const id = 'social-repair-selection';
+        const marker = JSON.parse(forgedRepairEvidence.rawArtifacts[id]!) as { selectedAssessmentIds: string[] };
+        marker.selectedAssessmentIds = ['assessment:communityBreadth'];
+        replaceRawArtifact(forgedRepairEvidence, id, JSON.stringify(marker));
+      } else {
+        const id = 'social-repair-proposal-prompt';
+        const prompt = JSON.parse(forgedRepairEvidence.rawArtifacts[id]!) as {
+          qualificationChecks: { accountUpperBound: number | null };
+        };
+        assert.ok(prompt.qualificationChecks, 'the fresh v3 repair packet binds its code-derived qualification checks');
+        prompt.qualificationChecks.accountUpperBound = 999;
+        replaceRawArtifact(forgedRepairEvidence, id, JSON.stringify(prompt));
+      }
+      const tamperVerifier = new Service(':memory:');
+      try {
+        assert.throws(() => tamperVerifier.analyzeLive(forgedRepairEvidence), /SOCIAL_PROOF_INVALID/, tamper);
+      } finally {
+        tamperVerifier.close();
+      }
     }
 
     const legacyBundle = structuredClone(proofBundle);
@@ -1831,12 +1901,13 @@ test('full CLI retains attention and social qualification proofs and replays the
       assert.notEqual(featureIndex, -1, `legacy social feature ${assessment.id} is retained`);
       legacyBundle.features[featureIndex] = assessment.projection!;
     }
-    const legacyDbPath = join(directory, 'legacy-social-replay.sqlite');
-    const legacyWriter = new Service(legacyDbPath);
-    let legacySnapshot: EntrySnapshot;
-    try { legacySnapshot = legacyWriter.analyzeLive(legacyBundle); } finally { legacyWriter.close(); }
-    const legacyReader = new Service(legacyDbPath);
-    try { assert.deepEqual(legacyReader.replay(legacySnapshot.id), legacySnapshot); } finally { legacyReader.close(); }
+    const legacyVerifier = new Service(':memory:');
+    try {
+      assert.throws(() => legacyVerifier.analyzeLive(legacyBundle), /ATTENTION_LEADERSHIP_METHOD_INVALID|SOCIAL_SEED_PROOF_INVALID/,
+        'stripping required fresh-run acquisition receipts cannot turn a current capture into valid historical proof');
+    } finally {
+      legacyVerifier.close();
+    }
 
     const receipt = JSON.parse(proofBundle.rawArtifacts[receiptRecord.id]!) as { read: { queries: string[] } };
     receipt.read.queries.push('forged scope extension');

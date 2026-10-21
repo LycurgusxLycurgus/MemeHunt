@@ -16,15 +16,21 @@ export function requiredComparisonRecoveryParents(leads:ComparisonLead[]):Compar
 }
 export type OriginAcquisition={method:'original-origin-acquisition-v1';complete:boolean;sourceIds:string[];searches:Array<{id:string;complete:boolean}>;urls:Array<{url:string;sourceId:string|null;state:'ACQUIRED'|'UNAVAILABLE'|'OMITTED'|'CLIPPED'|'CONFLICTED'|'EXCLUDED_REVIEWED'}>};
 type RecoveryPlan={queries:string[];skipUrls:string[];maxUrls:number;queryParents?:RecoveryQueryParent[];recordQueryTimes?:boolean};
-export type AttentionRead = {entryEvidenceMethod?:'public-support-v2';sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;comparisonCoverage?:import('../domain/attention.js').ComparisonCoverage;comparisonPublicSupport?:import('../domain/attention.js').ComparisonPublicSupport;narrativePublicSupport?:import('../domain/attention.js').NarrativePublicSupport;queryRetrievedAt?:Record<string,string>;metadataLinks?:true;metadataUri?:string;originRecovery?:OriginRecovery;originExclusions?:OriginExclusion[];originScope?:{method:'bounded-origin-sources-v1';complete:boolean;sourceIds:string[];acquisition?:OriginAcquisition};growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
+export type ComparisonRecovery={method:'comparison-acquisition-v1';accessGapMethod?:'own-acquired-alternates-v1';selectedLeadIds:string[];recoveryQueries:Array<{queryId:string;parentLeadId:string;query:string;state:string;descriptorComplete:boolean;resultCount:number;availableAt:string}>;recoveryCapped:boolean;sourceLineage:Array<{leadId:string;queryIds:string[];sourceIds:string[]}>};
+export type TerminalPostScope={method:'terminal-post-gap-v1';complete:boolean;sourceIds:string[];gaps:Array<{url:string;code:'HTTP_404'|'HTTP_410'}>;blockers:string[]};
+export type AttentionRead = {collectionMethod?:'project-context-v2';leadershipPositiveMethod?:'source-bound-positive-v1';postSampleScope?:TerminalPostScope;entryExecutionMethod?:'entry-first-v1'|'entry-first-v2';comparisonRecovery?:ComparisonRecovery;entryEvidenceMethod?:'public-support-v2';sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;comparisonCoverage?:import('../domain/attention.js').ComparisonCoverage;comparisonPublicSupport?:import('../domain/attention.js').ComparisonPublicSupport;narrativePublicSupport?:import('../domain/attention.js').NarrativePublicSupport;queryRetrievedAt?:Record<string,string>;metadataLinks?:true;metadataUri?:string;originRecovery?:OriginRecovery;originExclusions?:OriginExclusion[];originScope?:{method:'bounded-origin-sources-v1';complete:boolean;sourceIds:string[];acquisition?:OriginAcquisition};growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
+export const attentionSourceLimit=(read:Pick<AttentionRead,'collectionMethod'>)=>read.collectionMethod==='project-context-v2'?64:32;
+export const attentionInitialPageLimit=(read:Pick<AttentionRead,'collectionMethod'>)=>read.collectionMethod==='project-context-v2'?40:32;
 const object=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
 /** The collector and persistence reconstruction share the original seed-link boundary. */
-export function originSeedLinks(seed:string,links:unknown[]):string[]{
+export function originSeedLinks(seed:string,links:unknown[],method?:'project-context-v2'):string[]{
   const u=new URL(seed),metadata=/\.json(?:[?]|$)/i.test(seed),social=/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname);
   return [...new Set(links.flatMap(link=>{
     if(typeof link!=='string')return [];const safe=publicHttpsUrl(link,true),next=safe?normalizeAttentionSearchUrl(safe):null;if(!next)return [];const v=new URL(next);
     const eligible=metadata?!/\.(?:png|jpe?g|webp|gif|svg)(?:[?]|$)/i.test(v.pathname):social?/^\/[A-Za-z0-9_]+\/?$/.test(u.pathname)&&/^\/[A-Za-z0-9_]+\/status\/\d+/.test(v.pathname)&&v.pathname.split('/')[1].toLowerCase()===u.pathname.split('/')[1]?.toLowerCase():v.hostname===u.hostname&&/^\/(?:docs?|about|whitepaper|launch|log)(?:[/.\-]|$)/i.test(v.pathname);
-    return eligible?[next]:[];
+    // A token/profile on a shared venue does not own the venue's global docs.
+    const platformNavigation=method==='project-context-v2'&&!metadata&&!social&&u.hostname.replace(/^www\./,'')==='pump.fun';
+    return eligible&&!platformNavigation?[next]:[];
   }))];
 }
 /** Failed or omitted original pages cannot disappear behind the surviving text. */
@@ -39,7 +45,7 @@ export function reconstructOriginAcquisition(read:AttentionRead,token?:TokenRef)
   for(const [id,raw] of Object.entries(read.rawArtifacts))if(/^attention-fetch-\d+(?:-retry-\d+)?$/.test(id))try{
     const response=JSON.parse(raw);if(!Array.isArray(response.results)||!Array.isArray(response.errors))continue;
     for(const e of response.errors)if(typeof e?.url==='string'){const url=normalizeAttentionSearchUrl(e.url);if(url)attempted.add(url);}
-    for(const r of response.results){const url=typeof r?.url==='string'?normalizeAttentionSearchUrl(r.url):null,finalUrl=typeof r?.final_url==='string'?normalizeAttentionSearchUrl(r.final_url):url;if(!url||!finalUrl||typeof r.text!=='string')continue;attempted.add(url);results.push({url,finalUrl,text:r.text});if(read.discoveryUrls?.includes(url)){const metadata=/\.json(?:[?]|$)/i.test(url)?[...r.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];for(const link of originSeedLinks(url,[...(Array.isArray(r.links)?r.links:[]),...metadata]))required.add(link);}}
+    for(const r of response.results){const url=typeof r?.url==='string'?normalizeAttentionSearchUrl(r.url):null,finalUrl=typeof r?.final_url==='string'?normalizeAttentionSearchUrl(r.final_url):url;if(!url||!finalUrl||typeof r.text!=='string')continue;attempted.add(url);results.push({url,finalUrl,text:r.text});if(read.discoveryUrls?.includes(url)){const metadata=/\.json(?:[?]|$)/i.test(url)?[...r.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];for(const link of originSeedLinks(url,[...(Array.isArray(r.links)?r.links:[]),...metadata],read.collectionMethod))required.add(link);}}
   }catch{/* Invalid response cannot supply a page. */}
   const urls:OriginAcquisition['urls']=[...required].map(url=>{
     const observed=results.filter(r=>r.url===url),alias=read.originRecovery?.aliases.find(a=>a.originUrl===url),verified=alias?verifyOriginAlias(alias,read.sources,read.rawArtifacts):null,source=verified??read.sources.find(s=>observed.some(r=>r.finalUrl===s.url&&r.text===s.text)&&s.text.trim()&&s.text.trim().toLowerCase()!=='safety check');
@@ -48,6 +54,29 @@ export function reconstructOriginAcquisition(read:AttentionRead,token?:TokenRef)
     return {url,sourceId:source?.id??null,state};
   });
   return {method:'original-origin-acquisition-v1',complete:searches.every(s=>s.complete)&&urls.length>0&&urls.every(u=>u.state==='ACQUIRED'||u.state==='EXCLUDED_REVIEWED'),sourceIds:[...new Set(urls.flatMap(u=>u.sourceId?[u.sourceId]:[]))],searches,urls};
+}
+/** Definitive missing posts are retained gaps; transport/caps/omissions never qualify this negative-only scope. */
+export function terminalPostScope(read:AttentionRead):TerminalPostScope{
+ const blockers:string[]=[],candidates=new Set<string>(),bodies=new Set<string>(),missing=new Map<string,'HTTP_404'|'HTTP_410'>();
+ const post=(value:unknown)=>{if(typeof value!=='string')return null;const safe=normalizeAttentionSearchUrl(value);if(!safe)return null;const u=new URL(safe),m=/^\/([A-Za-z0-9_]+)\/status\/(\d+)(?:\/.*)?$/.exec(u.pathname);return /^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&m?'https://x.com/'+m[1].toLowerCase()+'/status/'+m[2]:null;};
+ for(let n=1;n<=read.queries.length;n++)try{const r=JSON.parse(read.rawArtifacts['attention-search-'+n]);if(!Array.isArray(r.results)||r.error||r.errors&&(!Array.isArray(r.errors)||r.errors.length)||r.results.some((item:unknown)=>!object(item)||typeof item.url!=='string'))throw Error();for(const item of r.results){const url=post(item.url);if(url)candidates.add(url);}}catch{blockers.push('ATT_POST_SCOPE_SEARCH_INCOMPLETE');}
+ for(const url of read.discoveryUrls??[]){const key=post(url);if(key)candidates.add(key);}
+ const sources=read.sources.filter(source=>source.kind==='POST'&&(!read.postSampleSourceIds||read.postSampleSourceIds.includes(source.id)));
+ for(const source of sources){const url=post(source.url);if(url)candidates.add(url);else blockers.push('ATT_POST_SCOPE_BINDING');}
+ const observe=(packet:unknown)=>{
+   if(!object(packet)||!Array.isArray(packet.results)||!Array.isArray(packet.errors)){blockers.push('ATT_POST_SCOPE_FETCH_INCOMPLETE');return;}
+   for(const r of packet.results){if(!object(r))continue;const url=post(r.url),final=post(r.final_url??r.url);if(!url)continue;candidates.add(url);
+     if(url===final&&typeof r.text==='string'&&r.text.length<=120000&&sources.some(source=>post(source.url)===url&&source.text===r.text)&&r.text.trim()&&!/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(r.text)){bodies.add(url);missing.delete(url);}
+   }
+   for(const error of packet.errors){if(!object(error))continue;const url=post(error.url);if(!url)continue;candidates.add(url);if(bodies.has(url))continue;const status=Number(error.status),text=String(error.error??error.code??'');if(status===404||status===410||(!Number.isFinite(status)||status===0)&&/^page_not_found$/.test(text)){missing.set(url,status===410?'HTTP_410':'HTTP_404');}}
+ };
+ for(const [id,raw]of Object.entries(read.rawArtifacts))if(/^attention-fetch-\d+$/.test(id)){
+   try{observe(JSON.parse(raw));if(read.rawArtifacts[id+'-retry-1'])observe(JSON.parse(read.rawArtifacts[id+'-retry-1']));}catch{blockers.push('ATT_POST_SCOPE_FETCH_INCOMPLETE');}
+ }
+ for(const url of candidates)if(!bodies.has(url)&&!missing.has(url))blockers.push('ATT_POST_SCOPE_UNRESOLVED');
+ if(read.codes.some(code=>/^ATT_(?:TEXT_CAP|PAGE_CAP|SOURCE_CAP|FETCH_BINDING|FETCH_SOURCE_CONFLICT)$/.test(code)))blockers.push('ATT_POST_SCOPE_LIMIT_OR_BINDING');
+ const gaps=[...missing].filter(([url])=>!bodies.has(url)).map(([url,code])=>({url,code}));
+ return {method:'terminal-post-gap-v1',complete:blockers.length===0&&sources.length>0&&gaps.length>0,sourceIds:sources.map(source=>source.id),gaps,blockers:[...new Set(blockers)]};
 }
 /** Submission limits are versioned so old packets and replay retain their original catalog. */
 export function attentionSourceText(read:AttentionRead,text:string){return read.entryEvidenceMethod?text:text.slice(0,6000);}
@@ -82,7 +111,11 @@ export function comparisonRecoveryFallback(frontier:RecoverySlot[],leads:Array<{
 }
 /** Public-support review may inspect permanent access gaps; it never grades an interrupted request as token evidence. */
 export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:string){
- const origin=reconstructOriginAcquisition(read,token),blockers:string[]=[],gaps:Array<{url:string;code:string}>=[],failures=new Map<string,string>(),records:Array<{url:string;text:string}>=[],recoveryBatchOutcomes=new Map<string,Set<string>>(),recoveryBatchFailures=new Map<string,Map<string,string>>();
+ const origin=reconstructOriginAcquisition(read,token),blockers:string[]=[],gaps:Array<{url:string;code:string;cause?:string;originalAttemptIds?:string[];parentLeadId?:string;originalRoleId?:string;queryIds?:string[];alternativeSourceIds?:string[]}>=[],failures=new Map<string,string>(),records:Array<{url:string;text:string;artifactId:string;requestedUrl:string}>=[],recoveryBatchOutcomes=new Map<string,Set<string>>(),recoveryBatchFailures=new Map<string,Map<string,string>>();
+ const ownAlternates=read.comparisonRecovery?.accessGapMethod==='own-acquired-alternates-v1';
+ const httpStatus=(id:string)=>{try{const recovery=id.startsWith('attention-recovery-'),role=id.startsWith('attention-origin-role-'),key=role?'attention-origin-http-outcomes':recovery?'attention-recovery-http-outcomes':'attention-http-outcomes',packet=JSON.parse(read.rawArtifacts[key]);const rows=packet.outcomes.filter((r:{artifactId:string})=>r.artifactId===(recovery?id.replace('attention-recovery-','attention-'):id));return packet.method==='fetch-http-outcomes-v1'&&rows.length===1&&Number.isInteger(rows[0].status)?rows[0].status as number:null;}catch{return null;}};
+ const httpOk=(id:string)=>{const status=httpStatus(id);return status!==null&&status>=200&&status<300;};
+ const httpFailure=(id:string,fallback:string)=>{const status=httpStatus(id);return status!==null&&!httpOk(id)?'ATT_FETCH_HTTP_'+status:fallback;};
  const canonical=(value:string)=>{const u=new URL(value);if(/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)){u.hostname='x.com';u.pathname=u.pathname.toLowerCase();}return u.toString();};
  const fail=(id:string,url:string,code:string)=>{const key=canonical(url);failures.set(key,code);if(id.startsWith('attention-recovery-fetch-')){const batch=recoveryBatchFailures.get(id)??new Map<string,string>();batch.set(key,code);recoveryBatchFailures.set(id,batch);}};
  const terminal=(error:Record<string,unknown>)=>/bot_blocked|forbidden|not_found|not found|(?:http[ _:]*)?(?:403|404|410)\b/i.test(String(error.error??error.code??''))||[403,404,410].includes(Number(error.status));
@@ -93,6 +126,7 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
  // recovered errors, while historical raw failures remain retained diagnostics.
  for(const [id,raw]of Object.entries(read.rawArtifacts))if(/^attention-(?:(?:recovery-)?fetch-\d+|origin-fetch-1|origin-role-\d+-fetch)$/.test(id))try{
   const packet=JSON.parse(raw);if(!Array.isArray(packet.results)||!Array.isArray(packet.errors)){blockers.push('ATT_ENTRY_FETCH_SHAPE');continue;}
+  if(ownAlternates&&/^attention-(?:(?:recovery-)?fetch-\d+|origin-role-\d+-fetch)$/.test(id)&&(!httpOk(id)||packet.error||read.rawArtifacts[id+'-retry-1']&&!httpOk(id+'-retry-1')))blockers.push(httpFailure(!httpOk(id)?id:id+'-retry-1','ATT_ENTRY_FETCH_HTTP_INCOMPLETE'));
   let results=packet.results as Array<Record<string,unknown>>,errors=packet.errors as Array<Record<string,unknown>>;
   if(/^(?:attention-fetch|attention-recovery-fetch)-\d+$/.test(id)){
    try{const retry=JSON.parse(read.rawArtifacts[id+'-retry-1']);if(Array.isArray(retry.results)&&Array.isArray(retry.errors)){
@@ -105,24 +139,24 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
   for(const r of results)if(typeof r?.url==='string'&&typeof r?.text==='string'){
    const rawText=r.text;let text=rawText;
    if(id==='attention-origin-fetch-1'){
-    const source=read.sources.find(source=>source.url===(r.final_url??r.url)&&source.text===rawText.replace(/\\_/g,'_'));
+    const source=read.sources.find(source=>source.url===(r.final_url??r.url)&&(source.text===rawText.replace(/\\_/g,'_')||read.originRecovery?.aliases.some(alias=>alias.sourceId===source.id&&alias.responseId===id&&verifyOriginAlias(alias,read.sources,read.rawArtifacts))));
     const alias=read.originRecovery?.aliases.find(a=>a.sourceId===source?.id);
     const supplement=source&&read.originRecovery?.comparisonSupplementIds.includes(source.id)&&
       (source.url===`https://api.dexscreener.com/token-pairs/v1/${token.chain}/${token.address}`?(()=>{try{const pairs=JSON.parse(source.text);return Array.isArray(pairs)&&pairs.some(p=>p.chainId===token.chain&&(p.baseToken?.address===token.address||p.quoteToken?.address===token.address));}catch{return false;}})():token.chain==='solana'&&read.comparisonAcquisition?.leads.some(lead=>lead.acquisitionStatus!=='ACQUIRED'&&geckoPoolBinding(source,lead.url)));
     if(!source||(r.final_url??r.url)!==r.url||!(alias&&verifyOriginAlias(alias,read.sources,read.rawArtifacts)||supplement))continue;
     text=source.text;
    }
-   records.push({url:canonical(String(r.final_url??r.url)),text});
+   records.push({url:canonical(String(r.final_url??r.url)),text,artifactId:id,requestedUrl:String(r.url)});
    if(/^attention-recovery-fetch-/.test(id)&&read.sources.some(source=>canonical(source.url)===canonical(String(r.final_url??r.url))&&source.text===text)&&text.trim()&&!/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(text)){
     const batch=recoveryBatchOutcomes.get(id)??new Set<string>();batch.add(canonical(r.url));recoveryBatchOutcomes.set(id,batch);
    }
    if(/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(text))fail(id,r.url,'TARGET_BLOCKED');
   }
-  for(const e of errors)if(typeof e?.url==='string'){const text=[e.error,e.code,e.status].filter(v=>v!==undefined).join(' ');fail(id,e.url,terminal(e)?'TARGET_BLOCKED':/timeout|408/i.test(text)?'ATT_FETCH_TIMEOUT':/429|rate.limit/i.test(text)?'ATT_FETCH_HTTP_429':/5\d\d|transport|network/i.test(text)?'ATT_FETCH_TRANSPORT':'ATT_ENTRY_FETCH_UNRESOLVED');}else blockers.push('ATT_ENTRY_FETCH_SHAPE');
+  for(const e of errors)if(typeof e?.url==='string'){const text=[e.error,e.code,e.status].filter(v=>v!==undefined).join(' ');fail(id,e.url,terminal(e)?'TARGET_BLOCKED':e.error==='empty_content'||e.code==='empty_content'?'TARGET_EMPTY':/timeout|408/i.test(text)?'ATT_FETCH_TIMEOUT':/429|rate.limit/i.test(text)?'ATT_FETCH_HTTP_429':/5\d\d|transport|network/i.test(text)?'ATT_FETCH_TRANSPORT':'ATT_ENTRY_FETCH_UNRESOLVED');}else blockers.push('ATT_ENTRY_FETCH_SHAPE');
  }catch{blockers.push('ATT_ENTRY_FETCH_SHAPE');}
  const replaced=new Set<string>();
  if(!origin.searches.every(s=>s.complete))blockers.push('ATT_ENTRY_REQUIRED_SEARCH_INCOMPLETE');
- const q=read.comparisonQualification as {recoveryCapped?:boolean;recoveryQueries?:Array<{queryId:string;parentLeadId:string;state:string;descriptorComplete?:boolean}>}|undefined;
+ const q=(read.entryExecutionMethod?read.comparisonRecovery:read.comparisonQualification) as {recoveryCapped?:boolean;recoveryQueries?:Array<{queryId:string;parentLeadId:string;state:string;descriptorComplete?:boolean}>}|undefined;
  // Reconstruct the actual bounded selection, then require an effective outcome
  // for every selected URL. Search success alone does not finish acquisition.
  if(q?.recoveryQueries?.length){
@@ -131,7 +165,7 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
    const initial=read.sources.filter(source=>!source.id.startsWith('attention-recovery-'));
    const parents=queries.map(query=>({leadId:query.parentLeadId,originalUrl:read.comparisonAcquisition?.leads.find(lead=>lead.id===query.parentLeadId)?.url??null}));
    const leads=queries.flatMap((query,index)=>(searchRows(query.queryId)??[]).map((row,resultIndex)=>({searchArtifactId:'attention-search-'+(index+1),resultIndex,url:normalizeAttentionSearchUrl(String(row.url))})));
-   const selected=comparisonRecoverySelection(leads,parents,[...initial.map(source=>source.url),...(read.comparisonAcquisition?.leads.flatMap(lead=>lead.url?[lead.url]:[])??[])],Math.min(8,32-initial.length));
+   const selected=comparisonRecoverySelection(leads,parents,[...initial.map(source=>source.url),...(read.comparisonAcquisition?.leads.flatMap(lead=>lead.url?[lead.url]:[])??[])],Math.min(8,attentionSourceLimit(read)-initial.length));
    const expected={...selected,selection:selected.selection.map(row=>({...row,collectorQueryId:row.queryId,queryId:row.queryId.replace('attention-','attention-recovery-')}))};
    const raw=read.rawArtifacts['attention-recovery-selection-scope'];
    if(raw){const actual=JSON.parse(raw);if(actual.method!==expected.method||actual.maxUrls!==expected.maxUrls||JSON.stringify(actual.selectedUrls)!==JSON.stringify(expected.selectedUrls)||(!Array.isArray(actual.selection)||actual.selection.length!==expected.selection.length||expected.selection.some((row,index)=>Object.entries(row).some(([key,value])=>actual.selection[index]?.[key]!==value))))blockers.push('ATT_ENTRY_RECOVERY_SELECTION_INVALID');}
@@ -145,6 +179,7 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
     const allowed=new Set(urls.map(canonical)),id=`attention-recovery-fetch-${batch}`;expectedBatches.add(id);let valid=true;
     for(const suffix of ['', '-retry-1']){
      if(suffix&&!read.rawArtifacts[id+suffix])continue;
+     if(ownAlternates&&!httpOk(id+suffix)){blockers.push(httpFailure(id+suffix,'ATT_ENTRY_RECOVERY_HTTP_INCOMPLETE'));valid=false;}
      const packet=JSON.parse(read.rawArtifacts[id+suffix]??'null');
      if(!packet||!Array.isArray(packet.results)||!Array.isArray(packet.errors)){blockers.push('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE');valid=false;continue;}
      if([...packet.results,...packet.errors].some(row=>typeof row?.url!=='string'||!allowed.has(canonical(row.url)))){blockers.push('ATT_ENTRY_RECOVERY_SELECTION_INVALID');valid=false;}
@@ -174,7 +209,6 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
    for(const url of allSelected){const key=canonical(url);if(replaced.has(key))gaps.push({url,code:'RECOVERED_ALTERNATE'});else if(validatedFailures.get(key)==='TARGET_BLOCKED')gaps.push({url,code:'TARGET_BLOCKED'});else if(!validatedOutcomes.has(key))blockers.push('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE');}
   }catch{blockers.push('ATT_ENTRY_RECOVERY_SELECTION_INVALID');}
  }
- for(const [url,code] of failures)if(code!=='TARGET_BLOCKED'&&!replaced.has(url))blockers.push(code);
  const recoveredLead=(lead:ComparisonLead)=>{const queries=q?.recoveryQueries?.filter(r=>r.parentLeadId===lead.id)??[];return queries.length>0&&queries.every(r=>['OBSERVED','NO_RESULTS'].includes(r.state)&&r.descriptorComplete!==false&&searchRows(r.queryId)!==null);};
  // Reuse an already completed own comparison recovery for the same URL. Other
  // original gaps require their canonical free role-recovery Search/Fetch attempt.
@@ -183,19 +217,41 @@ export function entryEvidenceScope(read:AttentionRead,token:TokenRef,cutoff:stri
   if(read.comparisonAcquisition?.leads.some(lead=>lead.url&&canonical(lead.url)===canonical(url)&&recoveredLead(lead)))return true;
   const index=originalCandidates.findIndex(lead=>lead.url===url);if(index<0)return false;
   const id=`attention-origin-role-${index+1}`,rows=searchRows(id+'-search');if(!rows||read.entryEvidenceMethod&&read.rawArtifacts[id+'-search-query']!==originRecoveryQuery(read,token,url))return false;
+  if(ownAlternates&&!httpOk(id+'-search')){blockers.push(httpFailure(id+'-search','ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE'));return false;}
   const urls=[...new Set(rows.flatMap(row=>{const safe=publicHttpsUrl(String(row.url),true);return safe&&new URL(safe).hostname!==new URL(url).hostname?[safe]:[];}))].slice(0,2);
   if(!urls.length)return rows.length===0;
-  try{const fetched=JSON.parse(read.rawArtifacts[id+'-fetch']);return Array.isArray(fetched.results)&&Array.isArray(fetched.errors)&&urls.every(url=>fetched.results.some((r:Record<string,unknown>)=>r.url===url&&(r.final_url??r.url)===url&&typeof r.text==='string'&&read.sources.some(s=>s.url===url&&s.text===r.text))||fetched.errors.some((e:Record<string,unknown>)=>e.url===url&&terminal(e)));}catch{return false;}
+  if(ownAlternates&&!httpOk(id+'-fetch')){blockers.push(httpFailure(id+'-fetch','ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE'));return false;}
+  try{const fetched=JSON.parse(read.rawArtifacts[id+'-fetch']);return Array.isArray(fetched.results)&&Array.isArray(fetched.errors)&&(!ownAlternates||!fetched.error&&[...fetched.results,...fetched.errors].every(r=>typeof r?.url==='string'&&urls.includes(r.url)))&&urls.every(url=>fetched.results.some((r:Record<string,unknown>)=>r.url===url&&(r.final_url??r.url)===url&&typeof r.text==='string'&&read.sources.some(s=>s.url===url&&s.text===r.text))||fetched.errors.some((e:Record<string,unknown>)=>e.url===url&&terminal(e)));}catch{return false;}
  };
- for(const u of origin.urls)if(u.state!=='ACQUIRED'&&u.state!=='EXCLUDED_REVIEWED'){const code=failures.get(canonical(u.url));if(code==='TARGET_BLOCKED'&&u.state==='UNAVAILABLE'&&recoveredOriginal(u.url))gaps.push({url:u.url,code});else blockers.push(code==='TARGET_BLOCKED'?'ATT_ENTRY_ORIGIN_RECOVERY_INCOMPLETE':'ATT_ENTRY_ORIGIN_'+u.state);}
+ const acquiredGap=(url:string)=>{
+  if(!ownAlternates||failures.get(canonical(url))!=='ATT_FETCH_TIMEOUT')return null;
+  // Only an original target's explicit per-URL timeout in two successful API
+  // responses is eligible. A request failure or omitted selected body is not.
+  const attempts=Object.keys(read.rawArtifacts).filter(id=>/^attention-fetch-\d+$/.test(id)).flatMap(id=>{
+   try{const same=(key:string)=>{const p=JSON.parse(read.rawArtifacts[key]);return httpOk(key)&&!p.error&&Array.isArray(p.results)&&Array.isArray(p.errors)&&p.errors.some((e:{url:string;error:string;status?:unknown;code?:unknown})=>e.url===url&&e.error==='timeout'&&e.status===undefined&&(e.code===undefined||e.code==='timeout'))&&!p.results.some((r:{url:string;text:string})=>r.url===url&&typeof r.text==='string'&&r.text.trim());};return same(id)&&same(id+'-retry-1')?[id,id+'-retry-1']:[];}catch{return [];}
+  });
+  if(attempts.length!==2)return null;
+  const parent=read.comparisonAcquisition?.leads.find(lead=>lead.url&&canonical(lead.url)===canonical(url));
+  let queryIds:string[]=[],roleId:string|undefined;
+  if(parent&&recoveredLead(parent))queryIds=(q?.recoveryQueries??[]).filter(r=>r.parentLeadId===parent.id&&r.state==='OBSERVED').map(r=>r.queryId);
+  else {const index=originalCandidates.findIndex(lead=>lead.url===url);if(index<0||!recoveredOriginal(url))return null;roleId=`attention-origin-role-${index+1}`;queryIds=[roleId+'-search'];}
+  if(!queryIds.length||queryIds.some(id=>!httpOk(id)))return null;
+  const alternatives=read.sources.filter(source=>canonical(source.url)!==canonical(url)&&(!roleId||new URL(source.url).hostname!==new URL(url).hostname)&&queryIds.some(id=>(searchRows(id)??[]).some(row=>{const u=normalizeAttentionSearchUrl(String(row.url));return u&&canonical(u)===canonical(source.url);}))&&records.some(r=>(!roleId||r.artifactId===roleId+'-fetch')&&r.url===canonical(source.url)&&r.text===source.text&&r.url===canonical(r.requestedUrl)&&httpOk(r.artifactId)&&source.text.trim().length>=8&&!/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(source.text)));
+  if(!alternatives.length)return null;
+  return {url,code:'TARGET_ACCESS_GAP',cause:'ATT_FETCH_TIMEOUT',originalAttemptIds:attempts,...(parent?{parentLeadId:parent.id}:{originalRoleId:roleId!}),queryIds,alternativeSourceIds:alternatives.map(s=>s.id)};
+ };
+ const timeoutGaps=new Map<string,NonNullable<ReturnType<typeof acquiredGap>>>();
+ for(const url of new Set([...origin.urls.map(u=>u.url),...(read.comparisonAcquisition?.leads.flatMap(l=>l.url?[l.url]:[])??[])])){const gap=acquiredGap(url);if(gap){timeoutGaps.set(canonical(url),gap);gaps.push(gap);}}
+ for(const [url,code] of failures)if(code!=='TARGET_BLOCKED'&&!replaced.has(url)&&!timeoutGaps.has(url)&&!(code==='TARGET_EMPTY'&&recoveredOriginal(url)))blockers.push(code);
+ for(const u of origin.urls)if(u.state!=='ACQUIRED'&&u.state!=='EXCLUDED_REVIEWED'){const code=failures.get(canonical(u.url));if(timeoutGaps.has(canonical(u.url))&&u.state==='UNAVAILABLE')continue;if((code==='TARGET_BLOCKED'||code==='TARGET_EMPTY')&&u.state==='UNAVAILABLE'&&recoveredOriginal(u.url))gaps.push({url:u.url,code});else blockers.push(code==='TARGET_BLOCKED'||code==='TARGET_EMPTY'?'ATT_ENTRY_ORIGIN_RECOVERY_INCOMPLETE':'ATT_ENTRY_ORIGIN_'+u.state);}
  if(!read.comparisonAcquisition?.searchSucceeded||!read.comparisonAcquisition.descriptorComplete)blockers.push('ATT_ENTRY_COMPARISON_SEARCH_INCOMPLETE');
  if(q?.recoveryCapped)blockers.push('ATT_ENTRY_RECOVERY_CAP');
- for(const lead of read.comparisonAcquisition?.leads??[])if(lead.acquisitionStatus!=='ACQUIRED'||lead.acquisitionCodes.length){const code=lead.url&&failures.get(canonical(lead.url));if(code==='TARGET_BLOCKED'&&recoveredLead(lead))gaps.push({url:lead.url!,code});else blockers.push('ATT_ENTRY_COMPARISON_RECOVERY_INCOMPLETE');}
+ for(const lead of read.comparisonAcquisition?.leads??[])if(lead.acquisitionStatus!=='ACQUIRED'||lead.acquisitionCodes.length){const code=lead.url&&failures.get(canonical(lead.url));if(lead.url&&timeoutGaps.has(canonical(lead.url)))continue;if((code==='TARGET_BLOCKED'||code==='TARGET_EMPTY')&&recoveredLead(lead))gaps.push({url:lead.url!,code});else blockers.push('ATT_ENTRY_COMPARISON_RECOVERY_INCOMPLETE');}
  for(const source of read.sources){if(source.text.length>120000)blockers.push('ATT_ENTRY_TEXT_CAP');if(!records.some(r=>r.url===canonical(source.url)&&r.text===source.text))blockers.push('ATT_ENTRY_SOURCE_TEXT_INCOMPLETE');const age=Date.parse(cutoff)-Date.parse(source.availableAt);if(!Number.isFinite(age)||age<0||age>900000)blockers.push('ATT_ENTRY_SOURCE_STALE');}
  for(const code of read.codes)if(/^(?:ATT_(?:SEARCH|FETCH|RECOVERY)|WEB_).*(?:TIMEOUT|TRANSPORT|HTTP_(?:408|429|5\d\d))|COLLECTION_BUDGET|RUN_ABORTED/.test(code))blockers.push(code);
- if(!read.sources.length||read.sources.length>32)blockers.push('ATT_ENTRY_SOURCE_CAP');
+ if(!read.sources.length||read.sources.length>attentionSourceLimit(read))blockers.push('ATT_ENTRY_SOURCE_CAP');
  const operational=blockers.find(c=>/TIMEOUT|TRANSPORT|DNS_ERROR|HTTP_(?:408|429|5\d\d)|COLLECTION_BUDGET|RUN_ABORTED/.test(c));
- return {method:'attempted-public-source-scope-v1' as const,complete:blockers.length===0,sourceIds:read.sources.map(s=>s.id),originSourceIds:origin.sourceIds,gaps:[...new Map(gaps.map(g=>[g.url,g])).values()],blockers:[...new Set(operational?[operational,...blockers]:blockers)]};
+ return {method:ownAlternates?'attempted-public-source-scope-v2' as const:'attempted-public-source-scope-v1' as const,complete:blockers.length===0,sourceIds:read.sources.map(s=>s.id),originSourceIds:origin.sourceIds,gaps:[...new Map(gaps.map(g=>[g.url,g])).values()],blockers:[...new Set(operational?[operational,...blockers]:blockers)]};
 }
 /** Decode only the observed search-result redirect wire, then apply the normal public URL gate. */
 export function normalizeAttentionSearchUrl(value:string):string|null{
@@ -225,9 +281,10 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
   const queryRetrievedAt:Record<string,string>={};
   const leads:ComparisonLead[]=[],sourceByRequested=new Map<string,string>(),blockedUrls=new Set<string>(),conflictedUrls=new Set<string>();
   let descriptorComplete=true,descriptorCharacters=0,leadCount=0;
-  const pageLimit=recoveryPlan?Math.min(8,Math.max(0,recoveryPlan.maxUrls)):32;
+  const pageLimit=recoveryPlan?Math.min(8,Math.max(0,recoveryPlan.maxUrls)):(entryEvidenceMethod?40:32);
   const end=now(),start=new Date(Date.parse(end)-24*3600_000).toISOString();
   const rawArtifacts:Record<string,string>={},codes:string[]=[],urls:string[]=[],sources:AttentionSource[]=[],comparisonUrls=new Set<string>(),comparisonSourceIds:string[]=[],comparisonFetched=new Set<string>(),truncatedSourceUrls=new Set<string>();
+  const httpOutcome=(artifactId:string,status:number)=>{if(!entryEvidenceMethod)return;const id='attention-http-outcomes',prior=rawArtifacts[id]?JSON.parse(rawArtifacts[id]).outcomes:[];rawArtifacts[id]=JSON.stringify({method:'fetch-http-outcomes-v1',outcomes:[...prior.filter((r:{artifactId:string})=>r.artifactId!==artifactId),{artifactId,status}]});};
   const isPostUrl=(url:string)=>{const u=new URL(url);return /^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_]+\/status\/\d+(?:\/.*)?$/.test(u.pathname);};
   const canonicalUrl=(url:string)=>{if(!isPostUrl(url))return url;const u=new URL(url);return `https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`;};
   const seeds=[...new Set(discoveryUrls.map(url=>publicHttpsUrl(url,true)).filter((u):u is string=>!!u).map(canonicalUrl))].slice(0,4);
@@ -242,6 +299,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     const url=new URL('https://api.search.tinyfish.ai/');url.searchParams.set('query',query);
     if(recoveryPlan||i===2){const intent=recoveryPlan?'Identify and corroborate the indexed entity and distinctive subject or mechanism named in this query using descriptive independent public sources. Include descriptive context and alternate contract-bearing pages when applicable; a shared name alone is insufficient.':comparisonIntent;url.searchParams.set('intent',intent);rawArtifacts[`attention-search-${i+1}-intent`]=intent;}
     const response=await fetchReadResponse(url.toString(),{headers:{'X-API-Key':key,accept:'application/json'}},fetcher,10000);
+    httpOutcome('attention-search-'+(i+1),response.status);
     if(!response.ok){codes.push(`ATT_SEARCH_HTTP_${response.status}`);postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}
     let raw=await readLimitedText(response,100000);rawArtifacts[`attention-search-${i+1}`]=raw;if(recoveryPlan?.recordQueryTimes)queryRetrievedAt[`attention-search-${i+1}`]=now();let value:unknown=JSON.parse(raw);
     if(!recoveryPlan&&i===2&&query!==`"${name!.replace(/["\\]/g,'')}" ${token.chain}`&&object(value)&&!value.error&&Array.isArray(value.results)&&value.results.length===0&&(value.errors===undefined||Array.isArray(value.errors)&&value.errors.length===0)){
@@ -251,6 +309,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
       const fallbackUrl=new URL(url);fallbackUrl.searchParams.set('query',fallback);
       const fallbackResponse=await fetchReadResponse(fallbackUrl.toString(),{headers:{'X-API-Key':key,accept:'application/json'}},fetcher,10000);
       if(!fallbackResponse.ok){codes.push(`ATT_SEARCH_HTTP_${fallbackResponse.status}`);comparisonIncomplete=true;continue;}
+      httpOutcome('attention-search-'+(i+1),fallbackResponse.status);
       raw=await readLimitedText(fallbackResponse,100000);value=JSON.parse(raw);rawArtifacts['attention-search-3']=raw;queries[i]=fallback;
     }
     if(!object(value)||!Array.isArray(value.results)){codes.push('ATT_SEARCH_SHAPE');postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}
@@ -262,7 +321,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
         leadCount++;
         const title=typeof r.title==='string'?r.title:'',snippet=typeof r.snippet==='string'?r.snippet:'';
         const descriptor=title+'\n'+snippet;
-        if(leads.length>=(recoveryPlan?128:32)||descriptorCharacters+descriptor.length>64000){descriptorComplete=false;comparisonIncomplete=true;codes.push('ATT_DESCRIPTOR_CAP');}
+        if(leads.length>=(recoveryPlan?200:32)||descriptorCharacters+descriptor.length>(recoveryPlan?200000:64000)){descriptorComplete=false;comparisonIncomplete=true;codes.push('ATT_DESCRIPTOR_CAP');}
         else{
           descriptorCharacters+=descriptor.length;
           const id=`comparison-lead-${leads.length+1}`,metadataEvidenceId=`${id}-metadata`;
@@ -302,6 +361,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     offset+=requested.length;batch++;
     try{
     const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls:requested,format:'markdown',links:true,ttl:0,per_url_timeout_ms:8000})},fetcher,30000);
+    httpOutcome('attention-fetch-'+batch,response.status);
     if(!response.ok){codes.push(`ATT_FETCH_HTTP_${response.status}`);if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;continue;}
     const raw=await readLimitedText(response,2000000);rawArtifacts[`attention-fetch-${batch}`]=raw;const value:unknown=JSON.parse(raw);
     if(!object(value)||!Array.isArray(value.results)||!Array.isArray(value.errors)){codes.push('ATT_FETCH_SHAPE');if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;continue;}
@@ -312,6 +372,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     const retryUrls=requested.filter(url=>!returnedUrls.has(url)&&!permanent.has(url));
     if(retryUrls.length)try{
       const recovery=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls:retryUrls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000);
+      httpOutcome('attention-fetch-'+batch+'-retry-1',recovery.status);
       const retryRaw=await readLimitedText(recovery,2000000);rawArtifacts[`attention-fetch-${batch}-retry-1`]=retryRaw;
       const recovered:unknown=JSON.parse(retryRaw);
       if(recovery.ok&&object(recovered)&&Array.isArray(recovered.results)&&Array.isArray(recovered.errors)){
@@ -368,11 +429,11 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
       if(comparisonUrls.has(requestedUrl))comparisonSourceIds.push(sources.at(-1)!.id);
       const metadataSeed=seeds.includes(requestedUrl)&&/\.json(?:[?]|$)/i.test(requestedUrl);
       const metadataLinks=metadataSeed?[...text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];
-      if(!recoveryPlan&&seeds.includes(requestedUrl))for(const next of originSeedLinks(requestedUrl,[...(Array.isArray(r.links)?r.links:[]),...metadataLinks])){
+      if(!recoveryPlan&&seeds.includes(requestedUrl))for(const next of originSeedLinks(requestedUrl,[...(Array.isArray(r.links)?r.links:[]),...metadataLinks],entryEvidenceMethod?'project-context-v2':undefined)){
         if(urls.includes(next))continue;
         // Follow only seed-page links, ahead of remaining search pages, without exceeding the shared page budget.
         followed.add(next);discoveryParents.set(next,requestedUrl);urls.splice(offset+followed.size-1,0,next);
-        if(urls.length>32){const omitted=urls.pop()!;codes.push('ATT_PAGE_CAP');if(isPostUrl(omitted))postSampleComplete=false;if(comparisonUrls.has(omitted))comparisonIncomplete=true;}
+        if(urls.length>pageLimit){const omitted=urls.pop()!;codes.push('ATT_PAGE_CAP');if(isPostUrl(omitted))postSampleComplete=false;if(comparisonUrls.has(omitted))comparisonIncomplete=true;}
       }
     }
     if(requested.some(u=>!returned.has(u)))codes.push('ATT_FETCH_INCOMPLETE');
@@ -389,7 +450,9 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     lead.acquisitionStatus=blockedUrls.has(lead.url)?'BLOCKED':conflictedUrls.has(lead.url)?'CONFLICTED':!urls.includes(lead.url)?'OMITTED':sourceId?'ACQUIRED':'FAILED';
     lead.acquisitionCodes=[...(truncatedSourceUrls.has(lead.url)?['ATT_TEXT_CAP']:[]),...(lead.acquisitionStatus==='ACQUIRED'?[]:[`ATT_LEAD_${lead.acquisitionStatus}`])];
   }
-  return {sources,rawArtifacts,queries,...(entryEvidenceMethod?{entryEvidenceMethod}:{}),...(recoveryPlan?.recordQueryTimes?{queryRetrievedAt}:{}),complete:codes.length===0,codes:[...new Set(codes)],start,end,comparisonSourceIds,comparisonComplete,postSampleComplete,discoveryUrls:seeds,...((name||recoveryPlan)?{comparisonAcquisition:{originalComplete:comparisonComplete,searchSucceeded:comparisonSearchSucceeded,descriptorComplete,leadCount,leads},comparisonRankingSourceIds:[...comparisonSourceIds],postSampleSourceIds:sources.filter(s=>s.kind==='POST').map(s=>s.id)}:{})};
+  const collected:AttentionRead={...(entryEvidenceMethod&&!recoveryPlan?{collectionMethod:'project-context-v2' as const,leadershipPositiveMethod:'source-bound-positive-v1' as const}:{}),sources,rawArtifacts,queries,...(entryEvidenceMethod?{entryEvidenceMethod}:{}),...(recoveryPlan?.recordQueryTimes?{queryRetrievedAt}:{}),complete:codes.length===0,codes:[...new Set(codes)],start,end,comparisonSourceIds,comparisonComplete,postSampleComplete,discoveryUrls:seeds,...((name||recoveryPlan)?{comparisonAcquisition:{originalComplete:comparisonComplete,searchSucceeded:comparisonSearchSucceeded,descriptorComplete,leadCount,leads},comparisonRankingSourceIds:[...comparisonSourceIds],postSampleSourceIds:sources.filter(s=>s.kind==='POST').map(s=>s.id)}:{})};
+  if(entryEvidenceMethod&&!recoveryPlan)collected.postSampleScope=terminalPostScope(collected);
+  return collected;
 }
 
 

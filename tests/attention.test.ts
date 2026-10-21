@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 import { deriveAttention, originSourceScope } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import { attentionSubmittedSources, collectAttentionSources, comparisonRecoveryFallback, comparisonRecoverySelection, entryEvidenceScope, normalizeAttentionSearchUrl, recoverComparisonSources, type AttentionRead } from '../src/providers/attention.js';
+import { attentionInitialPageLimit, attentionSourceLimit, attentionSubmittedSources, collectAttentionSources, comparisonRecoveryFallback, comparisonRecoverySelection, entryEvidenceScope, normalizeAttentionSearchUrl, originSeedLinks, recoverComparisonSources, terminalPostScope, type AttentionRead } from '../src/providers/attention.js';
 import { binaryEntryDecisionProgram, qualifyAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
-import { originRecoveryQuery } from '../src/providers/origin-recovery.js';
+import { originRecoveryQuery, verifyOriginAlias } from '../src/providers/origin-recovery.js';
 
 const token = { chain: 'solana', address: 'MintAddress111111111111111111111111111111111' } as const;
 const KEY = 'attention-test-key';
@@ -692,6 +693,39 @@ test('recovery query parents share the bounded fetch budget fairly and preserve 
   });
 });
 
+test('project-context-v2 retains the complete bounded recovery descriptor set', async () => {
+  const queries = Array.from({ length: 20 }, (_, index) => `independent indexed subject recovery query ${index + 1}`);
+  const resultsByQuery = new Map(queries.map((query, queryIndex) => [query, Array.from({ length: 10 }, (_, resultIndex) => ({
+    url: `https://recovery-${queryIndex + 1}.example/source-${resultIndex + 1}`,
+    title: `Distinctive indexed source ${queryIndex + 1}-${resultIndex + 1}`,
+    snippet: `Public description of indexed subject ${queryIndex + 1} with source context ${resultIndex + 1}.`,
+  }))]));
+  const fetched: string[][] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      return json({ results: resultsByQuery.get(query) ?? [], errors: [] });
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(requested);
+    return json({ results: requested.map(item => fetchResult(item, `A fully acquired independent source about ${token.address}.`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [], {
+    queries, skipUrls: [], maxUrls: 8,
+  }, 'public-support-v2');
+
+  assert.equal(read.comparisonAcquisition?.leadCount, 200);
+  assert.equal(read.comparisonAcquisition?.leads.length, 200,
+    'all 20 × 10 indexed descriptors are retained for qualification');
+  assert.equal(read.comparisonAcquisition?.descriptorComplete, true);
+  assert.equal(read.codes.includes('ATT_DESCRIPTOR_CAP'), false);
+  assert.equal(fetched.flat().length, 8, 'only the bounded source-fetch budget is consumed');
+  assert.equal(read.sources.length, 8);
+  assert.equal(read.comparisonComplete, false, 'unfetched descriptors remain an explicit acquisition gap');
+  assert.ok(read.codes.includes('ATT_PAGE_CAP'));
+});
+
 test('collector caps unique pages at thirty-two, fetch batches at ten, and retained text at twelve thousand characters', async () => {
   const allUrls = Array.from({ length: 40 }, (_, index) => `https://public.example/page-${index + 1}`);
   const fetchBatches: string[][] = [];
@@ -844,6 +878,124 @@ test('public-support scope accepts only explicit permanent blocks after each com
   }
 });
 
+test('public-support timeout gaps require successful original attempts and a selected full body from the target lead own recovery', async () => {
+  const cutoff = '2026-10-20T12:00:00.000Z';
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const targetUrl = 'https://public.example/river-lantern-market';
+  const alternateUrl = 'https://independent.example/river-lantern-market-record';
+  const query = 'Identify the indexed River Lantern market record and independent project sources';
+  const originText = `The River Lantern project describes its public art theme and identifies token ${token.address} as its original deployment.`;
+  const alternateText = `An independent index records the River Lantern project and token ${token.address}; its indexed subject remains distinct from the unread original market page.`;
+  let searchCall = 0;
+  let fetchCall = 0;
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const call = searchCall++;
+      if (call < 2) return json({ results: [{ url: originUrl }], errors: [] });
+      if (call === 2) return json({ results: [{ url: targetUrl, title: 'River Lantern market record', snippet: 'A public index page for the project market.' }], errors: [] });
+      return json({ results: [{ url: alternateUrl, title: 'River Lantern project index', snippet: 'An independent public project record.' }], errors: [] });
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetchCall++;
+    if (requested.includes(alternateUrl)) return json({
+      results: [fetchResult(alternateUrl, alternateText)], errors: [],
+    });
+    return json({
+      results: requested.includes(originUrl) ? [fetchResult(originUrl, originText)] : [],
+      errors: requested.includes(targetUrl) ? [{ url: targetUrl, error: 'timeout' }] : [],
+    });
+  });
+  const initial = await collectAttentionSources(token, KEY, mock.fetcher, () => cutoff, 'River Lantern', [], undefined, 'public-support-v2');
+  assert.equal(fetchCall, 2, 'the original target timeout is retained after the collector makes its bounded retry');
+  const originalOutcomes = JSON.parse(initial.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+  assert.deepEqual(originalOutcomes.outcomes.filter(row => row.artifactId.startsWith('attention-fetch-')),
+    [{ artifactId: 'attention-fetch-1', status: 200 }, { artifactId: 'attention-fetch-1-retry-1', status: 200 }],
+    'the transport envelope succeeded for the original and retry even though the target-local page timed out');
+  assert.equal(entryEvidenceScope(initial, token, cutoff).complete, false,
+    'a timeout by itself remains unknown before own alternate acquisition');
+
+  const parent = initial.comparisonAcquisition!.leads.find(lead => lead.url === targetUrl)!;
+  const recovery = await recoverComparisonSources(token, KEY, [query], [originUrl, targetUrl], 8,
+    mock.fetcher, () => cutoff, [{ leadId: parent.id, originalUrl: targetUrl }], true, 'public-support-v2');
+  const recoveredSources = recovery.sources.map(source => ({ ...source, id: source.id.replace(/^attention-/, 'attention-recovery-') }));
+  const recoveryArtifacts: Record<string, string> = {};
+  for (const [id, raw] of Object.entries(recovery.rawArtifacts)) {
+    if (id === 'attention-selection-scope') {
+      const selection = JSON.parse(raw) as { selection: Array<Record<string, unknown> & { queryId: string }> };
+      recoveryArtifacts['attention-recovery-selection-scope'] = JSON.stringify({
+        ...selection,
+        selection: selection.selection.map(row => ({ ...row, collectorQueryId: row.queryId,
+          queryId: row.queryId.replace(/^attention-/, 'attention-recovery-') })),
+      });
+    } else if (id.startsWith('attention-')) recoveryArtifacts[id.replace(/^attention-/, 'attention-recovery-')] = raw;
+    else if (id.startsWith('comparison-lead-')) recoveryArtifacts[`attention-recovery-${id}`] = raw;
+  }
+  const recoverySearch = JSON.parse(recovery.rawArtifacts['attention-search-1']!) as { results: unknown[] };
+  const recoveryQueryId = 'attention-recovery-search-1';
+  const sourceIds = recoveredSources.map(source => source.id);
+  const recoveryQueries = [{ queryId: recoveryQueryId, parentLeadId: parent.id, query, state: 'OBSERVED',
+    descriptorComplete: true, resultCount: recoverySearch.results.length, availableAt: cutoff }];
+  const lead = { ...parent, recoveryQueryIds: [recoveryQueryId], recoverySourceIds: sourceIds };
+  const comparisonRecovery = { method: 'comparison-acquisition-v1' as const, accessGapMethod: 'own-acquired-alternates-v1' as const,
+    selectedLeadIds: [parent.id], recoveryQueries, recoveryCapped: false,
+    sourceLineage: [{ leadId: parent.id, queryIds: [recoveryQueryId], sourceIds }] };
+  const qualified: AttentionRead = {
+    ...initial,
+    entryExecutionMethod: 'entry-first-v2',
+    sources: [...initial.sources, ...recoveredSources],
+    rawArtifacts: { ...initial.rawArtifacts, ...recoveryArtifacts, 'attention-entry-first-acquisition': JSON.stringify(comparisonRecovery) },
+    comparisonAcquisition: { ...initial.comparisonAcquisition!, originalComplete: false, leads: [lead] },
+    comparisonRecovery,
+    comparisonSourceIds: sourceIds,
+    comparisonComplete: false,
+  };
+  const eligible = entryEvidenceScope(qualified, token, cutoff);
+  assert.equal(eligible.complete, true, JSON.stringify(eligible));
+  assert.deepEqual(eligible.gaps, [{ url: targetUrl, code: 'TARGET_ACCESS_GAP', cause: 'ATT_FETCH_TIMEOUT',
+    originalAttemptIds: ['attention-fetch-1', 'attention-fetch-1-retry-1'], parentLeadId: parent.id,
+    queryIds: [recoveryQueryId], alternativeSourceIds: sourceIds }]);
+  assert.equal(qualified.complete, false, 'a public review scope does not rewrite factual acquisition completeness');
+  assert.equal(qualified.comparisonComplete, false, 'alternate acquisition does not claim original comparison completion');
+  assert.equal(qualified.comparisonAcquisition?.originalComplete, false);
+
+  const blocked = (name: string, mutate: (candidate: AttentionRead) => void, expected?: string) => {
+    const candidate = structuredClone(qualified);
+    mutate(candidate);
+    const scope = entryEvidenceScope(candidate, token, cutoff);
+    assert.equal(scope.complete, false, `${name}: ${JSON.stringify(scope)}`);
+    assert.equal(scope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false, `${name} cannot certify the original access gap`);
+    if (expected) assert.ok(scope.blockers.includes(expected), `${name}: ${scope.blockers.join(', ')}`);
+  };
+  for (const [artifactId, status, code] of [
+    ['attention-fetch-1', 503, 'ATT_FETCH_HTTP_503'],
+    ['attention-fetch-1-retry-1', 429, 'ATT_FETCH_HTTP_429'],
+  ] as const) blocked(`${artifactId} HTTP ${status}`, candidate => {
+    const outcomes = JSON.parse(candidate.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+    outcomes.outcomes.find(row => row.artifactId === artifactId)!.status = status;
+    candidate.rawArtifacts['attention-http-outcomes'] = JSON.stringify(outcomes);
+  }, code);
+  blocked('missing recovery HTTP receipt', candidate => { delete candidate.rawArtifacts['attention-recovery-http-outcomes']; }, 'ATT_ENTRY_RECOVERY_HTTP_INCOMPLETE');
+  blocked('no results from the own query', candidate => {
+    candidate.rawArtifacts[recoveryQueryId] = JSON.stringify({ results: [], errors: [] });
+    const q = candidate.comparisonRecovery!;
+    q.recoveryQueries[0]!.state = 'NO_RESULTS';
+    q.recoveryQueries[0]!.resultCount = 0;
+    candidate.rawArtifacts['attention-entry-first-acquisition'] = JSON.stringify(q);
+  });
+  blocked('full body exists only outside the own query results', candidate => {
+    const raw = JSON.parse(candidate.rawArtifacts[recoveryQueryId]!) as { results: Array<Record<string, unknown>> };
+    raw.results = [{ url: 'https://sibling.example/river-lantern' }];
+    candidate.rawArtifacts[recoveryQueryId] = JSON.stringify(raw);
+  });
+  blocked('selected alternative body is missing from the retained catalog', candidate => {
+    candidate.sources = candidate.sources.filter(source => !source.id.startsWith('attention-recovery-'));
+  });
+  blocked('selected Fetch is moved out of its canonical batch', candidate => {
+    candidate.rawArtifacts['attention-recovery-fetch-99'] = candidate.rawArtifacts['attention-recovery-fetch-1']!;
+    delete candidate.rawArtifacts['attention-recovery-fetch-1'];
+  }, 'ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE');
+});
+
 test('public-support scope requires completed recovery for blocked original sources and reuses only matching comparison recovery', () => {
   const originUrl = 'https://public.example/river-lantern-origin';
   const blockedUrl = 'https://public.example/river-lantern-launch';
@@ -891,6 +1043,52 @@ test('public-support scope requires completed recovery for blocked original sour
   assert.equal(emptySearchScope.complete, true, JSON.stringify(emptySearchScope));
   assert.deepEqual(emptySearchScope.gaps, [{ url: blockedUrl, code: 'TARGET_BLOCKED' }],
     'a successful bounded search with no alternate results is a completed attempt');
+
+  const emptyContentOriginal = (): AttentionRead => {
+    const read = blockedOriginal();
+    const fetch = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as {
+      results: Array<Record<string, unknown>>; errors: Array<Record<string, unknown>>;
+    };
+    fetch.errors[0] = { url: blockedUrl, error: 'empty_content' };
+    read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetch);
+    return read;
+  };
+  const emptyWithoutRecovery = entryEvidenceScope(emptyContentOriginal(), token, cutoff);
+  assert.equal(emptyWithoutRecovery.complete, false, 'empty_content is not a terminal gap without the matching bounded recovery');
+  assert.deepEqual(emptyWithoutRecovery.gaps, []);
+
+  const emptyNoResultsRecovery = emptyContentOriginal();
+  emptyNoResultsRecovery.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(emptyNoResultsRecovery, token, blockedUrl);
+  emptyNoResultsRecovery.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [], errors: [] });
+  const emptyNoResultsScope = entryEvidenceScope(emptyNoResultsRecovery, token, cutoff);
+  assert.equal(emptyNoResultsScope.complete, true, JSON.stringify(emptyNoResultsScope));
+  assert.deepEqual(emptyNoResultsScope.gaps, [{ url: blockedUrl, code: 'TARGET_EMPTY' }]);
+
+  const emptyMissingRecovery = emptyContentOriginal();
+  emptyMissingRecovery.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [], errors: [] });
+  const emptyMissingScope = entryEvidenceScope(emptyMissingRecovery, token, cutoff);
+  assert.equal(emptyMissingScope.complete, false, 'an unbound recovery response cannot close the original empty_content gap');
+  assert.deepEqual(emptyMissingScope.gaps, []);
+
+  const emptyFailedRecovery = emptyContentOriginal();
+  emptyFailedRecovery.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(emptyFailedRecovery, token, blockedUrl);
+  emptyFailedRecovery.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ error: 'HTTP 503 transport failure' });
+  const emptyFailedScope = entryEvidenceScope(emptyFailedRecovery, token, cutoff);
+  assert.equal(emptyFailedScope.complete, false, 'a failed recovery search leaves empty_content unresolved');
+  assert.deepEqual(emptyFailedScope.gaps, []);
+
+  const emptyTimeoutRecovery = emptyContentOriginal();
+  const timeoutFetch = JSON.parse(emptyTimeoutRecovery.rawArtifacts['attention-fetch-1']!) as {
+    results: Array<Record<string, unknown>>; errors: Array<Record<string, unknown>>;
+  };
+  timeoutFetch.errors[0] = { url: blockedUrl, error: 'timeout' };
+  emptyTimeoutRecovery.rawArtifacts['attention-fetch-1'] = JSON.stringify(timeoutFetch);
+  emptyTimeoutRecovery.codes = ['ATT_FETCH_TIMEOUT'];
+  emptyTimeoutRecovery.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(emptyTimeoutRecovery, token, blockedUrl);
+  emptyTimeoutRecovery.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [], errors: [] });
+  const emptyTimeoutScope = entryEvidenceScope(emptyTimeoutRecovery, token, cutoff);
+  assert.equal(emptyTimeoutScope.complete, false, 'a successful no-results search cannot erase the original timeout');
+  assert.deepEqual(emptyTimeoutScope.gaps, []);
 
   const terminalAlternate = blockedOriginal();
   terminalAlternate.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(terminalAlternate, token, blockedUrl);
@@ -1001,6 +1199,133 @@ test('public-support scope requires completed recovery for blocked original sour
     assert.ok(scope.blockers.includes('ATT_ENTRY_ORIGIN_RECOVERY_INCOMPLETE'), name);
     assert.equal(scope.gaps.some(gap => gap.url === blockedUrl), false, name);
   }
+});
+
+test('fresh original-role access gaps require the role Fetch HTTP receipt and bind to its own body', () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const blockedUrl = 'https://public.example/river-lantern-launch';
+  const alternateUrl = 'https://independent.example/river-lantern-launch-record';
+  const originText = `River Lantern token ${token.address}; the project launch page is ${blockedUrl}.`;
+  const alternateText = `An independent public index describes River Lantern launch activity and token ${token.address}.`;
+  const cutoff = '2026-10-19T18:30:00.000Z';
+  const result = (url: string, title: string, snippet: string) => ({ url, title, snippet });
+  const search = { results: [
+    result(originUrl, 'River Lantern origin', 'A project page about its launch.'),
+    result(blockedUrl, 'River Lantern launch page', 'An indexed original project launch page.'),
+    result(alternateUrl, 'River Lantern launch record', 'An independent launch record.'),
+  ], errors: [] };
+  const makeRead = (roleStatus: number | null = 200): AttentionRead => {
+    const read: AttentionRead = {
+      entryEvidenceMethod: 'public-support-v2', entryExecutionMethod: 'entry-first-v2',
+      comparisonRecovery: { method: 'comparison-acquisition-v1', accessGapMethod: 'own-acquired-alternates-v1',
+        selectedLeadIds: [], recoveryQueries: [], recoveryCapped: false, sourceLineage: [] },
+      sources: [
+        { id: 'origin-source', url: originUrl, text: originText, publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' },
+        { id: 'earlier-alternate-source', url: alternateUrl, text: alternateText, publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' },
+      ],
+      rawArtifacts: {
+        'attention-search-1': JSON.stringify(search), 'attention-search-2': JSON.stringify(search),
+        'attention-search-3': JSON.stringify({ results: [], errors: [] }),
+        'attention-fetch-1': JSON.stringify({ results: [
+          { url: originUrl, final_url: originUrl, text: originText },
+          { url: alternateUrl, final_url: alternateUrl, text: alternateText },
+        ], errors: [{ url: blockedUrl, error: 'timeout' }] }),
+        'attention-fetch-1-retry-1': JSON.stringify({ results: [], errors: [{ url: blockedUrl, error: 'timeout' }] }),
+        'attention-http-outcomes': JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+          { artifactId: 'attention-fetch-1', status: 200 },
+          { artifactId: 'attention-fetch-1-retry-1', status: 200 },
+        ] }),
+        'attention-origin-role-1-search-query': '',
+        'attention-origin-role-1-search': JSON.stringify({ results: [{ url: alternateUrl }], errors: [] }),
+        // The same page body was retained by an earlier successful Fetch. The
+        // role receipt must still prove this required role Fetch succeeded.
+        'attention-origin-role-1-fetch': JSON.stringify({ results: [
+          { url: alternateUrl, final_url: alternateUrl, text: alternateText },
+        ], errors: [] }),
+        'attention-origin-http-outcomes': JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+          { artifactId: 'attention-origin-role-1-search', status: 200 },
+          ...(roleStatus === null ? [] : [{ artifactId: 'attention-origin-role-1-fetch', status: roleStatus }]),
+        ] }),
+      },
+      queries: [`"${token.address}" ${token.chain} origin`, `"${token.address}" public source`, 'comparison search'],
+      complete: false, codes: ['ATT_FETCH_URL_ERROR'], start: cutoff, end: cutoff,
+      discoveryUrls: [originUrl, blockedUrl, alternateUrl], comparisonSourceIds: [], comparisonComplete: false,
+      comparisonAcquisition: { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 0, leads: [] },
+    };
+    read.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(read, token, blockedUrl);
+    // The original request and its bounded retry both timed out at the target
+    // URL inside successful HTTP responses; the alternate was already retained.
+    return read;
+  };
+
+  const eligibleRead = makeRead();
+  const eligible = entryEvidenceScope(eligibleRead, token, cutoff);
+  assert.equal(eligible.complete, true, JSON.stringify(eligible));
+  assert.deepEqual(eligible.gaps, [{ url: blockedUrl, code: 'TARGET_ACCESS_GAP', cause: 'ATT_FETCH_TIMEOUT',
+    originalAttemptIds: ['attention-fetch-1', 'attention-fetch-1-retry-1'], originalRoleId: 'attention-origin-role-1',
+    queryIds: ['attention-origin-role-1-search'], alternativeSourceIds: ['earlier-alternate-source'] }]);
+
+  const requestTimeoutRead = makeRead();
+  requestTimeoutRead.codes = ['ATT_FETCH_TIMEOUT'];
+  const requestTimeoutScope = entryEvidenceScope(requestTimeoutRead, token, cutoff);
+  assert.equal(requestTimeoutScope.complete, false, 'a provider/request timeout remains an operational blocker');
+  assert.ok(requestTimeoutScope.blockers.includes('ATT_FETCH_TIMEOUT'));
+
+  const blocked = (name: string, mutate: (read: AttentionRead) => void, expected?: string) => {
+    const read = makeRead();
+    mutate(read);
+    const scope = entryEvidenceScope(read, token, cutoff);
+    assert.equal(scope.complete, false, `${name}: ${JSON.stringify(scope)}`);
+    assert.equal(scope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false, `${name} cannot certify the original gap`);
+    if (expected) assert.ok(scope.blockers.includes(expected), `${name}: ${scope.blockers.join(', ')}`);
+  };
+  for (const [status, code] of [[503, 'ATT_FETCH_HTTP_503'], [429, 'ATT_FETCH_HTTP_429']] as const) {
+    blocked(`own role Fetch HTTP ${status}`, read => {
+      const proof = JSON.parse(read.rawArtifacts['attention-origin-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+      proof.outcomes.find(row => row.artifactId === 'attention-origin-role-1-fetch')!.status = status;
+      read.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify(proof);
+    }, code);
+  }
+  blocked('missing own role Fetch HTTP outcome row', read => {
+    const proof = JSON.parse(read.rawArtifacts['attention-origin-http-outcomes']!) as { outcomes: Array<{ artifactId: string }> };
+    proof.outcomes = proof.outcomes.filter(row => row.artifactId !== 'attention-origin-role-1-fetch');
+    read.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify(proof);
+  }, 'ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE');
+  blocked('missing own role HTTP receipt', read => { delete read.rawArtifacts['attention-origin-http-outcomes']; },
+    'ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE');
+  blocked('missing own role Fetch artifact', read => { delete read.rawArtifacts['attention-origin-role-1-fetch']; });
+  blocked('own role Fetch omits the selected row', read => {
+    read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [], errors: [] });
+  });
+  blocked('own role Fetch redirects away from the selected URL', read => {
+    read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [
+      { url: alternateUrl, final_url: 'https://elsewhere.example/redirected', text: alternateText },
+    ], errors: [] });
+  });
+  blocked('own role Fetch includes an unselected result URL', read => {
+    const searchRows = JSON.parse(read.rawArtifacts['attention-origin-role-1-search']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+    searchRows.results.push({ url: 'https://public.example/same-host-result', title: 'Same host', snippet: 'Excluded from different-host corroboration.' });
+    read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify(searchRows);
+    read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [
+      { url: alternateUrl, final_url: alternateUrl, text: alternateText },
+      { url: 'https://public.example/same-host-result', final_url: 'https://public.example/same-host-result', text: 'Unexpected unselected result.' },
+    ], errors: [] });
+  });
+  blocked('own role Fetch body differs from the retained source', read => {
+    read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [
+      { url: alternateUrl, final_url: alternateUrl, text: alternateText + ' altered after acquisition' },
+    ], errors: [] });
+  });
+  blocked('role Search HTTP failure', read => {
+    const proof = JSON.parse(read.rawArtifacts['attention-origin-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+    proof.outcomes.find(row => row.artifactId === 'attention-origin-role-1-search')!.status = 503;
+    read.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify(proof);
+  }, 'ATT_FETCH_HTTP_503');
+  blocked('role Search receipt missing', read => {
+    const proof = JSON.parse(read.rawArtifacts['attention-origin-http-outcomes']!) as { outcomes: Array<{ artifactId: string }> };
+    proof.outcomes = proof.outcomes.filter(row => row.artifactId !== 'attention-origin-role-1-search');
+    read.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify(proof);
+  }, 'ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE');
 });
 
 test('public-support scope requires an effective Fetch outcome for each actual selected comparison URL', async () => {
@@ -1303,6 +1628,193 @@ test('safe discovery seeds lead the fetch queue and only approved one-level link
   assert.ok(fetchBatches.flat().length <= 20);
 });
 
+test('fresh Pump coin context skips shared platform docs without starving indexed and project posts', async () => {
+  const pumpCoin = `https://pump.fun/coin/${token.address}`;
+  const projectHome = 'https://river-lantern.example/';
+  const projectDocs = 'https://river-lantern.example/docs/token-contract';
+  const projectProfile = 'https://x.com/river_lantern';
+  const ownPosts = ['https://x.com/river_lantern/status/9101', 'https://x.com/river_lantern/status/9102'];
+  const indexedPosts = Array.from({ length: 24 }, (_, index) => `https://x.com/writer${index % 4}/status/${9200 + index}`);
+  const globalDocs = Array.from({ length: 20 }, (_, index) => `https://pump.fun/docs/platform-${index + 1}`);
+  const globalLegal = ['https://pump.fun/terms', 'https://pump.fun/privacy'];
+  const linkedGlobalPages = [...globalLegal, globalDocs[0]!, globalDocs[1]!, ...globalDocs.slice(2)];
+  const discoveryUrls = [pumpCoin, projectHome, projectProfile];
+
+  const collect = async (fresh: boolean) => {
+    const fetched: string[] = [];
+    let searchIndex = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) {
+        const page = searchIndex++;
+        return search((page === 0 ? indexedPosts.slice(0, 12) : indexedPosts.slice(12)));
+      }
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetched.push(...requested);
+      return json({ results: requested.map(requestedUrl => {
+        const links = requestedUrl === pumpCoin ? linkedGlobalPages
+          : requestedUrl === projectHome ? [projectDocs]
+            : requestedUrl === projectProfile ? ownPosts : [];
+        const isPost = /\/status\/\d+$/.test(requestedUrl);
+        return { ...fetchResult(requestedUrl, `River Lantern source names ${token.address} and describes its project context.`, isPost ? '2026-10-01T10:00:00Z' : undefined), ...(links.length ? { links } : {}) };
+      }), errors: [] });
+    });
+    const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined,
+      discoveryUrls, undefined, fresh ? 'public-support-v2' : undefined);
+    return { read, fetched };
+  };
+
+  assert.deepEqual(originSeedLinks(pumpCoin, [globalDocs[0]!]), [globalDocs[0]], 'the markerless helper preserves historical behavior');
+  assert.deepEqual(originSeedLinks(pumpCoin, [globalDocs[0]!], 'project-context-v2'), [], 'the fresh helper excludes shared Pump navigation');
+
+  const fresh = await collect(true);
+  assert.equal(fresh.read.collectionMethod, 'project-context-v2');
+  assert.equal(fresh.read.sources.length, 30, 'three seeds, one project docs page, two own posts, and twenty-four indexed posts fit');
+  assert.deepEqual(fresh.read.codes, []);
+  assert.equal(fresh.read.postSampleComplete, true);
+  assert.equal(fresh.read.sources.some(source => source.url === projectDocs), true, 'ordinary project documentation remains eligible');
+  assert.ok(ownPosts.every(url => fresh.read.sources.some(source => source.url === url)), 'the profile’s own original posts are retained');
+  assert.ok(indexedPosts.every(url => fresh.read.sources.some(source => source.url === url)), 'indexed post coverage survives shared-platform link expansion');
+  assert.equal(fresh.fetched.some(url => linkedGlobalPages.includes(url)), false, 'global legal and platform docs never enter the fresh Fetch queue');
+  const pumpReceipt = Object.values(fresh.read.rawArtifacts).map(raw => JSON.parse(raw) as { results?: Array<{ url: string; links?: string[] }> })
+    .flatMap(packet => packet.results ?? []).find(result => result.url === pumpCoin);
+  assert.deepEqual(pumpReceipt?.links, linkedGlobalPages, 'the original provider receipt remains available for audit');
+
+  const legacy = await collect(false);
+  assert.equal(legacy.read.collectionMethod, undefined, 'the legacy route keeps the method marker absent');
+  assert.ok(legacy.read.codes.includes('ATT_PAGE_CAP'), 'markerless Pump docs retain their historical shared-page-cap effect');
+  assert.ok(legacy.read.sources.some(source => globalDocs.includes(source.url)), 'markerless collection still follows an eligible Pump docs link');
+});
+
+test('project-context-v2 keeps its 40-page initial budget and leaves eight recovery slots within 64 sources', async () => {
+  const pumpCoin = `https://pump.fun/coin/${token.address}`;
+  const projectHome = 'https://river-lantern.example/';
+  const projectProfile = 'https://x.com/river_lantern';
+  const projectAnnouncement = 'https://river-lantern.example/announcements';
+  const projectDocs = Array.from({ length: 6 }, (_, index) => `https://river-lantern.example/docs/project-context-${index + 1}`);
+  const globalPumpPages = [
+    'https://pump.fun/terms', 'https://pump.fun/privacy',
+    ...Array.from({ length: 20 }, (_, index) => `https://pump.fun/docs/platform-${index + 1}`),
+  ];
+  const indexedPosts = [
+    ...Array.from({ length: 10 }, (_, index) => `https://x.com/writer_a/status/${9400 + index}`),
+    ...Array.from({ length: 10 }, (_, index) => `https://x.com/writer_b/status/${9500 + index}`),
+  ];
+  const comparisonPages = Array.from({ length: 10 }, (_, index) => `https://independent.example/market-record-${index + 1}`);
+  const queryResults = [indexedPosts.slice(0, 10), indexedPosts.slice(10), comparisonPages];
+  const fetched: string[] = [];
+  let searchIndex = 0;
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const rows = queryResults[searchIndex++] ?? [];
+      return json({ results: rows.map((item, index) => ({ url: item, title: `River Lantern public source ${index + 1}`, snippet: `A retained independent source mentions ${token.address}.` })), errors: [] });
+    }
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(requestedUrl => {
+      const links = requestedUrl === pumpCoin ? globalPumpPages : requestedUrl === projectHome ? projectDocs : [];
+      const isPost = /\/status\/\d+$/.test(requestedUrl);
+      return {
+        ...fetchResult(requestedUrl, `River Lantern original public source ${token.address} ${requestedUrl}.`, isPost ? '2026-10-01T10:00:00Z' : undefined),
+        ...(links.length ? { links } : {}),
+      };
+    }), errors: [] });
+  });
+  const seeds = [pumpCoin, projectHome, projectProfile, projectAnnouncement];
+  const initial = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', 'River Lantern',
+    seeds, undefined, 'public-support-v2');
+
+  assert.equal(initial.collectionMethod, 'project-context-v2');
+  assert.equal(attentionInitialPageLimit(initial), 40);
+  assert.equal(attentionSourceLimit(initial), 64);
+  assert.equal(initial.sources.length, 40);
+  assert.equal(initial.codes.includes('ATT_PAGE_CAP'), false);
+  assert.ok(projectDocs.every(url => initial.sources.some(source => source.url === url)),
+    'ordinary project documentation uses the added initial slots');
+  assert.ok(indexedPosts.every(url => initial.sources.some(source => source.url === url)),
+    'both complete indexed post pages survive project-context collection');
+  assert.ok(comparisonPages.every(url => initial.sources.some(source => source.url === url)));
+  assert.equal(fetched.some(url => globalPumpPages.includes(url)), false,
+    'Pump global legal/navigation links do not consume project identity capacity');
+
+  const parent = initial.comparisonAcquisition!.leads[0]!;
+  assert.ok(parent.url);
+  const recoveryPages = Array.from({ length: 8 }, (_, index) => `https://recovery.example/market-alternate-${index + 1}`);
+  const recoveryFetched: string[][] = [];
+  const recoveryMock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return json({
+      results: recoveryPages.map((item, index) => ({ url: item, title: `Independent alternate ${index + 1}`, snippet: 'A separate indexed market source.' })),
+      errors: [],
+    });
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    recoveryFetched.push(requested);
+    return json({ results: requested.map(item => fetchResult(item, `Independent alternate evidence for ${token.address}.`)), errors: [] });
+  });
+  const recoveryLimit = Math.min(8, attentionSourceLimit(initial) - initial.sources.length);
+  const recovery = await recoverComparisonSources(token, KEY, ['Find independent alternate sources for the indexed market record'],
+    [...initial.sources.map(source => source.url), parent.url], recoveryLimit, recoveryMock.fetcher,
+    () => '2026-10-01T12:00:00.000Z', [{ leadId: parent.id, originalUrl: parent.url }], true, 'public-support-v2');
+  const merged = { ...initial, sources: [...initial.sources, ...recovery.sources.map(source => ({
+    ...source, id: source.id.replace(/^attention-/, 'attention-recovery-'),
+  }))] };
+
+  assert.equal(recoveryLimit, 8);
+  assert.deepEqual(recoveryFetched, [recoveryPages]);
+  assert.equal(recovery.sources.length, 8);
+  assert.equal(merged.sources.length, 48);
+  assert.equal(merged.sources.length <= attentionSourceLimit(merged), true);
+  assert.equal(attentionSubmittedSources(merged).length, 48,
+    'the submitted source catalog retains all eight newly acquired pages');
+});
+
+test('IPFS recovery accepts only a whole JSON fence whose bytes match the immutable CID', () => {
+  const sourceText = JSON.stringify({ name: 'River Lantern', symbol: 'LANTERN', mint: token.address, description: 'A neighborhood project.' });
+  const cidFor = (text: string) => {
+    const multihash = Buffer.concat([Buffer.from([1, 0x55, 0x12, 0x20]), createHash('sha256').update(text).digest()]);
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+    let bits = 0, value = 0, encoded = '';
+    for (const byte of multihash) {
+      value = (value << 8) | byte;
+      bits += 8;
+      while (bits >= 5) { bits -= 5; encoded += alphabet[(value >> bits) & 31]; }
+    }
+    if (bits) encoded += alphabet[(value << (5 - bits)) & 31];
+    return `b${encoded}`;
+  };
+  const cid = cidFor(sourceText);
+  const originUrl = `https://ipfs.io/ipfs/${cid}`;
+  const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${cid}`;
+  const fenced = `\x60\x60\x60json\r\n${sourceText}\r\n\x60\x60\x60`;
+  const alias = { method: 'raw-cid-sha256-v1' as const, originUrl, sourceId: 'recovered-ipfs-json', responseId: 'attention-origin-fetch-1', resultIndex: 0 };
+  const source = { id: alias.sourceId, url: gatewayUrl, text: sourceText, kind: 'PAGE' as const,
+    publishedAt: null, authorId: null, availableAt: '2026-10-01T12:00:00.000Z' };
+  const receipt = (text: string, url = gatewayUrl) => ({ [alias.responseId]: JSON.stringify({ results: [{ url, final_url: url, text }], errors: [] }) });
+  const scope = (rawArtifacts: Record<string, string>) => originSourceScope({
+    sources: [source], rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+      ...rawArtifacts,
+    }, queries: [`"${token.address}" origin`, `"${token.address}" project`], complete: false, codes: [],
+    start: '2026-10-01T00:00:00.000Z', end: '2026-10-01T12:00:00.000Z', discoveryUrls: [originUrl],
+    originRecovery: { aliases: [alias], comparisonSupplementIds: [] },
+  } as AttentionRead, token);
+
+  assert.equal(verifyOriginAlias(alias, [source], receipt(fenced)), source,
+    'the complete JSON body may be unwrapped from a whole response fence after its SHA-256 CID matches');
+  assert.equal(scope(receipt(fenced)).complete, true,
+    'the verified canonical body is accepted when reconstructing the original public-source scope');
+  assert.equal(verifyOriginAlias(alias, [source], receipt(`\x60\x60\x60json\n${sourceText.replace('River Lantern', 'Other project')}\n\x60\x60\x60`)), null,
+    'changed JSON bytes do not qualify under the original CID');
+  const wrongCidUrl = `https://ipfs.io/ipfs/${cidFor(sourceText.replace('River Lantern', 'Other project'))}`;
+  const wrongCidAlias = { ...alias, originUrl: wrongCidUrl };
+  const wrongGateway = `https://gateway.pinata.cloud/ipfs/${wrongCidUrl.split('/').at(-1)}`;
+  assert.equal(verifyOriginAlias(wrongCidAlias, [{ ...source, url: wrongGateway }], receipt(fenced, wrongGateway)), null,
+    'a CID for other JSON bytes cannot authenticate the retained response');
+  assert.equal(verifyOriginAlias(alias, [source], receipt(`Provider commentary\n${fenced}`)), null,
+    'only the complete standalone JSON fence is eligible for normalization; surrounding prose remains part of the hash input');
+  assert.equal(scope(receipt(`Provider commentary\n${fenced}`)).complete, false,
+    'source-scope reconstruction rejects a prose-wrapped body instead of treating it as the original document');
+});
+
 test('five eligible project posts linked from an original profile complete the origin ledger within the shared page cap', async () => {
   const profile = 'https://x.com/river_lantern';
   const linkedPosts = Array.from({ length: 5 }, (_, index) => `https://x.com/river_lantern/status/${810 + index}`);
@@ -1460,6 +1972,81 @@ test('missing and redirected POST fetches invalidate only declared post-sample c
     assert.equal(read.sources.length, 0);
     assert.equal(read.postSampleComplete, false);
     assert.ok(read.codes.includes('ATT_FETCH_BINDING'));
+  });
+});
+
+test('terminal deleted-post scope requires a retained full body and treats only definitive 404/410 as gaps', async t => {
+  const retained = 'https://x.com/community/status/903';
+  const missing = 'https://x.com/community/status/904';
+  const retainedText = `A complete original post about ${token.address} and the project.`;
+  const collect = async (urls: string[], mode: '404' | '410' | '403' | '503' | 'missing' | 'full' | 'cap' | 'clipped') => {
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) return json({ results: urls.map(item => ({ url: item })), errors: [] });
+      const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      if (mode === 'full' || mode === 'cap') return json({ results: requested.map(item => fetchResult(item, retainedText)), errors: [] });
+      const results = requested.filter(item => item === retained).map(item => fetchResult(item,
+        mode === 'clipped' ? `${retainedText}${'x'.repeat(120_001)}` : retainedText));
+      if (mode === 'missing') return json({ results: [], errors: [] });
+      const status = mode === '404' || mode === 'clipped' ? 404 : mode === '410' ? 410 : mode === '403' ? 403 : 503;
+      const error = mode === '404' || mode === 'clipped' ? 'not_found' : mode === '410' ? 'not_found' : mode === '403' ? 'forbidden' : 'timeout';
+      return json({ results, errors: requested.filter(item => item !== retained).map(item => ({ url: item, status, error })) });
+    });
+    return collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined, [], undefined, 'public-support-v2');
+  };
+
+  for (const [status, code] of [['404', 'HTTP_404'], ['410', 'HTTP_410']] as const) await t.test(`HTTP ${status} is a terminal gap after full retained-body acquisition`, async () => {
+    const read = await collect([retained, missing], status);
+    assert.equal(read.postSampleScope?.complete, true, JSON.stringify(read.postSampleScope));
+    assert.deepEqual(read.postSampleScope?.sourceIds, [read.sources[0]?.id]);
+    assert.deepEqual(read.postSampleScope?.gaps, [{ url: missing, code }]);
+    assert.deepEqual(read.postSampleScope?.blockers, []);
+    assert.equal(read.postSampleComplete, false, 'the factual post sample remains incomplete despite its terminal gap classification');
+  });
+
+  for (const status of ['403', '503', 'missing'] as const) await t.test(`${status} remains unresolved`, async () => {
+    const read = await collect([retained, missing], status);
+    assert.equal(read.postSampleScope?.complete, false, JSON.stringify(read.postSampleScope));
+    assert.deepEqual(read.postSampleScope?.gaps, []);
+    assert.ok(read.postSampleScope?.blockers.includes('ATT_POST_SCOPE_UNRESOLVED'));
+  });
+
+  await t.test('full bodies without a deleted-post gap do not create a negative-only scope', async () => {
+    const read = await collect([retained, 'https://x.com/community/status/905'], 'full');
+    assert.equal(read.postSampleScope?.complete, false);
+    assert.deepEqual(read.postSampleScope?.gaps, []);
+    assert.deepEqual(read.postSampleScope?.blockers, []);
+  });
+
+  await t.test('a source cap cannot be treated as a terminal-gap scope', async () => {
+    const urls = Array.from({ length: 41 }, (_, index) => `https://x.com/community/status/${1000 + index}`);
+    const read = await collect(urls, 'cap');
+    assert.ok(read.codes.includes('ATT_PAGE_CAP'));
+    assert.equal(read.postSampleScope?.complete, false);
+    assert.ok(read.postSampleScope?.blockers.includes('ATT_POST_SCOPE_LIMIT_OR_BINDING'));
+    assert.ok(read.postSampleScope?.blockers.includes('ATT_POST_SCOPE_UNRESOLVED'));
+  });
+
+  await t.test('a clipped post body cannot count as retained evidence', async () => {
+    const read = await collect([retained, missing], 'clipped');
+    assert.ok(read.codes.includes('ATT_TEXT_CAP'));
+    assert.equal(read.postSampleScope?.complete, false);
+    assert.deepEqual(read.postSampleScope?.gaps, [{ url: missing, code: 'HTTP_404' }]);
+  });
+
+  await t.test('a later matching full-body retry overrides an earlier 404', async () => {
+    const read = await collect([retained, missing], '404');
+    const retainedSource = read.sources[0]!;
+    const recoveredSource = { ...retainedSource, id: 'recovered-post', url: missing };
+    read.sources.push(recoveredSource);
+    read.postSampleSourceIds = [retainedSource.id, recoveredSource.id];
+    read.rawArtifacts['attention-fetch-1-retry-1'] = JSON.stringify({
+      results: [fetchResult(missing, retainedText)], errors: [],
+    });
+
+    const scope = terminalPostScope(read);
+    assert.equal(scope.complete, false, 'complete negative-only scope still requires at least one remaining terminal gap');
+    assert.deepEqual(scope.gaps, []);
+    assert.deepEqual(scope.blockers, [], JSON.stringify({ scope, sources: read.sources.map(source => ({ id: source.id, url: source.url, kind: source.kind })), postSampleSourceIds: read.postSampleSourceIds }));
   });
 });
 

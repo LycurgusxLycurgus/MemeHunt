@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
 import { readLimitedText, fetchReadResponse } from './http.js';
 import { publicHttpsUrl } from './tinyfish.js';
-import type { AttentionRead, AttentionSource } from './attention.js';
+import { attentionInitialPageLimit, type AttentionRead, type AttentionSource } from './attention.js';
 import type { TokenRef } from '../domain/contracts.js';
 import { z } from 'zod';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -82,20 +82,21 @@ export function originRecoveryQuery(read:AttentionRead,token:TokenRef,url:string
 export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,tinyfishKey:string,geminiKey:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,routing?:SourceModelRouting):Promise<AttentionRead>{
   const missing=originRecoveryCandidates(read);
   const out:AttentionRead={...read,sources:[...read.sources],rawArtifacts:{...read.rawArtifacts},originExclusions:[]};
+  const outcome=(artifactId:string,status:number)=>{if(!read.entryEvidenceMethod)return;const id='attention-origin-http-outcomes',prior=out.rawArtifacts[id]?JSON.parse(out.rawArtifacts[id]).outcomes:[];out.rawArtifacts[id]=JSON.stringify({method:'fetch-http-outcomes-v1',outcomes:[...prior,{artifactId,status}]});};
   for(const [n,lead] of missing.entries()){
-    if(out.sources.length>=32)break;
+    if(out.sources.length>=attentionInitialPageLimit(out))break;
     const index=n+1,id=`attention-origin-role-${index}`;
     try{
       const query=originRecoveryQuery(read,token,lead.url);if(read.entryEvidenceMethod)out.rawArtifacts[id+'-search-query']=query;
       const searchUrl=new URL('https://api.search.tinyfish.ai/');searchUrl.searchParams.set('query',query);
-      const search=await fetchReadResponse(searchUrl.toString(),{headers:{'X-API-Key':tinyfishKey}},fetcher,15000),searchRaw=await readLimitedText(search,400000);out.rawArtifacts[id+'-search']=searchRaw;
+      const search=await fetchReadResponse(searchUrl.toString(),{headers:{'X-API-Key':tinyfishKey}},fetcher,15000),searchRaw=await readLimitedText(search,400000);out.rawArtifacts[id+'-search']=searchRaw;outcome(id+'-search',search.status);
       const found=JSON.parse(searchRaw);if(!search.ok||found.error||found.errors?.length||!Array.isArray(found.results))continue;
-      const urls=[...new Set<string>(found.results.flatMap((r:{url?:string})=>{const u=r.url&&publicHttpsUrl(r.url,true);return u&&new URL(u).hostname!==new URL(lead.url).hostname?[u]:[];}))].slice(0,Math.min(2,32-out.sources.length));
+      const urls=[...new Set<string>(found.results.flatMap((r:{url?:string})=>{const u=r.url&&publicHttpsUrl(r.url,true);return u&&new URL(u).hostname!==new URL(lead.url).hostname?[u]:[];}))].slice(0,Math.min(2,attentionInitialPageLimit(out)-out.sources.length));
       if(!urls.length)continue;
-      const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':tinyfishKey,'content-type':'application/json'},body:JSON.stringify({urls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000),raw=await readLimitedText(response,400000);out.rawArtifacts[id+'-fetch']=raw;
+      const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':tinyfishKey,'content-type':'application/json'},body:JSON.stringify({urls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000),raw=await readLimitedText(response,400000);out.rawArtifacts[id+'-fetch']=raw;outcome(id+'-fetch',response.status);
       const fetched=JSON.parse(raw);if(!response.ok||!Array.isArray(fetched.results)||!Array.isArray(fetched.errors))continue;
       const ids:string[]=[];
-      for(const r of fetched.results){if(ids.length>=urls.length||out.sources.length>=32||ids.some(id=>out.sources.find(s=>s.id===id)?.url===r.url)||!urls.includes(r.url)||(r.final_url??r.url)!==r.url||typeof r.text!=='string'||r.text.length<8||r.text.length>120000||ids.reduce((n,id)=>n+out.sources.find(s=>s.id===id)!.text.length,0)+r.text.length>120000||r.text.trim().toLowerCase()==='safety check')continue;const s:AttentionSource={id:`origin-role-page-${index}-${ids.length+1}`,url:r.url,text:r.text,kind:'PAGE',publishedAt:null,authorId:null,availableAt:now()};out.sources.push(s);ids.push(s.id);}
+      for(const r of fetched.results){if(ids.length>=urls.length||out.sources.length>=attentionInitialPageLimit(out)||ids.some(id=>out.sources.find(s=>s.id===id)?.url===r.url)||!urls.includes(r.url)||(r.final_url??r.url)!==r.url||typeof r.text!=='string'||r.text.length<8||r.text.length>120000||ids.reduce((n,id)=>n+out.sources.find(s=>s.id===id)!.text.length,0)+r.text.length>120000||r.text.trim().toLowerCase()==='safety check')continue;const s:AttentionSource={id:`origin-role-page-${index}-${ids.length+1}`,url:r.url,text:r.text,kind:'PAGE',publishedAt:null,authorId:null,availableAt:now()};out.sources.push(s);ids.push(s.id);}
       if(!ids.length)continue;
       const context=originContext(out,lead.url);
       const call=async<S extends z.ZodType>(suffix:string,prompt:string,schema:S)=>{out.rawArtifacts[id+'-'+suffix+'-prompt']=prompt;return (await requestSourceJson(prompt,schema,geminiKey,fetcher,(raw,retrying,attempt)=>{out.rawArtifacts[id+'-'+suffix+(attempt?`-transport-attempt-${attempt}`:'-response')]=raw;},delay,signal,'ATT_MODEL',routing)).value;};
@@ -119,6 +120,13 @@ function rawDigest(url:string):Buffer|null{
     return buffer.length===36&&buffer.subarray(0,4).equals(Buffer.from([1,0x55,0x12,0x20]))?buffer.subarray(4):null;
   }catch{return null;}
 }
+/** Markdown wrappers are removed only if the exact recovered bytes match the CID. */
+export function verifiedOriginText(originUrl:string,fetchedText:string):string|null{
+  const digest=rawDigest(originUrl);if(!digest)return null;
+  const text=fetchedText.replace(/\\_/g,'_'),fenced=/^\x60\x60\x60(?:json)?\r?\n([\s\S]*?)\r?\n\x60\x60\x60$/.exec(text);
+  for(const candidate of [text,...(fenced?[fenced[1]]:[])])try{if(createHash('sha256').update(candidate).digest().equals(digest)){JSON.parse(candidate);return candidate;}}catch{/* Non-JSON cannot qualify token metadata. */}
+  return null;
+}
 /** The only normalization is accepted when it restores the immutable content digest. */
 export function verifyOriginAlias(alias:OriginAlias,sources:AttentionSource[],rawArtifacts:Record<string,string>):AttentionSource|null{
   try{
@@ -126,22 +134,21 @@ export function verifyOriginAlias(alias:OriginAlias,sources:AttentionSource[],ra
     if(alias.method!=='raw-cid-sha256-v1'||!digest||!source||!Array.isArray(response.results)||!Array.isArray(response.errors)||!Number.isSafeInteger(alias.resultIndex))return null;
     const result=response.results[alias.resultIndex],cid=new URL(alias.originUrl).pathname.split('/')[2],gateway=`https://gateway.pinata.cloud/ipfs/${cid}`;
     if(result?.url!==gateway||(result.final_url??gateway)!==gateway||source.url!==gateway||typeof result.text!=='string')return null;
-    const text=result.text.replace(/\\_/g,'_');
-    if(text!==source.text||!createHash('sha256').update(text).digest().equals(digest))return null;
-    JSON.parse(text);return source;
+    const text=verifiedOriginText(alias.originUrl,result.text);
+    return text!==null&&text===source.text?source:null;
   }catch{return null;}
 }
 
 /** Free Fetch only, bounded supplements; these pages never become sampled participants. */
 export async function recoverOriginPages(read:AttentionRead,token:TokenRef,key:string,fetcher:typeof fetch,now:()=>string):Promise<AttentionRead>{
-  if(!read.sources.length||read.sources.length>=32||!read.originScope?.acquisition)return read;
+  if(!read.sources.length||read.sources.length>=attentionInitialPageLimit(read)||!read.originScope?.acquisition)return read;
   const missing=read.originScope.acquisition.urls.filter(u=>u.state==='UNAVAILABLE'||u.state==='OMITTED');
   const gateways=missing.flatMap(u=>rawDigest(u.url)?[{origin:u.url,url:`https://gateway.pinata.cloud/ipfs/${new URL(u.url).pathname.split('/')[2]}`}]:[]).slice(0,1);
   const dexLead=read.comparisonAcquisition?.leads.some(l=>l.url&&new URL(l.url).hostname.replace(/^www\./,'')==='dexscreener.com'&&l.acquisitionStatus!=='ACQUIRED');
   const dexUrl=`https://api.dexscreener.com/token-pairs/v1/${token.chain}/${token.address}`;
   const poolLead=token.chain==='solana'?read.comparisonAcquisition?.leads.find(l=>l.acquisitionStatus!=='ACQUIRED'&&geckoPoolApiUrl(l.url)):undefined;
   const poolUrl=poolLead?geckoPoolApiUrl(poolLead.url):null;
-  const urls=[...gateways.map(g=>g.url),...(dexLead?[dexUrl]:[]),...(poolUrl?[poolUrl]:[])].slice(0,32-read.sources.length);
+  const urls=[...gateways.map(g=>g.url),...(dexLead?[dexUrl]:[]),...(poolUrl?[poolUrl]:[])].slice(0,attentionInitialPageLimit(read)-read.sources.length);
   if(!urls.length)return read;
   const rawArtifacts={...read.rawArtifacts},sources=[...read.sources],recovery:OriginRecovery={aliases:[],comparisonSupplementIds:[]},id='attention-origin-fetch-1';
   try{
@@ -149,9 +156,10 @@ export async function recoverOriginPages(read:AttentionRead,token:TokenRef,key:s
     const raw=await readLimitedText(response,400000);rawArtifacts[id]=raw;const value=JSON.parse(raw);
     if(!response.ok||!Array.isArray(value.results)||!Array.isArray(value.errors))return {...read,rawArtifacts};
     for(const [resultIndex,result] of value.results.entries()){
-      if(sources.length>=32||sources.some(s=>s.url===result?.url)||!urls.includes(result?.url)||typeof result.text!=='string'||(result.final_url??result.url)!==result.url||!publicHttpsUrl(result.url,true))continue;
-      const source:AttentionSource={id:`attention-origin-page-${sources.length+1}`,url:result.url,text:result.text.replace(/\\_/g,'_'),kind:'PAGE',availableAt:now(),authorId:null,publishedAt:null};
-      const gateway=gateways.find(g=>g.url===result.url);
+      if(sources.length>=attentionInitialPageLimit(read)||sources.some(s=>s.url===result?.url)||!urls.includes(result?.url)||typeof result.text!=='string'||(result.final_url??result.url)!==result.url||!publicHttpsUrl(result.url,true))continue;
+      const gateway=gateways.find(g=>g.url===result.url),text=gateway?verifiedOriginText(gateway.origin,result.text):result.text.replace(/\\_/g,'_');
+      if(text===null)continue;
+      const source:AttentionSource={id:`attention-origin-page-${sources.length+1}`,url:result.url,text,kind:'PAGE',availableAt:now(),authorId:null,publishedAt:null};
       if(gateway){const alias:OriginAlias={method:'raw-cid-sha256-v1',originUrl:gateway.origin,sourceId:source.id,responseId:id,resultIndex};if(!verifyOriginAlias(alias,[source],rawArtifacts))continue;recovery.aliases.push(alias);}
       else{
         if(result.url===poolUrl){if(!geckoPoolBinding(source,poolLead!.url))continue;}

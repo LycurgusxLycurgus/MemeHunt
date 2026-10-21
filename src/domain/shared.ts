@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
-import { evaluateEntry } from './policy.js';
+import { evaluateEntry, type EntryEvidenceGates } from './policy.js';
 import { sharedPolicyFactsSchema, type FeatureResult, type EvidenceRecord, type Observation, type Profile, type SocialPolicyFacts, type TokenRef } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
 import type { AttentionSource } from '../providers/attention.js';
@@ -20,15 +20,21 @@ export type SharedInputs={qualityMode?:'ENTRY_GATES_V1';token:TokenRef;cutoff:st
 /** A reviewed entry-support decision does not resolve factual candidate binding. */
 export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|undefined{
  const a=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN'),d=a?.data as {entryDecisionMethod?:string;decision?:{verdict?:string}}|null|undefined;
- return !!d&&['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
+ return !!d&&['binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes(d.entryDecisionMethod??'')&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
+}
+/** Negative entry evidence grades retain unknown factual counts and growth. */
+export function attentionEntryGates(baseline:BaselineAssessment[]):EntryEvidenceGates|undefined{
+ const gates:EntryEvidenceGates={};
+ for(const [id,criterion,key]of [['A15','ATT-01','sample'],['A18','ATT-02','growth']] as const){const a=baseline.find(a=>a.id===id&&a.quality!=='STALE'),d=a?.data as {method?:string;entryCriterion?:string;verdict?:string;postSampleScope?:{complete:boolean}}|null|undefined;if(d?.method==='entry-evidence-gate-v1'&&d.entryCriterion===criterion&&d.verdict==='FAIL'&&d.postSampleScope?.complete===true)gates[key]=false;}
+ return Object.keys(gates).length?gates:undefined;
 }
 /** Reuse the actual entry evaluator. Remove inputs only when the same decision survives. */
-export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean){
+export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean,entryGates?:EntryEvidenceGates){
   const mode=social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2';
-  const rows=evaluateEntry(features,profile,cutoff,mode,social,false,entryComparison).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
+  const rows=evaluateEntry(features,profile,cutoff,mode,social,false,entryComparison,entryGates).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
   return rows.map(row=>{
     let selected=[...features];
-    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social,false,entryComparison).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
+    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social,false,entryComparison,entryGates).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
     const featureIds=row.status==='UNKNOWN'?row.featureRefs:selected.map(f=>f.id);
     const socialIds=row.checkId.startsWith('SOC-')?social?.evidenceIds??[]:[];
     return {checkId:row.checkId,status:row.status as 'PASS'|'FAIL'|'UNKNOWN',featureIds,evidenceIds:[...new Set([...selected.filter(f=>featureIds.includes(f.id)).flatMap(f=>f.evidenceIds),...socialIds])],route:row.checkId.startsWith('SOC-')&&social?'qualified-social':row.checkId==='CAN-02'?'qualified-representation':'entry-policy'};
@@ -41,7 +47,7 @@ export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyF
     const data=a.data as {originBasis?:string;summary?:string;citations?:SharedClaim['citations']};
     if(data.summary&&data.citations)claims.push(sharedClaimSchema.parse({id:a.id,statement:data.originBasis==='PUBLIC_EVIDENCE_INADEQUATE'?`Reviewed public origin evidence is inadequate within the declared discovery sample: ${data.summary}. This is a traceability screening grade, not fraud or absence of origin everywhere.`:data.summary,citations:data.citations}));
   }
-  for(const a of baseline.filter(a=>['A09','A14'].includes(a.id)&&a.quality==='KNOWN')){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string;citations:SharedClaim['citations']}};if(['binary-public-support-v1','binary-public-support-v2'].includes(d.entryDecisionMethod??'')&&d.decision)claims.push(sharedClaimSchema.parse({id:a.id+':entry',statement:'Entry '+d.entryCriterion+' evidence standard '+d.decision.verdict+': '+d.decision.rationale+'. This is a bounded public-support judgment, not verified factual identity, origin, popularity or fraud.',citations:d.decision.citations}));}
+  for(const a of baseline.filter(a=>['A09','A14'].includes(a.id)&&a.quality==='KNOWN')){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string;citations:SharedClaim['citations']}};if(['binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes(d.entryDecisionMethod??'')&&d.decision)claims.push(sharedClaimSchema.parse({id:a.id+':entry',statement:'Entry '+d.entryCriterion+' evidence standard '+d.decision.verdict+': '+d.decision.rationale+'. This is a bounded public-support judgment, not verified factual identity, origin, popularity or fraud.',citations:d.decision.citations}));}
   const representation=baseline.find(a=>a.id==='A09'&&a.quality==='KNOWN');
   for(const a of baseline.filter(a=>['A01','A05'].includes(a.id)&&a.quality==='KNOWN')){
     const data=a.data as {method?:string;publicSupport?:{rationale:string;citations:SharedClaim['citations']}};
@@ -59,7 +65,7 @@ export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyF
 }
 
 export function deriveShared(input:SharedInputs){
-  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,input.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(input.baseline):undefined),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
+  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,input.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(input.baseline):undefined,input.qualityMode==='ENTRY_GATES_V1'?attentionEntryGates(input.baseline):undefined),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
   const selected=new Set(witnesses.filter(w=>w.status!=='UNKNOWN').flatMap(w=>w.featureIds));
   const freshness=[...selected].map(id=>{
     const f=input.features.find(f=>f.id===id)!,a=input.baseline.find(a=>a.id===id),data=a?.data as {window?:{end?:string};end?:string}|undefined;

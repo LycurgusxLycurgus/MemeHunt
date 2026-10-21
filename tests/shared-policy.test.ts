@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { entryDefinitions } from '../src/domain/catalog.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import { sharedWitnesses } from '../src/domain/shared.js';
+import { attentionEntryGates, deriveShared, sharedWitnesses } from '../src/domain/shared.js';
 import { SHARED_CUTOFF, sharedFixture } from './shared-fixtures.js';
 
 function setFeature(input: ReturnType<typeof sharedFixture>, id: string, changes: Record<string, unknown>) {
@@ -103,4 +103,55 @@ test('qualified social negatives use v4 judgments without requiring legacy scala
   assert.equal(legacySocial.status, 'UNKNOWN',
     'without validated v4 social facts, missing scalar coverage stays unresolved');
   assert.ok(legacySocial.featureIds.includes('S04'), 'the legacy scalar denominator still includes its historical proxy');
+});
+
+test('fresh terminal post-gap markers grade only negative attention gates and leave factual projections unknown', () => {
+  const input = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  const gapScope = {
+    method: 'terminal-post-gap-v1', complete: true, sourceIds: ['retained-post'],
+    gaps: [{ url: 'https://x.com/community/status/904', code: 'HTTP_404' }], blockers: [],
+  };
+  for (const [id, entryCriterion] of [['A15', 'ATT-01'], ['A18', 'ATT-02']] as const) {
+    const row = input.baseline.find(item => item.id === id)!;
+    row.data = { method: 'entry-evidence-gate-v1', entryCriterion, verdict: 'FAIL', postSampleScope: gapScope };
+  }
+  for (const id of ['A15', 'A16', 'A17', 'A18', 'S10']) setFeature(input, id, { value: null, quality: 'MISSING' });
+  setFeature(input, 'S10', { value: false, quality: 'KNOWN' });
+
+  assert.deepEqual(attentionEntryGates(input.baseline), { sample: false, growth: false });
+  const reviewed = deriveShared(input);
+  assert.equal(reviewed.facts.witnesses.find(item => item.checkId === 'ATT-01')?.status, 'FAIL');
+  assert.equal(reviewed.facts.witnesses.find(item => item.checkId === 'ATT-02')?.status, 'FAIL');
+  assert.equal(input.features.find(item => item.id === 'A16')?.value, null, 'post count remains unknown');
+  assert.equal(input.features.find(item => item.id === 'A17')?.value, null, 'author count remains unknown');
+  assert.equal(input.features.find(item => item.id === 'A18')?.value, null, 'growth remains unknown');
+
+  const communityAlternative = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  communityAlternative.baseline.find(item => item.id === 'A18')!.data = {
+    method: 'entry-evidence-gate-v1', entryCriterion: 'ATT-02', verdict: 'FAIL', postSampleScope: gapScope,
+  };
+  setFeature(communityAlternative, 'A18', { value: null, quality: 'MISSING' });
+  setFeature(communityAlternative, 'S10', { value: true, quality: 'KNOWN' });
+  assert.equal(deriveShared(communityAlternative).facts.witnesses.find(item => item.checkId === 'ATT-02')?.status, 'PASS',
+    'qualified community growth remains an independent passing route');
+
+  const measuredGrowth = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
+  measuredGrowth.baseline.find(item => item.id === 'A18')!.data = {
+    method: 'entry-evidence-gate-v1', entryCriterion: 'ATT-02', verdict: 'FAIL', postSampleScope: gapScope,
+  };
+  setFeature(measuredGrowth, 'A18', { value: true, quality: 'KNOWN' });
+  setFeature(measuredGrowth, 'S10', { value: false, quality: 'KNOWN' });
+  assert.equal(deriveShared(measuredGrowth).facts.witnesses.find(item => item.checkId === 'ATT-02')?.status, 'PASS',
+    'a measured positive growth result takes precedence over a negative-only marker');
+
+  const noCarrier = sharedFixture();
+  assert.equal(attentionEntryGates(noCarrier.baseline), undefined);
+  const staleCarrier = sharedFixture();
+  const staleRow = staleCarrier.baseline.find(item => item.id === 'A15')!;
+  staleRow.quality = 'STALE';
+  staleRow.data = { method: 'entry-evidence-gate-v1', entryCriterion: 'ATT-01', verdict: 'FAIL', postSampleScope: gapScope };
+  staleCarrier.baseline.find(item => item.id === 'A18')!.data = {
+    method: 'entry-evidence-gate-v1', entryCriterion: 'ATT-02', verdict: 'FAIL', postSampleScope: gapScope,
+  };
+  assert.deepEqual(attentionEntryGates(staleCarrier.baseline), { growth: false }, 'stale markers cannot supply a gate');
 });

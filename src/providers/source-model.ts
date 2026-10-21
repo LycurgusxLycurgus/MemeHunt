@@ -49,7 +49,8 @@ export function sourceSpans(sourceId:string,text:string,prefix='ATT_MODEL'):Sour
 }
 
 export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL',routing?:SourceModelRouting):Promise<{raw:string;value:z.output<S>}>{
-  if(packet.length>300000)throw new Error(`${prefix}_PACKET_LIMIT`);
+  // Larger full-source packets require real token admission; unpaced legacy calls keep their prior cap.
+  if(packet.length>(routing?.pacing?1000000:300000))throw new Error(`${prefix}_PACKET_LIMIT`);
   const body={...buildGeminiSemanticRequest('attention-source-review'),contents:[{role:'user',parts:[{text:packet}]}]};
   // Gemini's supported subset omits dialect and string-length keywords; Zod still enforces them locally.
   const jsonSchema=JSON.parse(JSON.stringify(z.toJSONSchema(schema),(name,value)=>{
@@ -74,7 +75,8 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
       let count=counts.get(model);
       if(!count){try{count=await countGeminiInput(model,payload,key,fetcher,signal);}catch(error){checkRun();throw error;}counts.set(model,count);}
       checkRun();
-      try{admission=await routing.pacing.admit(model,count.tokens,count.method,wait,signal);}catch(error){checkRun();throw error;}
+      if(packet.length>300000&&count.method!=='COUNT_TOKENS')throw new Error(`${prefix}_TOKEN_COUNT_UNAVAILABLE`);
+      try{admission=await routing.pacing.admit(model,count.tokens,count.method,wait,signal);}catch(error){checkRun();if(error instanceof Error&&error.message==='GEMINI_INPUT_BUDGET')throw new Error(`${prefix}_INPUT_TOKEN_LIMIT`);throw error;}
     }
     const local=AbortSignal.timeout(90000),started=Date.now();
     let phase:'RESPONSE_HEADERS'|'RESPONSE_BODY'='RESPONSE_HEADERS',retrying=false,quotaDelay:number|null=null,attemptRaw:string|undefined;

@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import BN from 'bn.js';
 import { Decimal } from 'decimal.js';
@@ -10,10 +14,11 @@ import {
   pumpPoolAuthorityPda, sellBaseInput,
 } from '@pump-fun/pump-swap-sdk';
 import { starterProfile } from '../src/app/config.js';
-import type { ControlFacts, HolderFacts } from '../src/domain/baseline.js';
-import type { TokenRef } from '../src/domain/contracts.js';
+import { deriveBaseline, type ControlFacts, type HolderFacts } from '../src/domain/baseline.js';
+import { Service } from '../src/app/service.js';
+import type { AssessmentDetails, LiveBundle, TokenRef } from '../src/domain/contracts.js';
 import { TOKEN_2022_PROGRAM, UPGRADEABLE_LOADER } from '../src/providers/solana.js';
-import { inspectPumpSwap } from '../src/providers/pumpswap.js';
+import { inspectPumpSwap, validatePumpRecoveryBundle, verifyPumpSlippage } from '../src/providers/pumpswap.js';
 
 const MINT = '3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump';
 const TOKEN: TokenRef = { chain: 'solana', address: MINT };
@@ -71,8 +76,10 @@ type Scenario = {
   feeResponses?: unknown[];
   feeErrors?: Array<{ code: number; message: string } | undefined>;
   blockhashes?: string[];
+  slippageSlot?: number;
+  retryCaptureSlot?: number;
   simulationFailure?:
-    | 'payer-delta' | 'base-delta' | 'existing-base-changed' | 'wrong-slot' | 'event-spend'
+    | 'payer-delta' | 'base-delta' | 'existing-base-changed' | 'wrong-slot' | 'event-spend' | 'slippage' | 'slippage-persistent' | 'slippage-wrong-program'
     | 'missing-vectors' | 'null-vectors' | 'missing-fee' | 'null-fee' | 'missing-token-vectors' | 'null-token-vectors'
     | 'missing-loaded-addresses' | 'null-loaded-addresses'
     | 'native-vector-length' | 'native-negative' | 'native-fractional' | 'native-unsafe'
@@ -230,6 +237,9 @@ async function fixture(scenario: Scenario = {}) {
   const methods: Array<{ method: string; params: unknown[] }> = [];
   let feeResponseIndex = 0;
   let blockhashIndex = 0;
+  let captureCount = 0;
+  let simulationCount = 0;
+  let dexCalls = 0;
   const poolAccounts = new Map<string, ReturnType<typeof rpcAccount>>([
     [poolKey.toBase58(), rpcAccount(PUMP_AMM_PROGRAM_ID, discoveredPool)],
     [GLOBAL_CONFIG_PDA.toBase58(), rpcAccount(PUMP_AMM_PROGRAM_ID, discoveryGlobalConfig)],
@@ -314,6 +324,7 @@ async function fixture(scenario: Scenario = {}) {
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
     if (url.startsWith('https://api.dexscreener.com/')) {
+      dexCalls++;
       if (scenario.failDex) return new Response('unavailable', { status: 503, headers: { 'retry-after': '11' } });
       return new Response(JSON.stringify([{
         chainId: 'solana', pairAddress: 'FixtureSolUsdc', dexId: 'raydium', url: 'https://dexscreener.com/solana/FixtureSolUsdc',
@@ -326,10 +337,15 @@ async function fixture(scenario: Scenario = {}) {
     methods.push(request);
     if (request.method === 'getMultipleAccounts') {
       const keys = request.params[0] as string[];
+      const options = request.params[1] as { minContextSlot?: number } | undefined;
       const discovery = keys.length === 3 && keys[0] === poolKey.toBase58();
       const capture = keys.length === 8 && keys[0] === poolKey.toBase58();
+      const captureIndex = capture ? captureCount++ : -1;
       const map = discovery ? poolAccounts : capture ? capturedAccounts : undefined;
-      let contextSlot = discovery ? scenario.discoverySlot ?? SLOT + 1 : capture ? scenario.captureSlot ?? SLOT + 2 : Math.max(SLOT + 1, scenario.captureSlot ?? SLOT + 2);
+      let contextSlot = discovery ? scenario.discoverySlot ?? SLOT + 1 : capture ? captureIndex === 0
+        ? scenario.captureSlot ?? SLOT + 2 : scenario.retryCaptureSlot ?? SLOT + 12
+        : Math.max(SLOT + 1, scenario.captureSlot ?? SLOT + 2);
+      contextSlot = Math.max(contextSlot, options?.minContextSlot ?? 0);
       if (capture && scenario.malformedCaptureSlot) contextSlot = (scenario.discoverySlot ?? SLOT + 1) - 1;
       return rpcResult({ context: { slot: contextSlot }, value: keys.map(key => {
         if (scenario.simulate && fundedPayerAddresses.has(key)) {
@@ -364,27 +380,32 @@ async function fixture(scenario: Scenario = {}) {
       }) });
     }
     if (request.method === 'getAccountInfo' && request.params[0] === PUMP_AMM_PROGRAM_ID.toBase58()) return rpcResult({
-      context: { slot: SLOT + methods.length }, value: rpcAccount(UPGRADEABLE_LOADER, header, { executable: true }),
+      context: { slot: Math.max(SLOT + methods.length, (request.params[1] as { minContextSlot?: number } | undefined)?.minContextSlot ?? 0) }, value: rpcAccount(UPGRADEABLE_LOADER, header, { executable: true }),
     });
     if (request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA.toBase58()) return rpcResult({
-      context: { slot: SLOT + methods.length }, value: rpcAccount(UPGRADEABLE_LOADER, programData),
+      context: { slot: Math.max(SLOT + methods.length, (request.params[1] as { minContextSlot?: number } | undefined)?.minContextSlot ?? 0) }, value: rpcAccount(UPGRADEABLE_LOADER, programData),
     });
     if (request.method === 'getLatestBlockhash') {
       const index = blockhashIndex++;
       const blockhash = scenario.blockhashes?.[index] ?? new PublicKey(Buffer.alloc(32, 44 + index)).toBase58();
-      return rpcResult({ context: { slot: SLOT + 3 + index }, value: { blockhash, lastValidBlockHeight: 10_000 + index } });
+      const floor = (request.params[0] as { minContextSlot?: number } | undefined)?.minContextSlot ?? 0;
+      return rpcResult({ context: { slot: Math.max(SLOT + 3 + index, floor) }, value: { blockhash, lastValidBlockHeight: 10_000 + index } });
     }
     if (request.method === 'getFeeForMessage') {
       const index = feeResponseIndex++;
       const error = scenario.feeErrors?.[index];
       if (error) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error }), { headers: { 'content-type': 'application/json' } });
       const value = scenario.feeResponses ? scenario.feeResponses[index] : networkFeeLamports;
-      return rpcResult({ context: { slot: SLOT + 1 }, value });
+      const floor = (request.params[1] as { minContextSlot?: number } | undefined)?.minContextSlot ?? 0;
+      return rpcResult({ context: { slot: Math.max(SLOT + 1, floor) }, value });
     }
     if (request.method === 'getMinimumBalanceForRentExemption') return rpcResult(rentLamports);
     if (request.method === 'simulateTransaction' && scenario.simulate) {
-      const failure = scenario.simulationFailure;
-      const params = request.params as [string, { accounts?: { addresses?: unknown[] } }];
+      const simulationIndex = simulationCount++;
+      const persistentSlippage = scenario.simulationFailure === 'slippage-persistent';
+      const refreshFailure = scenario.simulationFailure === 'slippage' || scenario.simulationFailure === 'slippage-wrong-program' || persistentSlippage;
+      const failure = refreshFailure && simulationIndex > 0 && !persistentSlippage ? undefined : scenario.simulationFailure;
+      const params = request.params as [string, { accounts?: { addresses?: unknown[] }; minContextSlot?: number }];
       const transaction = VersionedTransaction.deserialize(Buffer.from(params[0]!, 'base64'));
       const staticKeys = transaction.message.staticAccountKeys.map(key => key.toBase58());
       const [payerOutput, baseOutput, quoteOutput] = params[1]?.accounts?.addresses ?? [];
@@ -393,6 +414,23 @@ async function fixture(scenario: Scenario = {}) {
       const quoteIndex = staticKeys.indexOf(quoteAta.toBase58());
       if (payerIndex !== 0 || baseIndex < 0 || quoteIndex < 0 || payerOutput !== simulationPayer.toBase58() || baseOutput !== baseAta.toBase58() || quoteOutput !== quoteAta.toBase58()) {
         throw new Error('FIXTURE_SIMULATION_REQUEST_DOES_NOT_MATCH_COMPILED_MESSAGE');
+      }
+      if (refreshFailure && (simulationIndex === 0 || persistentSlippage)) {
+        const buyDiscriminator = Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(instruction => instruction.name === 'buy')!.discriminator);
+        const instructionIndex = transaction.message.compiledInstructions.findIndex(instruction =>
+          staticKeys[instruction.programIdIndex] === PUMP_AMM_PROGRAM_ID.toBase58()
+          && Buffer.from(instruction.data).subarray(0, buyDiscriminator.length).equals(buyDiscriminator));
+        assert.notEqual(instructionIndex, -1, 'slippage fixture points to the actual Pump buy instruction in the compiled transaction');
+        const program = scenario.simulationFailure === 'slippage-wrong-program' ? PUMP_AMM_FEE_CONFIG_PDA : PUMP_AMM_PROGRAM_ID;
+        const contextSlot = Math.max(scenario.slippageSlot ?? SLOT + 10, params[1]?.minContextSlot ?? SLOT + 2);
+        return rpcResult({ context: { slot: contextSlot }, value: {
+          err: { InstructionError: [instructionIndex, { Custom: 6004 }] },
+          logs: [
+            `Program ${program.toBase58()} invoke [1]`,
+            'Program log: Error Code: ExceededSlippage. Error Number: 6004.',
+            `Program ${program.toBase58()} failed: custom program error: 0x1774`,
+          ],
+        } });
       }
 
       const preBalances = Array<number>(staticKeys.length).fill(0);
@@ -474,12 +512,13 @@ async function fixture(scenario: Scenario = {}) {
       if (failure === 'post-wsol') postBalances[quoteIndex] = 1;
       if (failure === 'pre-wsol') preBalances[quoteIndex] = 1;
       const captureSlot = scenario.captureSlot ?? SLOT + 2;
-      const contextSlot = failure === 'wrong-slot' ? Math.max(0, captureSlot - 1) : captureSlot;
+      const contextSlot = failure === 'wrong-slot' ? Math.max(0, captureSlot - 1) : Math.max(captureSlot, params[1]?.minContextSlot ?? captureSlot);
       return rpcResult({ context: { slot: contextSlot }, value: simValue });
     }
     throw new Error(`UNEXPECTED_MOCK_RPC_${request.method}`);
   };
-  return { fetcher, methods, poolKey, baseVault, quoteVault, lpMint, payer: PAYER, expectedBaseAtomic: expectedBuy.base.toString(), baseAta, quoteAta };
+  return { fetcher, methods, poolKey, baseVault, quoteVault, lpMint, payer: PAYER, expectedBaseAtomic: expectedBuy.base.toString(), baseAta, quoteAta,
+    get captureCount() { return captureCount; }, get dexCalls() { return dexCalls; } };
 }
 
 const controls: ControlFacts = {
@@ -550,7 +589,7 @@ test('canonical PumpSwap binding and SDK quotes use the requested USD size and a
   assert.ok(BigInt(quote.actualEntryAtomic) > 0n);
   assert.ok(BigInt(quote.exitAtomic) > 0n);
   assert.deepEqual(read.inspection.evidenceIds, [
-    'rpc-genesis', 'pump-pool-config', 'pump-mints-vaults', 'pump-program', 'pump-program-data', 'pump-sol-usd', 'pump-simulation-fallback-payers', 'pump-quote-calculation',
+    'rpc-genesis', 'pump-pool-config', 'pump-mints-vaults', 'pump-program', 'pump-program-data', 'pump-sol-usd', 'pump-simulation-payers', 'pump-simulation-fallback-payers', 'pump-quote-calculation',
   ]);
   assert.deepEqual(Object.keys(read.retrievedAt).sort(), Object.keys(read.rawArtifacts).sort());
   assert.ok(Object.values(read.retrievedAt).every(at => at === AT));
@@ -960,8 +999,9 @@ test('funded deterministic candidate account permits unsigned round-trip reconci
   assert.equal(proof.feeLamports, '7500');
   assert.equal(proof.setupLamports, '2064280');
   const holderPayerProbe = f.methods.find(call => call.method === 'getMultipleAccounts'
-    && (call.params[0] as string[]).length === 1 && (call.params[0] as string[])[0] === f.payer.toBase58());
-  assert.ok(holderPayerProbe, 'the observed holder owner is checked before configured fallback accounts');
+    && (call.params[0] as string[]).length === 2 && (call.params[0] as string[])[0] === f.payer.toBase58());
+  assert.ok(holderPayerProbe, 'the observed holder and verified pool coin creator are checked before configured fallback accounts');
+  assert.deepEqual(holderPayerProbe.params[0], [f.payer.toBase58(), new PublicKey(Buffer.alloc(32, 7)).toBase58()]);
   assert.equal(read.rawArtifacts['pump-simulation-fallback-payers'], undefined, 'a funded observed holder prevents fallback probing');
   assert.equal(f.methods.some(call => /sendtransaction/i.test(call.method)), false, 'execution remains unsigned and is never broadcast');
 });
@@ -1081,6 +1121,43 @@ test('holder payer selection checks each funded candidate with both ATAs and cho
   assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), true);
 });
 
+test('a funded sixth observed holder can satisfy real ATA and fee simulation after the first five are unfunded', async () => {
+  const owners = Array.from({ length: 6 }, (_, index) => new PublicKey(Buffer.alloc(32, 80 + index)));
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: owners.map((owner, index) => ({
+      address: `ordered-holder-token-account-${index + 1}`, owner: owner.toBase58(), amount: String(6 - index),
+    })),
+  };
+  const sixth = owners[5]!;
+  const f = await fixture({ simulate: true, additionalFundedPayers: [sixth], simulationPayer: sixth });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT);
+
+  assert.equal(read.venue?.costsReconciled, true, 'the selected sixth holder completed quote, fee, and roundtrip proof');
+  assert.deepEqual(read.venue?.simulation, { setupVerified: true, buySucceeded: true, sellSucceeded: true });
+  assert.equal(read.inspection.errors.simulation, undefined);
+  const candidateProbe = f.methods.find(call => call.method === 'getMultipleAccounts'
+    && (call.params[0] as string[]).length === owners.length + 1
+    && (call.params[0] as string[])[0] === owners[0]!.toBase58());
+  assert.ok(candidateProbe, 'the bounded candidate batch includes the six ranked holders and verified pool coin creator');
+  assert.deepEqual((candidateProbe.params[0] as string[]).slice(0, owners.length), owners.map(owner => owner.toBase58()));
+  assert.equal((candidateProbe.params[0] as string[])[owners.length], new PublicKey(Buffer.alloc(32, 7)).toBase58());
+
+  const ataProbe = f.methods.find(call => call.method === 'getMultipleAccounts'
+    && (call.params[0] as string[]).length === 2
+    && (call.params[0] as string[])[0] === getAssociatedTokenAddressSync(new PublicKey(MINT), sixth, true, TOKEN_PROGRAM_ID).toBase58());
+  assert.ok(ataProbe, 'the selected funded owner’s base and WSOL ATAs are checked before building instructions');
+  assert.deepEqual(ataProbe.params[0], [
+    getAssociatedTokenAddressSync(new PublicKey(MINT), sixth, true, TOKEN_PROGRAM_ID).toBase58(),
+    getAssociatedTokenAddressSync(NATIVE_MINT, sixth, true, TOKEN_PROGRAM_ID).toBase58(),
+  ]);
+  assert.equal(f.methods.filter(call => call.method === 'getFeeForMessage').length, 2,
+    'both unsigned swap messages receive actual fee quotes');
+  assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), true,
+    'the complete unsigned roundtrip is simulated with the selected payer and ATA vectors');
+  assert.equal(f.methods.some(call => /sendtransaction/i.test(call.method)), false, 'the test never broadcasts a transaction');
+});
+
 test('a holder with existing WSOL is skipped before trying the GlobalConfig fallback group', async () => {
   const fallbackPayer = new PublicKey(Buffer.alloc(32, 72));
   const holders: HolderFacts = {
@@ -1166,6 +1243,335 @@ test('incomplete, malformed or inconsistent single-response simulation proof rem
       assert.equal(f.methods.filter(call => call.method === 'getFeeForMessage').length, 2, 'only independent entry and exit fees are requested');
       assert.ok(read.venue, 'direct binding and quote facts survive rejected simulation');
     });
+  }
+});
+
+test('full PumpSwap retries one verified 6004 failure at its state floor and Service admission rejects rehashed marker tampering', async () => {
+  const f = await fixture({ simulate: true, simulationFailure: 'slippage', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [{ address: 'candidate-token-account', owner: f.payer.toBase58(), amount: '1' }],
+  };
+  const recovered = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+  assert.equal(recovered.inspection.errors.simulation, undefined, 'the accepted second simulation is the returned execution result');
+  assert.equal(recovered.inspection.errors.execution, undefined);
+  assert.equal(recovered.venue?.costsReconciled, true);
+  assert.equal(f.methods.filter(call => call.method === 'simulateTransaction').length, 2, 'the failed first attempt and one fresh full attempt are the only simulations');
+  assert.equal(f.captureCount, 2, 'the retry recaptures the coupled pool and vault state');
+  assert.equal(f.dexCalls, 2, 'the retry reacquires the independent SOL/USD price');
+
+  const refresh = JSON.parse(recovered.rawArtifacts['pump-slippage-refresh']!) as {
+    method: string; minSlot: number; nextMinSlot: number;
+    first: { rawArtifacts: Record<string, string>; retrievedAt: Record<string, string> };
+  };
+  assert.equal(refresh.method, 'pump-slippage-refresh-v1');
+  assert.equal(refresh.minSlot, SLOT);
+  assert.equal(refresh.nextMinSlot, SLOT + 10);
+  assert.deepEqual(verifyPumpSlippage(refresh.first.rawArtifacts, TOKEN), { slot: SLOT + 10, stateSlot: SLOT + 2 });
+  const firstSimulationIndex = f.methods.findIndex(call => call.method === 'simulateTransaction');
+  assert.ok(firstSimulationIndex >= 0);
+  const subsequentRpc = f.methods.slice(firstSimulationIndex + 1);
+  const contextFloor = (call: typeof f.methods[number]) => {
+    if (call.method === 'getMultipleAccounts' || call.method === 'getAccountInfo') {
+      return (call.params[1] as { minContextSlot?: number } | undefined)?.minContextSlot;
+    }
+    if (call.method === 'getLatestBlockhash') {
+      return (call.params[0] as { minContextSlot?: number } | undefined)?.minContextSlot;
+    }
+    if (call.method === 'getFeeForMessage' || call.method === 'simulateTransaction') {
+      return (call.params[1] as { minContextSlot?: number } | undefined)?.minContextSlot;
+    }
+    return undefined;
+  };
+  for (const call of subsequentRpc.filter(call => contextFloor(call) !== undefined)) {
+    assert.ok(contextFloor(call)! >= SLOT + 10, `${call.method} is bounded to the failed simulation slot`);
+  }
+  for (const id of ['pump-pool-config', 'pump-mints-vaults']) {
+    const capture = JSON.parse(recovered.rawArtifacts[id]!) as { result: { context: { slot: number } } };
+    assert.ok(capture.result.context.slot >= SLOT + 10, `${id} is recaptured above the failed simulation floor`);
+  }
+  const finalSimulation = JSON.parse(recovered.rawArtifacts['pump-roundtrip-simulation']!) as { result: { context: { slot: number } } };
+  const finalRequest = JSON.parse(recovered.rawArtifacts['pump-simulation-request']!) as { minContextSlot: number; wireBase64: string };
+  const finalCalculation = JSON.parse(recovered.rawArtifacts['pump-quote-calculation']!) as {
+    slot: number; simulationProof?: { wireBase64: string };
+  };
+  assert.ok(finalSimulation.result.context.slot >= SLOT + 10);
+  assert.ok(finalCalculation.slot >= SLOT + 10);
+  assert.ok(finalRequest.minContextSlot >= SLOT + 10);
+  assert.equal(finalCalculation.simulationProof?.wireBase64, finalRequest.wireBase64,
+    'the final quote calculation binds to the actual successful second wire');
+
+  const derivedIds = new Set(['pump-simulation-request', 'pump-quote-calculation', 'pump-slippage-refresh']);
+  const bundle = {
+    token: TOKEN, cutoff: AT, profile: starterProfile(), features: [], rawArtifacts: structuredClone(recovered.rawArtifacts),
+    evidence: Object.entries(recovered.rawArtifacts).map(([id, raw]) => ({
+      id, sourceId: derivedIds.has(id) ? 'pumpswap-derived' : 'pumpswap-rpc',
+      sourceType: derivedIds.has(id) ? 'CALCULATION' : 'RPC',
+      accessMode: derivedIds.has(id) ? 'LOCAL_DERIVED' : 'RPC',
+      retrievedAt: recovered.retrievedAt[id]!, contentHash: createHash('sha256').update(raw).digest('hex'),
+    })),
+  } as unknown as LiveBundle;
+  validatePumpRecoveryBundle(bundle);
+  const rehash = (candidate: LiveBundle) => {
+    for (const evidence of candidate.evidence) {
+      const raw = candidate.rawArtifacts[evidence.id];
+      if (raw !== undefined) evidence.contentHash = createHash('sha256').update(raw).digest('hex');
+    }
+  };
+  const rejectRehashed = (label: string, mutate: (candidate: LiveBundle) => void) => {
+    const candidate = structuredClone(bundle);
+    mutate(candidate);
+    rehash(candidate);
+    assert.throws(() => validatePumpRecoveryBundle(candidate), /PUMP_SLIPPAGE_PROOF_INVALID/, label);
+  };
+  const refreshOf = (candidate: LiveBundle) => JSON.parse(candidate.rawArtifacts['pump-slippage-refresh']!) as typeof refresh;
+  const rewriteFirstArtifact = (candidate: LiveBundle, id: string, update: (packet: Record<string, unknown>) => void) => {
+    const marker = refreshOf(candidate);
+    const packet = JSON.parse(marker.first.rawArtifacts[id]!) as Record<string, unknown>;
+    update(packet);
+    marker.first.rawArtifacts[id] = JSON.stringify(packet);
+    candidate.rawArtifacts['pump-slippage-refresh'] = JSON.stringify(marker);
+  };
+  rejectRehashed('first request token mismatch', candidate => {
+    rewriteFirstArtifact(candidate, 'pump-simulation-request', packet => { packet.token = '11111111111111111111111111111111'; });
+  });
+  rejectRehashed('first error log moved outside the actual Pump program', candidate => {
+    const marker = refreshOf(candidate);
+    const packet = JSON.parse(marker.first.rawArtifacts['pump-roundtrip-simulation']!) as {
+      result: { value: { logs: string[] } };
+    };
+    packet.result.value.logs = packet.result.value.logs.map(line => line.replaceAll(PUMP_AMM_PROGRAM_ID.toBase58(), PUMP_AMM_FEE_CONFIG_PDA.toBase58()));
+    marker.first.rawArtifacts['pump-roundtrip-simulation'] = JSON.stringify(packet);
+    candidate.rawArtifacts['pump-slippage-refresh'] = JSON.stringify(marker);
+  });
+  rejectRehashed('first Pump buy discriminator mismatch', candidate => {
+    rewriteFirstArtifact(candidate, 'pump-simulation-request', packet => {
+      const request = packet as { wireBase64: string };
+      const tx = VersionedTransaction.deserialize(Buffer.from(request.wireBase64, 'base64'));
+      const first = refreshOf(candidate);
+      const response = JSON.parse(first.first.rawArtifacts['pump-roundtrip-simulation']!) as {
+        result: { value: { err: { InstructionError: [number, unknown] } } };
+      };
+      const buyIndex = response.result.value.err.InstructionError[0];
+      const bytes = Buffer.from(tx.message.compiledInstructions[buyIndex]!.data);
+      bytes[0] ^= 1;
+      tx.message.compiledInstructions[buyIndex]!.data = bytes;
+      request.wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+    });
+  });
+  rejectRehashed('first quote amount mismatch', candidate => {
+    rewriteFirstArtifact(candidate, 'pump-quote-calculation', packet => { packet.acquiredAtomic = '0'; });
+  });
+  rejectRehashed('retry slot floor mismatch', candidate => {
+    const marker = refreshOf(candidate);
+    marker.nextMinSlot--;
+    candidate.rawArtifacts['pump-slippage-refresh'] = JSON.stringify(marker);
+  });
+  rejectRehashed('first proof timestamp occurs after its refresh receipt', candidate => {
+    const marker = refreshOf(candidate);
+    marker.first.retrievedAt['pump-roundtrip-simulation'] = '2026-09-30T16:00:01.000Z';
+    candidate.rawArtifacts['pump-slippage-refresh'] = JSON.stringify(marker);
+  });
+  rejectRehashed('final request wire differs from the successful simulation proof', candidate => {
+    const request = JSON.parse(candidate.rawArtifacts['pump-simulation-request']!) as { wireBase64: string };
+    request.wireBase64 = Buffer.from(request.wireBase64, 'base64').subarray(1).toString('base64');
+    candidate.rawArtifacts['pump-simulation-request'] = JSON.stringify(request);
+  });
+
+  const partialFixture = await fixture({ simulate: true, simulationFailure: 'slippage' });
+  const partial = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', partialFixture.fetcher, () => AT);
+  assert.equal(partial.inspection.errors.simulation, 'PUMP_SIMULATION_SLIPPAGE');
+  assert.equal(partialFixture.methods.filter(call => call.method === 'simulateTransaction').length, 1,
+    'the default partial read preserves the one-attempt behavior');
+  assert.equal(partial.rawArtifacts['pump-slippage-refresh'], undefined);
+
+  const abortController = new AbortController();
+  const cancelFixture = await fixture({ simulate: true, simulationFailure: 'slippage' });
+  const cancelFetcher: typeof fetch = async (input, init) => {
+    const response = await cancelFixture.fetcher(input, init);
+    if (String(input).startsWith('https://rpc.example')
+      && JSON.parse(String(init?.body)).method === 'simulateTransaction') abortController.abort();
+    return response;
+  };
+  const cancelled = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', cancelFetcher, () => AT,
+    abortController.signal, undefined, undefined, true);
+  assert.equal(cancelFixture.methods.filter(call => call.method === 'simulateTransaction').length, 1,
+    'caller cancellation after the verified first failure prevents a second inspection');
+  assert.equal(cancelled.rawArtifacts['pump-slippage-refresh'], undefined);
+
+  const wrongProgramFixture = await fixture({ simulate: true, simulationFailure: 'slippage-wrong-program' });
+  const wrongProgram = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', wrongProgramFixture.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+  assert.equal(wrongProgram.inspection.errors.simulation, 'PUMP_SIMULATION_SLIPPAGE');
+  assert.equal(wrongProgramFixture.methods.filter(call => call.method === 'simulateTransaction').length, 1,
+    'an unscoped 6004-looking log cannot authorize a retry');
+  assert.equal(wrongProgram.rawArtifacts['pump-slippage-refresh'], undefined);
+});
+
+test('two verified Pump 6004 failures derive only a known entry-cost rejection and survive Service replay', async () => {
+  const profile = starterProfile();
+  const f = await fixture({ simulate: true, simulationFailure: 'slippage-persistent', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [{ address: 'candidate-token-account', owner: f.payer.toBase58(), amount: '1' }],
+  };
+  const read = await inspectPumpSwap(TOKEN, profile, controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, { tinyfishKey: TINYFISH_KEY }, undefined, true);
+
+  assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_SLIPPAGE');
+  assert.equal(f.methods.filter(call => call.method === 'simulateTransaction').length, 2);
+  assert.equal(f.captureCount, 2, 'the second failure follows a complete state recapture');
+  assert.equal(f.dexCalls, 2, 'the second failure follows a fresh independent USD read');
+  assert.equal(read.venue?.costsReconciled, false);
+  assert.equal(read.venue?.simulation, undefined);
+  assert.deepEqual(read.venue?.executionFailure, { method: 'pump-budget-rejection-v1', code: 'PUMP_SIMULATION_SLIPPAGE' });
+
+  const refresh = JSON.parse(read.rawArtifacts['pump-slippage-refresh']!) as {
+    nextMinSlot: number; first: { rawArtifacts: Record<string, string>; retrievedAt: Record<string, string> };
+  };
+  const firstProof = verifyPumpSlippage(refresh.first.rawArtifacts, TOKEN);
+  assert.equal(refresh.nextMinSlot, Math.max(SLOT, firstProof.slot));
+  const finalProof = verifyPumpSlippage(read.rawArtifacts, TOKEN);
+  assert.ok(finalProof.stateSlot >= refresh.nextMinSlot);
+  const secondSimulation = JSON.parse(read.rawArtifacts['pump-roundtrip-simulation']!) as { result: { context: { slot: number } } };
+  assert.ok(secondSimulation.result.context.slot >= refresh.nextMinSlot);
+  const secondState = JSON.parse(read.rawArtifacts['pump-mints-vaults']!) as { result: { context: { slot: number } } };
+  assert.ok(secondState.result.context.slot >= refresh.nextMinSlot);
+
+  const baseline = deriveBaseline({
+    token: TOKEN, cutoff: AT, profile, features: [], evidence: [], observations: [],
+    venueInspection: read.inspection, venue: read.venue!,
+  });
+  const expectedReason = {
+    method: 'pump-budget-rejection-v1', code: 'PUMP_SIMULATION_SLIPPAGE',
+    meaning: 'The simulated buy exceeded its exact quoted spending limit; execution cost verification failed. Monetary costs and sellability are not established.',
+  };
+  for (const id of ['O12', 'O16']) {
+    const assessment = baseline.find(row => row.id === id)!;
+    assert.equal(assessment.quality, 'KNOWN');
+    assert.deepEqual(assessment.data, expectedReason);
+    assert.equal(assessment.projection?.value, false);
+    assert.equal(assessment.projection?.quality, 'KNOWN');
+  }
+  assert.equal(baseline.find(row => row.id === 'O15')?.quality, 'MISSING', 'a rejected buy does not assert numeric fees or total-loss bps');
+
+  const derivedIds = new Set(['pump-simulation-request', 'pump-quote-calculation', 'pump-slippage-refresh']);
+  const rawArtifacts = structuredClone(read.rawArtifacts);
+  const evidence: LiveBundle['evidence'] = Object.entries(rawArtifacts).map(([id, raw]) => {
+    const derived = derivedIds.has(id), market = id === 'pump-sol-usd';
+    const retrievedAt = read.retrievedAt[id]!;
+    return {
+      id,
+      sourceId: derived ? 'pumpswap-derived' : market ? 'dexscreener' : 'pumpswap-direct',
+      sourceType: derived ? 'CALCULATION' : market ? 'PUBLIC_MARKET' : 'JSON_RPC',
+      retrievedAt, availableAt: retrievedAt, contentHash: createHash('sha256').update(raw).digest('hex'),
+      adapterVersion: 'pumpswap-test-v1', accessMode: derived ? 'LOCAL_DERIVED' : 'PUBLIC_API',
+      scope: { operation: id, mint: TOKEN.address, pool: read.inspection.poolAddress },
+    };
+  });
+  const collection: LiveBundle['collection'] = {
+    rpc: { state: 'OBSERVED' }, dex: { state: 'NO_RESULTS', count: 0 }, web: { state: 'NOT_REQUESTED' },
+  };
+  const semantic: LiveBundle['semantic'] = { status: 'NOT_REQUESTED', claims: [] };
+  const details: AssessmentDetails = {
+    version: 1, profile, thesis: null, baseline, origins: {},
+    stageInputs: { circulatingMarketCapUsd: null, tokenCreatedAt: null },
+  };
+  const bundle: LiveBundle = {
+    analysisKind: 'LIVE', token: TOKEN, cutoff: AT, profile, evidence, rawArtifacts,
+    observations: [], features: baseline.flatMap(row => row.projection ? [row.projection] : []),
+    collection, semantic, market: null, details,
+  };
+
+  const directory = mkdtempSync(join(tmpdir(), 'pump-budget-rejection-'));
+  try {
+    const database = join(directory, 'accepted.sqlite');
+    const writer = new Service(database);
+    let snapshotId = '';
+    let snapshotHash = '';
+    try {
+      const saved = writer.analyzeLive(bundle);
+      snapshotId = saved.id;
+      snapshotHash = saved.hash;
+      assert.equal(saved.details?.baseline.find(row => row.id === 'O16')?.projection?.value, false);
+    } finally { writer.close(); }
+
+    const reopened = new Service(database);
+    try {
+      const replay = reopened.replay(snapshotId);
+      assert.equal(replay.hash, snapshotHash);
+      assert.deepEqual(replay, reopened.show(snapshotId));
+    } finally { reopened.close(); }
+
+    const candidate = structuredClone(bundle);
+    const calculation = JSON.parse(candidate.rawArtifacts['pump-quote-calculation']!) as Record<string, unknown>;
+    delete calculation.executionFailure;
+    const raw = JSON.stringify(calculation);
+    candidate.rawArtifacts['pump-quote-calculation'] = raw;
+    candidate.evidence.find(record => record.id === 'pump-quote-calculation')!.contentHash = createHash('sha256').update(raw).digest('hex');
+    const verifier = new Service(join(directory, 'stripped-negative-proof.sqlite'));
+    try {
+      assert.throws(() => verifier.analyzeLive(candidate), /PUMP_SLIPPAGE_PROOF_INVALID/,
+        'a fully rehashed bundle cannot keep known negative features after stripping the embedded proof');
+    } finally { verifier.close(); }
+
+    const rejectProoflessSignal = (name: string, signal: 'feature-only' | 'assessment-only') => {
+      const stripped = structuredClone(bundle);
+      const removedIds = new Set(['pump-slippage-refresh', 'pump-simulation-request', 'pump-quote-calculation']);
+      for (const id of removedIds) delete stripped.rawArtifacts[id];
+      stripped.evidence = stripped.evidence.filter(record => !removedIds.has(record.id));
+      const clearRemovedEvidenceRefs = (value: unknown): void => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) {
+          for (const item of value) clearRemovedEvidenceRefs(item);
+          return;
+        }
+        const row = value as Record<string, unknown>;
+        if (Array.isArray(row.evidenceIds)) {
+          row.evidenceIds = row.evidenceIds.filter(id => typeof id !== 'string' || !removedIds.has(id));
+        }
+        for (const child of Object.values(row)) clearRemovedEvidenceRefs(child);
+      };
+      clearRemovedEvidenceRefs(stripped);
+      if (signal === 'feature-only') {
+        for (const id of ['O12', 'O16']) {
+          const assessment = stripped.details!.baseline.find(row => row.id === id)!;
+          assessment.quality = 'MISSING';
+          assessment.data = null;
+          assessment.projection = undefined;
+        }
+        const o12 = stripped.features.find(feature => feature.id === 'O12')!;
+        o12.value = null;
+        o12.quality = 'MISSING';
+        assert.deepEqual(stripped.features.find(feature => feature.id === 'O16')?.value, false,
+          'the feature-only case retains the adverse O16 signal after clearing all adverse assessments');
+      } else {
+        for (const id of ['O12', 'O16']) {
+          const feature = stripped.features.find(row => row.id === id)!;
+          feature.value = null;
+          feature.quality = 'MISSING';
+        }
+        assert.equal(stripped.details!.baseline.find(row => row.id === 'O16')?.data
+          && (stripped.details!.baseline.find(row => row.id === 'O16')!.data as { method?: string }).method,
+        'pump-budget-rejection-v1', 'the assessment-only case retains its persistent rejection decision');
+      }
+      for (const record of stripped.evidence) {
+        const raw = stripped.rawArtifacts[record.id];
+        if (raw !== undefined) record.contentHash = createHash('sha256').update(raw).digest('hex');
+      }
+      assert.equal(stripped.evidence.some(record => removedIds.has(record.id)), false);
+      assert.equal([...removedIds].some(id => stripped.rawArtifacts[id] !== undefined), false);
+      const strippedVerifier = new Service(join(directory, `${name}.sqlite`));
+      try {
+        assert.throws(() => strippedVerifier.analyzeLive(stripped), /PUMP_SLIPPAGE_PROOF_INVALID/,
+          `${signal} rejection must be caught by Pump recovery validation after every proof artifact and reference is removed`);
+      } finally { strippedVerifier.close(); }
+    };
+    rejectProoflessSignal('stripped-pump-proof-feature-only', 'feature-only');
+    rejectProoflessSignal('stripped-pump-proof-assessment-only', 'assessment-only');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -1289,8 +1695,10 @@ test('holder-supplied payer candidates are bounded to observed owners and never 
   const f = await fixture();
   const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT);
   assert.equal(read.inspection.bindingVerified, true);
-  const payerQuery = f.methods.find(call => call.method === 'getMultipleAccounts' && (call.params[0] as string[]).length === 5);
-  assert.ok(payerQuery, 'at most five candidate system-owner accounts are checked');
+  const payerQuery = f.methods.find(call => call.method === 'getMultipleAccounts' && (call.params[0] as string[]).length === 7);
+  assert.ok(payerQuery, 'all six observed owners and the verified pool coin creator are checked within the 20-plus-one bound');
+  assert.deepEqual((payerQuery.params[0] as string[]).slice(0, 6), holders.accounts.map(account => account.owner));
+  assert.equal((payerQuery.params[0] as string[])[6], new PublicKey(Buffer.alloc(32, 7)).toBase58());
   assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
   assert.equal(read.venue?.simulation, undefined);
   assert.equal(read.venue?.costsReconciled, false);

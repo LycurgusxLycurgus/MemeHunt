@@ -27,9 +27,9 @@ export function unknownCauseKind(causes:MissingCause[]):'INFRA'|'COLLECTION'|'MO
   const codes=causes.map(c=>c.code);
   if(causes.some(c=>c.category==='USER_INPUT_MISSING'))return 'INPUT';
   if(causes.some(c=>c.category==='COLLECTION_UNIMPLEMENTED'))return 'IMPLEMENTATION';
-  if(codes.some(c=>/(?:HTTP_(?:408|429|5\d\d)|TIMEOUT|TRANSPORT|DNS_ERROR|NETWORK_ACCESS_DENIED|RUN_ABORTED|COLLECTION_BUDGET|RUN_LIMIT|RUN_TIMEOUT)/.test(c)))return 'INFRA';
-  if(codes.some(c=>/^(?:PUMP|CURVE)_(?:SIMULATION|TRANSACTION|QUOTE|FEE|PAYER|ACCOUNT)/.test(c)))return 'EXECUTION';
-  if(codes.some(c=>/TEXT_CAP|PAGE_CAP|SOURCE_CAP|PACKET_LIMIT|RESPONSE_LIMIT|FETCH_|DISCOVERY_INCOMPLETE|COLLECTION_INCOMPLETE|SCOPE_INCOMPLETE|CORPUS_REQUIRED|HOLDER_TAIL_UNKNOWN|ATT_ENTRY_(?:FETCH|ORIGIN|SOURCE_TEXT|SOURCE_CAP|TEXT_CAP|RECOVERY|COMPARISON|REQUIRED_SEARCH)/.test(c)))return 'COLLECTION';
+  if(codes.some(c=>/(?:HTTP_(?:408|429|5\d\d)|TOKEN_COUNT_UNAVAILABLE|TIMEOUT|TRANSPORT|DNS_ERROR|NETWORK_ACCESS_DENIED|RUN_ABORTED|COLLECTION_BUDGET|RUN_LIMIT|RUN_TIMEOUT|LIVE_(?:PHASE_DEADLINE|HARD_DEADLINE|OPERATION_LIMIT|CALLER_CANCELLED|DEPENDENCY_SKIPPED))/.test(c)))return 'INFRA';
+  if(codes.some(c=>/^(?:PUMP|CURVE|DAMM)_(?:SIMULATION|TRANSACTION|QUOTE|FEE|PAYER|ACCOUNT)/.test(c)))return 'EXECUTION';
+  if(codes.some(c=>/TEXT_CAP|PAGE_CAP|SOURCE_CAP|PACKET_LIMIT|INPUT_TOKEN_LIMIT|RESPONSE_LIMIT|FETCH_|DISCOVERY_INCOMPLETE|COLLECTION_INCOMPLETE|SCOPE_INCOMPLETE|CORPUS_REQUIRED|HOLDER_TAIL_UNKNOWN|ATT_ENTRY_(?:FETCH|ORIGIN|SOURCE_TEXT|SOURCE_CAP|TEXT_CAP|RECOVERY|COMPARISON|REQUIRED_SEARCH)/.test(c)))return 'COLLECTION';
   if(causes.some(c=>c.category==='CLAIM_UNVALIDATED')||codes.some(c=>/MODEL_|REVIEW_|UNRESOLVED|CITATION/.test(c)))return 'MODEL';
   return 'DATA';
 }
@@ -70,6 +70,8 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   if(recovered.length)lines.push(`Market recovery: free TinyFish live Fetch (${recovered.join(', ')}); original direct responses retained. Recovery does not certify market accuracy.`);
   const feeRetries=snapshot.evidence.filter(e=>e.id.endsWith('-min-context-recovery')||/^curve-(?:entry|exit)-fee-recovery$/.test(e.id));
   if(feeRetries.length)lines.push(`Fee recovery: ${feeRetries.length} bounded retries while the RPC caught up to the required finalized slot; the slot requirement and quote expiry were preserved.`);
+  if(snapshot.evidence.some(e=>e.id==='pump-slippage-refresh'))lines.push('Execution recovery: one complete fresh-state quote and unsigned simulation retry; the spending limit was not widened.');
+  if((details?.baseline.find(a=>a.id==='O16')?.data as {method?:string}|undefined)?.method==='pump-budget-rejection-v1')lines.push('Execution finding: both unsigned buys exceeded their exact quoted spending limit. FAIL means the entry execution-cost standard was not met; fees, sellability and fraud are not established.');
   if(snapshot.evidence.some(e=>e.id==='social-repair-selection'))lines.push('Social review recovery: one reassessment and fresh independent review were attempted; the original rejection is retained. Only an accepted review can change the result.');
   if(snapshot.semantic)lines.push(`Semantic extraction: ${snapshot.semantic.status}, ${snapshot.semantic.claims.length} claims. ${snapshot.semantic.status==='VALIDATED'?'Validated means source-qualified by automated review, not verified real-world truth.':'Candidates are source claims, not verified checklist evidence.'}`);
   const models=[...new Set(snapshot.evidence.filter(e=>e.id.includes('-transport-attempt-')).map(e=>e.scope.model).filter((m):m is string=>typeof m==='string'))];
@@ -77,7 +79,7 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   if((details?.baseline.find(a=>a.id==='A03')?.data as {originBasis?:string}|undefined)?.originBasis==='PUBLIC_EVIDENCE_INADEQUATE')lines.push('Origin screening FAIL: reviewed public origin/catalyst evidence is inadequate within the declared discovery sample. This is poor traceability, not a finding of fraud.');
   if(details?.shared){const s=details.shared;lines.push(`Shared evidence: ${s.witnesses.filter(w=>w.status!=='UNKNOWN').length}/${s.witnesses.length} required decisions resolved; semantic receipts ${s.semanticQualified?'qualified':'incomplete'}; conflict audit ${s.auditQualified?'qualified':'incomplete'} (${s.conflicts.length} scoped conflicts).`);if(s.unresolved.length)lines.push(`Shared coverage waits for: ${s.unresolved.join(', ')}.`);lines.push('Growth compares two equal time bins in the reviewed fixed sample. Data-quality checks assess this decision scope; they do not certify token truth or platform-wide coverage.');}
   if(details?.shared?.qualityMode==='ENTRY_GATES_V1')lines.push('Data-quality FAIL means the analysis evidence standard is unmet. An incomplete conflict audit is not a detected conflict.');
-  for(const a of details?.baseline??[]){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string}};if(['binary-public-support-v1','binary-public-support-v2'].includes(d?.entryDecisionMethod??'')&&d.decision)lines.push(`Entry evidence ${d.entryCriterion}: ${d.decision.verdict} — ${cleanText(d.decision.rationale)}`);}
+  for(const a of details?.baseline??[]){const d=a.data as {entryDecisionMethod?:string;entryCriterion?:string;decision?:{verdict:string;rationale:string}};if(['binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes(d?.entryDecisionMethod??'')&&d.decision)lines.push(`Entry evidence ${d.entryCriterion}: ${d.decision.verdict} — ${cleanText(d.decision.rationale)}`);}
   if(details?.social){
     const s=details.social;
     for(const [label,judgment] of [['Identity verifiability',s.identityReview],['Source integrity',s.integrityReview],['Participation evidence',s.participationReview]] as const)if(judgment){
@@ -86,7 +88,7 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
     }
     if(s.identityReview?.verdict==='CONTRADICTED')lines.push('  SOC-01 FAIL concerns inadequate or contradicted public identity evidence; it does not prove impersonation.');
     lines.push(`Social assessment: automated extraction and independent source review when available, ${s.start} to ${s.end}. Accounts are not people; public binding is not an authenticity guarantee.`,
-      `  Sample: ${s.qualifiedOriginalCount??'unknown'} qualified original posts; ${s.accountUpperBound??'unknown'} source accounts; ${s.sampleComplete?'complete within the declared query sample':'incomplete query/review scope'}.`,
+      `  Sample: ${s.qualifiedOriginalCount??'unknown'} qualified original posts; ${s.accountUpperBound??'unknown'} source accounts; ${s.sampleComplete?'complete within the declared query sample':s.participationReview&&s.participationReview.verdict!=='UNRESOLVED'?'entry evidence reviewed; exact participation counts remain unqualified':'incomplete query/review scope'}.`,
       `  Independent origins: ${s.independentGroupCount??'unknown'}; communities: ${s.independentCommunityCount??'unknown'}; ${s.lineageComplete?'source lineage qualified':'source lineage unresolved'}. Participation threshold: 3 accounts / 2 origins / 2 communities.`);
     const identity=details.baseline.find(a=>a.id==='S01')?.data as {claims?:Array<{accountId:string;status:string}>}|undefined;
     for(const claim of identity?.claims??[])lines.push(`  Account ${cleanText(claim.accountId)}: ${cleanText(claim.status)}.`);
@@ -130,6 +132,7 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   lines.push('',`${snapshot.checklistKind==='ENTRY'?'Entry':'Management'} checklist:`);
   const selected=options.checklist?rows:rows.filter(r=>!r.checkId.startsWith('ADV-'));
   if(options.checklist&&rows.some(r=>r.checkId.startsWith('ADV-')))lines.push('ADV-* rows are optional advisory observations; they are excluded from required coverage and pillar totals.');
+  for(const id of ['A15','A18']){const a=details?.baseline.find(a=>a.id===id),d=a?.data as {method?:string;entryCriterion?:string;reason?:string}|undefined;if(d?.method==='entry-evidence-gate-v1')lines.push((id==='A18'?'Growth evidence branch':'Qualified sample evidence')+': FAIL — '+cleanText(d.reason)+ ' This does not establish zero posts or declining attention.'+(id==='A18'?' ATT-02 also evaluates community breadth independently.':''));}
   if(rows.some(r=>r.status==='UNKNOWN'))lines.push('Unknown causes: INFRA=request/quota/deadline; COLLECTION=blocked or incomplete sources; MODEL=unfinished or unqualified review; EXECUTION=quote/setup/simulation; INPUT=settings; IMPLEMENTATION=unsupported collector; DATA=missing evidence. Higher rate limits address only some INFRA failures.');
   for(const row of selected){const tags=[...new Set(row.causes.map(c=>categoryText[c.category]))];if(row.status==='UNKNOWN'&&row.featureRefs.some(id=>/^[OAS]/.test(id)))tags.push(...[...new Set(row.causes.map(c=>c.code))].slice(0,2));lines.push(`  ${(row.status+(row.unknownKind?` (${row.unknownKind})`:``)).padEnd(25)} ${row.checkId} ${row.name}${row.status==='UNKNOWN'?` — ${tags.join('; ')}`:''}`);}
   const actions=[...new Set(rows.flatMap(r=>r.status==='UNKNOWN'?r.causes.map(c=>c.action):[]))];

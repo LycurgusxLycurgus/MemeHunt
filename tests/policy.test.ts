@@ -94,6 +94,50 @@ test('attention sample needs qualified posts and independent authors', () => {
   assert.equal(result.checks.find(row => row.checkId === 'ATT-01')?.status, 'UNKNOWN');
 });
 
+test('bounded negative entry gates grade only declared attention checks while factual counts stay unknown', () => {
+  const features = completeFixtureEntryFeatures();
+  for (const id of ['A15', 'A16', 'A17', 'A18', 'S10']) {
+    const feature = features.find(item => item.id === id)!;
+    feature.value = null;
+    feature.quality = 'MISSING';
+  }
+  const reviewedGap = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'QUALIFIED_V4', undefined, false, undefined, { sample: false, growth: false });
+  assert.equal(reviewedGap.checks.find(row => row.checkId === 'ATT-01')?.status, 'FAIL');
+  assert.equal(reviewedGap.checks.find(row => row.checkId === 'ATT-02')?.status, 'UNKNOWN',
+    'a negative growth review cannot fail ATT-02 while the community alternative is unknown');
+  assert.equal(features.find(item => item.id === 'A16')?.value, null, 'a gate never fills the factual post count');
+  assert.equal(features.find(item => item.id === 'A17')?.value, null, 'a gate never fills the factual author count');
+  assert.equal(features.find(item => item.id === 'A18')?.value, null, 'a gate never fills measured growth');
+
+  const reviewedGrowthAndKnownFalseCommunity = structuredClone(features);
+  const community = reviewedGrowthAndKnownFalseCommunity.find(item => item.id === 'S10')!;
+  community.value = false;
+  community.quality = 'KNOWN';
+  const bothAlternativesFail = evaluateEntry(reviewedGrowthAndKnownFalseCommunity, illustrativeUncalibratedProfile,
+    FIXTURE_CUTOFF, 'QUALIFIED_V4', undefined, false, undefined, { sample: false, growth: false });
+  assert.equal(bothAlternativesFail.checks.find(row => row.checkId === 'ATT-02')?.status, 'FAIL',
+    'the reviewed growth gate plus a separately known-false community alternative makes ATT-02 fail');
+  assert.equal(reviewedGrowthAndKnownFalseCommunity.find(item => item.id === 'A18')?.value, null,
+    'the entry gate does not invent a measured growth value');
+
+  const positive = evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'QUALIFIED_V4', undefined, false, undefined, { sample: false, growth: false });
+  assert.equal(positive.checks.find(row => row.checkId === 'ATT-01')?.status, 'PASS', 'measured sample support takes precedence');
+  assert.equal(positive.checks.find(row => row.checkId === 'ATT-02')?.status, 'PASS', 'measured growth or the community alternative takes precedence');
+
+  const stale = completeFixtureEntryFeatures();
+  for (const id of ['A15', 'A16', 'A17', 'A18', 'S10']) {
+    const feature = stale.find(item => item.id === id)!;
+    feature.value = null;
+    feature.quality = 'STALE';
+  }
+  const staleResult = evaluateEntry(stale, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'QUALIFIED_V4', undefined, false, undefined, { sample: false, growth: false });
+  assert.equal(staleResult.checks.find(row => row.checkId === 'ATT-01')?.status, 'UNKNOWN');
+  assert.equal(staleResult.checks.find(row => row.checkId === 'ATT-02')?.status, 'UNKNOWN');
+});
+
 test('known thesis invalidation outranks missing support evidence', () => {
   const episode = fixtureEpisode(
     predicate('A01', true, 'bool'),

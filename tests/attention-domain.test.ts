@@ -6,11 +6,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, fixtureBundle, illustrativeFixtureThesis, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 import { decisionHash, Service } from '../src/app/service.js';
-import { deriveAttention, narrativeSourceBound, originSourceScope, type NarrativePublicSupport } from '../src/domain/attention.js';
+import { deriveAttention, narrativeSourceBound, originSourceScope, validateLeadershipPositive, type NarrativePublicSupport } from '../src/domain/attention.js';
 import { deriveBaseline, type BaselineAssessment } from '../src/domain/baseline.js';
 import type { FeatureResult, LiveBundle, Profile, TokenRef } from '../src/domain/contracts.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import type { AttentionRead, AttentionSource } from '../src/providers/attention.js';
+import { leadershipEntryCriterion, leadershipOptions } from '../src/providers/attention-model.js';
 
 // All source text below is synthetic contract data. It demonstrates citation binding and count rules,
 // and makes no claim about a real token or the truth of a market narrative.
@@ -207,6 +208,99 @@ function fixedGrowthAssessment(fixture: Fixture): BaselineAssessment[] {
   return deriveAttention(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF,
     ['evidence-sources', 'evidence-proposal', 'evidence-review'], true);
 }
+
+function projectContextPostFixture(): Fixture {
+  const fixture = makeFixture();
+  const posts = fixture.read.sources.filter(source => source.kind === 'POST').slice(0, 4);
+  const postIds = new Set(posts.map(source => source.id));
+  fixture.read.sources = fixture.read.sources.filter(source => source.kind !== 'POST' || postIds.has(source.id));
+  fixture.read.postSampleSourceIds = posts.map(source => source.id);
+  fixture.read.postSampleComplete = true;
+  fixture.read.collectionMethod = 'project-context-v2';
+  const proposal = fixture.proposal as { claims: unknown[]; posts: Array<{ id: string; sourceId: string; quote: string; role: string }>; competitors: unknown[] };
+  proposal.posts = proposal.posts.slice(0, 4);
+  const review = fixture.review as { decisions: Array<{ id: string; accepted: boolean; rationale: string }> };
+  const retainedDecisionIds = new Set([...proposal.posts.map(post => post.id), 'claim-1', 'claim-2', 'claim-3', 'claim-4', 'claim-5', 'competitor-target', 'competitor-other']);
+  review.decisions = review.decisions.filter(decision => retainedDecisionIds.has(decision.id));
+
+  const previousTimes = ['2026-09-30T13:00:00.000Z', '2026-09-30T18:00:00.000Z', '2026-09-30T23:59:00.000Z'];
+  for (let index = 0; index < posts.length; index++) {
+    const source = posts[index]!;
+    const label = proposal.posts[index]!;
+    source.publishedAt = index < 3 ? previousTimes[index]! : '2026-10-01T01:00:00.000Z';
+    source.authorId = `x.com:writer${index + 1}`;
+    if (index < 3) label.role = (['NEWS', 'JOKE', 'CALL'] as const)[index]!;
+    else {
+      const quote = `Price-only recap for ${TOKEN.address}; it reports a quote without a project update.`;
+      source.text = quote;
+      label.quote = quote;
+      label.role = 'NEWS';
+      review.decisions.find(decision => decision.id === label.id)!.accepted = false;
+    }
+  }
+  return fixture;
+}
+
+test('project-context attention counts accepted source posts while retaining rejected role judgments', async t => {
+  const fixture = projectContextPostFixture();
+  const rows = fixedGrowthAssessment(fixture);
+  const qualified = row(rows, 'A16').data as {
+    qualified: number;
+    excluded: Array<{ id: string; role?: string; accepted?: boolean; reason?: string }>;
+    method: string;
+  };
+  const growth = row(rows, 'A18').data as { previous: number; current: number; dispositions: Array<{ id: string; accepted: boolean; qualified: boolean }> };
+  const rejected = qualified.excluded.find(item => item.id === 'post-source-4');
+
+  assert.equal(fixture.read.collectionMethod, 'project-context-v2');
+  assert.deepEqual([row(rows, 'A15').quality, row(rows, 'A16').quality, row(rows, 'A17').quality, row(rows, 'A18').quality],
+    ['KNOWN', 'KNOWN', 'KNOWN', 'KNOWN']);
+  assert.deepEqual([feature(rows, 'A16').value, feature(rows, 'A17').value, feature(rows, 'A18').value], ['3', '3', false]);
+  assert.equal(qualified.qualified, 3);
+  assert.equal(qualified.method, 'accepted-original-source-posts-v2');
+  assert.deepEqual(rejected, { id: 'post-source-4', role: 'NEWS', accepted: false, reason: 'ROLE_NOT_QUALIFIED' });
+  assert.deepEqual([growth.previous, growth.current], [3, 0], 'growth uses the same three accepted source claims and excludes the rejected claim');
+  assert.deepEqual(growth.dispositions.find(item => item.id === 'post-source-4'), {
+    id: 'post-source-4', publishedAt: '2026-10-01T01:00:00.000Z', authorId: 'x.com:writer4', role: 'NEWS',
+    accepted: false, qualified: false, bin: 'CURRENT',
+  });
+  assert.equal((fixture.proposal as { posts: Array<{ id: string; role: string }> }).posts.find(post => post.id === 'post-label-4')?.role,
+    'NEWS', 'the proposed role stays intact after the independent rejection');
+  assert.equal((fixture.review as { decisions: Array<{ id: string; accepted: boolean }> }).decisions.find(decision => decision.id === 'post-label-4')?.accepted,
+    false, 'the actual independent rejection remains visible');
+
+  await t.test('legacy marker absence keeps rejected current roles unresolved', () => {
+    const legacy = projectContextPostFixture();
+    delete legacy.read.collectionMethod;
+    const legacyRows = fixedGrowthAssessment(legacy);
+    assert.equal(row(legacyRows, 'A16').quality, 'MISSING');
+    assert.equal(feature(legacyRows, 'A16').value, null);
+    assert.equal(row(legacyRows, 'A18').quality, 'MISSING');
+    assert.equal(feature(legacyRows, 'A18').value, null);
+  });
+
+  const blockers: Array<{ name: string; change: (value: Fixture) => void }> = [
+    { name: 'missing independent post review', change: value => {
+      (value.review as { decisions: Array<{ id: string }> }).decisions = (value.review as { decisions: Array<{ id: string }> }).decisions.filter(item => item.id !== 'post-label-4');
+    } },
+    { name: 'invalid literal citation', change: value => {
+      (value.proposal as { posts: Array<{ id: string; quote: string }> }).posts.find(item => item.id === 'post-label-4')!.quote = `Fabricated ${TOKEN.address} citation.`;
+    } },
+    { name: 'incomplete post acquisition', change: value => { value.read.postSampleComplete = false; } },
+    { name: 'stale observation window', change: value => { value.read.end = '2026-10-01T11:00:00.000Z'; } },
+    { name: 'missing original author', change: value => { value.read.sources.find(source => source.id === 'post-source-4')!.authorId = null; } },
+    { name: 'missing post date', change: value => { value.read.sources.find(source => source.id === 'post-source-4')!.publishedAt = null; } },
+  ];
+  for (const scenario of blockers) await t.test(scenario.name, () => {
+    const blocked = projectContextPostFixture();
+    scenario.change(blocked);
+    const blockedRows = fixedGrowthAssessment(blocked);
+    for (const id of ['A15', 'A16', 'A17', 'A18']) {
+      assert.equal(row(blockedRows, id).quality, 'MISSING', id);
+      assert.equal(feature(blockedRows, id).value, null, id);
+    }
+  });
+});
 
 test('linked narrative references bind one hop for A01 while A03 stays literal-contract-only', () => {
   const fixture = makeFixture();
@@ -960,6 +1054,33 @@ test('v2 CAN-02 evaluates origin relationship separately from measured attention
     assert.equal(row(rows, 'A14').quality, 'MISSING');
     assert.equal(feature(rows, 'A14').value, null);
   });
+});
+
+test('source-bound measured positives use the canonical qualified common-query posts', () => {
+  const fixture = makeV2Fixture('UNKNOWN', true);
+  setComparativePattern(fixture, 'TARGET_LEADS');
+  fixture.read.leadershipPositiveMethod = 'source-bound-positive-v1';
+  const routes = leadershipEntryCriterion(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF) as {
+    originRelationship: { status: string };
+    measuredAttention: { status: string; sourceIds: string[] };
+    reviewedPosts: Array<{ sourceId: string; quote: string }>;
+  };
+
+  assert.equal(routes.originRelationship.status, 'UNKNOWN');
+  assert.equal(routes.measuredAttention.status, 'SUPPORTED');
+  const options = leadershipOptions(fixture.read, TOKEN, CUTOFF, routes);
+  assert.ok(options.measured.length >= 10, 'the model receives only cited posts from the canonically supported common-query ranking');
+  const selected = options.measured[0]!;
+  const source = fixture.read.sources.find(item => item.id === selected.sourceId)!;
+  const quote = routes.reviewedPosts.find(post => post.sourceId === source.id)!.quote;
+  assert.equal(source.text, quote);
+  assert.equal(validateLeadershipPositive(fixture.read, TOKEN, CUTOFF, {
+    verdict: 'PASS', basis: 'MEASURED_ATTENTION', citations: [{ sourceId: source.id, quote }],
+  }, routes), true);
+  assert.equal(validateLeadershipPositive(fixture.read, TOKEN, CUTOFF, {
+    verdict: 'PASS', basis: 'MEASURED_ATTENTION', citations: [{ sourceId: source.id, quote }],
+  }, { ...routes, measuredAttention: { status: 'UNKNOWN', sourceIds: routes.measuredAttention.sourceIds } }), false,
+  'a reviewed source is not a positive measurement option without the canonical SUPPORTED route');
 });
 
 test('v2 measured leadership uses only complete common-query posts in-window with ten posts, three accounts, two candidates, and a unique leader', async t => {

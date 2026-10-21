@@ -260,9 +260,10 @@ test('complete holder population binds exact mint, token program, state, unique 
   rejects('aggregate oversupply cannot be accepted as a complete population', { context: valid.context, value: [entry(good.pubkey, rawTokenAccount(101n))] }, 'HOLDER_SUPPLY_UNRECONCILED');
 });
 
-test('complete holder decoding accepts more than ten thousand accounts and rejects populations above fifty thousand', () => {
-  const accountData = rawTokenAccount(0n).toString('base64');
-  const population = Array.from({ length: 20_001 }, (_, index) => {
+test('complete holder decoding retains a valid 52,173-account population and derives a compact summary', () => {
+  const populationSize = 52_173;
+  const accountData = rawTokenAccount(1n).toString('base64');
+  const population = Array.from({ length: populationSize }, (_, index) => {
     const bytes = Buffer.alloc(32);
     bytes.writeUInt32LE(index + 1, 28);
     return {
@@ -270,13 +271,17 @@ test('complete holder decoding accepts more than ten thousand accounts and rejec
       account: { owner: TOKEN_2022_PROGRAM, executable: false, data: [accountData, 'base64'] },
     };
   });
-  const holders = decodeHolderPopulation({ context: { slot: 120 }, value: population }, MINT, TOKEN_2022_PROGRAM, '0', 110);
+  const holders = decodeHolderPopulation({ context: { slot: 120 }, value: population }, MINT, TOKEN_2022_PROGRAM, String(populationSize), 110);
   assert.equal(holders.complete, true);
-  assert.equal(holders.accounts.length, 20_001);
-  assert.equal(holders.accounts[0]?.amount, '0');
-  assert.equal(holders.accounts.at(-1)?.amount, '0');
-
-  assert.throws(() => decodeHolderPopulation({ context: { slot: 120 }, value: Array(50_001).fill(null) }, MINT, TOKEN_2022_PROGRAM, '0', 110), /RPC_SHAPE/);
+  assert.equal(holders.accounts.length, populationSize);
+  assert.equal(holders.accounts[0]?.amount, '1');
+  assert.equal(holders.accounts.at(-1)?.amount, '1');
+  const summary = deriveHolderBounds(holders);
+  assert.equal(summary.sampleAccounts, populationSize);
+  assert.equal(summary.ownerCountLowerBound, 1);
+  assert.equal(summary.sampledAtomic, String(populationSize));
+  assert.equal(summary.complete, true);
+  assert.equal('accounts' in summary, false, 'derived baseline facts stay compact rather than copying the RPC population');
 });
 
 function mintDescriptor(): SolanaMint {
@@ -294,13 +299,21 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
   const rawMint = token2022Mint();
   rawMint.writeBigUInt64LE(100n, 36);
   const requestLog: Array<{ method: string; params: unknown[] }> = [];
+  let mintReads = 0;
+  let populationReads = 0;
   const fetcher: typeof fetch = async (_url, init) => {
     const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
     requestLog.push(request);
-    if (request.method === 'getAccountInfo' && request.params[0] === MINT) return rpcResponse(accountResult(rawMint, TOKEN_2022_PROGRAM, 102));
-    if (request.method === 'getProgramAccounts') return rpcResponse({ context: { slot: 104 }, value: [] });
-    if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 103 }, value: [{ address: TOKEN_ACCOUNT, amount: '60', decimals: 6 }] });
-    if (request.method === 'getMultipleAccounts') return rpcResponse({ context: { slot: 104 }, value: [{
+    if (request.method === 'getAccountInfo' && request.params[0] === MINT) {
+      mintReads++;
+      return rpcResponse(accountResult(rawMint, TOKEN_2022_PROGRAM, mintReads === 1 ? 102 : 106));
+    }
+    if (request.method === 'getProgramAccounts') {
+      populationReads++;
+      return rpcResponse({ context: { slot: populationReads === 1 ? 104 : 107 }, value: [] });
+    }
+    if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 107 }, value: [{ address: TOKEN_ACCOUNT, amount: '60', decimals: 6 }] });
+    if (request.method === 'getMultipleAccounts') return rpcResponse({ context: { slot: 108 }, value: [{
       owner: TOKEN_2022_PROGRAM, executable: false, data: [tokenAccountBytes(60n).toString('base64'), 'base64'],
     }] });
     if (request.method === 'getAccountInfo' && request.params[0] === TOKEN_2022_PROGRAM) return rpcResponse(accountResult(upgradeableProgramHeader(), UPGRADEABLE_LOADER, 104, true));
@@ -325,10 +338,11 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
   const largest = requestLog.find(request => request.method === 'getTokenLargestAccounts');
   assert.deepEqual(largest?.params, [MINT, { commitment: 'finalized' }]);
   const multiple = requestLog.find(request => request.method === 'getMultipleAccounts');
-  assert.deepEqual(multiple?.params, [[TOKEN_ACCOUNT], { encoding: 'base64', commitment: 'finalized', minContextSlot: 103 }]);
-  const population = requestLog.find(request => request.method === 'getProgramAccounts');
-  assert.deepEqual(population?.params, [TOKEN_2022_PROGRAM, {
-    encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, withContext: true,
+  assert.deepEqual(multiple?.params, [[TOKEN_ACCOUNT], { encoding: 'base64', commitment: 'finalized', minContextSlot: 107 }]);
+  const populations = requestLog.filter(request => request.method === 'getProgramAccounts');
+  assert.deepEqual(populations.map(request => (request.params[1] as { minContextSlot: number }).minContextSlot), [102, 106]);
+  assert.deepEqual(populations[0]?.params, [TOKEN_2022_PROGRAM, {
+    encoding: 'base64', commitment: 'finalized', minContextSlot: 102, withContext: true,
     dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
   const rawRead = requestLog.find(request => request.method === 'getAccountInfo' && request.params[0] === MINT);
@@ -337,8 +351,11 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
   assert.deepEqual(programHeader?.params[1], { encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, dataSlice: { offset: 0, length: 36 } });
   const programDataRead = requestLog.find(request => request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA);
   assert.deepEqual(programDataRead?.params[1], { encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, dataSlice: { offset: 0, length: 45 } });
-  assert.equal(Object.keys(details.rawArtifacts).sort().join(','), 'rpc-holder-accounts,rpc-holder-population,rpc-largest,rpc-mint-raw,rpc-program,rpc-program-data');
+  assert.equal(Object.keys(details.rawArtifacts).sort().join(','), 'rpc-holder-accounts,rpc-holder-population,rpc-holder-population-reconciliation-attempt-1,rpc-largest,rpc-mint-raw,rpc-mint-raw-reconciliation-attempt-1,rpc-mint-reconciliation-response,rpc-program,rpc-program-data');
 
+  requestLog.length = 0;
+  mintReads = 0;
+  populationReads = 0;
   let fakeNow = Date.parse('2026-10-06T12:00:00.000Z');
   const timedFetcher: typeof fetch = async (input, init) => {
     const response = await fetcher(input, init);
@@ -349,10 +366,15 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
     () => new Date(fakeNow).toISOString());
   const artifactIds = Object.keys(timed.rawArtifacts);
   assert.deepEqual(Object.keys(timed.retrievedAt ?? {}).sort(), [...artifactIds].sort(), 'every retained RPC body has one retrieval instant');
-  assert.deepEqual(Object.values(timed.retrievedAt ?? {}).sort(), Array.from({ length: artifactIds.length }, (_, index) =>
+  assert.deepEqual([...new Set(Object.values(timed.retrievedAt ?? {}))].sort(), Array.from({ length: 8 }, (_, index) =>
     new Date(Date.parse('2026-10-06T12:00:00.000Z') + 310_000 * (index + 1)).toISOString()).sort(),
-  'each response is stamped once as it arrives, even when details span more than the state TTL');
-  assert.ok(Date.parse(timed.retrievedAt?.['rpc-program-data'] ?? '') - Date.parse(timed.retrievedAt?.['rpc-mint-raw'] ?? '') > 300_000,
+  'each distinct RPC response is stamped once; retained retry aliases keep the original response instant');
+  assert.equal(timed.retrievedAt?.['rpc-mint-raw'], timed.retrievedAt?.['rpc-mint-reconciliation-response'],
+    'the canonical raw-mint alias preserves the refreshed response timestamp');
+  assert.equal(timed.retrievedAt?.['rpc-mint-raw-reconciliation-attempt-1'],
+    new Date(Date.parse('2026-10-06T12:00:00.000Z') + 310_000).toISOString(),
+    'the original raw mint keeps its first retrieval time');
+  assert.ok(Date.parse(timed.retrievedAt?.['rpc-program-data'] ?? '') - Date.parse(timed.retrievedAt?.['rpc-mint-reconciliation-response'] ?? '') > 300_000,
     'later program reads do not refresh the earlier raw mint response');
 });
 
@@ -382,7 +404,7 @@ test('complete holder scan is attempted before the top-account fallback and reco
   assert.equal(requestLog.some(request => request.method === 'getTokenLargestAccounts'), false);
   const population = requestLog.find(request => request.method === 'getProgramAccounts');
   assert.deepEqual(population?.params, [TOKEN_2022_PROGRAM, {
-    encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT, withContext: true,
+    encoding: 'base64', commitment: 'finalized', minContextSlot: 102, withContext: true,
     dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
 });
@@ -448,6 +470,136 @@ test('holder reconciliation uses current raw mint supply after a burn while reta
   }
 });
 
+test('a lagging full holder population is recaptured once at monotonic finalized-slot floors', async t => {
+  const makeMint = (supply: bigint) => {
+    const bytes = token2022Mint();
+    bytes.writeBigUInt64LE(supply, 36);
+    return bytes;
+  };
+  const population = (amount: bigint) => [{
+    pubkey: '11111111111111111111111111111111',
+    account: { owner: TOKEN_2022_PROGRAM, executable: false, data: [rawTokenAccount(amount).toString('base64'), 'base64'] },
+  }];
+
+  await t.test('a fresh mint and matching population replace the stale pair while preserving the first attempt', async () => {
+    const requests: Array<{ method: string; params: unknown[] }> = [];
+    let mintRead = 0;
+    let populationRead = 0;
+    let fakeNow = Date.parse('2026-10-20T12:00:00.000Z');
+    const clockTimes: string[] = [];
+    let firstMintResponse = '';
+    let firstPopulationResponse = '';
+    const fetcher: typeof fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      requests.push(request);
+      if (request.method === 'getAccountInfo' && request.params[0] === MINT) {
+        mintRead++;
+        const result = accountResult(makeMint(mintRead === 1 ? 100n : 90n), TOKEN_2022_PROGRAM, mintRead === 1 ? 102 : 105);
+        const raw = JSON.stringify({ jsonrpc: '2.0', id: 1, result });
+        if (mintRead === 1) firstMintResponse = raw;
+        return new Response(raw, { headers: { 'content-type': 'application/json' } });
+      }
+      if (request.method === 'getProgramAccounts') {
+        populationRead++;
+        const result = { context: { slot: populationRead === 1 ? 103 : 106 }, value: population(90n) };
+        const raw = JSON.stringify({ jsonrpc: '2.0', id: 1, result });
+        if (populationRead === 1) firstPopulationResponse = raw;
+        return new Response(raw, { headers: { 'content-type': 'application/json' } });
+      }
+      if (request.method === 'getAccountInfo' && request.params[0] === TOKEN_2022_PROGRAM) {
+        return rpcResponse(accountResult(upgradeableProgramHeader(), UPGRADEABLE_LOADER, 107, true));
+      }
+      if (request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA) {
+        return rpcResponse(accountResult(programData(null, 99), UPGRADEABLE_LOADER, 107));
+      }
+      throw new Error(`UNEXPECTED_RPC_METHOD_${request.method}`);
+    };
+    const details = await inspectSolanaDetails(mintDescriptor(), MINT, 'https://rpc.example', fetcher, undefined, () => {
+      const time = new Date(fakeNow++).toISOString();
+      clockTimes.push(time);
+      return time;
+    });
+
+    assert.equal(mintRead, 2);
+    assert.equal(populationRead, 2);
+    assert.equal(details.holders?.complete, true);
+    assert.equal(details.holders?.supplyAtomic, '90');
+    assert.equal(details.holders?.accounts.reduce((sum, row) => sum + BigInt(row.amount), 0n), 90n);
+    assert.equal(details.holders?.slot, 106);
+    assert.equal(details.errors.holderPopulation, undefined);
+    assert.equal(details.rawArtifacts['rpc-mint-raw-reconciliation-attempt-1'], firstMintResponse,
+      'the original raw mint response is retained separately after the canonical response is refreshed');
+    assert.equal(details.rawArtifacts['rpc-holder-population-reconciliation-attempt-1'], firstPopulationResponse);
+    assert.ok(details.rawArtifacts['rpc-mint-reconciliation-response']);
+    assert.equal(details.rawArtifacts['rpc-mint-raw'], details.rawArtifacts['rpc-mint-reconciliation-response']);
+    assert.equal(details.retrievedAt?.['rpc-mint-raw-reconciliation-attempt-1'], clockTimes[0]);
+    assert.equal(details.retrievedAt?.['rpc-holder-population-reconciliation-attempt-1'], clockTimes[1]);
+    assert.ok(Date.parse(details.retrievedAt?.['rpc-mint-raw'] ?? '') > Date.parse(details.retrievedAt?.['rpc-mint-raw-reconciliation-attempt-1'] ?? ''));
+
+    const mintRequests = requests.filter(request => request.method === 'getAccountInfo' && request.params[0] === MINT);
+    const populationRequests = requests.filter(request => request.method === 'getProgramAccounts');
+    assert.deepEqual(mintRequests.map(request => (request.params[1] as { minContextSlot: number }).minContextSlot), [SLOT, 103]);
+    assert.deepEqual(populationRequests.map(request => (request.params[1] as { minContextSlot: number }).minContextSlot), [102, 105],
+      'each full scan is requested at or after the raw mint bank it is reconciled against');
+  });
+
+  await t.test('a repeated mismatch remains incomplete after the single refresh', async () => {
+    let mintRead = 0;
+    let populationRead = 0;
+    const fetcher: typeof fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      if (request.method === 'getAccountInfo' && request.params[0] === MINT) {
+        mintRead++;
+        return rpcResponse(accountResult(makeMint(100n), TOKEN_2022_PROGRAM, mintRead === 1 ? 102 : 105));
+      }
+      if (request.method === 'getProgramAccounts') {
+        populationRead++;
+        return rpcResponse({ context: { slot: populationRead === 1 ? 103 : 106 }, value: population(90n) });
+      }
+      if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 107 }, value: [] });
+      if (request.method === 'getAccountInfo' && request.params[0] === TOKEN_2022_PROGRAM) return rpcResponse(accountResult(upgradeableProgramHeader(), UPGRADEABLE_LOADER, 108, true));
+      if (request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA) return rpcResponse(accountResult(programData(null, 99), UPGRADEABLE_LOADER, 108));
+      throw new Error(`UNEXPECTED_RPC_METHOD_${request.method}`);
+    };
+    const details = await inspectSolanaDetails(mintDescriptor(), MINT, 'https://rpc.example', fetcher);
+    assert.equal(mintRead, 2, 'only one refresh is attempted');
+    assert.equal(populationRead, 2, 'only one fresh full population is attempted');
+    assert.notEqual(details.holders?.complete, true);
+    assert.equal(details.errors.holderPopulation, 'HOLDER_SUPPLY_UNRECONCILED');
+  });
+
+  await t.test('cancellation during the bounded refresh backoff prevents another RPC request', async () => {
+    const controller = new AbortController();
+    let mintRead = 0;
+    let populationRead = 0;
+    const abort = setTimeout(() => controller.abort(), 20);
+    const fetcher: typeof fetch = async (_url, init) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      if (request.method === 'getAccountInfo' && request.params[0] === MINT) {
+        mintRead++;
+        return rpcResponse(accountResult(makeMint(100n), TOKEN_2022_PROGRAM, 102));
+      }
+      if (request.method === 'getProgramAccounts') {
+        populationRead++;
+        return rpcResponse({ context: { slot: 103 }, value: population(90n) });
+      }
+      if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 104 }, value: [] });
+      if (request.method === 'getAccountInfo' && request.params[0] === TOKEN_2022_PROGRAM) return rpcResponse(accountResult(upgradeableProgramHeader(), UPGRADEABLE_LOADER, 105, true));
+      if (request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA) return rpcResponse(accountResult(programData(null, 99), UPGRADEABLE_LOADER, 105));
+      throw new Error(`UNEXPECTED_RPC_METHOD_${request.method}`);
+    };
+    try {
+      const details = await inspectSolanaDetails(mintDescriptor(), MINT, 'https://rpc.example', fetcher, controller.signal);
+      assert.equal(mintRead, 1);
+      assert.equal(populationRead, 1);
+      assert.equal(details.rawArtifacts['rpc-mint-reconciliation-response'], undefined);
+      assert.notEqual(details.holders?.complete, true);
+    } finally {
+      clearTimeout(abort);
+    }
+  });
+});
+
 test('sampled holder mismatch and empty lists remain unknown instead of manufacturing owner coverage', async t => {
   await t.test('wrong mint association rejects holder projection', async () => {
     const rawMint = token2022Mint();
@@ -469,11 +621,19 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
   await t.test('empty complete population preserves its supply mismatch without requesting sample accounts', async () => {
     const rawMint = token2022Mint();
     let multipleCalls = 0;
+    let mintReads = 0;
+    let populationReads = 0;
     const fetcher: typeof fetch = async (_url, init) => {
       const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
-      if (request.method === 'getAccountInfo' && request.params[0] === MINT) return rpcResponse(accountResult(rawMint));
-      if (request.method === 'getProgramAccounts') return rpcResponse({ context: { slot: 103 }, value: [] });
-      if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 103 }, value: [] });
+      if (request.method === 'getAccountInfo' && request.params[0] === MINT) {
+        mintReads++;
+        return rpcResponse(accountResult(rawMint, TOKEN_2022_PROGRAM, mintReads === 1 ? 100 : 104));
+      }
+      if (request.method === 'getProgramAccounts') {
+        populationReads++;
+        return rpcResponse({ context: { slot: populationReads === 1 ? 103 : 105 }, value: [] });
+      }
+      if (request.method === 'getTokenLargestAccounts') return rpcResponse({ context: { slot: 105 }, value: [] });
       if (request.method === 'getMultipleAccounts') { multipleCalls++; throw new Error('EMPTY_SAMPLE_MUST_NOT_FETCH'); }
       if (request.method === 'getAccountInfo' && request.params[0] === TOKEN_2022_PROGRAM) return rpcResponse(accountResult(upgradeableProgramHeader(), UPGRADEABLE_LOADER, 104, true));
       if (request.method === 'getAccountInfo' && request.params[0] === PROGRAM_DATA) return rpcResponse(accountResult(programData(null, 99), UPGRADEABLE_LOADER, 104));

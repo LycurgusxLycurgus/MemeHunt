@@ -9,6 +9,7 @@ import { PublicKey } from '@solana/web3.js';
 import { AccountType, ExtensionType, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 import { MPL_TOKEN_METADATA_PROGRAM_ID, metadataPda } from '@pump-fun/pump-swap-sdk';
 import { collectLiveSolana, collectLiveToken } from '../src/app/live.js';
+import type { LiveRuntime } from '../src/app/live-phases.js';
 import { renderSnapshot } from '../src/app/report.js';
 import { Service } from '../src/app/service.js';
 import { parseGeminiSemantic } from '../src/providers/gemini.js';
@@ -512,6 +513,29 @@ test('mint inspection reuses the pinned handshake and preserves successful raw r
     assert.equal(calls, 2);
   });
 
+  await t.test('final mint reads request the preflight context floor and reject an older response', async () => {
+    let accountParams: unknown;
+    const mock = mockedFetch();
+    const floor = 321;
+    const read = await inspectSolanaMint(MINT, RPC_URL, async (input, init) => {
+      const request = JSON.parse(String(init?.body)) as { method: string; params?: unknown[] };
+      if (request.method === 'getAccountInfo' && request.params?.[0] === MINT) accountParams = request.params[1];
+      return mock.fetcher(input, init);
+    }, undefined, () => AT, floor);
+    assert.equal(read.status, 'OBSERVED');
+    assert.deepEqual(accountParams, { encoding: 'jsonParsed', commitment: 'finalized', minContextSlot: floor });
+
+    const stale: typeof fetch = async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { method: string };
+      if (request.method === 'getGenesisHash') return jsonResponse({ jsonrpc: '2.0', id: 1, result: SOLANA_MAINNET_GENESIS });
+      assert.equal(request.method, 'getAccountInfo');
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: { context: { slot: floor - 1 }, value: legacyAccount() } });
+    };
+    const rejected = await inspectSolanaMint(MINT, RPC_URL, stale, undefined, undefined, floor);
+    assert.deepEqual({ status: rejected.status, code: rejected.code }, { status: 'UNAVAILABLE', code: 'RPC_SHAPE' });
+    assert.equal(rejected.accountRaw, undefined, 'a stale account body cannot become canonical mint evidence');
+  });
+
   await t.test('failed account reads retain only the successful handshake timestamp', async () => {
     const current = '2026-10-06T12:00:00.000Z';
     const fetcher: typeof fetch = async (_input, init) => {
@@ -672,28 +696,91 @@ function liveOptions(fetcher: typeof fetch, overrides: Partial<Parameters<typeof
   return { profile, semanticEnabled: false, fetcher, now: () => AT, ...overrides };
 }
 
-test('full semantic live runs use ten minutes while partial collection keeps two minutes', async () => {
-  const original = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout');
-  assert.ok(original?.value instanceof Function);
-  const nativeTimeout = AbortSignal.timeout;
-  const observed: number[] = [];
-  Object.defineProperty(AbortSignal, 'timeout', {
-    ...original,
-    value: (milliseconds: number) => { observed.push(milliseconds); return nativeTimeout(milliseconds); },
-  });
-  try {
-    const full = mockedFetch();
-    const baseToken = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
-    await collectLiveToken(baseToken, liveOptions(full.fetcher, { semanticEnabled: true }));
-    assert.equal(observed[0], 600_000, 'full semantic analysis has the user-approved ten-minute run budget');
+test('semantic expiry still performs fresh final RPC and DEX reads in the actual collector', async () => {
+  const mock = mockedFetch();
+  let nowMs = 0;
+  let workDeadline: AbortController | undefined;
+  let expired = false;
+  const afterExpiry: Array<{ url: string; method?: string; params?: unknown[] }> = [];
+  const runtime: LiveRuntime = {
+    nowMs: () => nowMs,
+    timeout: milliseconds => {
+      const controller = new AbortController();
+      if (milliseconds === 480_000) workDeadline = controller;
+      return controller.signal;
+    },
+    wait: async () => {},
+  };
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    let request: { method?: string; params?: unknown[] } | undefined;
+    if (url.startsWith('https://rpc.example/')) request = JSON.parse(String(init?.body)) as typeof request;
+    if (expired && (url.startsWith('https://rpc.example/') || url.startsWith('https://api.dexscreener.com/'))) {
+      afterExpiry.push({ url, method: request?.method, params: request?.params });
+    }
+    const response = await mock.fetcher(input, init);
+    if (!expired && url.startsWith('https://api.search.tinyfish.ai/')) {
+      assert.ok(workDeadline, 'the semantic work signal exists before attention starts its first provider request');
+      nowMs = 480_000;
+      expired = true;
+      workDeadline.abort();
+    }
+    return response;
+  };
+  const now = () => new Date(Date.parse(AT) + nowMs).toISOString();
+  const bundle = await collectLiveSolana(token, liveOptions(fetcher, {
+    semanticEnabled: true, tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), rpcUrl: RPC_URL, runtime, now,
+  }));
 
-    const partial = mockedFetch();
-    const before = observed.length;
-    await collectLiveToken(baseToken, liveOptions(partial.fetcher, { semanticEnabled: false }));
-    assert.equal(observed[before], 120_000, 'partial collection retains its existing two-minute run budget');
-  } finally {
-    Object.defineProperty(AbortSignal, 'timeout', original);
-  }
+  assert.equal(expired, true);
+  const run = JSON.parse(bundle.rawArtifacts['live-run-scope']!) as {
+    elapsedMs: number; semanticLimitMs: number; stages: Array<{ phase: string; status: string; origin?: string; ops: number; endMs: number | null }>;
+  };
+  const attention = run.stages.find(stage => stage.phase === 'ATTENTION')!;
+  const finalize = run.stages.find(stage => stage.phase === 'FINALIZE')!;
+  assert.equal(run.semanticLimitMs, 600_000);
+  assert.equal(run.elapsedMs, 480_000);
+  assert.deepEqual([attention.status, attention.origin, attention.endMs], ['CANCELLED', 'PHASE_DEADLINE', 480_000]);
+  assert.equal(finalize.status, 'COMPLETED');
+  assert.ok(finalize.ops > 0, 'the final stage receives live transport operations after semantic cancellation');
+
+  assert.ok(afterExpiry.some(call => call.url.startsWith('https://rpc.example/') && call.method === 'getGenesisHash'));
+  const finalMint = afterExpiry.find(call => call.url.startsWith('https://rpc.example/') && call.method === 'getAccountInfo' && call.params?.[0] === MINT);
+  assert.ok(finalMint, 'the final canonical mint is actually read after semantic expiry');
+  assert.deepEqual(finalMint.params?.[1], { encoding: 'jsonParsed', commitment: 'finalized', minContextSlot: 321 });
+  assert.ok(afterExpiry.some(call => call.url.startsWith('https://api.dexscreener.com/')), 'the final DEX request is actually sent after semantic expiry');
+  assert.ok(bundle.evidence.some(record => record.id === 'rpc-account' && record.sourceId === 'solana-rpc'));
+  assert.ok(bundle.evidence.some(record => record.id === 'dex-pairs-primary' && record.sourceId === 'dexscreener'),
+    'the final direct DEX response remains evidence even when the optional recovery is not selected');
+  assert.ok(bundle.evidence.some(record => record.id === 'dex-discovery-primary'), 'early discovery remains separately labeled');
+  const discoveryPrimary = bundle.evidence.find(record => record.id === 'dex-discovery-primary')!;
+  const finalDex = bundle.evidence.find(record => record.id === 'dex-pairs-primary')!;
+  assert.ok(discoveryPrimary, 'early DEX discovery is retained');
+  assert.ok(Date.parse(finalDex.retrievedAt) > Date.parse(discoveryPrimary.retrievedAt), 'final market state is retrieved after early discovery');
+});
+
+test('semantic research keeps the partial 120-second final stage active through venue collection', async () => {
+  const mock = mockedFetch();
+  const timeouts: number[] = [];
+  const runtime: LiveRuntime = {
+    nowMs: () => 0,
+    timeout: milliseconds => { timeouts.push(milliseconds); return new AbortController().signal; },
+    wait: async () => {},
+  };
+  const research = { schemaVersion: 1 as const, token, records: [], reviews: [] };
+  const bundle = await collectLiveSolana(token, liveOptions(mock.fetcher, {
+    semanticEnabled: true, tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), rpcUrl: RPC_URL, research, runtime,
+  }));
+  assert.ok(timeouts.every(milliseconds => milliseconds === 120_000), 'research uses the existing partial-run ceiling');
+  assert.ok(bundle.evidence.some(record => record.id === 'curated-research'));
+  assert.ok(!bundle.rawArtifacts['live-run-scope'], 'legacy/partial research does not claim the fresh full-run phase receipt');
+  assert.ok(!bundle.rawArtifacts['social-attention-seed'], 'curated research does not start the live social branch');
+  const rpcMethods = mock.calls.filter(call => call.url.startsWith('https://rpc.example/'))
+    .map(call => (JSON.parse(String(call.init?.body)) as { method: string }).method);
+  assert.ok(rpcMethods.some(method => method === 'getAccountInfo'), 'canonical mint acquisition remains live');
+  const lastSearchIndex = mock.calls.reduce((last, call, index) => call.url.startsWith('https://api.search.tinyfish.ai/') ? index : last, -1);
+  assert.ok(mock.calls.slice(lastSearchIndex + 1).some(call => call.url.startsWith('https://rpc.example/')),
+    'venue RPC work still reaches the provider after attention uses the shared final-stage fetcher');
 });
 
 test('Service accepts safe RPC diagnostics and keeps a partial holder error as the cause', async () => {
@@ -803,6 +890,101 @@ test('Service gives only the validated LIVE holder-population artifact its separ
     setArtifact('rpc-mint-raw', mintRaw.trimEnd().padEnd(24_000_001, ' '));
     assert.throws(() => service.analyzeLive(bundle), /ARTIFACT_HASH_OR_SIZE/,
       'an equally large non-holder artifact remains subject to the ordinary LIVE aggregate cap');
+  } finally {
+    service.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Service reconstructs a finalized holder-population retry and rejects rehashed trigger, floor, and bound mutations', async () => {
+  const mock = mockedFetch();
+  const makeMint = (supply: bigint) => {
+    const bytes = Buffer.alloc(82);
+    bytes.writeBigUInt64LE(supply, 36);
+    bytes[44] = 6;
+    bytes[45] = 1;
+    return bytes;
+  };
+  const holderAccount = (amount: bigint) => {
+    const bytes = Buffer.alloc(165);
+    new PublicKey(MINT).toBuffer().copy(bytes, 0);
+    Buffer.alloc(32, 9).copy(bytes, 32);
+    bytes.writeBigUInt64LE(amount, 64);
+    bytes[108] = 1;
+    return bytes;
+  };
+  let mintReads = 0;
+  let populationReads = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://rpc.example/') || url.startsWith('https://api.mainnet.solana.com')) {
+      const request = JSON.parse(String(init?.body)) as { method: string; params?: unknown[] };
+      if (request.method === 'getAccountInfo' && request.params?.[0] === MINT
+        && (request.params[1] as { encoding?: string } | undefined)?.encoding === 'base64') {
+        mintReads++;
+        return jsonResponse({ jsonrpc: '2.0', id: 1, result: {
+          context: { slot: mintReads === 1 ? 322 : 324 }, value: rpcAccount(LEGACY_TOKEN_PROGRAM, makeMint(mintReads === 1 ? 100n : 90n)),
+        } });
+      }
+      if (request.method === 'getProgramAccounts') {
+        populationReads++;
+        const amount = populationReads === 1 ? 90n : 90n;
+        return jsonResponse({ jsonrpc: '2.0', id: 1, result: {
+          context: { slot: populationReads === 1 ? 323 : 325 },
+          value: [{ pubkey: PROGRAM_DATA, account: rpcAccount(LEGACY_TOKEN_PROGRAM, holderAccount(amount)) }],
+        } });
+      }
+    }
+    return mock.fetcher(input, init);
+  };
+  const bundle = await collectLiveSolana(token, liveOptions(fetcher));
+  assert.equal(mintReads, 2, 'the mismatch produces exactly one finalized raw-mint refresh');
+  assert.equal(populationReads, 2, 'the refreshed mint is followed by exactly one fresh population scan');
+  assert.ok(bundle.rawArtifacts['rpc-mint-raw-reconciliation-attempt-1']);
+  assert.ok(bundle.rawArtifacts['rpc-holder-population-reconciliation-attempt-1']);
+  assert.ok(bundle.rawArtifacts['rpc-mint-reconciliation-response']);
+  assert.equal(bundle.rawArtifacts['rpc-mint-raw'], bundle.rawArtifacts['rpc-mint-reconciliation-response']);
+  for (const id of ['O17', 'O18', 'O19', 'O20']) {
+    assert.equal(bundle.details?.baseline.find(row => row.id === id)?.quality, 'KNOWN', `${id} is derived from the reconciled complete population`);
+  }
+
+  const directory = mkdtempSync(join(tmpdir(), 'holder-reconciliation-service-'));
+  const service = new Service(join(directory, 'proof.sqlite'));
+  const rehash = (candidate: typeof bundle, id: string, raw: string) => {
+    candidate.rawArtifacts[id] = raw;
+    const evidence = candidate.evidence.find(record => record.id === id);
+    assert.ok(evidence, `${id} has a provenance record`);
+    evidence.contentHash = sha256(raw);
+  };
+  try {
+    const saved = service.analyzeLive(bundle);
+    assert.deepEqual(service.replay(saved.id), saved, 'the verified reconciliation survives persistence and deterministic replay');
+
+    const badTrigger = structuredClone(bundle);
+    const initialPopulation = JSON.parse(badTrigger.rawArtifacts['rpc-holder-population-reconciliation-attempt-1']!) as {
+      result: { value: Array<{ account: { data: [string, string] } }> };
+    };
+    const initialBytes = Buffer.from(initialPopulation.result.value[0]!.account.data[0], 'base64');
+    initialBytes.writeBigUInt64LE(100n, 64);
+    initialPopulation.result.value[0]!.account.data[0] = initialBytes.toString('base64');
+    const initialPopulationRaw = JSON.stringify(initialPopulation);
+    rehash(badTrigger, 'rpc-holder-population-reconciliation-attempt-1', initialPopulationRaw);
+    assert.throws(() => service.analyzeLive(badTrigger), /HOLDER_RECONCILIATION_PROOF_INVALID/,
+      'a rehashed original sample that no longer mismatches cannot authorize a retry');
+
+    const badFloor = structuredClone(bundle);
+    const currentMint = JSON.parse(badFloor.rawArtifacts['rpc-mint-raw']!) as { result: { context: { slot: number } } };
+    currentMint.result.context.slot = 322;
+    rehash(badFloor, 'rpc-mint-raw', JSON.stringify(currentMint));
+    assert.throws(() => service.analyzeLive(badFloor), /HOLDER_RECONCILIATION_PROOF_INVALID/,
+      'a rehashed refreshed mint below the first population slot fails monotonic-floor validation');
+
+    const badBounds = structuredClone(bundle);
+    const concentration = badBounds.details?.baseline.find(row => row.id === 'O19');
+    assert.ok(concentration);
+    concentration.data = { ...(concentration.data as Record<string, unknown>), sampledAtomic: '89' };
+    assert.throws(() => service.analyzeLive(badBounds), /HOLDER_RECONCILIATION_PROOF_INVALID/,
+      'a modified baseline cannot be admitted when it disagrees with the exact reconciled holder decode');
   } finally {
     service.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1345,7 +1527,7 @@ function freshComparisonResponse(packet: Record<string, unknown>, target: TokenR
     });
   }
 
-  if (packet.method === 'binary-public-support-v2' && Array.isArray(packet.sources)) {
+  if ((packet.method === 'binary-public-support-v2' || packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4') && Array.isArray(packet.sources)) {
     const catalog = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
     const originIds = (packet.scope as { originSourceIds: string[] }).originSourceIds;
     const origin = catalog.flatMap(source => source.spans.map(span => ({ source, span })))
@@ -1353,6 +1535,10 @@ function freshComparisonResponse(packet: Record<string, unknown>, target: TokenR
     const comparison = catalog.flatMap(source => source.spans.map(span => ({ source, span })))[0];
     assert.ok(origin, 'the independent origin criterion cites a literal target span from the original scope');
     assert.ok(comparison, 'the remaining criteria cite actual retained comparison text');
+    const explanationIds = packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4' ? packet.explainableCitationSourceIds as string[] : [];
+    const explainable = catalog.flatMap(source => source.spans.map(span => ({ source, span })))
+      .find(({ source, span }) => explanationIds.includes(source.id) && span.text.includes(target.address));
+    if (packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4') assert.ok(explainable, 'the fresh thesis judgment cites a narrative-bound exact-token source');
     const final = Object.hasOwn(packet, 'draft');
     const grade = (verdict: 'PASS' | 'FAIL', sourceId: string, spanId: string, rationale: string) => ({
       verdict, rationale, citation: { sourceId, spanId },
@@ -1361,12 +1547,16 @@ function freshComparisonResponse(packet: Record<string, unknown>, target: TokenR
       originTraceability: grade(final ? 'FAIL' : 'PASS', origin.source.id, origin.span.id, final
         ? 'The retained source names the exact contract but does not establish its specific originating project or catalyst.'
         : 'The retained source is proposed as support for the origin criterion.'),
-      leadership: grade(final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
+      leadership: { ...grade(packet.method === 'binary-public-support-v4' || final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
         ? 'The bounded sample has no relative exact-token mention counts or verified primary-origin relationship.'
         : 'The retained source is proposed as support for the leadership criterion.'),
+        ...(packet.method === 'binary-public-support-v4' ? { basis: 'EVIDENCE_INADEQUACY' } : {}) },
       representations: grade(final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
         ? 'The bounded source review does not establish adequate competing-representation coverage.'
         : 'The retained source is proposed as support for the representation criterion.'),
+      ...(packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4' ? { explainableThesis: grade(final ? 'FAIL' : 'PASS', explainable!.source.id, explainable!.span.id, final
+        ? 'The retained sources do not adequately explain the narrative interest and its relationship to this exact token.'
+        : 'The retained source is proposed as support for a plain-language thesis judgment.') } : {}),
       inspectionComplete: true,
     });
   }
@@ -1941,7 +2131,7 @@ test('A18 excludes a clipped old post but requires retained full text for in-win
   }
 });
 
-test('live qualification retains full comparison batches and emits a locally derived batch manifest', async () => {
+test('fresh live entry review receives full acquired text without a factual comparison pass', async () => {
   const target = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
   const rival = '0x2222222222222222222222222222222222222222';
   const postUrl = 'https://x.com/river_lantern/status/901';
@@ -2095,61 +2285,72 @@ test('live qualification retains full comparison batches and emits a locally der
   assert.deepEqual(providerCalls, { attentionSearchCount: 3, socialSearchCount: 2, attentionFetchCount: 1, socialFetchCount: 1 });
   const attentionPackets = mock.geminiPackets.filter(packet => !isSocialModelPacket(packet));
   const socialPackets = mock.geminiPackets.filter(isSocialModelPacket);
-  assert.ok(attentionPackets.some(packet => packet.method === 'binary-public-support-v2'),
-    'fresh qualification also executes the independent full-catalog entry review');
+  const entryPackets = attentionPackets.filter(packet => packet.method === 'binary-public-support-v4');
+  assert.equal(entryPackets.length, 2, 'fresh acquisition reuses the independent public-entry proposal/review pair');
   assert.equal(socialPackets.length, 1);
   assert.equal(invalidSocialModelCalls, 1);
   assertInvalidSocialProposal(result.rawArtifacts);
-  const comparisonSourceId = (attentionPackets[0]!.scope as { comparisonSourceIds: string[] }).comparisonSourceIds[0]!;
-  assert.equal((attentionPackets[0]!.scope as { comparisonDeferred?: boolean }).comparisonDeferred, true);
+  const receipt = JSON.parse(result.rawArtifacts['attention-qualified-receipt']!) as {
+    read: {
+      entryExecutionMethod?: string; comparisonComplete?: boolean; comparisonQualification?: unknown;
+      comparisonSourceIds?: string[]; comparisonRecovery?: {
+        method: string; selectedLeadIds: string[]; recoveryQueries: Array<{ queryId: string; parentLeadId: string; state: string }>;
+        sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }>;
+      }; comparisonAcquisition?: { leads: Array<{ id: string; recoveryQueryIds: string[]; recoverySourceIds: string[] }> };
+    };
+    review: { entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string };
+      representations: { verdict: string }; explainableThesis?: { verdict: string } } };
+  };
+  const comparisonSourceId = receipt.read.comparisonSourceIds?.[0];
+  assert.ok(comparisonSourceId);
+  assert.equal(receipt.read.entryExecutionMethod, 'entry-first-v2');
+  assert.equal(receipt.read.comparisonComplete, false);
+  assert.equal(receipt.read.comparisonQualification, undefined,
+    'source acquisition does not manufacture factual comparison accounting');
+  assert.equal(receipt.read.comparisonRecovery?.method, 'comparison-acquisition-v1');
+  assert.ok(receipt.read.comparisonRecovery?.recoveryQueries.every(query =>
+    receipt.read.comparisonRecovery?.selectedLeadIds.includes(query.parentLeadId)));
+  for (const lineage of receipt.read.comparisonRecovery?.sourceLineage ?? []) {
+    const lead = receipt.read.comparisonAcquisition?.leads.find(item => item.id === lineage.leadId);
+    assert.ok(lead);
+    assert.deepEqual(lineage.queryIds, lead.recoveryQueryIds);
+    assert.deepEqual(lineage.sourceIds, lead.recoverySourceIds);
+  }
+  assert.equal(result.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(receipt.read.comparisonRecovery));
+  assert.deepEqual(receipt.review.entryDecisions && [receipt.review.entryDecisions.method,
+    receipt.review.entryDecisions.originTraceability.verdict, receipt.review.entryDecisions.leadership.verdict,
+    receipt.review.entryDecisions.representations.verdict, receipt.review.entryDecisions.explainableThesis?.verdict],
+  ['binary-public-support-v4', 'FAIL', 'FAIL', 'FAIL', 'FAIL']);
   const baseProposalResponse = JSON.parse(result.rawArtifacts['attention-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
   assert.deepEqual((JSON.parse(baseProposalResponse.candidates[0]!.content.parts[0]!.text) as { competitors: unknown[] }).competitors, [], 'the base pass leaves comparison candidates to full-text review');
   assert.equal(result.rawArtifacts[comparisonSourceId], comparisonText, 'live evidence retains the full collector text, including the rival after the model prefix');
-  for (const packet of attentionPackets.slice(0, 2)) {
-    const submitted = (packet.sources as AttentionPacket['sources']).find(source => source.id === comparisonSourceId)!;
+  for (const packet of entryPackets) {
+    const packetSources: AttentionPacket['sources'] = packet.sources as AttentionPacket['sources'];
+    const submitted: AttentionPacket['sources'][number] = packetSources.find(source => source.id === comparisonSourceId)!;
     assert.equal(submitted.spans.map(span => span.text).join(''), comparisonText,
-      'fresh mode submits the complete retained comparison body in its base narrative and origin passes');
+      'both independent entry passes receive the complete retained body, including the tail representation');
+    assert.ok(submitted.spans.some(span => span.text.includes(rival)));
   }
-  const batchPacket = attentionPackets.find(packet => (packet.scope as { batch?: number } | undefined)?.batch === 1 && !packet.proposal)!;
-  const fullBatchSource = (batchPacket.sources as AttentionPacket['sources']).find(source => source.id === comparisonSourceId)!;
-  assert.equal(fullBatchSource.spans.map(span => span.text).join(''), comparisonText, 'the comparison pass receives every retained character');
-  assert.ok(fullBatchSource.spans.some(span => span.text.includes(rival)), 'the tail rival is visible to the comparison proposal');
-  assert.ok(result.rawArtifacts['attention-comparison-1-proposal-prompt']);
-  assert.ok(result.rawArtifacts['attention-comparison-1-review-prompt']);
-  assert.ok(result.rawArtifacts['attention-comparison-final-review-prompt']);
-  assert.ok(result.rawArtifacts['attention-comparison-manifest']);
+  assert.equal(Object.keys(result.rawArtifacts).some(id => /^attention-comparison-\d+-(?:proposal|review)-prompt$/.test(id)), false,
+    'the fresh route does not issue factual comparison batch prompts');
+  assert.equal(result.rawArtifacts['attention-comparison-manifest'], undefined);
   for (const id of ['attention-leadership-proposal-prompt', 'attention-leadership-proposal-response',
     'attention-leadership-review-prompt', 'attention-leadership-review-response']) {
     assert.ok(result.rawArtifacts[id], `the independent entry pair retains ${id}`);
   }
-
-  const retainedScope = JSON.parse(result.rawArtifacts['attention-scope']!) as {
-    comparisonComplete: boolean; comparisonSourceIds: string[]; codes: string[];
-  };
-  assert.equal(retainedScope.comparisonComplete, true, result.rawArtifacts['attention-comparison-coverage']);
-  assert.deepEqual(retainedScope.comparisonSourceIds, [comparisonSourceId]);
-  assert.equal(retainedScope.codes.includes('ATT_MODEL_COMPARISON_TEXT_CAP'), false);
-  const scopeRecord = result.evidence.find(item => item.id === 'attention-scope');
-  assert.equal(scopeRecord?.sourceType, 'SAMPLE_SCOPE');
-  assert.equal(scopeRecord?.scope.method, 'comparison-scope-v2');
-  const manifestRecord = result.evidence.find(item => item.id === 'attention-comparison-manifest');
-  assert.equal(manifestRecord?.sourceId, 'attention-collector');
-  assert.equal(manifestRecord?.sourceType, 'SAMPLE_SCOPE');
-  assert.equal(manifestRecord?.accessMode, 'LOCAL_DERIVED');
-  assert.equal(manifestRecord?.scope.method, 'complete-comparison-batches-v1');
-  const rivalEvidence = result.details?.baseline.find(row => row.id === 'A09')?.data as { candidates?: Array<{ token: { address: string }; quote: string }> } | undefined;
-  assert.ok(rivalEvidence?.candidates?.some(candidate => candidate.token.address === rival && comparisonText.includes(candidate.quote)));
-
-  const rows = new Map(result.details?.baseline.map(row => [row.id, row]) ?? []);
-  assert.equal(rows.get('A09')?.quality, 'KNOWN');
-  assert.equal(rows.get('A11')?.quality, 'MISSING', 'one common-name post cannot establish representation leadership');
-  assert.equal(rows.get('A11')?.causes[0]?.code, 'ATT_COMPARABLE_SAMPLE_INSUFFICIENT');
-  const routes = rows.get('A14')?.data as { originRelationship: { status: string }; measuredAttention: { status: string } } | undefined;
-  assert.equal(routes?.originRelationship.status, 'UNKNOWN');
-  assert.equal(routes?.measuredAttention.status, 'UNKNOWN');
+  assert.equal(result.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(receipt.read.comparisonRecovery));
+  assert.equal(result.rawArtifacts['attention-comparison-coverage'], undefined);
+  const a09 = result.details?.baseline.find(row => row.id === 'A09');
+  assert.equal(a09?.quality, 'KNOWN');
+  assert.equal(a09?.projection?.value, false, 'the independent entry decision grades public support');
+  const a09Data = a09?.data as { entryDecisionMethod?: string; factualAssessment?: { quality: string; value: unknown } } | undefined;
+  assert.equal(a09Data?.entryDecisionMethod, 'binary-public-support-v4');
+  assert.notEqual(a09Data?.factualAssessment?.quality, 'KNOWN',
+    'the public entry grade does not turn the acquired rival text into factual comparison qualification');
+  assert.equal(a09Data?.factualAssessment?.value, null);
 });
 
-test('live lead recovery preserves both scopes and source lineage through isolated Service replay', async () => {
+test('fresh entry-first lead recovery preserves each parent lineage through Service replay', async () => {
   const target = { chain: 'solana', address: MINT } as const;
   const alternate = { chain: 'solana', address: OTHER_MINT } as const;
   const targetUrl = 'https://public.example/river-lantern';
@@ -2387,11 +2588,13 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     const original = JSON.parse(bundle.rawArtifacts['attention-acquisition-scope']!) as {
       comparisonComplete: boolean; comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string }> };
     };
-    const effective = JSON.parse(bundle.rawArtifacts['attention-scope']!) as {
-      comparisonComplete: boolean; comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string; recoverySourceIds: string[] }> };
-        comparisonQualification: { mode: string; accountingComplete: boolean; decisions: Array<{ leadId: string; accounted: boolean; qualified: boolean;
-          accounting: { status: string; basis: string }; representation: { status: string } }> };
-    };
+    const effective = (JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as { read: {
+      entryExecutionMethod?: string; comparisonComplete?: boolean; comparisonQualification?: unknown;
+      comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string; recoveryQueryIds: string[]; recoverySourceIds: string[] }> };
+      comparisonRecovery?: { method: string; selectedLeadIds: string[];
+        recoveryQueries: Array<{ queryId: string; parentLeadId: string; state: string; descriptorComplete: boolean }>;
+        sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }> };
+    } }).read;
     const recoveryMetadataId = 'attention-recovery-comparison-lead-1-metadata';
     const transportReceiptId = 'attention-proposal-transport-attempt-1';
     const snapshot = service.analyzeLive(bundle);
@@ -2412,34 +2615,38 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     const finalDex = evidence.get('dex-pairs')!;
     const dexCalls = mock.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.url.startsWith('https://api.dexscreener.com/'));
     const geminiCallIndexes = mock.calls.flatMap((call, index) => call.url.startsWith('https://generativelanguage.googleapis.com/') ? [index] : []);
-    const firstCanonicalRequestIndex = mock.calls.findIndex(call => {
+    const finalGenesisRequestIndex = mock.calls.map((call, index) => ({ call, index })).filter(({ call }) => {
       if (!call.url.startsWith('https://rpc.example/') && !call.url.startsWith('https://api.mainnet.solana.com')) return false;
-      return JSON.parse(String(call.init?.body)).method !== 'getMultipleAccounts';
-    });
+      return JSON.parse(String(call.init?.body)).method === 'getGenesisHash';
+    }).at(-1)?.index ?? -1;
 
     assert.equal(bundle.analysisKind, 'LIVE');
     assert.equal(original.comparisonComplete, false);
     assert.equal(original.comparisonAcquisition.originalComplete, false);
     assert.equal(original.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-2')?.acquisitionStatus, 'FAILED');
     assert.equal(original.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.acquisitionStatus, 'FAILED');
-    assert.equal(effective.comparisonComplete, true, JSON.stringify({
-      qualification: effective.comparisonQualification.decisions.map(decision => [decision.leadId, decision.accounting.status, decision.accounted, decision.representation.status, decision.qualified]),
-      coverage: bundle.rawArtifacts['attention-comparison-coverage'],
-    }));
+    assert.equal(effective.entryExecutionMethod, 'entry-first-v2');
+    assert.equal(effective.comparisonComplete, false);
+    assert.equal(effective.comparisonQualification, undefined,
+      'recovery acquisition is not full factual comparison qualification');
+    assert.equal(effective.comparisonRecovery?.method, 'comparison-acquisition-v1');
+    assert.ok(effective.comparisonRecovery?.selectedLeadIds.includes('comparison-lead-2'));
+    assert.ok(effective.comparisonRecovery?.selectedLeadIds.includes('comparison-lead-3'));
     assert.equal(effective.comparisonAcquisition.originalComplete, false, 'effective qualification preserves the failed original acquisition state');
     assert.equal(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-2')?.acquisitionStatus, 'FAILED');
     assert.equal(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.acquisitionStatus, 'FAILED');
-    assert.equal(effective.comparisonQualification.mode, 'qualified-identified-leads-v3');
-    assert.equal(effective.comparisonQualification.accountingComplete, true);
-    assert.deepEqual(effective.comparisonQualification.decisions.map(decision => [decision.accounting.status, decision.accounted, decision.representation.status, decision.qualified]), [
-      ['ACCOUNTED', true, 'BOUND', true], ['ACCOUNTED', true, 'UNRELATED', true], ['ACCOUNTED', true, 'UNRELATED', true],
-    ]);
-    assert.equal(effective.comparisonQualification.decisions[1]?.accounting.basis, 'RECOVERED_ENTITY');
-    assert.equal(effective.comparisonQualification.decisions[2]?.accounting.basis, 'RECOVERED_ENTITY',
-      'different-host recovery accounts the indexed feline-art entity, not its unread original page');
-    assert.deepEqual(effective.comparisonQualification.decisions.slice(1).map(decision => decision.representation.status), ['UNRELATED', 'UNRELATED']);
-    assert.ok(effective.comparisonAcquisition.leads.find(lead => lead.id === 'comparison-lead-3')?.recoverySourceIds.length,
-      'the unrelated lead is backed by recovered, retained sources');
+    for (const leadId of ['comparison-lead-2', 'comparison-lead-3']) {
+      const lead = effective.comparisonAcquisition.leads.find(item => item.id === leadId)!;
+      const queries = effective.comparisonRecovery?.recoveryQueries.filter(item => item.parentLeadId === leadId) ?? [];
+      const lineage: { leadId: string; queryIds: string[]; sourceIds: string[] } | undefined =
+        effective.comparisonRecovery?.sourceLineage.find(item => item.leadId === leadId);
+      assert.ok(queries.length > 0 && queries.every(query => query.state === 'OBSERVED' && query.descriptorComplete),
+        `${leadId} has a complete owned recovery Search receipt`);
+      assert.ok(lead.recoveryQueryIds.length > 0 && lead.recoverySourceIds.length > 0,
+        `${leadId} retains its own recovery query and fetched sources without upgrading the original failure`);
+      assert.deepEqual(lineage?.queryIds, lead.recoveryQueryIds);
+      assert.deepEqual(lineage?.sourceIds, lead.recoverySourceIds);
+    }
     assert.equal(metadataEvidence.sourceId, 'attention-collector');
     assert.equal(metadataEvidence.sourceType, 'INDEXED_LEAD');
     assert.equal(metadataEvidence.accessMode, 'LOCAL_DERIVED');
@@ -2459,17 +2666,21 @@ test('live lead recovery preserves both scopes and source lineage through isolat
       'the isolated Service database retains the derived transport receipt by content hash');
     assert.equal(readFileSync(join(directory, 'artifacts', recoveryPageEvidence.contentHash), 'utf8'), alternateText,
       'Service stores recovered page content under its verified evidence hash');
-    const comparisonCoverage = JSON.parse(bundle.rawArtifacts['attention-comparison-coverage']!) as {
-      complete: boolean; sourceRequirements: Array<{ sourceId: string; obligation: string }>;
-    };
     const retainedFooterId = Object.entries(bundle.rawArtifacts).find(([, raw]) => raw === footerText)?.[0];
     assert.ok(retainedFooterId, 'the actual fetched footer is retained as a source artifact');
-    assert.equal(comparisonCoverage.complete, true);
-    assert.equal(comparisonCoverage.sourceRequirements.find(item => item.sourceId === retainedFooterId)?.obligation,
-      'OPTIONAL_UNUSABLE_SUPPLEMENT');
     const sharedProof = JSON.parse(bundle.rawArtifacts['shared-derivation']!) as { sources: Array<{ id: string; text: string }> };
     assert.ok(sharedProof.sources.some(source => source.id === retainedFooterId && source.text.includes(footerText)),
-      'the optional footer remains in the full audited Shared source catalog');
+      'the fetched footer remains in the Shared source audit without creating a comparison grade');
+    assert.equal(bundle.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(effective.comparisonRecovery));
+    assert.equal(bundle.rawArtifacts['attention-comparison-coverage'], undefined);
+    const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
+      review: { entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string };
+        representations: { verdict: string }; explainableThesis?: { verdict: string } } };
+    };
+    assert.deepEqual(receipt.review.entryDecisions && [receipt.review.entryDecisions.method,
+      receipt.review.entryDecisions.originTraceability.verdict, receipt.review.entryDecisions.leadership.verdict,
+      receipt.review.entryDecisions.representations.verdict, receipt.review.entryDecisions.explainableThesis?.verdict],
+    ['binary-public-support-v4', 'FAIL', 'FAIL', 'FAIL', 'FAIL']);
     assert.deepEqual(replayed, snapshot, 'the temporary proof database reopens the live snapshot unchanged');
     assert.equal(capture.method, 'late-state-capture-v1');
     assert.equal(capture.discoveryId, 'dex-discovery');
@@ -2479,8 +2690,8 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     assert.equal(capture.dexState, 'OBSERVED');
     assert.equal(dexCalls.length, 2, 'discovery and final canonical DEX reads are retained as separate requests');
     assert.ok(geminiCallIndexes.length > 0);
-    assert.ok(Math.max(...geminiCallIndexes) < firstCanonicalRequestIndex,
-      'the final canonical RPC starts only after attention, social, and shared semantic work');
+    assert.ok(Math.max(...geminiCallIndexes) < finalGenesisRequestIndex,
+      'the final canonical RPC refresh follows attention, social, and Shared semantic work after the discovery-only preflight');
     assert.ok(Math.max(...geminiCallIndexes) < dexCalls[1]!.index,
       'the final DEX observation follows semantic qualification');
     assert.equal((JSON.parse(bundle.rawArtifacts['dex-discovery']!) as Array<{ priceUsd: string }>)[0]?.priceUsd, '0.001');
@@ -2506,58 +2717,46 @@ test('live lead recovery preserves both scopes and source lineage through isolat
     assert.equal(JSON.stringify(bundle).includes(GEMINI_KEY), false);
     assert.equal(JSON.stringify(transportReceipt).includes('generativelanguage.googleapis.com'), false);
 
-    const forgedCoverage = structuredClone(bundle);
-    const coverageEvidence = forgedCoverage.evidence.find(item => item.id === 'attention-comparison-coverage');
-    assert.ok(coverageEvidence, 'locally derived coverage has a retained provenance record');
-    const forgedLocalCoverage = JSON.parse(forgedCoverage.rawArtifacts[coverageEvidence.id]!) as { complete: boolean };
-    forgedLocalCoverage.complete = false;
-    forgedCoverage.rawArtifacts[coverageEvidence.id] = JSON.stringify(forgedLocalCoverage);
-    coverageEvidence.contentHash = sha256(forgedCoverage.rawArtifacts[coverageEvidence.id]!);
-    assert.equal(forgedCoverage.rawArtifacts['attention-comparison-final-review-response'],
-      bundle.rawArtifacts['attention-comparison-final-review-response'], 'the tamper leaves Gemini review bytes unchanged');
-    const comparisonResponseIds = Object.keys(bundle.rawArtifacts).filter(id => /^attention-comparison-.*-response$/.test(id));
-    assert.ok(comparisonResponseIds.length > 0);
-    for (const id of comparisonResponseIds) assert.equal(forgedCoverage.rawArtifacts[id], bundle.rawArtifacts[id],
-      `the local coverage tamper leaves ${id} unchanged`);
-    const verifier = new Service(join(directory, 'forged-coverage.sqlite'));
-    try {
-      assert.throws(() => verifier.analyzeLive(forgedCoverage), /SHARED_PROOF_INVALID/,
-        'rehashed locally derived coverage cannot contradict the raw model proof and replayed source requirements');
-    } finally {
-      verifier.close();
-    }
-
-    type LocalComparisonReceipt = {
+    type FreshAcquisitionReceipt = {
       read: {
         comparisonAcquisition: { leads: Array<{ id: string; sourceIds: string[]; recoverySourceIds: string[] }> };
-        comparisonQualification: { decisions: Array<{ leadId: string; qualified: boolean }> };
+        comparisonRecovery: { sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }> };
         sources: Array<{ id: string }>;
       };
     };
-    const rejectRehashedReceipt = (name: string, mutate: (receipt: LocalComparisonReceipt) => void) => {
+    const rejectRehashedReceipt = (name: string, mutate: (receipt: FreshAcquisitionReceipt) => void,
+      expected: RegExp = /SHARED_(?:PROOF|SOURCE)_(?:INVALID|REQUIRED)/) => {
       const forged = structuredClone(bundle);
       const receiptRecord = forged.evidence.find(item => item.id === 'attention-qualified-receipt');
       assert.ok(receiptRecord);
-      const receipt = JSON.parse(forged.rawArtifacts[receiptRecord.id]!) as LocalComparisonReceipt;
+      const receipt = JSON.parse(forged.rawArtifacts[receiptRecord.id]!) as FreshAcquisitionReceipt;
       mutate(receipt);
       forged.rawArtifacts[receiptRecord.id] = JSON.stringify(receipt);
-      receiptRecord.contentHash = sha256(forged.rawArtifacts[receiptRecord.id]!);
+      for (const evidence of forged.evidence) {
+        const raw = forged.rawArtifacts[evidence.id];
+        if (raw !== undefined) evidence.contentHash = sha256(raw);
+      }
+      const sharedRecord = forged.evidence.find(item => item.id === 'shared-derivation')!;
+      const shared = JSON.parse(forged.rawArtifacts[sharedRecord.id]!) as { evidence: typeof forged.evidence };
+      shared.evidence = forged.evidence.filter(item => item.id !== sharedRecord.id);
+      forged.rawArtifacts[sharedRecord.id] = JSON.stringify(shared);
+      sharedRecord.contentHash = sha256(forged.rawArtifacts[sharedRecord.id]!);
       const receiptVerifier = new Service(join(directory, `${name}.sqlite`));
       try {
-        assert.throws(() => receiptVerifier.analyzeLive(forged), /SHARED_(?:PROOF|SOURCE)_(?:INVALID|REQUIRED)/, name);
+        assert.throws(() => receiptVerifier.analyzeLive(forged), expected, name);
       } finally {
         receiptVerifier.close();
       }
     };
-    rejectRehashedReceipt('locally-forged-qualified-unrelated-lead', receipt => {
-      receipt.read.comparisonQualification.decisions.find(item => item.leadId === 'comparison-lead-3')!.qualified = false;
-    });
     rejectRehashedReceipt('locally-forged-recovery-parent-lineage', receipt => {
       receipt.read.comparisonAcquisition.leads.find(item => item.id === 'comparison-lead-3')!.recoverySourceIds = [];
     });
-    rejectRehashedReceipt('locally-deleted-original-comparison-source', receipt => {
-      receipt.read.sources = receipt.read.sources.filter(source => source.id !== 'attention-page-1');
+    rejectRehashedReceipt('locally-forged-recovery-source-lineage', receipt => {
+      receipt.read.comparisonRecovery.sourceLineage.find(item => item.leadId === 'comparison-lead-3')!.sourceIds = [];
     });
+    rejectRehashedReceipt('locally-deleted-original-entry-source', receipt => {
+      receipt.read.sources = receipt.read.sources.filter(source => source.id !== 'attention-page-1');
+    }, /SOCIAL_SEED_PROOF_INVALID/);
   } finally {
     service.close();
     rmSync(directory, { recursive: true, force: true });
@@ -2624,6 +2823,8 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
   const blockedRecoveryUrls = [recoveredMarketUrl, ...Array.from({ length: 7 }, (_, index) =>
     `https://blocked-recovery-${index + 1}.example/river-lantern-market-record`)];
   const targetUrl = 'https://public.example/river-lantern-project';
+  const roleGapUrl = 'https://market.example/river-lantern-origin-index';
+  const roleAlternateUrl = 'https://independent.example/river-lantern-origin-record';
   const postUrls = [
     'https://x.com/first_writer/status/7101',
     'https://x.com/second_writer/status/7102',
@@ -2633,40 +2834,81 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
   const snippet = 'DexScreener lists a River Lantern market pair on Base with pair and liquidity data only, without project narrative or origin context.';
   const marketText = `Token ${target.address}. A market index lists a River Lantern pair and trading data only; it contains no project narrative or origin description.`;
   const targetText = `Token ${target.address}. River Lantern token metadata lists a deployment index and a Base contract. No project description, narrative, mechanism, or explanation is provided.`;
+  const roleRecoveryTargetText = `The River Lantern project launched a neighborhood arts collective to fund public murals. The project uses exact contract ${target.address} for community puzzle rewards connected to those murals.`;
+  const roleAlternateText = `An independent River Lantern market index lists token ${target.address} and public pair records.`;
   let recoverViaAlternate = false;
+  let timeoutOriginalMarket = false;
   let omitRecoveredMarket = false;
   let omittedRecoveredFetches = 0;
+  let ownRoleRecovery = false;
+  let timeoutOriginalRole = false;
+  let originRoleFetchStatus: number | undefined;
   const mock = mockedFetch({
     dexValue: [pair(0, { chainId: 'base', baseToken: { address: target.address, name: 'River Lantern' }, quoteToken: { address: '0x3333333333333333333333333333333333333333' } })],
-    searchValue: (requestUrl, call) => call === 0
-      ? { results: [
-        { url: targetUrl, title: 'River Lantern project', snippet: `Token ${target.address}` },
+    searchValue: (requestUrl, call) => {
+      const query = new URL(requestUrl).searchParams.get('query') ?? '';
+      if (ownRoleRecovery && query.includes('origin project launch announcement')) return { results: [{
+        url: roleAlternateUrl,
+        title: 'River Lantern independent market index',
+        snippet: 'An independent market index lists this token with public pair records only.',
+      }] };
+      if (call === 0) return { results: [
+        { url: targetUrl, title: 'River Lantern project', snippet: ownRoleRecovery
+          ? `The neighborhood arts collective uses exact contract ${target.address} for public mural rewards.`
+          : `Token ${target.address}` },
+        ...(ownRoleRecovery ? [
+          { url: roleGapUrl, title: 'River Lantern market index', snippet: 'A market index provides trading pair listings only, not a project launch or origin source.' },
+          { url: roleAlternateUrl, title: 'River Lantern independent market index', snippet: 'An independent market index lists this token with public pair records only.' },
+        ] : []),
         ...postUrls.map(url => ({ url, title: 'Unrelated gardening note', snippet: 'A general gardening update.' })),
-      ] }
-      : call === 2
-        ? { results: [{ url: wrappedMarketUrl, title, snippet }] }
-      : call > 2 && new URL(requestUrl).searchParams.get('query')?.includes('indexed project independent public sources')
-          ? { results: recoverViaAlternate ? [...blockedRecoveryUrls.map(url => ({ url,
-            title: 'River Lantern blocked market index record', snippet: 'An independent index repeats pair and liquidity details without project narrative.' })), {
-            url: alternateRecoveredMarketUrl,
-            title: 'River Lantern alternate market index record', snippet: 'An independent index repeats pair and liquidity details without project narrative.' }]
-            : [{ url: recoveredMarketUrl, title: 'River Lantern market index record', snippet: 'The index repeats pair and liquidity details without project narrative.' }] }
-          : { results: [] },
+      ] };
+      if (call === 2) return { results: [{ url: wrappedMarketUrl, title, snippet }] };
+      if (call > 2 && query.includes('indexed project independent public sources')) return {
+        results: recoverViaAlternate ? [...blockedRecoveryUrls.map(url => ({ url,
+          title: 'River Lantern blocked market index record', snippet: 'An independent index repeats pair and liquidity details without project narrative.' })), {
+          url: alternateRecoveredMarketUrl,
+          title: 'River Lantern alternate market index record', snippet: 'An independent index repeats pair and liquidity details without project narrative.' }]
+          : [{ url: recoveredMarketUrl, title: 'River Lantern market index record', snippet: 'The index repeats pair and liquidity details without project narrative.' }],
+      };
+      return { results: [] };
+    },
     fetchValue: (urls: string[]) => {
       if (omitRecoveredMarket && urls.includes(recoveredMarketUrl)) omittedRecoveredFetches++;
       const blockedFallbackBatch = recoverViaAlternate ? urls.filter(url => blockedRecoveryUrls.includes(url)) : [];
       return {
-      results: urls.filter(url => url !== marketUrl && !blockedFallbackBatch.includes(url) && !(omitRecoveredMarket && url === recoveredMarketUrl)).map(url => ({
+      results: urls.filter(url => url !== marketUrl && !(timeoutOriginalRole && url === roleGapUrl)
+        && !blockedFallbackBatch.includes(url) && !(omitRecoveredMarket && url === recoveredMarketUrl)).map(url => ({
         url, final_url: url,
-        text: url === dexSupplementUrl ? dexSupplementText : url === recoveredMarketUrl || url === alternateRecoveredMarketUrl ? marketText : postText.get(url) ?? targetText,
+        text: url === dexSupplementUrl ? dexSupplementText
+          : url === recoveredMarketUrl || url === alternateRecoveredMarketUrl ? marketText
+            : url === roleAlternateUrl ? roleAlternateText
+          : postText.get(url) ?? (ownRoleRecovery && url === targetUrl ? roleRecoveryTargetText : targetText),
         ...(postText.has(url) ? { published_date: '2026-09-29T11:00:00.000Z' } : {}),
       })),
-      errors: [...(urls.includes(marketUrl) ? [{ url: marketUrl, status: 404, error: 'not_found' }] : []),
+      errors: [...(urls.includes(marketUrl) ? [timeoutOriginalMarket
+        ? { url: marketUrl, error: 'timeout' }
+        : { url: marketUrl, status: 404, error: 'not_found' }] : []),
+        ...(urls.includes(roleGapUrl) && timeoutOriginalRole ? [{ url: roleGapUrl, error: 'timeout' }] : []),
         ...blockedFallbackBatch.map(url => ({ url, status: 404, error: 'not_found' }))],
       };
     },
     attentionResponse: packet => {
       if (isSocialModelPacket(packet)) return attentionEnvelope({ decisions: {}, candidateSet: { complete: false, rationale: 'This fixture leaves optional social judgments unresolved.' } });
+      const rolePacket = packet as {
+        url?: string;
+        context?: Array<{ id: string; spans: Array<{ id: string }> }>;
+        corroboration?: Array<{ id: string; spans: Array<{ id: string }> }>;
+      };
+      if (ownRoleRecovery && rolePacket.url === roleGapUrl && rolePacket.context?.length && rolePacket.corroboration?.length) {
+        if ('proposal' in packet) return attentionEnvelope({ accepted: true,
+          rationale: 'The independent role review verifies the market-only classification against the retained sources.' });
+        return attentionEnvelope({
+          role: 'MARKET_ONLY',
+          rationale: 'The indexed description and independent fetched page identify a market listing with no launch role.',
+          contextSpanIds: [rolePacket.context[0]!.spans[0]!.id],
+          corroborationSpanIds: [rolePacket.corroboration[0]!.spans[0]!.id],
+        });
+      }
       const scope = packet.scope as { mode?: string; batch?: number; meaning?: string; leadQualification?: { leads?: Array<{ id?: string; leadId?: string; sourceIds?: string[]; recoverySourceIds?: string[] }> } } | undefined;
       const typed = packet as AttentionPacket;
       if ('originalProposal' in packet) {
@@ -2678,14 +2920,20 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
           sourceDecisions: Object.fromEntries(sources.map(source => [source.id, {
             accepted: true, rationale: 'The independent pass inspected every retained original source span.', inspectionComplete: true,
           }])),
-          decisions: {
-            NARRATIVE_DESCRIPTION: { accepted: true, rationale: 'The full scope supports the bounded narrative-support gap.' },
-            EXPLAINABLE_THESIS: { accepted: true, rationale: 'The full scope supports the bounded explanation-support gap.' },
-          },
+          decisions: Object.fromEntries(['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'].map(criterion => [criterion, {
+            accepted: true, rationale: ownRoleRecovery
+              ? 'The reviewed exact-token project source supports a bounded narrative, so this pass makes no inadequacy finding.'
+              : `The full scope supports the bounded ${criterion} public-support gap.`,
+          }])),
         });
         return attentionEnvelope({
           sourceSupport: Object.fromEntries(sources.map(source => {
             const own = source.spans.find(span => span.text.includes(target.address));
+            const narrative = ownRoleRecovery && source.spans.find(span => span.text.includes(target.address)
+              && /neighborhood arts collective|public murals/i.test(span.text));
+            if (narrative) return [source.id, { status: 'SUBSTANTIVE_SUPPORT', criteria: ['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'],
+              rationale: 'The full source grounds the neighborhood arts narrative and its relation to the exact target contract.',
+              citations: [{ sourceId: source.id, spanId: narrative.id }] }];
             return [source.id, own
               ? { status: 'PUBLIC_SUPPORT_GAP', criteria: ['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'],
                 rationale: 'This exact-token metadata identifies deployment but supplies no project narrative or explanation.',
@@ -2693,12 +2941,14 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
               : { status: 'CONTEXT_ONLY', criteria: [], rationale: 'This original source is contextual and does not provide a token-bound narrative.', citations: [] }];
           })),
           judgments: Object.fromEntries(['NARRATIVE_DESCRIPTION', 'EXPLAINABLE_THESIS'].map(criterion => [criterion, {
-            verdict: 'INADEQUATE', rationale: `The complete reviewed scope does not establish ${criterion}.`,
+            verdict: ownRoleRecovery ? 'UNRESOLVED' : 'INADEQUATE', rationale: ownRoleRecovery
+              ? `The exact-token narrative source is retained, so this review does not find ${criterion} inadequate.`
+              : `The complete reviewed scope does not establish ${criterion}.`,
             citations: [{ sourceId: cited.source.id, spanId: cited.span.id }],
           }])),
         });
       }
-      if (packet.method === 'binary-public-support-v2' && Array.isArray(packet.sources)) {
+      if ((packet.method === 'binary-public-support-v2' || packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4') && Array.isArray(packet.sources)) {
         assert.equal(omitRecoveredMarket, false, 'the binary entry reviewer must not run for an unfinished selected recovery');
         const sources = packet.sources as Array<{ id: string; spans: Array<{ id: string; text: string }> }>;
         const originIds = (packet.scope as { originSourceIds: string[] }).originSourceIds;
@@ -2707,6 +2957,10 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
         const comparison = sources.flatMap(source => source.spans.map(span => ({ source, span })))[0];
         assert.ok(origin, 'the current binary entry packet cites a literal exact-token original source');
         assert.ok(comparison, 'the full retained catalog provides a comparison citation');
+        const explanationIds = packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4' ? packet.explainableCitationSourceIds as string[] : [];
+        const explainable = sources.flatMap(source => source.spans.map(span => ({ source, span })))
+          .find(({ source, span }) => explanationIds.includes(source.id) && span.text.includes(target.address));
+        if (packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4') assert.ok(explainable, 'the fresh thesis review cites a narrative-bound exact-token source');
         const final = Object.hasOwn(packet, 'draft');
         const grade = (verdict: 'PASS' | 'FAIL', sourceId: string, spanId: string, rationale: string) => ({
           verdict, rationale, citation: { sourceId, spanId },
@@ -2715,12 +2969,16 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
           originTraceability: grade(final ? 'FAIL' : 'PASS', origin.source.id, origin.span.id, final
             ? 'The retained token index provides deployment identity but no source-grounded originating project or catalyst relationship.'
             : 'The original source is proposed as sufficient for an origin-traceability judgment.'),
-          leadership: grade(final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
+          leadership: { ...grade(packet.method === 'binary-public-support-v4' || final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
             ? 'The collected record supplies neither relative explicit-token mention counts nor a documented primary-origin relationship.'
             : 'The retained source is proposed as sufficient for a leadership judgment.'),
+            ...(packet.method === 'binary-public-support-v4' ? { basis: 'EVIDENCE_INADEQUACY' } : {}) },
           representations: grade(final ? 'FAIL' : 'PASS', comparison.source.id, comparison.span.id, final
             ? 'The collected market record and incomplete candidate coverage do not identify or bind relevant competing representations.'
             : 'The retained source is proposed as sufficient for a representation-coverage judgment.'),
+          ...(packet.method === 'binary-public-support-v3' || packet.method === 'binary-public-support-v4' ? { explainableThesis: grade(final ? 'FAIL' : 'PASS', explainable!.source.id, explainable!.span.id, final
+            ? 'The retained evidence does not adequately explain the narrative interest and its relationship to the exact token.'
+            : 'The retained source is proposed as sufficient for an ordinary-language thesis judgment.') } : {}),
           inspectionComplete: true,
         });
       }
@@ -3010,8 +3268,10 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       }
       if (packet.proposal) return attentionEnvelope({
         decisions: Object.fromEntries([...(typed.requiredDecisionIds ?? [])].reverse().map(id => [id, {
-          accepted: id !== 'claim-topic', rationale: id === 'claim-topic'
-            ? 'The exact-token deployment metadata does not support the proposed community-project narrative.'
+          accepted: id !== 'claim-topic' || ownRoleRecovery, rationale: id === 'claim-topic'
+            ? ownRoleRecovery
+              ? 'The exact-token project source supports the neighborhood arts narrative and its relation to this contract.'
+              : 'The exact-token deployment metadata does not support the proposed community-project narrative.'
             : 'The source supports this bounded attention item.',
         }])),
         candidateSet: { complete: false, rationale: 'The original comparison acquisition remains incomplete.' },
@@ -3027,37 +3287,43 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       });
     },
   });
+  const roleFetcher: typeof fetch = async (input, init) => {
+    const response = await mock.fetcher(input, init);
+    if (originRoleFetchStatus === undefined || !String(input).startsWith('https://api.fetch.tinyfish.ai/')) return response;
+    const request = JSON.parse(String(init?.body ?? '{}')) as { urls?: unknown };
+    if (!Array.isArray(request.urls) || request.urls.length !== 1 || request.urls[0] !== roleAlternateUrl) return response;
+    return new Response(await response.text(), {
+      status: originRoleFetchStatus,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
 
   const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
     tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
   }));
   const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
     evidenceIds: string[];
-    read: { entryEvidenceMethod?: string; end: string; originRecovery?: { comparisonSupplementIds: string[] };
-      sources: Array<{ id: string; url: string; text: string; kind: 'POST' | 'PAGE' }>; narrativePublicSupport?: { method: string; judgments: Record<string, { verdict: string; review: { accepted: boolean } }> };
-      comparisonAcquisition: { originalComplete: boolean }; comparisonQualification: { mode: string; wireMethod: string; accountingComplete: boolean;
-      entryDecisionMethod?: string; entryScopeMethod?: string; entryCitationMethod?: string;
-      decisions: Array<{ leadId: string; accounted: boolean; accounting: { status: string; role: string }; representation: { status: string } }>;
-    }; comparisonCoverage?: { complete: boolean }; comparisonPublicSupport?: {
-      method: string; verdict: string; review: { accepted: boolean }; decision?: { verdict: string; rationale: string }; researchComplete?: boolean;
-      leadScopes: Array<{ status: string; basis: string; role: string; review: { accepted: boolean } }>;
-      sourceSupport: Array<{ status: string; accepted: boolean; inspectionComplete: boolean }>;
-      bodyObservations?: Array<{ sourceId: string; bodyRole: { kind: string }; description: { kind: string; citations: unknown } }>;
-      entry?: { sourceSupport: Record<string, { status: string }>; grade: { citations: unknown } };
-    } };
+    read: { collectionMethod?: string; leadershipPositiveMethod?: string; entryEvidenceMethod?: string; entryExecutionMethod?: string; comparisonComplete?: boolean; complete?: boolean; codes?: string[]; end: string;
+      originRecovery?: { comparisonSupplementIds: string[] };
+      sources: Array<{ id: string; url: string; text: string; kind: 'POST' | 'PAGE' }>;
+      comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; url: string | null; acquisitionStatus: string; recoveryQueryIds: string[]; recoverySourceIds: string[] }> };
+      comparisonRecovery?: { method: string; accessGapMethod?: string; selectedLeadIds: string[];
+        recoveryQueries: Array<{ queryId: string; parentLeadId: string; query: string; state: string; descriptorComplete: boolean }>;
+        sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }> };
+      comparisonQualification?: unknown;
+    };
     proposal: { claims: Array<{ id: string; feature: string; value: boolean; summary: string }>; posts: Array<{ id: string; sourceId: string; role: string }>; competitors: Array<{ id: string }> };
     review: { candidateSet: { complete: boolean }; decisions: Array<{ id: string; accepted: boolean }>;
-      entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string }; representations: { verdict: string } };
+      entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string }; representations: { verdict: string }; explainableThesis?: { verdict: string } };
       leadershipScreening?: { method: string; verdict: string; review: { accepted: boolean };
         originTraceability: { verdict: string; review: { accepted: boolean } } } };
   };
-  assert.equal(receipt.read.comparisonQualification.mode, 'qualified-identified-leads-v3', JSON.stringify({
-    qualification: bundle.rawArtifacts['comparison-lead-qualification'],
-    rawProposal: bundle.rawArtifacts['attention-comparison-lead-proposal-response'],
-    artifacts: Object.keys(bundle.rawArtifacts).filter(key => key.includes('comparison-lead')),
-  }));
-    assert.equal(receipt.read.comparisonQualification.wireMethod, 'comparison-lead-tasks-v5',
-    'the fresh Service proof reconstructs the authoritative-basis task wire');
+  assert.equal(receipt.read.entryExecutionMethod, 'entry-first-v2');
+  assert.equal(receipt.read.comparisonComplete, false);
+  assert.equal(receipt.read.comparisonQualification, undefined,
+    'the fresh route retains source acquisition and binary entry review without a factual lead task graph');
+  assert.equal(receipt.read.comparisonRecovery?.method, 'comparison-acquisition-v1');
+  assert.ok(receipt.read.comparisonRecovery?.selectedLeadIds.length);
   assert.equal(receipt.read.entryEvidenceMethod, 'public-support-v2');
   const supplementId = receipt.read.originRecovery?.comparisonSupplementIds[0];
   assert.ok(supplementId, 'the actual failed DEX lead produces one retained validated pair supplement');
@@ -3071,10 +3337,12 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     target, receipt.read.end);
   assert.equal(reconstructedScope.complete, true, JSON.stringify(reconstructedScope));
   assert.ok(reconstructedScope.sourceIds.includes(supplementId));
-  assert.equal(receipt.review.entryDecisions?.method, 'binary-public-support-v2');
+  assert.equal(bundle.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(receipt.read.comparisonRecovery));
+  assert.equal(receipt.review.entryDecisions?.method, 'binary-public-support-v4');
   assert.deepEqual([receipt.review.entryDecisions?.originTraceability.verdict,
-    receipt.review.entryDecisions?.leadership.verdict, receipt.review.entryDecisions?.representations.verdict], ['FAIL', 'FAIL', 'FAIL'],
-  'the fresh Service proof preserves all three independently reviewed public-entry outcomes');
+    receipt.review.entryDecisions?.leadership.verdict, receipt.review.entryDecisions?.representations.verdict,
+    receipt.review.entryDecisions?.explainableThesis?.verdict], ['FAIL', 'FAIL', 'FAIL', 'FAIL'],
+  'the fresh Service proof preserves all four independently reviewed public-entry outcomes');
   for (const id of ['attention-leadership-proposal-response', 'attention-leadership-review-response']) {
     const envelope = JSON.parse(bundle.rawArtifacts[id]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
     const rawDecision = JSON.parse(envelope.candidates[0]!.content.parts[0]!.text) as Record<string, unknown>;
@@ -3091,66 +3359,26 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       assert.equal('citations' in representations, false, 'the final wire does not use the legacy citation array');
     }
   }
-  const publicProposalEnvelope = JSON.parse(bundle.rawArtifacts['attention-comparison-support-proposal-response']!) as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-  };
-  const publicProposalWire = JSON.parse(publicProposalEnvelope.candidates[0]!.content.parts[0]!.text) as {
-    leadRoles: Array<{ leadId: string; descriptorRef?: { sourceId: string; spanId: string }; descriptorRefs?: unknown }>;
-  };
-  assert.equal(publicProposalWire.leadRoles.length, 1);
-  assert.equal(publicProposalWire.leadRoles[0]!.descriptorRef?.sourceId, receipt.read.comparisonQualification.decisions[0]!.leadId + '-metadata',
-    'the Service fixture retains the exact v4 singular selector against its own indexed descriptor');
-  assert.ok(publicProposalWire.leadRoles[0]!.descriptorRef?.spanId);
-  assert.equal(publicProposalWire.leadRoles[0]!.descriptorRefs, undefined,
-    'the original v4 Service proof does not rewrite the singular wire field to an array');
   assert.equal(receipt.read.comparisonAcquisition.originalComplete, false, 'the original DexScreener body remains failed');
-  assert.equal(receipt.read.comparisonQualification.accountingComplete, false, 'the index recovery does not manufacture factual accounting');
-  assert.deepEqual(receipt.read.comparisonQualification.decisions.map(item => [item.accounted, item.accounting.status, item.accounting.role, item.representation.status]),
-    [[false, 'UNRESOLVED', 'MARKET_OR_INDEX_RECORD', 'UNRESOLVED']],
-    'entry public-support grading must not promote the independent factual representation axis');
-  assert.equal(receipt.read.comparisonPublicSupport?.verdict, 'INADEQUATE');
-  assert.equal(receipt.read.comparisonPublicSupport?.review.accepted, true);
-  assert.equal(receipt.read.comparisonPublicSupport?.method, 'comparison-public-support-v6');
-  assert.equal(receipt.read.comparisonPublicSupport?.decision?.verdict, 'FAIL');
-  assert.equal(receipt.read.comparisonPublicSupport?.researchComplete, true);
-  assert.deepEqual(receipt.read.comparisonPublicSupport?.leadScopes.map(scope => [scope.status, scope.basis, scope.role, scope.review.accepted]),
-    [['REVIEWED', 'REVIEWED_MARKET_RECOVERY', 'MARKET_OR_INDEX_RECORD', true]],
-    'the accepted negative grade records a reviewed own market scope without changing factual acquisition');
-  assert.equal(receipt.read.comparisonPublicSupport?.sourceSupport.some(source => source.status === 'PUBLIC_SUPPORT_GAP'), false,
-    'the actual required source does not use the separate public-support-gap status');
-  const unresolvedMarketSource = receipt.read.sources.find(source => source.text.includes('market index lists'));
-  assert.ok(unresolvedMarketSource);
-  const publicSupport = receipt.read.comparisonPublicSupport;
-  assert.ok(publicSupport?.bodyObservations && publicSupport.entry);
-  const marketBodyObservation = publicSupport.bodyObservations.find(observation => observation.sourceId === unresolvedMarketSource.id
-    && observation.bodyRole.kind === 'MARKET_OR_INDEX_RECORD' && observation.description.kind === 'MARKET_FIELDS_OR_BOILERPLATE');
-  assert.ok(marketBodyObservation);
-  assert.equal(publicSupport.entry.sourceSupport[unresolvedMarketSource.id]?.status, 'BINDING_EVIDENCE');
-  assert.deepEqual(publicSupport.entry.grade.citations, marketBodyObservation.description.citations,
-    'the reviewed inadequate grade and positively binding support select the exact same full-body quote');
-  assert.equal(receipt.read.narrativePublicSupport?.method, 'narrative-public-support-v1');
-  assert.equal(receipt.read.narrativePublicSupport?.judgments.NARRATIVE_DESCRIPTION?.verdict, 'INADEQUATE');
-  assert.equal(receipt.read.narrativePublicSupport?.judgments.NARRATIVE_DESCRIPTION?.review.accepted, true);
-  assert.equal(receipt.read.narrativePublicSupport?.judgments.EXPLAINABLE_THESIS?.review.accepted, true);
+  const selectedMarketLeadId = receipt.read.comparisonRecovery!.selectedLeadIds.find(id =>
+    receipt.read.comparisonAcquisition.leads.find(lead => lead.id === id)?.url === marketUrl);
+  assert.ok(selectedMarketLeadId, 'the selected recovery remains bound to the original indexed market lead');
+  const marketLead = receipt.read.comparisonAcquisition.leads.find(lead => lead.id === selectedMarketLeadId)!;
+  const marketQueries = receipt.read.comparisonRecovery!.recoveryQueries.filter(query => query.parentLeadId === selectedMarketLeadId);
+  assert.ok(marketQueries.length && marketQueries.every(query => query.state === 'OBSERVED' && query.descriptorComplete));
+  assert.ok(marketLead.recoveryQueryIds.length && marketLead.recoverySourceIds.length);
+  const marketLineage = receipt.read.comparisonRecovery!.sourceLineage.find(row => row.leadId === selectedMarketLeadId);
+  assert.deepEqual(marketLineage?.queryIds, marketLead.recoveryQueryIds);
+  assert.deepEqual(marketLineage?.sourceIds, marketLead.recoverySourceIds);
+  assert.ok(marketLead.recoverySourceIds.some(id => receipt.read.sources.some(source => source.id === id && source.text === marketText)),
+    'the source planner acquisition binds a selected full body to its original parent');
+  assert.equal(Object.keys(bundle.rawArtifacts).some(id => /^attention-comparison-\d+-(?:proposal|review)-prompt$/.test(id)), false,
+    'no factual comparison batch task is issued on this fresh route');
+  assert.equal(bundle.rawArtifacts['attention-comparison-coverage'], undefined);
   assert.equal(receipt.proposal.claims[0]?.value, true, 'the original unsupported factual narrative proposal is retained');
   assert.equal(receipt.review.decisions.find(item => item.id === 'claim-topic')?.accepted, false,
     'the inadequate-support grade does not promote the rejected factual narrative');
-  assert.equal(receipt.read.comparisonCoverage?.complete, false, 'the negative grade leaves raw candidate coverage false');
   assert.equal(receipt.review.candidateSet.complete, false);
-  const bodyReviewEnvelope = JSON.parse(bundle.rawArtifacts['attention-comparison-1-review-response']!) as {
-    candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-  };
-  const bodyReview = JSON.parse(bodyReviewEnvelope.candidates[0]!.content.parts[0]!.text) as {
-    sourceDecisions: {
-      withLiteralObservations: Array<{ sourceId: string; disposition: string; insufficiencyKind: string }>;
-      withoutLiteralObservations: Array<{ sourceId: string; disposition: string; insufficiencyKind: string }>;
-    };
-  };
-  assert.ok(bodyReview.sourceDecisions.withLiteralObservations.some(decision => decision.sourceId === unresolvedMarketSource.id),
-    'the market body carries a literal mint while factual acquisition remains unresolved');
-  const unresolvedMarketDecision = bodyReview.sourceDecisions.withLiteralObservations.find(decision => decision.sourceId === unresolvedMarketSource.id);
-  assert.deepEqual([unresolvedMarketDecision?.disposition, unresolvedMarketDecision?.insufficiencyKind], ['INSUFFICIENT', 'UNRESOLVED_MEANING_OR_ASSOCIATION'],
-    'clear market-body observations can support public review while the exact factual token association stays unresolved');
   const canonicalPostSourceIds = receipt.read.sources.filter(source => source.kind === 'POST').map(source => source.id);
   assert.deepEqual(canonicalPostSourceIds, postUrls.map(url => receipt.read.sources.find(source => source.url === url)?.id));
   assert.ok(canonicalPostSourceIds.length > 1, 'the fixture exercises multiple keyed POST selections');
@@ -3180,7 +3408,7 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
   'the task-v5 public origin-traceability grade produces a scoped NAR-02 failure while leaving the underlying facts separate');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A14')?.quality, 'KNOWN');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A14')?.projection?.value, false,
-    'the independent review finds no primary-origin relationship or measured relative leadership');
+    'the public entry judgment is separate from factual origin and measured leadership');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A02')?.quality, 'MISSING');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A04')?.quality, 'MISSING');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A10')?.quality, 'MISSING');
@@ -3256,26 +3484,40 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     } finally { reopened.close(); }
 
     recoverViaAlternate = true;
+    timeoutOriginalMarket = true;
     mock.reset();
     const alternateBundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
       tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
     }));
     recoverViaAlternate = false;
+    timeoutOriginalMarket = false;
     const alternateReceipt = JSON.parse(alternateBundle.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
     const alternateDiagnosticRead = alternateReceipt.read as unknown as {
-      comparisonQualification?: { recoveryQueries?: unknown[] };
+      comparisonRecovery?: { recoveryQueries?: unknown[] };
       codes?: string[];
     };
     const alternateScope = entryEvidenceScope({ ...alternateReceipt.read, rawArtifacts: alternateBundle.rawArtifacts } as unknown as AttentionRead,
       target, alternateReceipt.read.end);
     assert.equal(alternateScope.complete, true, JSON.stringify({
       scope: alternateScope,
-      recoveryQueries: alternateDiagnosticRead.comparisonQualification?.recoveryQueries,
+      recoveryQueries: alternateDiagnosticRead.comparisonRecovery?.recoveryQueries,
       searches: Object.fromEntries(Object.entries(alternateBundle.rawArtifacts).filter(([id]) => /^attention-recovery-search-\d+$/.test(id))),
       selection: alternateBundle.rawArtifacts['attention-recovery-selection-scope'],
       fallback: alternateBundle.rawArtifacts['attention-recovery-fallback-scope'],
       codes: alternateDiagnosticRead.codes,
     }));
+    const declaredAccessGap = alternateScope.gaps.find(gap => gap.url === marketUrl);
+    assert.equal(declaredAccessGap?.code, 'TARGET_ACCESS_GAP', JSON.stringify(alternateScope));
+    assert.equal(declaredAccessGap?.cause, 'ATT_FETCH_TIMEOUT');
+    assert.equal(declaredAccessGap?.originalAttemptIds?.length, 2, 'both original target-local Fetch attempts record explicit timeout');
+    assert.ok(declaredAccessGap?.queryIds?.length, 'the gap is tied to a completed own recovery query');
+    assert.ok(declaredAccessGap?.alternativeSourceIds?.some(id => alternateReceipt.read.sources.some(source => source.id === id)),
+      'the same lead has a retained full alternative body');
+    const httpOutcomeReceipt = JSON.parse(alternateBundle.rawArtifacts['attention-http-outcomes']!) as {
+      outcomes: Array<{ artifactId: string; status: number }>;
+    };
+    assert.ok((declaredAccessGap?.originalAttemptIds ?? []).every(id => httpOutcomeReceipt.outcomes.some(row => row.artifactId === id && row.status === 200)),
+      'the timeout rows are admitted only inside successful HTTP Fetch envelopes');
     assert.ok(alternateReceipt.read.sources.some(source => source.url === alternateRecoveredMarketUrl),
       'the second-round alternate body is retained in the actual attention qualification');
     const fallbackReceipt = JSON.parse(alternateBundle.rawArtifacts['attention-recovery-fallback-scope']!) as {
@@ -3316,6 +3558,256 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       proofRecord.contentHash = createHash('sha256').update(candidate.rawArtifacts[proofRecord.id]!).digest('hex');
     };
 
+    const collectOwnRoleCase = async (fetchStatus: number) => {
+      ownRoleRecovery = true;
+      timeoutOriginalRole = true;
+      originRoleFetchStatus = fetchStatus;
+      mock.reset();
+      try {
+        return await collectLiveToken(target, liveOptions(roleFetcher, {
+          tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true,
+        }));
+      } finally {
+        ownRoleRecovery = false;
+        timeoutOriginalRole = false;
+        originRoleFetchStatus = undefined;
+      }
+    };
+
+    const roleQualifiedBundle = await collectOwnRoleCase(200);
+    const roleQualifiedReceipt = JSON.parse(roleQualifiedBundle.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    assert.equal(roleQualifiedReceipt.read.collectionMethod, 'project-context-v2');
+    assert.equal((JSON.parse(roleQualifiedBundle.rawArtifacts['attention-acquisition-scope']!) as { collectionMethod?: string }).collectionMethod,
+      'project-context-v2');
+    assert.equal((JSON.parse(roleQualifiedBundle.rawArtifacts['social-attention-seed']!) as { read: { collectionMethod?: string } }).read.collectionMethod,
+      'project-context-v2');
+    assert.equal((JSON.parse(roleQualifiedBundle.rawArtifacts['attention-proposal-prompt']!) as { scope: { collectionMethod?: string } }).scope.collectionMethod,
+      'project-context-v2');
+    assert.equal((JSON.parse(roleQualifiedBundle.rawArtifacts['attention-review-prompt']!) as { scope: { collectionMethod?: string } }).scope.collectionMethod,
+      'project-context-v2');
+    const roleQualifiedScope = entryEvidenceScope({ ...roleQualifiedReceipt.read, rawArtifacts: roleQualifiedBundle.rawArtifacts } as unknown as AttentionRead,
+      target, roleQualifiedReceipt.read.end);
+    const roleGap = roleQualifiedScope.gaps.find(gap => gap.url === roleGapUrl);
+    assert.equal(roleQualifiedScope.complete, true, JSON.stringify(roleQualifiedScope));
+    assert.equal(roleGap?.code, 'TARGET_ACCESS_GAP', JSON.stringify(roleQualifiedScope));
+    assert.equal(roleGap?.originalRoleId, 'attention-origin-role-1');
+    assert.equal(roleGap?.originalAttemptIds?.length, 2, 'the original role URL has two per-URL timeout outcomes');
+    assert.ok(roleGap?.alternativeSourceIds?.some(id => roleQualifiedReceipt.read.sources.some(source => source.id === id && source.url === roleAlternateUrl)),
+      'the own-role Fetch source is bound to the selected different-host alternate');
+    assert.ok(roleQualifiedReceipt.read.sources.some(source => source.url === roleAlternateUrl && source.text === roleAlternateText),
+      'the selected alternate body was already retained from the earlier Fetch');
+    const roleHttp = JSON.parse(roleQualifiedBundle.rawArtifacts['attention-origin-http-outcomes']!) as {
+      outcomes: Array<{ artifactId: string; status: number }>;
+    };
+    assert.ok(roleHttp.outcomes.some(row => row.artifactId === 'attention-origin-role-1-search' && row.status === 200));
+    assert.ok(roleHttp.outcomes.some(row => row.artifactId === 'attention-origin-role-1-fetch' && row.status === 200));
+    assert.equal(mock.geminiPackets.filter(packet => packet.method === 'binary-public-support-v4').length, 2,
+      'completed own-role acquisition dispatches the real independent entry proposal and review pair');
+    assert.equal(roleQualifiedReceipt.review.entryDecisions?.method, 'binary-public-support-v4');
+    assert.equal(roleQualifiedReceipt.read.leadershipPositiveMethod, 'source-bound-positive-v1');
+    const socialSeed = JSON.parse(roleQualifiedBundle.rawArtifacts['social-attention-seed']!) as {
+      read: { leadershipPositiveMethod?: string };
+    };
+    assert.equal(socialSeed.read.leadershipPositiveMethod, 'source-bound-positive-v1');
+    const socialDerivation = JSON.parse(roleQualifiedBundle.rawArtifacts['social-derivation']!) as {
+      read: { inspectionRecoveryMethod?: string };
+    };
+    assert.equal(socialDerivation.read.inspectionRecoveryMethod, 'historical-post-inspection-v1',
+      'the fresh source-bound route binds the historical inspection recovery mode into the social proof');
+
+    const roleWriter = new Service(join(directory, 'own-role-qualified.sqlite'));
+    let roleSnapshotId = '';
+    let roleSnapshotHash = '';
+    try {
+      const saved = roleWriter.analyzeLive(roleQualifiedBundle);
+      roleSnapshotId = saved.id;
+      roleSnapshotHash = saved.hash;
+      assert.equal(saved.result.checks.find(row => row.checkId === 'CAN-01')?.status, 'FAIL');
+      assert.equal(saved.details?.baseline.find(row => row.id === 'A09')?.quality, 'KNOWN');
+    } finally { roleWriter.close(); }
+    const roleReopened = new Service(join(directory, 'own-role-qualified.sqlite'));
+    try {
+      const replay = roleReopened.replay(roleSnapshotId);
+      assert.equal(replay.hash, roleSnapshotHash);
+      assert.deepEqual(replay, roleReopened.show(roleSnapshotId));
+      assert.equal(replay.result.checks.find(row => row.checkId === 'CAN-01')?.status, 'FAIL');
+    } finally { roleReopened.close(); }
+
+    const rejectRehashedCollectionMethod = (change: (candidate: typeof roleQualifiedBundle) => void, label: string) => {
+      const candidate = structuredClone(roleQualifiedBundle);
+      change(candidate);
+      recalculateProofHashes(candidate);
+      const verifier = new Service(join(directory, `collection-method-${label}.sqlite`));
+      try {
+        assert.throws(() => verifier.analyzeLive(candidate), /ATTENTION_COLLECTION_METHOD_INVALID/, label);
+      } finally { verifier.close(); }
+    };
+    rejectRehashedCollectionMethod(candidate => {
+      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof roleQualifiedReceipt;
+      delete receipt.read.collectionMethod;
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'receipt marker stripped');
+    rejectRehashedCollectionMethod(candidate => {
+      const receipt = JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as typeof roleQualifiedReceipt;
+      (receipt.read as { collectionMethod?: string }).collectionMethod = 'project-context-v1';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'unknown receipt marker');
+    rejectRehashedCollectionMethod(candidate => {
+      const scope = JSON.parse(candidate.rawArtifacts['attention-acquisition-scope']!) as { collectionMethod?: string };
+      scope.collectionMethod = 'project-context-v1';
+      candidate.rawArtifacts['attention-acquisition-scope'] = JSON.stringify(scope);
+    }, 'acquisition scope mismatch');
+    rejectRehashedCollectionMethod(candidate => {
+      const seed = JSON.parse(candidate.rawArtifacts['social-attention-seed']!) as { read: { collectionMethod?: string } };
+      delete seed.read.collectionMethod;
+      candidate.rawArtifacts['social-attention-seed'] = JSON.stringify(seed);
+    }, 'social seed marker stripped');
+    const strippedInspectionRecovery = structuredClone(roleQualifiedBundle);
+    const strippedSocialProof = JSON.parse(strippedInspectionRecovery.rawArtifacts['social-derivation']!) as {
+      read: { inspectionRecoveryMethod?: string };
+    };
+    delete strippedSocialProof.read.inspectionRecoveryMethod;
+    strippedInspectionRecovery.rawArtifacts['social-derivation'] = JSON.stringify(strippedSocialProof);
+    recalculateProofHashes(strippedInspectionRecovery);
+    const strippedInspectionVerifier = new Service(join(directory, 'stripped-historical-inspection-marker.sqlite'));
+    try {
+      assert.throws(() => strippedInspectionVerifier.analyzeLive(strippedInspectionRecovery), /SOCIAL_SEED_PROOF_INVALID/,
+        'Service rejects a fully rehashed fresh proof that strips the source-bound historical-inspection marker');
+    } finally { strippedInspectionVerifier.close(); }
+    rejectRehashedCollectionMethod(candidate => {
+      const prompt = JSON.parse(candidate.rawArtifacts['attention-proposal-prompt']!) as { scope: { collectionMethod?: string } };
+      prompt.scope.collectionMethod = 'legacy';
+      candidate.rawArtifacts['attention-proposal-prompt'] = JSON.stringify(prompt);
+    }, 'proposal prompt mismatch');
+    rejectRehashedCollectionMethod(candidate => {
+      const prompt = JSON.parse(candidate.rawArtifacts['attention-review-prompt']!) as { scope: { collectionMethod?: string } };
+      delete prompt.scope.collectionMethod;
+      candidate.rawArtifacts['attention-review-prompt'] = JSON.stringify(prompt);
+    }, 'review prompt marker stripped');
+
+    const roleFailedBundle = await collectOwnRoleCase(503);
+    const roleFailedReceipt = JSON.parse(roleFailedBundle.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
+    const roleFailedScope = entryEvidenceScope({ ...roleFailedReceipt.read, rawArtifacts: roleFailedBundle.rawArtifacts } as unknown as AttentionRead,
+      target, roleFailedReceipt.read.end);
+    assert.equal(roleFailedScope.complete, false, JSON.stringify(roleFailedScope));
+    assert.ok(roleFailedScope.blockers.some(code => code === 'ATT_FETCH_HTTP_503' || code === 'ATT_ENTRY_ORIGIN_RECOVERY_HTTP_INCOMPLETE'),
+      JSON.stringify({ scope: roleFailedScope, accessGapMethod: roleFailedReceipt.read.comparisonRecovery?.accessGapMethod,
+        entryEvidenceMethod: roleFailedReceipt.read.entryEvidenceMethod,
+        entryExecutionMethod: roleFailedReceipt.read.entryExecutionMethod,
+        comparisonRecovery: roleFailedReceipt.read.comparisonRecovery,
+        acquisitionMarker: roleFailedBundle.rawArtifacts['attention-entry-first-acquisition'],
+        collectionComplete: roleFailedReceipt.read.complete,
+        collectionCodes: roleFailedReceipt.read.codes,
+        proposalPresent: !!roleFailedReceipt.proposal,
+        reviewPresent: !!roleFailedReceipt.review,
+        originAndRecoveryArtifactIds: Object.keys(roleFailedBundle.rawArtifacts)
+          .filter(id => /attention-(?:proposal|review|comparison-recovery|entry-first-acquisition|origin-role)/.test(id)),
+        proposalResponsePrefix: roleFailedBundle.rawArtifacts['attention-proposal-response']?.slice(0, 400),
+        reviewResponsePrefix: roleFailedBundle.rawArtifacts['attention-review-response']?.slice(0, 400),
+        recoveryPlanResponsePrefix: roleFailedBundle.rawArtifacts['attention-comparison-recovery-plan-response']?.slice(0, 400),
+        fetchedBatches: mock.calls.filter(call => call.url.startsWith('https://api.fetch.tinyfish.ai/'))
+          .map(call => JSON.parse(String(call.init?.body)) as { urls?: string[] }),
+        sourceUrls: roleFailedReceipt.read.sources.map(source => source.url),
+        roleSearch: roleFailedBundle.rawArtifacts['attention-origin-role-1-search'],
+        roleFetch: roleFailedBundle.rawArtifacts['attention-origin-role-1-fetch'],
+        fetchOutcomeIds: Object.keys(roleFailedBundle.rawArtifacts).filter(id => /http-outcomes|attention-origin-role/.test(id)),
+        roleOutcomes: roleFailedBundle.rawArtifacts['attention-origin-http-outcomes'] }));
+    const roleFailedHttp = JSON.parse(roleFailedBundle.rawArtifacts['attention-origin-http-outcomes']!) as {
+      outcomes: Array<{ artifactId: string; status: number }>;
+    };
+    assert.ok(roleFailedHttp.outcomes.some(row => row.artifactId === 'attention-origin-role-1-fetch' && row.status === 503),
+      'the honest failed bundle retains the actual required own-role HTTP 503 outcome');
+    assert.equal(roleFailedScope.gaps.some(gap => gap.url === roleGapUrl && gap.code === 'TARGET_ACCESS_GAP'), false,
+      'the already-retained alternate body cannot mask a failed required own-role Fetch');
+    assert.equal(roleFailedReceipt.review.entryDecisions, undefined,
+      'the failed required Fetch leaves the public entry result ungraded');
+    assert.equal(mock.geminiPackets.filter(packet => packet.method === 'binary-public-support-v4').length, 0,
+      'an incomplete own-role scope does not dispatch public entry grading');
+
+    const roleFailedWriter = new Service(join(directory, 'own-role-failed.sqlite'));
+    let roleFailedSnapshotId = '';
+    let roleFailedSnapshotHash = '';
+    try {
+      const saved = roleFailedWriter.analyzeLive(roleFailedBundle);
+      roleFailedSnapshotId = saved.id;
+      roleFailedSnapshotHash = saved.hash;
+      assert.equal(saved.result.checks.find(row => row.checkId === 'CAN-01')?.status, 'UNKNOWN');
+    } finally { roleFailedWriter.close(); }
+    const roleFailedReopened = new Service(join(directory, 'own-role-failed.sqlite'));
+    try {
+      const replay = roleFailedReopened.replay(roleFailedSnapshotId);
+      assert.equal(replay.hash, roleFailedSnapshotHash);
+      assert.deepEqual(replay, roleFailedReopened.show(roleFailedSnapshotId));
+      assert.equal(replay.result.checks.find(row => row.checkId === 'CAN-01')?.status, 'UNKNOWN');
+    } finally { roleFailedReopened.close(); }
+
+    const forgedRoleGrade = structuredClone(roleQualifiedBundle);
+    const forgedRoleHttp = JSON.parse(forgedRoleGrade.rawArtifacts['attention-origin-http-outcomes']!) as {
+      outcomes: Array<{ artifactId: string; status: number }>;
+    };
+    const forgedFetchOutcome = forgedRoleHttp.outcomes.find(row => row.artifactId === 'attention-origin-role-1-fetch');
+    assert.equal(forgedFetchOutcome?.status, 200, 'the accepted known-grade proof begins with a successful own-role Fetch receipt');
+    forgedFetchOutcome!.status = 503;
+    forgedRoleGrade.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify(forgedRoleHttp);
+    recalculateProofHashes(forgedRoleGrade);
+    const forgedRoleVerifier = new Service(join(directory, 'forged-own-role-grade.sqlite'));
+    try {
+      assert.throws(() => forgedRoleVerifier.analyzeLive(forgedRoleGrade), /ATTENTION_HTTP_PROOF_INVALID|SHARED_(?:PROOF|ATTENTION|SOURCE)_/,
+        'Service rejects the admitted known grade when only its required own-role HTTP outcome is changed to 503 and rehashed');
+    } finally { forgedRoleVerifier.close(); }
+
+    const accessGapRead = (candidate: typeof alternateBundle) => JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as {
+      read: {
+        comparisonRecovery: { accessGapMethod?: string; recoveryQueries: Array<{ queryId: string; parentLeadId: string }> };
+        sources: Array<{ id: string; url: string; text: string }>;
+      };
+    };
+    const rejectRehashedAccessGap = (change: (candidate: typeof alternateBundle) => void, label: string) => {
+      const candidate = structuredClone(alternateBundle);
+      change(candidate);
+      recalculateProofHashes(candidate);
+      const verifier = new Service(join(directory, `access-gap-${label}.sqlite`));
+      try { assert.throws(() => verifier.analyzeLive(candidate), /ATTENTION_HTTP_PROOF_INVALID|SHARED_(?:PROOF|ATTENTION|SOURCE)_/m, label); }
+      finally { verifier.close(); }
+    };
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      receipt.read.comparisonRecovery.accessGapMethod = 'unverified-alternates-v0';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'fresh access-gap marker downgrade');
+    rejectRehashedAccessGap(candidate => {
+      const outcomes = JSON.parse(candidate.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+      const receipt = accessGapRead(candidate);
+      const gap = alternateScope.gaps.find(row => row.code === 'TARGET_ACCESS_GAP' && row.url === marketUrl);
+      const attempt = gap?.originalAttemptIds?.[0];
+      assert.ok(attempt);
+      const outcome = outcomes.outcomes.find(row => row.artifactId === attempt);
+      assert.ok(outcome);
+      outcome.status = 503;
+      candidate.rawArtifacts['attention-http-outcomes'] = JSON.stringify(outcomes);
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'per-URL timeout status changed to a failed provider response');
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      assert.ok(receipt.read.comparisonRecovery.recoveryQueries[0]);
+      receipt.read.comparisonRecovery.recoveryQueries[0]!.parentLeadId = 'unrelated-lead';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'recovery query parent reassignment');
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      const gap = alternateScope.gaps.find(row => row.code === 'TARGET_ACCESS_GAP' && row.url === marketUrl);
+      const sourceId = gap?.alternativeSourceIds?.[0];
+      const source = receipt.read.sources.find(row => row.id === sourceId);
+      assert.ok(source);
+      source.text += ' Changed after the retained fetch response.';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'alternative source body changed after acquisition');
+    rejectRehashedAccessGap(candidate => {
+      const prompt = JSON.parse(candidate.rawArtifacts['attention-leadership-proposal-prompt']!) as { instruction: string };
+      prompt.instruction += ' Remove the declared gap from consideration.';
+      candidate.rawArtifacts['attention-leadership-proposal-prompt'] = JSON.stringify(prompt);
+    }, 'entry prompt no longer matches the canonical access-gap scope');
+
     const movedRecoveryBundle = structuredClone(alternateBundle);
     const movedFetchId = 'attention-recovery-fetch-2';
     const movedFetchRaw = movedRecoveryBundle.rawArtifacts[movedFetchId]!;
@@ -3344,7 +3836,7 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       assert.equal(can01?.status, 'UNKNOWN', JSON.stringify({
         expectation: 'the incomplete selected recovery cannot become a binary PASS or FAIL', can01,
         a09: saved.details?.baseline.find(row => row.id === 'A09'),
-        publicSupportMethod: incompleteReceipt.read.comparisonPublicSupport?.method,
+        comparisonRecoveryMethod: incompleteReceipt.read.comparisonRecovery?.method,
         scopeBlockers: incompleteScope.blockers,
       }));
       const recoveredA09 = saved.details?.baseline.find(row => row.id === 'A09');
@@ -3385,19 +3877,37 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     tamperedSupplement.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(tamperedSupplementReceipt);
     recalculateProofHashes(tamperedSupplement);
     const supplementVerifier = new Service(join(directory, 'tampered-origin-supplement.sqlite'));
-    try { assert.throws(() => supplementVerifier.analyzeLive(tamperedSupplement), /SHARED_(?:PROOF|ATTENTION|SOURCE)_/); }
+    try { assert.throws(() => supplementVerifier.analyzeLive(tamperedSupplement), /SOCIAL_SOURCE_INVALID/,
+      'the already admitted fresh bundle rejects a rehashed body mutation at the frozen social-source boundary'); }
     finally { supplementVerifier.close(); }
 
-    const tampered = structuredClone(bundle);
-    const raw = JSON.parse(tampered.rawArtifacts['attention-comparison-support-proposal-response']!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
-    const wire = JSON.parse(raw.candidates[0]!.content.parts[0]!.text) as { verdict: string };
-    wire.verdict = 'UNRESOLVED';
-    raw.candidates[0]!.content.parts[0]!.text = JSON.stringify(wire);
-    tampered.rawArtifacts['attention-comparison-support-proposal-response'] = JSON.stringify(raw);
-    recalculateProofHashes(tampered);
-    const verifier = new Service(join(directory, 'tampered.sqlite'));
-    try { assert.throws(() => verifier.analyzeLive(tampered), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { verifier.close(); }
+    const tamperedEntryGrade = structuredClone(bundle);
+    const entryResponse = JSON.parse(tamperedEntryGrade.rawArtifacts['attention-leadership-review-response']!) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    const entryWire = JSON.parse(entryResponse.candidates[0]!.content.parts[0]!.text) as {
+      originTraceability: { verdict: string };
+    };
+    entryWire.originTraceability.verdict = 'PASS';
+    entryResponse.candidates[0]!.content.parts[0]!.text = JSON.stringify(entryWire);
+    tamperedEntryGrade.rawArtifacts['attention-leadership-review-response'] = JSON.stringify(entryResponse);
+    recalculateProofHashes(tamperedEntryGrade);
+    const entryGradeVerifier = new Service(join(directory, 'tampered-entry-grade.sqlite'));
+    try { assert.throws(() => entryGradeVerifier.analyzeLive(tamperedEntryGrade), /SHARED_PROOF_INVALID/,
+      'Service re-derives entry decisions from the retained independent response after raw hashes are recomputed'); }
+    finally { entryGradeVerifier.close(); }
+
+    const tamperedAcquisitionMarker = structuredClone(bundle);
+    const marker = JSON.parse(tamperedAcquisitionMarker.rawArtifacts['attention-entry-first-acquisition']!) as {
+      selectedLeadIds: string[];
+    };
+    marker.selectedLeadIds = [];
+    tamperedAcquisitionMarker.rawArtifacts['attention-entry-first-acquisition'] = JSON.stringify(marker);
+    recalculateProofHashes(tamperedAcquisitionMarker);
+    const acquisitionMarkerVerifier = new Service(join(directory, 'tampered-acquisition-marker.sqlite'));
+    try { assert.throws(() => acquisitionMarkerVerifier.analyzeLive(tamperedAcquisitionMarker), /SHARED_PROOF_INVALID/,
+      'Service binds the raw acquisition marker to the validated receipt after rehashing'); }
+    finally { acquisitionMarkerVerifier.close(); }
 
     const strippedLeadershipMarker = structuredClone(bundle);
     const screeningReceipt = JSON.parse(strippedLeadershipMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
@@ -3408,68 +3918,6 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     try { assert.throws(() => screeningVerifier.analyzeLive(strippedLeadershipMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
     finally { screeningVerifier.close(); }
 
-    const strippedOriginCatalogMarker = structuredClone(bundle);
-    const originCatalogReceipt = JSON.parse(strippedOriginCatalogMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
-    delete originCatalogReceipt.read.comparisonQualification.entryScopeMethod;
-    strippedOriginCatalogMarker.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(originCatalogReceipt);
-    recalculateProofHashes(strippedOriginCatalogMarker);
-    const originCatalogVerifier = new Service(join(directory, 'stripped-origin-catalog-marker.sqlite'));
-    try { assert.throws(() => originCatalogVerifier.analyzeLive(strippedOriginCatalogMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { originCatalogVerifier.close(); }
-
-    const strippedCitationMarker = structuredClone(bundle);
-    const citationReceipt = JSON.parse(strippedCitationMarker.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
-    delete citationReceipt.read.comparisonQualification.entryCitationMethod;
-    strippedCitationMarker.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(citationReceipt);
-    recalculateProofHashes(strippedCitationMarker);
-    const citationMarkerVerifier = new Service(join(directory, 'stripped-single-citation-marker.sqlite'));
-    try { assert.throws(() => citationMarkerVerifier.analyzeLive(strippedCitationMarker), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { citationMarkerVerifier.close(); }
-
-    const tamperedNarrative = structuredClone(bundle);
-    const narrativeEnvelope = JSON.parse(tamperedNarrative.rawArtifacts['attention-narrative-support-proposal-response']!) as {
-      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-    };
-    const narrativeWire = JSON.parse(narrativeEnvelope.candidates[0]!.content.parts[0]!.text) as {
-      judgments: Record<string, { verdict: string }>;
-    };
-    narrativeWire.judgments.NARRATIVE_DESCRIPTION!.verdict = 'UNRESOLVED';
-    narrativeEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(narrativeWire);
-    tamperedNarrative.rawArtifacts['attention-narrative-support-proposal-response'] = JSON.stringify(narrativeEnvelope);
-    recalculateProofHashes(tamperedNarrative);
-    const narrativeVerifier = new Service(join(directory, 'tampered-narrative.sqlite'));
-    try { assert.throws(() => narrativeVerifier.analyzeLive(tamperedNarrative), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { narrativeVerifier.close(); }
-
-    const pluralDescriptorWire = structuredClone(bundle);
-    const descriptorEnvelope = JSON.parse(pluralDescriptorWire.rawArtifacts['attention-comparison-support-proposal-response']!) as {
-      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
-    };
-    const descriptorProposal = JSON.parse(descriptorEnvelope.candidates[0]!.content.parts[0]!.text) as {
-      leadRoles: Array<{ descriptorRef?: { sourceId: string; spanId: string }; descriptorRefs?: Array<{ sourceId: string; spanId: string }> }>;
-    };
-    for (const row of descriptorProposal.leadRoles) {
-      assert.ok(row.descriptorRef, 'the accepted proof starts with the v4 singular selector');
-      row.descriptorRefs = [row.descriptorRef];
-      delete row.descriptorRef;
-    }
-    descriptorEnvelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(descriptorProposal);
-    pluralDescriptorWire.rawArtifacts['attention-comparison-support-proposal-response'] = JSON.stringify(descriptorEnvelope);
-    recalculateProofHashes(pluralDescriptorWire);
-    const pluralDescriptorVerifier = new Service(join(directory, 'plural-descriptor-wire.sqlite'));
-    try { assert.throws(() => pluralDescriptorVerifier.analyzeLive(pluralDescriptorWire), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { pluralDescriptorVerifier.close(); }
-
-    const downgradedScope = structuredClone(bundle);
-    const downgradedReceipt = JSON.parse(downgradedScope.rawArtifacts['attention-qualified-receipt']!) as typeof receipt;
-    downgradedReceipt.read.comparisonPublicSupport!.method = 'comparison-public-support-v2';
-    downgradedReceipt.read.comparisonPublicSupport!.leadScopes = [];
-    downgradedReceipt.read.comparisonPublicSupport!.sourceSupport = [];
-    downgradedScope.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(downgradedReceipt);
-    recalculateProofHashes(downgradedScope);
-    const downgradeVerifier = new Service(join(directory, 'downgraded-public-scope.sqlite'));
-    try { assert.throws(() => downgradeVerifier.analyzeLive(downgradedScope), /SHARED_(?:PROOF|ATTENTION)_/); }
-    finally { downgradeVerifier.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 test('reviewed inadequate A03 persists as bounded traceability and Service rejects rehashed scope or review forgery', async () => {
@@ -3556,12 +4004,12 @@ test('reviewed inadequate A03 persists as bounded traceability and Service rejec
       candidate.rawArtifacts[proofRecord.id] = JSON.stringify(proof);
       proofRecord.contentHash = sha256(candidate.rawArtifacts[proofRecord.id]!);
     };
-    const rejectRehashed = (change: (candidate: typeof bundle) => void, label: string) => {
+    const rejectRehashed = (change: (candidate: typeof bundle) => void, label: string, expected: RegExp = /SHARED_PROOF_INVALID/) => {
       const candidate = structuredClone(bundle);
       change(candidate);
       rehashProof(candidate);
       const verifier = new Service(join(directory, `${label}.sqlite`));
-      try { assert.throws(() => verifier.analyzeLive(candidate), /SHARED_PROOF_INVALID/, label); }
+      try { assert.throws(() => verifier.analyzeLive(candidate), expected, label); }
       finally { verifier.close(); }
     };
     rejectRehashed(candidate => {
@@ -3582,7 +4030,7 @@ test('reviewed inadequate A03 persists as bounded traceability and Service rejec
       read.discoveryUrls = [];
       value.read.originScope = originSourceScope(read, target);
       candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(value);
-    }, 'rehashed receipt cannot delete a discovery seed and recompute an incomplete scope');
+    }, 'rehashed receipt cannot delete a discovery seed and recompute an incomplete scope', /SOCIAL_SEED_PROOF_INVALID/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

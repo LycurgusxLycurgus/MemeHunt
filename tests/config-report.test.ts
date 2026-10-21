@@ -254,6 +254,22 @@ test('inadequate representation report stays bounded and does not imply fraud or
   assert.doesNotMatch(rendered, /Known entry contradictions:[^\n]*fraud/i);
 });
 
+test('persistent Pump quote rejection reports only the execution-cost judgment', () => {
+  const snapshot = sampleSnapshot();
+  snapshot.details!.baseline.push({
+    id: 'O16', version: 'baseline-v1', evaluator: 'IMPLEMENTED', collector: 'IMPLEMENTED',
+    quality: 'KNOWN', unit: 'bool',
+    data: { method: 'pump-budget-rejection-v1', code: 'PUMP_SIMULATION_SLIPPAGE' },
+    observationIds: [], evidenceIds: [], limitations: [], causes: [],
+    projection: { id: 'O16', value: false, unit: 'bool', quality: 'KNOWN', availableAt: CUTOFF, evidenceIds: [], applicability: 'APPLICABLE' },
+  });
+
+  const rendered = renderSnapshot(snapshot);
+  assert.match(rendered, /both unsigned buys exceeded their exact quoted spending limit/);
+  assert.match(rendered, /entry execution-cost standard was not met/);
+  assert.match(rendered, /fees, sellability and fraud are not established/);
+});
+
 test('social explanations label synchrony and account history while legacy snapshots keep catalog names', () => {
   const snapshot = sampleSnapshot();
   const feature = (id: 'S04' | 'S05'): FeatureResult => ({
@@ -282,6 +298,11 @@ test('social explanations label synchrony and account history while legacy snaps
       citations: [{ sourceId: 'social-post', quote: 'The collected source shows a bounded public post sample.' }],
       method: 'source-transparency-review-v1', missingIndicators: ['ACCOUNT_HISTORY', 'ENGAGEMENT', 'COMPARABLE_HISTORY'],
     },
+    participationReview: {
+      verdict: 'CONTRADICTED', rationale: 'The reviewed public sample does not establish the participation threshold.',
+      citations: [{ sourceId: 'social-post', quote: 'The collected source shows a bounded public post sample.' }],
+      method: 'source-transparency-review-v1', missingIndicators: [],
+    },
   };
   snapshot.result.checks.push({
     checkId: 'SOC-01', checklistKind: 'ENTRY', role: 'REQUIRED_EVIDENCE', pillar: 'SOCIAL', required: true,
@@ -303,6 +324,8 @@ test('social explanations label synchrony and account history while legacy snaps
   assert.match(integrityExplanation, /Public-evidence review: CONTRADICTED/);
   assert.match(integrityExplanation, /Desired indicators unavailable: ACCOUNT_HISTORY, ENGAGEMENT, COMPARABLE_HISTORY/);
   assert.match(integrityExplanation, /visibility risks, not proof of fraud, bots or manipulation/);
+  assert.match(renderSnapshot(snapshot), /entry evidence reviewed; exact participation counts remain unqualified/,
+    'a completed adverse participation judgment is not reported as an incomplete collection scope');
 
   const legacy = structuredClone(snapshot);
   delete legacy.details!.social;
@@ -332,11 +355,18 @@ test('unknown kinds come from each row’s causal code and render alongside UNKN
 
   const typedCauses = [
     ['INFRA', 'EVIDENCE_UNAVAILABLE', 'SOC_SEARCH_HTTP_503'],
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'LIVE_PHASE_DEADLINE'],
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'LIVE_HARD_DEADLINE'],
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'LIVE_CALLER_CANCELLED'],
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'LIVE_OPERATION_LIMIT'],
+    ['INFRA', 'EVIDENCE_UNAVAILABLE', 'LIVE_DEPENDENCY_SKIPPED'],
     ['COLLECTION', 'EVIDENCE_UNAVAILABLE', 'SOC_TEXT_CAP'],
     ['MODEL', 'CLAIM_UNVALIDATED', 'SOC_REVIEW_INVALID'],
     ['IMPLEMENTATION', 'COLLECTION_UNIMPLEMENTED', 'SOC_COLLECTOR_UNIMPLEMENTED'],
     ['INPUT', 'USER_INPUT_MISSING', 'SOC_PROFILE_FIELD_MISSING'],
     ['EXECUTION', 'EVIDENCE_UNAVAILABLE', 'PUMP_SIMULATION_SLIPPAGE'],
+    ['EXECUTION', 'EVIDENCE_UNAVAILABLE', 'DAMM_SIMULATION_REJECTED'],
+    ['EXECUTION', 'EVIDENCE_UNAVAILABLE', 'DAMM_TRANSACTION_COSTS_UNAVAILABLE'],
     ['DATA', 'EVIDENCE_UNAVAILABLE', 'SOC_PUBLIC_RECORD_MISSING'],
   ] as const;
   for (const [kind, category, code] of typedCauses) {

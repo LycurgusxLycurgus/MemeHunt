@@ -1,3 +1,4 @@
+import { validatePumpRecoveryBundle } from '../providers/pumpswap.js';
 import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
@@ -6,22 +7,105 @@ import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:f
 import { dirname, join } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSchema, profileSchema, thesisSchema, type FeatureResult, type AssessmentDetails, type Bundle, type LiveBundle, type EntrySnapshot, type ManagementSnapshot, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
-import { baselineIds, deriveBaseline, validateResearch } from '../domain/baseline.js';
+import { baselineIds, deriveBaseline, deriveHolderBounds, validateResearch } from '../domain/baseline.js';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
 import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema } from '../domain/social.js';
 import { deriveAttention,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
 import { emptyAttentionQualification, comparisonRequiredRecoveryPlan, decodeComparisonLeadTasks, comparisonReferenceRepairDetails, decodeNarrativePublicSupport, decodeSubmittedAttention, comparisonTargetContext, comparisonInstruction, decodeComparisonLeadArray, decodeComparisonLeadAccounting, comparisonScopeV3Schema, comparisonLeadIsAccounted, comparisonAccountingComplete, comparisonAccountingContext, comparisonAccountingInstruction, comparisonAccountingReviewInstruction, comparisonAccountingReferenceRepairInstruction, comparisonAccountingArraySchema, comparisonLeadSupportInstruction, comparisonLeadSupportRepairEligible, comparisonLeadSupportRepairValid, leadershipEntryCriterion, decodeBinaryEntryDecisions, resolvePublicEntryDecision, binaryLeadershipReviewSchema, scopedLeadershipReviewSchema, decodeLeadershipSupport, leadershipSupportProposalSchema, leadershipSupportReviewSchema, decodeComparisonCoverage, comparisonSourceLineage, comparisonLeadIsQualified } from '../providers/attention-model.js';
-import { attentionSourceText, normalizeAttentionSearchUrl, type AttentionRead } from '../providers/attention.js';
+import { attentionSourceText, normalizeAttentionSearchUrl, terminalPostScope, type AttentionRead } from '../providers/attention.js';
 import { geckoPoolBinding } from '../providers/origin-recovery.js';
 import { validateSocialRepair,validateSocialWire } from '../providers/social-model.js';
 import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
+import { validateDammBundle } from '../providers/meteora-damm-v2.js';
 import { validateCurveBundle } from '../providers/pumpcurve.js';
+import { decodeHolderPopulation } from '../providers/solana.js';
 import { decodeTokenMetadataUri } from '../providers/token-discovery.js';
 import { decodeSharedAuditProof } from '../providers/shared-model.js';
-import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,type SharedInputs } from '../domain/shared.js';
+import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,attentionEntryGates,type SharedInputs } from '../domain/shared.js';
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
 
+/** Fresh execution receipts separate discovery, semantic work and final state acquisition. */
+function validateLiveExecution(b:LiveBundle){
+ const attentionReceipt=b.rawArtifacts['attention-qualified-receipt']?JSON.parse(b.rawArtifacts['attention-qualified-receipt']):null;
+ const gapMethod=attentionReceipt?.read?.comparisonRecovery?.accessGapMethod;
+ const optionalPacket=(id:string)=>b.rawArtifacts[id]?JSON.parse(b.rawArtifacts[id]):undefined;
+ const positivePackets=[attentionReceipt?.read,optionalPacket('attention-acquisition-scope'),optionalPacket('attention-scope'),optionalPacket('attention-proposal-prompt')?.scope,optionalPacket('attention-review-prompt')?.scope,optionalPacket('social-attention-seed')?.read,optionalPacket('attention-leadership-proposal-prompt'),optionalPacket('attention-leadership-review-prompt')];
+ if(positivePackets.some(p=>p?.leadershipPositiveMethod!==undefined)||attentionReceipt?.review?.entryDecisions?.method==='binary-public-support-v4'){
+  if(positivePackets.some(p=>p&&p.leadershipPositiveMethod!=='source-bound-positive-v1')||positivePackets[0]?.leadershipPositiveMethod!=='source-bound-positive-v1'||positivePackets[1]?.leadershipPositiveMethod!=='source-bound-positive-v1'||positivePackets[5]?.leadershipPositiveMethod!=='source-bound-positive-v1'||attentionReceipt?.review?.entryDecisions&&attentionReceipt.review.entryDecisions.method!=='binary-public-support-v4')throw Error('ATTENTION_LEADERSHIP_METHOD_INVALID');
+ }
+ const collectionMethods=[attentionReceipt?.read?.collectionMethod,JSON.parse(b.rawArtifacts['attention-acquisition-scope']??'{}').collectionMethod,JSON.parse(b.rawArtifacts['attention-proposal-prompt']??'{}').scope?.collectionMethod,JSON.parse(b.rawArtifacts['attention-review-prompt']??'{}').scope?.collectionMethod,JSON.parse(b.rawArtifacts['social-attention-seed']??'{}').read?.collectionMethod];
+ if(collectionMethods.some(method=>method!==undefined)){
+  if(collectionMethods.some(method=>method!==undefined&&method!=='project-context-v2')||collectionMethods[0]!=='project-context-v2'||collectionMethods[1]!=='project-context-v2'||collectionMethods[4]!=='project-context-v2'||b.rawArtifacts['attention-proposal-prompt']&&collectionMethods[2]!=='project-context-v2'||b.rawArtifacts['attention-review-prompt']&&collectionMethods[3]!=='project-context-v2')throw Error('ATTENTION_COLLECTION_METHOD_INVALID');
+ }
+ if(gapMethod!==undefined){
+  if(gapMethod!=='own-acquired-alternates-v1'||!Array.isArray(attentionReceipt.read.comparisonRecovery.recoveryQueries))throw Error('ATTENTION_HTTP_PROOF_INVALID');
+  for(const id of ['attention-http-outcomes',...(attentionReceipt.read.comparisonRecovery.recoveryQueries.length?['attention-recovery-http-outcomes']:[]),...(b.rawArtifacts['attention-origin-http-outcomes']?['attention-origin-http-outcomes']:[])]){
+   const e=b.evidence.find(e=>e.id===id&&e.sourceId==='attention-collector'&&e.sourceType==='SAMPLE_SCOPE'&&e.accessMode==='LOCAL_DERIVED'),packet=b.rawArtifacts[id]?JSON.parse(b.rawArtifacts[id]):null;
+   if(!e||!packet||packet.method!=='fetch-http-outcomes-v1'||!Array.isArray(packet.outcomes)||new Set(packet.outcomes.map((r:any)=>r.artifactId)).size!==packet.outcomes.length||packet.outcomes.some((r:any)=>!r||typeof r.artifactId!=='string'||!(id==='attention-origin-http-outcomes'?/^attention-origin-role-\d+-(?:search|fetch)$/:/^attention-(?:search|fetch)-\d+(?:-retry-1)?$/).test(r.artifactId)||!Number.isInteger(r.status)||r.status<100||r.status>599))throw Error('ATTENTION_HTTP_PROOF_INVALID');
+  }
+ }
+ const raw=b.rawArtifacts['live-run-scope'];
+ const fresh=!!raw||b.evidence.some(e=>e.sourceId==='solana-rpc-preflight'||e.id==='social-attention-seed'||e.id==='attention-entry-first-acquisition');
+ if(!fresh)return;
+ const record=b.evidence.find(e=>e.id==='live-run-scope'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');
+ if(!raw||!record)throw Error('LIVE_EXECUTION_PROOF_REQUIRED');
+ const scope=JSON.parse(raw),names=['PREFLIGHT','ATTENTION','SOCIAL','SHARED','FINALIZE'],allocations={PREFLIGHT:12,ATTENTION:60,SOCIAL:18,SHARED:12,FINALIZE:48};
+ if(scope.method!=='phase-isolated-live-v1'||tokenKey(scope.token)!==tokenKey(b.token)||scope.hardLimitMs!==840000||scope.semanticLimitMs!==600000||scope.operationLimit!==150||decisionHash(scope.allocations)!==decisionHash(allocations)||!Number.isFinite(scope.elapsedMs)||scope.elapsedMs<0||scope.elapsedMs>900000||!Number.isSafeInteger(scope.admittedRequests)||scope.admittedRequests<0||scope.admittedRequests>150||!Array.isArray(scope.stages)||scope.stages.length!==5||decisionHash(scope.stages.map((r:{phase:string})=>r.phase))!==decisionHash(names))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ let ops=0;
+ for(const row of scope.stages){
+  if(!['COMPLETED','FAILED','CANCELLED','NOT_STARTED'].includes(row.status)||!Number.isSafeInteger(row.ops)||row.ops<0||!Array.isArray(row.evidenceIds)||row.evidenceIds.some((id:string)=>!b.evidence.some(e=>e.id===id)))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  ops+=row.ops;
+  if(row.startedAt===null){if(row.startMs!==null||row.ops||row.status!=='NOT_STARTED')throw Error('LIVE_EXECUTION_PROOF_INVALID');}
+  else if(!Number.isFinite(Date.parse(row.startedAt))||!Number.isFinite(row.startMs)||row.startMs<0||row.startMs>scope.elapsedMs)throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  if(row.endedAt!==null&&(!Number.isFinite(Date.parse(row.endedAt))||!Number.isFinite(row.endMs)||row.endMs<(row.startMs??0)||row.endMs>scope.elapsedMs||row.startedAt!==null&&Date.parse(row.endedAt)<Date.parse(row.startedAt)))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  if(row.status!=='NOT_STARTED'&&row.endedAt===null)throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  if(row.code!==undefined&&(typeof row.code!=='string'||!/^[-A-Z0-9_:]{1,180}$/.test(row.code)))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  if(row.origin!==undefined&&!['PROVIDER','PHASE_DEADLINE','HARD_DEADLINE','OPERATION_LIMIT','CALLER','DEPENDENCY','UNSUPPORTED'].includes(row.origin))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+  const localCodes:Record<string,string>={PHASE_DEADLINE:'LIVE_PHASE_DEADLINE',HARD_DEADLINE:'LIVE_HARD_DEADLINE',OPERATION_LIMIT:'LIVE_OPERATION_LIMIT',CALLER:'LIVE_CALLER_CANCELLED',DEPENDENCY:'LIVE_DEPENDENCY_SKIPPED'};
+  if(localCodes[row.origin]&&row.code!==localCodes[row.origin]||Object.entries(localCodes).some(([origin,code])=>row.code===code&&row.origin!==origin)||row.blockedBy!==undefined&&!names.includes(row.blockedBy))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ }
+ if(ops!==scope.admittedRequests)throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ const [preStage,attentionStage,socialStage,sharedStage,finalStage]=scope.stages;
+ if(finalStage.startedAt===null||finalStage.endedAt===null||preStage.endedAt===null||finalStage.startMs<preStage.endMs||[attentionStage,socialStage,sharedStage].some(row=>row.startedAt!==null&&(row.startMs<preStage.endMs||row.endedAt===null||row.endMs>finalStage.startMs))||socialStage.startedAt!==null&&(attentionStage.startedAt===null||socialStage.startMs<attentionStage.startMs)||sharedStage.startedAt!==null&&[attentionStage,socialStage].some(row=>row.startedAt===null||row.endMs>sharedStage.startMs))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ const pre=scope.stages[0],final=scope.stages[4],capture=JSON.parse(b.rawArtifacts['live-state-capture']??'null');
+ const canonical=b.evidence.filter(e=>e.sourceId==='solana-rpc'||e.id==='dex-pairs').map(e=>({id:e.id,retrievedAt:e.retrievedAt}));
+ if(!capture||capture.method!=='late-state-capture-v1'||tokenKey(capture.token)!==tokenKey(b.token)||decisionHash(capture.canonical)!==decisionHash(canonical)||capture.rpcState!==b.collection.rpc.state||capture.dexState!==b.collection.dex.state||capture.discoveryId!==(b.evidence.some(e=>e.id==='dex-discovery')?'dex-discovery':null)||!Number.isFinite(Date.parse(capture.startedAt))||!Number.isFinite(Date.parse(capture.endedAt))||Date.parse(capture.startedAt)>Date.parse(capture.endedAt)||Date.parse(capture.startedAt)<Date.parse(final.startedAt)||Date.parse(capture.endedAt)>Date.parse(final.endedAt)||Date.parse(final.endedAt)>Date.parse(b.cutoff)||canonical.some(e=>Date.parse(e.retrievedAt)<Date.parse(capture.startedAt)||Date.parse(e.retrievedAt)>Date.parse(capture.endedAt))||b.evidence.some(e=>e.sourceId==='gemini'&&e.sourceType==='MODEL_RESPONSE'&&Date.parse(e.availableAt)>Date.parse(capture.startedAt)))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ for(const e of b.evidence.filter(e=>e.sourceId==='solana-rpc-preflight'))if(!['preflight-rpc-genesis','preflight-rpc-account'].includes(e.id)||Date.parse(e.availableAt)<Date.parse(pre.startedAt)||Date.parse(e.availableAt)>Date.parse(pre.endedAt))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ const early=b.rawArtifacts['preflight-rpc-account']?JSON.parse(b.rawArtifacts['preflight-rpc-account']):null,late=b.rawArtifacts['rpc-account']?JSON.parse(b.rawArtifacts['rpc-account']):null;
+ if(early&&late&&Number.isSafeInteger(early.result?.context?.slot)&&(!Number.isSafeInteger(late.result?.context?.slot)||late.result.context.slot<early.result.context.slot))throw Error('LIVE_EXECUTION_PROOF_INVALID');
+ if(b.details?.social&&!b.rawArtifacts['social-attention-seed'])throw Error('SOCIAL_SEED_PROOF_REQUIRED');
+ if(b.rawArtifacts['social-attention-seed']){
+  const seedRecord=b.evidence.find(e=>e.id==='social-attention-seed'&&e.sourceId==='social-collector'),seed=JSON.parse(b.rawArtifacts['social-attention-seed']),attention=JSON.parse(b.rawArtifacts['attention-qualified-receipt']??'null');
+  const original=JSON.parse(b.rawArtifacts['attention-acquisition-scope']??'null');
+  if(!seedRecord||seed.method!=='attention-social-seed-v1'||!attention||!original||decisionHash(seed.read.comparisonAcquisition??null)!==decisionHash(original.comparisonAcquisition??null)||seed.read.start!==attention.read.start||seed.read.end!==attention.read.end||decisionHash(seed.read.queries)!==decisionHash(attention.read.queries)||decisionHash(seed.read.discoveryUrls??[])!==decisionHash(attention.read.discoveryUrls??[])||!Array.isArray(seed.read.sources)||seed.read.sources.some((source:{id:string;text:string;availableAt:string})=>!attention.read.sources.some((s:{id:string})=>s.id===source.id)||typeof b.rawArtifacts[source.id]!=='string'||Date.parse(source.availableAt)>Date.parse(seedRecord.availableAt))||Date.parse(seedRecord.availableAt)>Date.parse(scope.stages[2].startedAt))throw Error('SOCIAL_SEED_PROOF_INVALID');
+  if(decisionHash(seed.read.sources.map((source:{id:string})=>source.id))!==decisionHash(attention.read.sources.filter((source:{id:string})=>!source.id.startsWith('attention-recovery-')).map((source:{id:string})=>source.id)))throw Error('SOCIAL_SEED_PROOF_INVALID');
+  const postScope=terminalPostScope({...seed.read,sources:seed.read.sources.map((source:{id:string})=>({...source,text:b.rawArtifacts[source.id]})),rawArtifacts:b.rawArtifacts});
+  if(!seed.read.postSampleScope||decisionHash(seed.read.postSampleScope)!==decisionHash(postScope)||decisionHash(attention.read.postSampleScope)!==decisionHash(postScope))throw Error('SOCIAL_SEED_PROOF_INVALID');
+  if(b.details?.social){const social=JSON.parse(b.rawArtifacts['social-derivation']),acquisition=JSON.parse(b.rawArtifacts['social-acquisition-scope']??'null');
+    if((seed.read.leadershipPositiveMethod==='source-bound-positive-v1')!==(social.read.inspectionRecoveryMethod==='historical-post-inspection-v1'))throw Error('SOCIAL_SEED_PROOF_INVALID');
+    const target=(seed.read.postSampleSourceIds??seed.read.sources.filter((source:{id:string;kind:string})=>source.kind==='POST'&&!seed.read.comparisonSourceIds?.includes(source.id)).map((source:{id:string})=>source.id)).filter((id:string)=>seed.read.sources.some((source:{id:string})=>source.id===id));
+    if(!['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4'].includes(social.read.reviewCriterionMethod)||decisionHash(social.read.postSampleScope)!==decisionHash(postScope)||decisionHash(social.read.targetPostIds)!==decisionHash(target)||!acquisition||acquisition.retainedAttentionSourceCount!==seed.read.sources.length)throw Error('SOCIAL_SEED_PROOF_INVALID');
+  }
+ }
+}
+function validateHolderReconciliation(b:LiveBundle){
+ const ids=['rpc-mint-raw-reconciliation-attempt-1','rpc-holder-population-reconciliation-attempt-1'];
+ if(!ids.some(id=>b.rawArtifacts[id]))return;
+ try{
+  for(const id of [...ids,'rpc-mint-raw','rpc-holder-population'])if(!b.evidence.some(e=>e.id===id&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'))throw Error('proof');
+  const initialMint=JSON.parse(b.rawArtifacts[ids[0]]).result,initialPopulation=JSON.parse(b.rawArtifacts[ids[1]]).result,currentMint=JSON.parse(b.rawArtifacts['rpc-mint-raw']).result,currentPopulation=JSON.parse(b.rawArtifacts['rpc-holder-population']).result;
+  const supply=(mint:any)=>{if(mint.value.data[1]!=='base64')throw Error('shape');const bytes=Buffer.from(mint.value.data[0],'base64');if(bytes.length<82)throw Error('shape');return bytes.readBigUInt64LE(36).toString();};
+  let mismatch=false;try{decodeHolderPopulation(initialPopulation,b.token.address,initialMint.value.owner,supply(initialMint),initialMint.context.slot);}catch(error){mismatch=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED';}if(!mismatch)throw Error('trigger');
+  const mintChanged=b.rawArtifacts['rpc-mint-raw']!==b.rawArtifacts[ids[0]],populationChanged=b.rawArtifacts['rpc-holder-population']!==b.rawArtifacts[ids[1]];
+  if(mintChanged&&(currentMint.context.slot<initialPopulation.context.slot||currentMint.value.owner!==initialMint.value.owner)||populationChanged&&Number.isSafeInteger(currentPopulation?.context?.slot)&&(!mintChanged||currentPopulation.context.slot<currentMint.context.slot))throw Error('floor');
+  if(b.details?.baseline.some(a=>['O17','O18'].includes(a.id)&&a.quality==='KNOWN')){
+   if(!mintChanged||!populationChanged)throw Error('capture');
+   const holders=decodeHolderPopulation(currentPopulation,b.token.address,currentMint.value.owner,supply(currentMint),currentMint.context.slot),bounds=deriveHolderBounds(holders);
+   if(['O17','O18','O19','O20'].some(id=>decisionHash(b.details!.baseline.find(a=>a.id===id)?.data??null)!==decisionHash(bounds)))throw Error('bounds');
+  }
+ }catch{throw Error('HOLDER_RECONCILIATION_PROOF_INVALID');}
+}
 function validateFeeRecovery(b:LiveBundle){
   for(const e of b.evidence.filter(e=>e.id.endsWith('-min-context-recovery'))){
     const id=e.id.replace(/-min-context-recovery$/,''),receipt=JSON.parse(b.rawArtifacts[e.id]);
@@ -158,12 +242,12 @@ export class Service {
     let artifactBytes = 0,populationBytes=0;
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
       const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
-      if(b.analysisKind==='LIVE'&&e.id==='rpc-holder-population'&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
+      if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
       if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'solana-rpc-diagnostics':'LOCAL_DERIVED', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'solana-rpc-preflight':'PUBLIC_API', 'venue-discovery-rpc':'PUBLIC_API', 'solana-rpc-diagnostics':'LOCAL_DERIVED', 'meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED','pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
         if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -176,9 +260,13 @@ export class Service {
       if (Date.parse(o.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_OBSERVATION');
     }
     if (b.analysisKind === 'LIVE') {
+      validateLiveExecution(b);
+      validatePumpRecoveryBundle(b);
       validateCurveBundle(b);
+      validateDammBundle(b);
       validateDexRecovery(b);
       validateFeeRecovery(b);
+      validateHolderReconciliation(b);
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
       if(b.details){
         const details=b.details;
@@ -203,7 +291,7 @@ export class Service {
               if(!['public-support-v2','public-support-v3'].includes(read.entryDecisionMethod??'')||(read.entryDecisionMethod==='public-support-v3'?!proposal.communityBreadthAssessment:!!proposal.communityBreadthAssessment)||normalized.wireMethod!=='social-line-span-v2'||!proposal.participationAssessment||decisionHash(acquisition?.read)!==decisionHash(receiptScope))throw Error('SOCIAL_PROOF_INVALID');
             }
             if(normalized.wireMethod!==undefined&&normalized.wireMethod!=='social-line-span-v2')throw new Error('SOCIAL_PROOF_INVALID');
-            if(normalized.identityCitationMethod!==undefined&&(!['assessment-citation-closure-v1','identity-citation-closure-v2'].includes(normalized.identityCitationMethod)||normalized.wireMethod!=='social-line-span-v2'))throw new Error('SOCIAL_PROOF_INVALID');
+            if(normalized.identityCitationMethod!==undefined&&(!['assessment-citation-closure-v1','identity-citation-closure-v2','identity-citation-closure-v3'].includes(normalized.identityCitationMethod)||normalized.wireMethod!=='social-line-span-v2'))throw new Error('SOCIAL_PROOF_INVALID');
             const hasRepair=Object.keys(b.rawArtifacts).some(id=>id.startsWith('social-repair-'));
             if((normalized.repairSelectionId!==undefined&&normalized.repairSelectionId!==(hasRepair?'social-repair-selection':null))||hasRepair&&!b.rawArtifacts['social-repair-selection'])throw new Error('SOCIAL_PROOF_INVALID');
             const selectorRepairIds=Object.keys(b.rawArtifacts).filter(id=>/^social-selector-repair-(?:prompt|response)$/.test(id));
@@ -252,14 +340,43 @@ export class Service {
             const receipt=JSON.parse(b.rawArtifacts[attentionRecord.id]);
             const binaryMode=receipt.read.entryEvidenceMethod==='public-support-v2'||receipt.read.comparisonQualification?.entryDecisionMethod==='binary-public-support-v1';
             const acquisitionMode=JSON.parse(b.rawArtifacts['attention-acquisition-scope']??'{}').entryEvidenceMethod,submittedMode=JSON.parse(b.rawArtifacts['attention-proposal-prompt']??'{}').scope?.entryEvidenceMethod;
-            if(receipt.read.entryEvidenceMethod||acquisitionMode||submittedMode||receipt.review?.entryDecisions?.method==='binary-public-support-v2'){const empty=emptyAttentionQualification(receipt.read),localEmpty=!receipt.read.sources.length&&decisionHash({proposal:receipt.proposal,review:receipt.review})===decisionHash({proposal:empty.proposal,review:empty.review});const submitted=!!b.rawArtifacts['attention-proposal-prompt']||!!b.rawArtifacts['attention-proposal-response']||!localEmpty&&(!!receipt.proposal||!!receipt.review);if(receipt.read.entryEvidenceMethod!=='public-support-v2'||acquisitionMode!=='public-support-v2'||(submitted&&submittedMode!=='public-support-v2'))throw Error('SHARED_PROOF_INVALID');}
+            if(receipt.read.entryEvidenceMethod||acquisitionMode||submittedMode||['binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes(receipt.review?.entryDecisions?.method)){const empty=emptyAttentionQualification(receipt.read),localEmpty=!receipt.read.sources.length&&decisionHash({proposal:receipt.proposal,review:receipt.review})===decisionHash({proposal:empty.proposal,review:empty.review});const submitted=!!b.rawArtifacts['attention-proposal-prompt']||!!b.rawArtifacts['attention-proposal-response']||!localEmpty&&(!!receipt.proposal||!!receipt.review);if(receipt.read.entryEvidenceMethod!=='public-support-v2'||acquisitionMode!=='public-support-v2'||(submitted&&submittedMode!=='public-support-v2'))throw Error('SHARED_PROOF_INVALID');}
+            const freshAcquisition=b.rawArtifacts['attention-entry-first-acquisition'];
+            const entryPrompt=JSON.parse(b.rawArtifacts['attention-leadership-proposal-prompt']??'{}');
+            if(receipt.read.entryExecutionMethod||receipt.read.comparisonRecovery||freshAcquisition||entryPrompt.entryExecutionMethod){
+              if(!['entry-first-v1','entry-first-v2'].includes(receipt.read.entryExecutionMethod)||receipt.read.comparisonQualification||receipt.read.comparisonComplete!==false||!freshAcquisition||decisionHash(JSON.parse(freshAcquisition))!==decisionHash(receipt.read.comparisonRecovery)||entryPrompt.entryExecutionMethod&&entryPrompt.entryExecutionMethod!==receipt.read.entryExecutionMethod)throw Error('SHARED_PROOF_INVALID');
+              const full:AttentionRead={...receipt.read,rawArtifacts:b.rawArtifacts};
+              const q=full.comparisonRecovery!;
+              if(q.method!=='comparison-acquisition-v1'||!Array.isArray(q.recoveryQueries)||!Array.isArray(q.sourceLineage)||!Array.isArray(q.selectedLeadIds)||typeof q.recoveryCapped!=='boolean'||q.accessGapMethod!==undefined&&q.accessGapMethod!=='own-acquired-alternates-v1'||entryPrompt.accessGapMethod!==undefined&&entryPrompt.accessGapMethod!==q.accessGapMethod)throw Error('SHARED_PROOF_INVALID');
+              const base=decodeSubmittedAttention(full,b.rawArtifacts),target=comparisonTargetContext(full,base.proposal,base.review,b.token,receipt.cutoff),plan=comparisonRequiredRecoveryPlan(full,b.token,target.narrativeClaims);
+              if(full.leadershipPositiveMethod){const {entryDecisions,leadershipScreening,...factualReview}=receipt.review??{};if(decisionHash(base.proposal)!==decisionHash(receipt.proposal)||decisionHash(base.review)!==decisionHash(factualReview))throw Error('SHARED_PROOF_INVALID');}
+              if(decisionHash(q.selectedLeadIds)!==decisionHash(plan.selectedLeadIds))throw Error('SHARED_PROOF_INVALID');
+              let expected:Array<{query:string;parentLeadId:string}>=[];
+              if(plan.selectedLeadIds.length){
+                if(b.rawArtifacts['attention-comparison-recovery-plan-prompt']!==JSON.stringify(plan.packet))throw Error('SHARED_PROOF_INVALID');
+                const decoded=plan.decode(parseSourceResponse(b.rawArtifacts['attention-comparison-recovery-plan-response']));
+                expected=decoded.queries.map((query,i)=>({query,parentLeadId:decoded.queryParents[i]}));
+              }
+              if(expected.length!==q.recoveryQueries.length)throw Error('SHARED_PROOF_INVALID');
+              for(const [i,query]of q.recoveryQueries.entries()){
+                const e=b.evidence.find(e=>e.id===query.queryId&&e.sourceId==='tinyfish-search'&&e.accessMode==='FREE_ACCOUNT'),raw=e?JSON.parse(b.rawArtifacts[e.id]):null;
+                if(query.queryId!=='attention-recovery-search-'+(i+1)||query.parentLeadId!==expected[i].parentLeadId||query.query!==expected[i].query||!Number.isFinite(Date.parse(query.availableAt))||Date.parse(query.availableAt)>Date.parse(receipt.cutoff)||e&&(!receipt.evidenceIds.includes(e.id)||e.availableAt!==query.availableAt)||!['OBSERVED','NO_RESULTS','INVALID','UNAVAILABLE'].includes(query.state)||query.state==='UNAVAILABLE'&&(e||raw)||query.state==='INVALID'&&!e)throw Error('SHARED_PROOF_INVALID');
+                if(['OBSERVED','NO_RESULTS'].includes(query.state)&&(!e||!Array.isArray(raw?.results)||raw.error||raw.errors&&(!Array.isArray(raw.errors)||raw.errors.length)||raw.results.length!==query.resultCount||query.state!==(raw.results.length?'OBSERVED':'NO_RESULTS')||!query.descriptorComplete||raw.results.some((r:{url?:unknown})=>typeof r?.url!=='string')))throw Error('SHARED_PROOF_INVALID');
+              }
+              const leads=full.comparisonAcquisition!.leads;
+              if(decisionHash(q.sourceLineage)!==decisionHash(leads.map(l=>({leadId:l.id,queryIds:l.recoveryQueryIds,sourceIds:l.recoverySourceIds}))))throw Error('SHARED_PROOF_INVALID');
+              for(const lead of leads){
+                const descriptor=JSON.parse(b.rawArtifacts[lead.metadataEvidenceId]??'null'),row=JSON.parse(b.rawArtifacts[lead.searchArtifactId]??'null')?.results?.[lead.resultIndex];
+                if(!descriptor||!row||descriptor.searchArtifactId!==lead.searchArtifactId||descriptor.resultIndex!==lead.resultIndex||descriptor.url!==row.url||descriptor.title!==(row.title??'')||descriptor.snippet!==(row.snippet??'')||lead.title!==descriptor.title||lead.snippet!==descriptor.snippet||lead.url!==descriptor.normalizedUrl||lead.recoveryQueryIds.some(id=>!q.recoveryQueries.some(query=>query.queryId===id&&query.parentLeadId===lead.id))||lead.recoverySourceIds.some(id=>!full.sources.some(source=>source.id===id)))throw Error('SHARED_SOURCE_INVALID');
+              }
+            }
             if(receipt.review?.entryDecisions){
               if(!binaryMode)throw Error('SHARED_PROOF_INVALID');
               for(const id of ['attention-leadership-proposal-response','attention-leadership-review-response'])if(!receipt.evidenceIds.includes(id)||!b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))throw Error('SHARED_PROOF_REQUIRED');
               const fullRead={...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))};
               if(decisionHash(decodeBinaryEntryDecisions(fullRead,receipt.proposal,receipt.review,b.token,receipt.cutoff,b.rawArtifacts))!==decisionHash(receipt.review.entryDecisions))throw Error('SHARED_PROOF_INVALID');
             }
-            if(binaryMode&&b.rawArtifacts['attention-leadership-review-response']){let completed=false;try{const response=parseSourceResponse(b.rawArtifacts['attention-leadership-review-response']);if(receipt.read.entryEvidenceMethod){resolvePublicEntryDecision(response,{...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))},b.token,receipt.cutoff);completed=true;}else completed=(receipt.read.comparisonQualification?.entryCitationMethod==='single-required-citation-v1'?scopedLeadershipReviewSchema:receipt.read.comparisonQualification?.entryScopeMethod==='code-owned-origin-scope-v1'?binaryLeadershipReviewSchema.omit({sourceIds:true}):binaryLeadershipReviewSchema).safeParse(response).success;}catch{}if(completed&&!receipt.review?.entryDecisions)throw Error('SHARED_PROOF_REQUIRED');}
+            if(binaryMode&&b.rawArtifacts['attention-leadership-review-response']){let completed=false;try{const response=parseSourceResponse(b.rawArtifacts['attention-leadership-review-response']);if(receipt.read.entryEvidenceMethod){resolvePublicEntryDecision(response,{...receipt.read,rawArtifacts:b.rawArtifacts,sources:receipt.read.sources.map((s:{id:string;text:string})=>({...s,text:b.rawArtifacts[s.id]??s.text}))},b.token,receipt.cutoff,receipt.proposal,receipt.review);completed=true;}else completed=(receipt.read.comparisonQualification?.entryCitationMethod==='single-required-citation-v1'?scopedLeadershipReviewSchema:receipt.read.comparisonQualification?.entryScopeMethod==='code-owned-origin-scope-v1'?binaryLeadershipReviewSchema.omit({sourceIds:true}):binaryLeadershipReviewSchema).safeParse(response).success;}catch{}if(completed&&!receipt.review?.entryDecisions)throw Error('SHARED_PROOF_REQUIRED');}
             if(receipt.read.comparisonQualification?.wireMethod==='comparison-lead-tasks-v5'&&b.rawArtifacts['attention-leadership-proposal-response']&&b.rawArtifacts['attention-leadership-review-response']){
               let completed=false;try{completed=leadershipSupportProposalSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-proposal-response'])).success&&leadershipSupportReviewSchema.safeParse(parseSourceResponse(b.rawArtifacts['attention-leadership-review-response'])).success;}catch{/* An honest malformed/interrupted review is not a completed proof. */}
               if(completed&&receipt.review?.leadershipScreening?.method!=='reviewed-public-support-v2')throw Error('SHARED_PROOF_REQUIRED');
@@ -485,7 +602,7 @@ export class Service {
             if(decisionHash(receipt.read.growthSample)!==decisionHash(expectedSample))throw new Error('SHARED_PROOF_INVALID');
             const derived=deriveAttention({...receipt.read,rawArtifacts:b.rawArtifacts},receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true);
             if(derived.some(a=>decisionHash(a)!==decisionHash(packet.baseline.find(x=>x.id===a.id))))throw new Error('SHARED_ATTENTION_INVALID');
-            const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2'].includes((a.data as {method?:string}).method??''));
+            const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes((a.data as {method?:string}).method??''));
             if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};const expected={kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'};if(decisionHash(b.semantic.claims.filter(c=>c.kind==='ORIGIN'))!==decisionHash([expected]))throw Error('SHARED_ATTENTION_INVALID');}
             const socialRecord=b.evidence.find(e=>e.id==='social-derivation');
             const socialSources=socialRecord?JSON.parse(b.rawArtifacts[socialRecord.id]).read.sources:[];
@@ -540,10 +657,10 @@ export class Service {
     return {version:1,profile:b.profile,thesis,origins:{profile:'FROZEN_INPUT'},stageInputs:stageInputs(b),baseline:deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:policyFeatures(b),evidence:b.evidence,observations:b.observations,thesis:thesis??undefined,research:b.analysisKind==='USER_IMPORT'?importedResearch(b):undefined})};
   }
   private analyzeCore(b: Bundle | LiveBundle): EntrySnapshot {
-    this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined,entryComparison=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(b.details.baseline):undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison);
+    this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined,entryComparison=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(b.details.baseline):undefined,entryGates=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?attentionEntryGates(b.details.baseline):undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison,entryGates);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.shared?(entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -645,7 +762,7 @@ export class Service {
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features, evidence:semantic.evidence??[] } as Bundle | LiveBundle;
     const effective=semantic.schemaVersion===1?legacyPolicyFeatures(replayBundle):semantic.policyFeatures;
     if(!Array.isArray(effective))throw new Error('UNSUPPORTED_SNAPSHOT_VERSION');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2'].includes(semantic.policyVersion),semantic.policyVersion==='research-screen-shared-v2'?semantic.entryComparison:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion),['research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion)?semantic.entryComparison:undefined,semantic.policyVersion==='research-screen-shared-v3'?semantic.entryGates:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

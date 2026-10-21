@@ -70,6 +70,31 @@ test('shared capability coverage binds the direct inspection evidence while lega
   assert.deepEqual(shared.projection?.evidenceIds, [EVIDENCE.id]);
 });
 
+test('venue outcomes distinguish a supported route skipped by scheduling from an unsupported route', () => {
+  const skipped = deriveBaseline(base({ sharedMode: true, evidence: [EVIDENCE], venueOutcome: {
+    state: 'CANCELLED', origin: 'PHASE_DEADLINE', code: 'LIVE_PHASE_DEADLINE', blockedBy: 'FINALIZE', evidenceIds: [EVIDENCE.id],
+  } }));
+  for (const id of ['O08', 'O09', 'O10', 'O11', 'O12', 'O13', 'O14', 'O15', 'O16']) {
+    const row = get(skipped, id);
+    assert.equal(row.collector, 'IMPLEMENTED', `${id}: the supported collector exists despite this skipped attempt`);
+    assert.equal(row.causes[0]?.category, 'EVIDENCE_UNAVAILABLE', `${id}: a deadline is an acquisition cause`);
+    assert.equal(row.causes[0]?.code, 'LIVE_PHASE_DEADLINE');
+    assert.deepEqual(row.causes[0]?.evidenceIds, [EVIDENCE.id]);
+  }
+  assert.equal(get(skipped, 'C02').causes[0]?.category, 'EVIDENCE_UNAVAILABLE');
+
+  const unsupported = deriveBaseline(base({ sharedMode: true, venueOutcome: {
+    state: 'UNSUPPORTED', origin: 'UNSUPPORTED', code: 'EVM_READER_UNIMPLEMENTED', evidenceIds: [],
+  } }));
+  for (const id of ['O08', 'O09', 'O10', 'O11', 'O12', 'O13', 'O14', 'O15', 'O16']) {
+    const row = get(unsupported, id);
+    assert.equal(row.collector, 'UNIMPLEMENTED', `${id}: an unsupported chain route stays explicit`);
+    assert.equal(row.causes[0]?.category, 'COLLECTION_UNIMPLEMENTED');
+    assert.equal(row.causes[0]?.code, 'EVM_READER_UNIMPLEMENTED');
+  }
+  assert.equal(get(unsupported, 'C02').causes[0]?.category, 'COLLECTION_UNIMPLEMENTED');
+});
+
 test('C10 freezes ordered thesis predicates with their cutoff-specific truth and plan scope', () => {
   const thesis: Thesis = {
     support: [{ op: 'eq', feature: 'O01', value: true, unit: 'bool' }],

@@ -184,6 +184,62 @@ test('one run shares rolling admissions across model stages and key-scoped pacer
   assert.notStrictEqual(geminiPacerForKey(singletonKey), geminiPacerForKey(`${singletonKey}-other`));
 });
 
+test('full-source packets above the legacy cap require authoritative token admission', async t => {
+  const packet = JSON.stringify({ retainedFullSourceCatalog: 'x'.repeat(300_100) });
+  const schema = z.object({ accepted: z.boolean() }).strict();
+
+  await t.test('a counted full packet above 300k characters is dispatched unchanged', async () => {
+    const countBodies: Array<Record<string, unknown>> = [];
+    const generationBodies: string[] = [];
+    const routing = { fallbackActive: false, pacing: new GeminiPacer({ inputTokensPerMinute: 200_000, requestsPerMinute: 12, now: () => 0 }) };
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input).endsWith(':countTokens')) {
+        countBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({ totalTokens: 101_762 });
+      }
+      generationBodies.push(String(init?.body));
+      return sourceEnvelope({ accepted: true }, 101_762);
+    };
+    const result = await requestSourceJson(packet, schema, KEY, fetcher, () => {}, async () => {}, undefined, 'ATT_MODEL', routing);
+    assert.deepEqual(result.value, { accepted: true });
+    assert.equal(countBodies.length, 1);
+    assert.equal(generationBodies.length, 1);
+    const counted = countBodies[0]!.generateContentRequest as { contents: Array<{ parts: Array<{ text: string }> }> };
+    assert.equal(counted.contents[0]!.parts[0]!.text, packet);
+    const generated = JSON.parse(generationBodies[0]!) as { contents: Array<{ parts: Array<{ text: string }> }> };
+    assert.equal(generated.contents[0]!.parts[0]!.text, packet, 'no source clipping or fallback byte estimate controls dispatch');
+  });
+
+  await t.test('unpaced legacy calls retain the 300k character guard', async () => {
+    let providerCalls = 0;
+    await assert.rejects(() => requestSourceJson(packet, schema, KEY, async () => {
+      providerCalls++;
+      return sourceEnvelope({ accepted: true });
+    }, () => {}, async () => {}, undefined, 'ATT_MODEL'), /ATT_MODEL_PACKET_LIMIT/);
+    assert.equal(providerCalls, 0);
+  });
+
+  await t.test('an unavailable count prevents generation for an oversized paced packet', async () => {
+    let generationCalls = 0;
+    const routing = { fallbackActive: false, pacing: new GeminiPacer({ inputTokensPerMinute: 400_000, requestsPerMinute: 12, now: () => 0 }) };
+    await assert.rejects(() => requestSourceJson(packet, schema, KEY, async input => String(input).endsWith(':countTokens')
+      ? new Response('count unavailable', { status: 503 })
+      : (generationCalls++, sourceEnvelope({ accepted: true })), () => {}, async () => {}, undefined, 'ATT_MODEL', routing),
+    /ATT_MODEL_TOKEN_COUNT_UNAVAILABLE/);
+    assert.equal(generationCalls, 0);
+  });
+
+  await t.test('a measured input above the rolling TPM budget is rejected before generation', async () => {
+    let generationCalls = 0;
+    const routing = { fallbackActive: false, pacing: new GeminiPacer({ inputTokensPerMinute: 200_000, requestsPerMinute: 12, now: () => 0 }) };
+    await assert.rejects(() => requestSourceJson(packet, schema, KEY, async input => String(input).endsWith(':countTokens')
+      ? jsonResponse({ totalTokens: 200_001 })
+      : (generationCalls++, sourceEnvelope({ accepted: true })), () => {}, async () => {}, undefined, 'ATT_MODEL', routing),
+    /ATT_MODEL_INPUT_TOKEN_LIMIT/);
+    assert.equal(generationCalls, 0);
+  });
+});
+
 test('count failures use conservative UTF-8 bytes; authorization, oversized packets, and aborts never dispatch generation', async t => {
   const payload = JSON.stringify({ text: '🌊' });
   const fallback = await countGeminiInput('gemini-test-model', payload, KEY, async () => new Response('unavailable', { status: 503 }));
@@ -228,7 +284,7 @@ test('count failures use conservative UTF-8 bytes; authorization, oversized pack
         : (generationCalls++, sourceEnvelope({ ok: true })),
       () => {}, async () => {}, undefined, 'ATT_MODEL', {
         fallbackActive: false, pacing: new GeminiPacer({ inputTokensPerMinute: 1_000, requestsPerMinute: 4 }),
-      }), /GEMINI_INPUT_BUDGET/);
+      }), /ATT_MODEL_INPUT_TOKEN_LIMIT/);
     assert.equal(generationCalls, 0);
   });
 
