@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { entryDefinitions, featureMetadata, managementDefinitions } from '../src/domain/catalog.js';
+import { entryDefinitions, entryDefinitionsFor, featureMetadata, managementDefinitions } from '../src/domain/catalog.js';
 
 test('catalog exposes the complete stable checklist IDs and feature inventory', () => {
   const entryIds = [
@@ -87,4 +87,22 @@ test('management rows retain their separate role and requiredFor namespaces', ()
     ['MG-13','REQUIRED_FOR_QUANTIFIED_PROPOSAL','QUANTIFIED_PROPOSAL'], ['MG-14','INVALIDATION','THESIS'],
     ['MG-15','REQUIRED_FOR_QUANTIFIED_PROPOSAL','QUANTIFIED_PROPOSAL'],
   ]);
+});
+
+test('versioned mandatory-group catalog promotes only EXE-03 and the five ADV groups', () => {
+  assert.equal(entryDefinitionsFor(false), entryDefinitions, 'legacy callers retain the original manifest object');
+  const current = entryDefinitionsFor(true);
+  assert.equal(current.length, 33);
+  assert.ok(current.every(row => row.required));
+  const legacyById = new Map(entryDefinitions.map(row => [row.checkId, row]));
+  for (const row of current) {
+    const legacy = legacyById.get(row.checkId)!;
+    assert.deepEqual(row.featureIds, legacy.featureIds, `${row.checkId} retains its static feature association`);
+    if (row.checkId === 'EXE-03') assert.deepEqual([row.role, row.required], ['HARD_GATE', true]);
+    else if (/^ADV-0[1-5]$/.test(row.checkId)) assert.deepEqual([row.role, row.required], ['OPPORTUNITY', true]);
+    else assert.deepEqual([row.role, row.required], [legacy.role, legacy.required], `${row.checkId} is unchanged`);
+  }
+  for (const row of entryDefinitions.filter(row => !['EXE-03','ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'].includes(row.checkId))) {
+    assert.deepEqual(current.find(candidate => candidate.checkId === row.checkId), row);
+  }
 });

@@ -2582,7 +2582,7 @@ test('fresh entry-first lead recovery preserves each parent lineage through Serv
   const directory = mkdtempSync(join(tmpdir(), 'attention-recovery-live-'));
   const service = new Service(join(directory, 'proof.sqlite'));
   try {
-    const bundle = await collectLiveToken(target, liveOptions(mock.fetcher, {
+    const bundle = await collectLiveSolana(target, liveOptions(mock.fetcher, {
       tinyfishKey: TINYFISH_KEY, geminiKey: nextGeminiKey(), semanticEnabled: true, now: fakeNow,
     }));
     const original = JSON.parse(bundle.rawArtifacts['attention-acquisition-scope']!) as {
@@ -2591,7 +2591,7 @@ test('fresh entry-first lead recovery preserves each parent lineage through Serv
     const effective = (JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as { read: {
       entryExecutionMethod?: string; comparisonComplete?: boolean; comparisonQualification?: unknown;
       comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; acquisitionStatus: string; recoveryQueryIds: string[]; recoverySourceIds: string[] }> };
-      comparisonRecovery?: { method: string; selectedLeadIds: string[];
+      comparisonRecovery?: { method: string; fallbackSelectionMethod?: string; selectedLeadIds: string[];
         recoveryQueries: Array<{ queryId: string; parentLeadId: string; state: string; descriptorComplete: boolean }>;
         sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }> };
     } }).read;
@@ -2630,6 +2630,7 @@ test('fresh entry-first lead recovery preserves each parent lineage through Serv
     assert.equal(effective.comparisonQualification, undefined,
       'recovery acquisition is not full factual comparison qualification');
     assert.equal(effective.comparisonRecovery?.method, 'comparison-acquisition-v1');
+    assert.equal(effective.comparisonRecovery?.fallbackSelectionMethod, 'observed-hosts-v1');
     assert.ok(effective.comparisonRecovery?.selectedLeadIds.includes('comparison-lead-2'));
     assert.ok(effective.comparisonRecovery?.selectedLeadIds.includes('comparison-lead-3'));
     assert.equal(effective.comparisonAcquisition.originalComplete, false, 'effective qualification preserves the failed original acquisition state');
@@ -2672,6 +2673,17 @@ test('fresh entry-first lead recovery preserves each parent lineage through Serv
     assert.ok(sharedProof.sources.some(source => source.id === retainedFooterId && source.text.includes(footerText)),
       'the fetched footer remains in the Shared source audit without creating a comparison grade');
     assert.equal(bundle.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(effective.comparisonRecovery));
+    const fallbackReceipt = JSON.parse(bundle.rawArtifacts['attention-recovery-fallback-scope']!) as {
+      method: string; rounds: Array<{ batch: number; selections: Array<{ parentId: string; url: string }> }>;
+    };
+    assert.equal(fallbackReceipt.method, 'same-parent-alternates-v2');
+    assert.ok(Array.isArray(fallbackReceipt.rounds), 'the marked live recovery keeps its raw fallback receipt through Service admission');
+    for (const id of ['attention-leadership-proposal-prompt', 'attention-leadership-review-prompt']) {
+      const raw = bundle.rawArtifacts[id];
+      if (!raw) continue;
+      assert.equal((JSON.parse(raw) as { scope?: { fallbackSelectionMethod?: string } }).scope?.fallbackSelectionMethod,
+        'observed-hosts-v1', `${id} binds the versioned selector marker into the independent public-entry packet`);
+    }
     assert.equal(bundle.rawArtifacts['attention-comparison-coverage'], undefined);
     const receipt = JSON.parse(bundle.rawArtifacts['attention-qualified-receipt']!) as {
       review: { entryDecisions?: { method: string; originTraceability: { verdict: string }; leadership: { verdict: string };
@@ -3307,7 +3319,7 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       originRecovery?: { comparisonSupplementIds: string[] };
       sources: Array<{ id: string; url: string; text: string; kind: 'POST' | 'PAGE' }>;
       comparisonAcquisition: { originalComplete: boolean; leads: Array<{ id: string; url: string | null; acquisitionStatus: string; recoveryQueryIds: string[]; recoverySourceIds: string[] }> };
-      comparisonRecovery?: { method: string; accessGapMethod?: string; selectedLeadIds: string[];
+      comparisonRecovery?: { method: string; accessGapMethod?: string; fallbackSelectionMethod?: string; selectedLeadIds: string[];
         recoveryQueries: Array<{ queryId: string; parentLeadId: string; query: string; state: string; descriptorComplete: boolean }>;
         sourceLineage: Array<{ leadId: string; queryIds: string[]; sourceIds: string[] }> };
       comparisonQualification?: unknown;
@@ -3413,9 +3425,9 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A04')?.quality, 'MISSING');
   assert.equal(bundle.details?.baseline.find(row => row.id === 'A10')?.quality, 'MISSING');
   assert.ok(bundle.details?.shared, 'Service receives the nonempty Shared source audit from the collected bundle');
-  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GATES_V1');
-  assert.equal((JSON.parse(bundle.rawArtifacts['shared-derivation']!) as { qualityMode?: string }).qualityMode, 'ENTRY_GATES_V1',
-    'the live shared proof persists the explicit entry-data-quality mode');
+  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GROUPS_V1');
+  assert.equal((JSON.parse(bundle.rawArtifacts['shared-derivation']!) as { qualityMode?: string }).qualityMode, 'ENTRY_GROUPS_V1',
+    'the fresh full shared proof persists the mandatory current-entry group mode');
   assert.ok(bundle.evidence.some(item => item.id === 'shared-derivation'));
   const sharedSupportClaim = sharedClaims(bundle.details!.baseline, bundle.details!.social).find(claim => claim.id === 'A09:entry');
   assert.ok(sharedSupportClaim,
@@ -3471,7 +3483,7 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     try {
       const row = storedDb.prepare('SELECT semantic FROM snapshots WHERE id=?').get(snapshotId) as { semantic: string };
       const semantic = JSON.parse(row.semantic) as { policyVersion: string; entryComparison?: boolean };
-      assert.equal(semantic.policyVersion, 'research-screen-shared-v2');
+      assert.equal(semantic.policyVersion, 'research-screen-shared-v4');
       assert.equal(semantic.entryComparison, false, 'the independently reviewed public FAIL is frozen for offline policy replay');
     } finally { storedDb.close(); }
     const reopened = new Service(database);
@@ -3523,7 +3535,10 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
     const fallbackReceipt = JSON.parse(alternateBundle.rawArtifacts['attention-recovery-fallback-scope']!) as {
       method: string; rounds: Array<{ batch: number; selections: Array<{ url: string }> }>;
     };
-    assert.equal(fallbackReceipt.method, 'same-parent-alternates-v1');
+    assert.equal(fallbackReceipt.method, 'same-parent-alternates-v2');
+    assert.equal(alternateReceipt.read.comparisonRecovery?.fallbackSelectionMethod, 'observed-hosts-v1');
+    assert.equal(alternateBundle.rawArtifacts['attention-entry-first-acquisition'],
+      JSON.stringify(alternateReceipt.read.comparisonRecovery), 'Service receives the same marked acquisition receipt used by the entry scope');
     assert.equal(fallbackReceipt.rounds.length, 1);
     assert.equal(fallbackReceipt.rounds[0]?.batch, 2);
     assert.ok(fallbackReceipt.rounds[0]?.selections.some(selection => selection.url === alternateRecoveredMarketUrl));
@@ -3758,7 +3773,7 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
 
     const accessGapRead = (candidate: typeof alternateBundle) => JSON.parse(candidate.rawArtifacts['attention-qualified-receipt']!) as {
       read: {
-        comparisonRecovery: { accessGapMethod?: string; recoveryQueries: Array<{ queryId: string; parentLeadId: string }> };
+        comparisonRecovery: { accessGapMethod?: string; fallbackSelectionMethod?: string; recoveryQueries: Array<{ queryId: string; parentLeadId: string }> };
         sources: Array<{ id: string; url: string; text: string }>;
       };
     };
@@ -3775,6 +3790,44 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       receipt.read.comparisonRecovery.accessGapMethod = 'unverified-alternates-v0';
       candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
     }, 'fresh access-gap marker downgrade');
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      delete receipt.read.comparisonRecovery.fallbackSelectionMethod;
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'selector marker omitted from the qualified receipt');
+    rejectRehashedAccessGap(candidate => {
+      const firstAcquisition = JSON.parse(candidate.rawArtifacts['attention-entry-first-acquisition']!) as {
+        fallbackSelectionMethod?: string;
+      };
+      delete firstAcquisition.fallbackSelectionMethod;
+      candidate.rawArtifacts['attention-entry-first-acquisition'] = JSON.stringify(firstAcquisition);
+    }, 'selector marker omitted from the first-acquisition proof');
+    rejectRehashedAccessGap(candidate => {
+      const fallback = JSON.parse(candidate.rawArtifacts['attention-recovery-fallback-scope']!) as { method: string };
+      fallback.method = 'same-parent-alternates-v1';
+      candidate.rawArtifacts['attention-recovery-fallback-scope'] = JSON.stringify(fallback);
+    }, 'versioned fallback receipt downgraded');
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      receipt.read.comparisonRecovery.fallbackSelectionMethod = 'unknown-selector-v99';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'unknown selector marker in the qualified receipt');
+    rejectRehashedAccessGap(candidate => {
+      const fallback = JSON.parse(candidate.rawArtifacts['attention-recovery-fallback-scope']!) as {
+        rounds: Array<{ selections: Array<{ url: string; parentId: string }> }>;
+      };
+      assert.ok(fallback.rounds[0]?.selections[0]);
+      fallback.rounds[0]!.selections[0]!.url = recoveredMarketUrl;
+      candidate.rawArtifacts['attention-recovery-fallback-scope'] = JSON.stringify(fallback);
+    }, 'fallback receipt URL no longer matches the canonical selected alternate');
+    rejectRehashedAccessGap(candidate => {
+      const fallback = JSON.parse(candidate.rawArtifacts['attention-recovery-fallback-scope']!) as {
+        rounds: Array<{ selections: Array<{ url: string; parentId: string }> }>;
+      };
+      assert.ok(fallback.rounds[0]?.selections[0]);
+      fallback.rounds[0]!.selections[0]!.parentId = 'forged-lead';
+      candidate.rawArtifacts['attention-recovery-fallback-scope'] = JSON.stringify(fallback);
+    }, 'fallback receipt parent no longer matches the selected lead');
     rejectRehashedAccessGap(candidate => {
       const outcomes = JSON.parse(candidate.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
       const receipt = accessGapRead(candidate);
@@ -3802,6 +3855,13 @@ test('fresh task-v5/v6 Service proof accepts reordered provider keys, replays, a
       source.text += ' Changed after the retained fetch response.';
       candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
     }, 'alternative source body changed after acquisition');
+    rejectRehashedAccessGap(candidate => {
+      const receipt = accessGapRead(candidate);
+      const selectedBody = receipt.read.sources.find(row => row.url === alternateRecoveredMarketUrl);
+      assert.ok(selectedBody, 'the selected fallback body exists in the qualified receipt');
+      selectedBody.text += ' Changed after the selected fallback batch.';
+      candidate.rawArtifacts['attention-qualified-receipt'] = JSON.stringify(receipt);
+    }, 'selected fallback body changed after its own Fetch batch');
     rejectRehashedAccessGap(candidate => {
       const prompt = JSON.parse(candidate.rawArtifacts['attention-leadership-proposal-prompt']!) as { instruction: string };
       prompt.instruction += ' Remove the declared gap from consideration.';
@@ -4128,13 +4188,13 @@ test('missing provider keys skip optional web/model calls while preserving RPC a
   assert.equal(result.collection.dex.state, 'OBSERVED');
 });
 
-test('ENTRY_GATES_V1 records an incomplete C05 as known false and persists it through replay', async () => {
+test('ENTRY_GROUPS_V1 records an incomplete C05 as known false and persists it through replay', async () => {
   const mock = mockedFetch({ dexValue: [pair(1)] });
   const bundle = await collectLiveSolana(token, liveOptions(mock.fetcher, { semanticEnabled: true }));
   const c05Features = bundle.features.filter(feature => feature.id === 'C05');
   const c05Assessment = bundle.details?.baseline.find(row => row.id === 'C05');
   assert.equal(c05Features.length, 1, 'a legacy C05 with no projection still receives one shared projection');
-  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GATES_V1');
+  assert.equal(bundle.details?.shared?.qualityMode, 'ENTRY_GROUPS_V1');
   assert.equal(c05Features[0]?.quality, 'KNOWN', 'the explicit gate mode records an incomplete review as a known failed quality gate');
   assert.equal(c05Features[0]?.value, false);
   assert.deepEqual(c05Assessment?.projection, c05Features[0]);
@@ -4171,7 +4231,7 @@ test('ENTRY_GATES_V1 records an incomplete C05 as known false and persists it th
   }
 });
 
-test('Shared repair proof reconstructs selected raw responses and rejects rehashed reassessment tampering', async () => {
+test('legacy Shared repair proof reconstructs selected raw responses and rejects rehashed reassessment tampering', async () => {
   const fixture = sharedFixture();
   const mock = mockedFetch({ dexValue: [] });
   const bundle = await collectLiveToken(fixture.token, liveOptions(mock.fetcher, {
@@ -4183,6 +4243,21 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
   assert.ok(originalProof);
   bundle.evidence = bundle.evidence.filter(record => record.id !== originalProof.id);
   delete bundle.rawArtifacts[originalProof.id];
+  // This test isolates the retained Shared-repair contract. Pin its synthetic
+  // path to legacy policy instead of claiming that the fixture meets all new
+  // mandatory groups; the separate fresh-service proof test covers that path.
+  const groupProof = bundle.evidence.find(record => record.id === 'entry-groups-derivation');
+  assert.ok(groupProof);
+  bundle.evidence = bundle.evidence.filter(record => record.id !== groupProof.id);
+  delete bundle.rawArtifacts[groupProof.id];
+  delete bundle.details!.groups;
+  bundle.details!.shared!.qualityMode = 'ENTRY_GATES_V1';
+  const captureRecord = bundle.evidence.find(record => record.id === 'live-state-capture');
+  assert.ok(captureRecord);
+  const capture = JSON.parse(bundle.rawArtifacts[captureRecord.id]!) as Record<string, unknown>;
+  delete capture.entryGroupMethod;
+  bundle.rawArtifacts[captureRecord.id] = JSON.stringify(capture);
+  captureRecord.contentHash = sha256(bundle.rawArtifacts[captureRecord.id]!);
   bundle.profile = fixture.profile;
   bundle.details!.profile = fixture.profile;
   delete bundle.details!.social;
@@ -4296,7 +4371,8 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
     'the synthetic retained proof uses the same canonical context as the runtime decoder');
 
   const input: SharedInputs = {
-    ...fixture, token: bundle.token, cutoff: bundle.cutoff, profile: bundle.profile,
+    ...fixture, qualityMode: 'ENTRY_GATES_V1',
+    token: bundle.token, cutoff: bundle.cutoff, profile: bundle.profile,
     baseline: fixture.baseline, features: fixture.features, evidence: structuredClone(bundle.evidence),
     observations: bundle.observations, social: undefined, claims, sources, audit,
     semanticReceiptIds: ['attention-qualified-receipt', 'social-qualified-receipt'],
@@ -4313,14 +4389,15 @@ test('Shared repair proof reconstructs selected raw responses and rejects rehash
     ...derived.assessments,
   ];
   bundle.details!.shared = derived.facts;
-  assert.equal(bundle.details!.baseline.find(row => row.id === 'C06')?.projection?.value, true);
+  assert.equal(bundle.details!.baseline.find(row => row.id === 'C06')?.projection?.value, true,
+    'the synthetic legacy fixture keeps its established Shared completeness result');
 
   const proofRaw = JSON.stringify(input);
   bundle.rawArtifacts['shared-derivation'] = proofRaw;
   bundle.evidence.push({
     id: 'shared-derivation', sourceId: 'shared-collector', sourceType: 'CALCULATION',
     retrievedAt: bundle.cutoff, availableAt: bundle.cutoff, contentHash: sha256(proofRaw),
-    adapterVersion: 'live-v1', accessMode: 'LOCAL_DERIVED', scope: { method: 'shared-evidence-v1' },
+    adapterVersion: 'live-v1', accessMode: 'LOCAL_DERIVED', scope: { method: 'shared-evidence-v1', qualityMode: input.qualityMode },
   });
 
   const directory = mkdtempSync(join(tmpdir(), 'shared-reassessment-proof-'));

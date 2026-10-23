@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { entryDefinitions } from '../src/domain/catalog.js';
 import { evaluateEntry } from '../src/domain/policy.js';
+import type { EntryGroupFacts } from '../src/domain/contracts.js';
 import { attentionEntryGates, deriveShared, sharedWitnesses } from '../src/domain/shared.js';
 import { SHARED_CUTOFF, sharedFixture } from './shared-fixtures.js';
 
@@ -13,6 +14,21 @@ function setFeature(input: ReturnType<typeof sharedFixture>, id: string, changes
 
 function witness(input: ReturnType<typeof sharedFixture>, checkId: string) {
   return sharedWitnesses(input.features, input.profile, input.cutoff, input.social).find(item => item.checkId === checkId)!;
+}
+
+function mandatoryGroups(input: ReturnType<typeof sharedFixture>): EntryGroupFacts {
+  return {
+    method: 'mandatory-entry-groups-v1', token: input.token, cutoff: input.cutoff,
+    groups: (['ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'] as const).map((checkId, index) => {
+      const featureId = (['O19','O28','A01','S02','O08'] as const)[index]!;
+      const feature = input.features.find(item => item.id === featureId)!;
+      return {
+        checkId, status: 'PASS', rationale: `${checkId} current evidence screen.`, code: 'CURRENT_SCREEN',
+        featureIds: [featureId], evidenceIds: feature.evidenceIds, availableAt: input.cutoff,
+        metrics: { currentOnly: true }, limitations: ['Prior-day history is not required.'],
+      };
+    }),
+  };
 }
 
 test('shared witnesses match required non-DAT policy statuses and keep every genuine unknown visible', () => {
@@ -154,4 +170,21 @@ test('fresh terminal post-gap markers grade only negative attention gates and le
     method: 'entry-evidence-gate-v1', entryCriterion: 'ATT-02', verdict: 'FAIL', postSampleScope: gapScope,
   };
   assert.deepEqual(attentionEntryGates(staleCarrier.baseline), { growth: false }, 'stale markers cannot supply a gate');
+});
+
+test('ENTRY_GROUPS_V1 adds five required rows to 30 non-DAT Shared witnesses without recursive DAT inputs', () => {
+  const input = sharedFixture();
+  const groups = mandatoryGroups(input);
+  const witnesses = sharedWitnesses(input.features, input.profile, input.cutoff, input.social, undefined, undefined, groups);
+  assert.equal(witnesses.length, 30);
+  assert.equal(witnesses.some(item => item.checkId.startsWith('DAT-')), false);
+  for (const group of groups.groups) {
+    const item = witnesses.find(row => row.checkId === group.checkId);
+    assert.deepEqual(item && [item.status, item.route, item.featureIds, item.evidenceIds], ['PASS','qualified-context',group.featureIds,group.evidenceIds]);
+  }
+  const current = deriveShared({ ...input, qualityMode: 'ENTRY_GROUPS_V1', groups });
+  assert.equal(current.facts.qualityMode, 'ENTRY_GROUPS_V1');
+  assert.equal(current.facts.witnesses.length, 30);
+  assert.ok(current.facts.witnesses.some(item => item.checkId === 'EXE-03'));
+  assert.throws(() => deriveShared({ ...input, qualityMode: 'ENTRY_GROUPS_V1' }), /SHARED_GROUPS_REQUIRED/);
 });

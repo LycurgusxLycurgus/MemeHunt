@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { z } from 'zod';
 import { geminiSettings } from '../src/providers/gemini.js';
@@ -195,6 +196,9 @@ test('social qualification makes exactly two reviewed passes over identical full
   assert.equal(receipt.method, 'social-source-review-v1');
   assert.deepEqual(receipt.read, socialInput);
   const proposalPacket = JSON.parse(result.rawArtifacts['social-proposal-prompt']!) as { instruction: string };
+  assert.equal(createHash('sha256').update(result.rawArtifacts['social-proposal-prompt']!).digest('hex'),
+    'd621cf8beb52d20aacf4645811138b95ba576e263133bd890d3ff920e32aba7f',
+    'inputs without the frozen guard marker retain the exact legacy proposal prompt bytes');
   assert.match(proposalPacket.instruction, /Select supplied sourceId and spanId for citations; code supplies literal quotes/);
   assert.match(proposalPacket.instruction, /firstLineId and lastLineId covering the ENTIRE actual original body/);
   assert.match(proposalPacket.instruction, /Use null when boundaries cannot be established/);
@@ -774,6 +778,123 @@ test('screening repair can correct a rejected historical integrity rationale onc
     'offline proof rejects a changed nonselected pair relationship');
 });
 
+test('frozen positive guards repair only fully inspected impossible positives and require an accepted cited negative', async t => {
+  const frozenRead = (complete = true) => {
+    const read = input();
+    read.screeningConstraintMethod = 'frozen-positive-guards-v1';
+    read.reviewCriterionMethod = 'verdict-aware-v4';
+    read.entryDecisionMethod = 'public-support-v3';
+    read.sources[0]!.publishedAt = '2026-10-02T12:00:00.000Z';
+    read.sampleComplete = complete;
+    if (!complete) read.codes = ['SOC_FETCH_TIMEOUT'];
+    return read;
+  };
+  const citationFor = (packet: ModelPacket): WireCitation => {
+    const source = packet.sources.find(row => row.id === packet.requiredPostIds[0]);
+    assert.ok(source);
+    const span = source.spans.find(row => row.text.includes(SOCIAL_TOKEN.address));
+    assert.ok(span);
+    return { sourceId: source.id, spanId: span.id };
+  };
+  const impossiblePositive = (packet: ModelPacket) => {
+    const proposal = proposalWire(packet, 'valid', 'complete') as ReturnType<typeof proposalWire>;
+    const citation = citationFor(packet);
+    (proposal as any).integrityAssessment = {
+      verdict: 'SUPPORTED', rationale: 'The fully inspected historical post proves current integrity and complete source lineage.', citations: [citation],
+    };
+    (proposal as any).participationAssessment = {
+      verdict: 'CONTRADICTED', rationale: 'The complete retained scope does not establish independent public participation.', citations: [citation],
+    };
+    (proposal as any).communityBreadthAssessment = {
+      verdict: 'CONTRADICTED', rationale: 'The complete retained scope does not establish independent public communities.', citations: [citation],
+    };
+    return proposal;
+  };
+  const groundedNegative = (packet: ModelPacket) => ({ integrityAssessment: {
+    verdict: 'CONTRADICTED',
+    rationale: 'The fully inspected source does not establish the origin or public community needed to qualify current integrity; this is an evidence shortfall, not a fraud finding.',
+    citations: [citationFor(packet)],
+  } });
+
+  await t.test('an impossible positive is constrained to a reviewed negative on complete evidence', async () => {
+    const read = frozenRead();
+    const model = mockModel({ responder: (packet, call) => {
+      if (call === 1) return impossiblePositive(packet);
+      if (call === 2) {
+        const initialReview = keyedReviewWire(packet) as { decisions: Record<string, { accepted: boolean }> };
+        assert.equal(initialReview.decisions['assessment:integrity']?.accepted, true,
+          'the guard is independently derived even when the initial reviewer accepts the impossible positive');
+        return initialReview;
+      }
+      if (call === 3) {
+        const repair = packet as ModelPacket & { frozenPositiveGuards?: { assessmentIds?: string[] }; initialReview?: { decisions?: Array<{ id: string; accepted: boolean }> } };
+        assert.deepEqual(repair.frozenPositiveGuards?.assessmentIds, ['assessment:integrity']);
+        assert.equal(repair.initialReview?.decisions?.find(row => row.id === 'assessment:integrity')?.accepted, true);
+        return groundedNegative(packet);
+      }
+      assert.equal(call, 4);
+      assert.equal((packet as ModelPacket & { repair?: boolean }).repair, true);
+      return keyedReviewWire(packet);
+    } });
+    const result = await qualifySocial(read, SOCIAL_TOKEN, KEY, model.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(model.calls.length, 4);
+    const repairSchema = (model.calls[2]!.payload.generationConfig as { responseJsonSchema: { properties: { integrityAssessment: { properties: { verdict: { enum: string[] } } } } } }).responseJsonSchema;
+    assert.deepEqual(repairSchema.properties.integrityAssessment.properties.verdict.enum, ['CONTRADICTED'],
+      'the existing repair schema cannot repeat a positive that fails the frozen guard');
+    assert.equal(result.code, undefined);
+    assert.equal(result.proposal?.integrityAssessment?.verdict, 'CONTRADICTED');
+    assert.equal(result.review?.decisions.find(row => row.id === 'assessment:integrity')?.accepted, true,
+      'the negative is admitted only after independent review');
+    const derived = deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-frozen-guard-test']);
+    assert.equal(derived.facts.integrityReview?.verdict, 'CONTRADICTED');
+    const history = derived.assessments.find(row => row.id === 'S05')!;
+    assert.equal(history.quality, 'MISSING', 'a negative current-source assessment does not fill in unavailable account history');
+    assert.deepEqual((history.data as { indicators: unknown[] }).indicators, []);
+    const selection = JSON.parse(result.rawArtifacts['social-repair-selection']!) as { method: string; selectedAssessmentIds: string[]; applied: boolean };
+    assert.deepEqual(selection, { method: 'social-screening-repair-v4', selectedAssessmentIds: ['assessment:integrity'], applied: true });
+    validateSocialWire(result.rawArtifacts, read, SOCIAL_TOKEN, result.proposal, result.review);
+  });
+
+  await t.test('a rejected negative repair stays unresolved instead of becoming a silent FAIL', async () => {
+    const read = frozenRead();
+    const model = mockModel({ responder: (packet, call) => {
+      if (call === 1) return impossiblePositive(packet);
+      if (call === 2) return keyedReviewWire(packet);
+      if (call === 3) return groundedNegative(packet);
+      const review = keyedReviewWire(packet) as { decisions: Record<string, { accepted: boolean; rationale: string }> };
+      review.decisions['assessment:integrity']!.accepted = false;
+      review.decisions['assessment:integrity']!.rationale = 'The source review does not support this negative evidence judgment.';
+      return review;
+    } });
+    const result = await qualifySocial(read, SOCIAL_TOKEN, KEY, model.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(model.calls.length, 4);
+    assert.equal(result.code, undefined, 'a rejected optional repair does not turn a qualified initial assessment into a transport error');
+    const selection = JSON.parse(result.rawArtifacts['social-repair-selection']!) as { applied: boolean; code?: string };
+    assert.equal(selection.applied, false);
+    assert.equal(selection.code, 'SOC_REPAIR_REJECTED');
+    assert.equal(result.proposal?.integrityAssessment?.verdict, 'SUPPORTED', 'the rejected repair cannot replace the retained proposal');
+    assert.equal(deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-frozen-guard-test']).facts.integrityReview?.verdict,
+      'UNRESOLVED', 'the original positive still fails its local support guard and does not become a negative finding');
+    validateSocialWire(result.rawArtifacts, read, SOCIAL_TOKEN, result.proposal, result.review);
+  });
+
+  await t.test('an incomplete acquisition does not activate the frozen negative repair', async () => {
+    const read = frozenRead(false);
+    const model = mockModel({ responder: (packet, call) => call === 1 ? impossiblePositive(packet) : keyedReviewWire(packet) });
+    const result = await qualifySocial(read, SOCIAL_TOKEN, KEY, model.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+    assert.equal(model.calls.length, 2);
+    assert.equal(result.rawArtifacts['social-repair-selection'], undefined);
+    assert.equal(result.rawArtifacts['social-repair-proposal-prompt'], undefined);
+    assert.equal(result.proposal?.integrityAssessment?.verdict, 'SUPPORTED');
+    assert.equal(deriveSocial(result.read, result.proposal, result.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-frozen-guard-test']).facts.integrityReview?.verdict,
+      'UNRESOLVED', 'an acquisition timeout leaves the evidence judgment unresolved');
+    validateSocialWire(result.rawArtifacts, read, SOCIAL_TOKEN, result.proposal, result.review);
+  });
+});
+
 test('fresh social wire always carries both source-span judgments and independent review IDs', async () => {
   const mock = mockModel();
   const result = await qualifySocial(input(1), SOCIAL_TOKEN, KEY, mock.fetcher, async () => {});
@@ -810,6 +931,145 @@ test('fresh social wire always carries both source-span judgments and independen
   assert.deepEqual(Object.keys(wire.identityAssessment.citations[0]!).sort(), ['sourceId', 'spanId']);
   assert.deepEqual(Object.keys(wire.posts[0]!.body).sort(), ['firstLineId', 'lastLineId']);
   assert.equal(JSON.stringify(wire).includes('quote'), false, 'fresh proposal selectors never contain model-authored citation text');
+});
+
+test('fresh literal association evidence gets one selector repair and keeps unsupported community facts null', async t => {
+  const invalidKey = 'https://t.me/MayaSamoyed_portal';
+  const makeInput = (marked: boolean, text = `${SOCIAL_TOKEN.address} Alice describes the project and leaves only the truncated Telegram reference t.me/MayaSamoyed\\_po… for the community.`) => {
+    const value = input(0, text);
+    value.entryDecisionMethod = 'public-support-v3';
+    value.reviewCriterionMethod = 'verdict-aware-v4';
+    value.identityComplete = true;
+    if (marked) value.associationCitationMethod = 'literal-associations-v1';
+    return value;
+  };
+  const citationFor = (packet: ModelPacket) => {
+    const post = packet.sources.find(source => source.id === packet.requiredPostIds[0]);
+    assert.ok(post);
+    const span = post.spans.find(candidate => candidate.text.includes(SOCIAL_TOKEN.address));
+    assert.ok(span);
+    return { sourceId: post.id, spanId: span.id };
+  };
+  const negativeProposal = (packet: ModelPacket): any => {
+    const proposal = proposalWire(packet, 'valid', 'complete', 'CONTRADICTED', 'CONTRADICTED') as any;
+    const citation = citationFor(packet);
+    proposal.identityAssessment = { verdict: 'CONTRADICTED', rationale: 'The complete public identity scope contains no independent account binding.', citations: [citation] };
+    proposal.integrityAssessment = { verdict: 'CONTRADICTED', rationale: 'The inspected post does not establish independently supported project lineage.', citations: [citation] };
+    proposal.participationAssessment = { verdict: 'CONTRADICTED', rationale: 'The complete sample does not establish independent participant origins and communities.', citations: [citation] };
+    proposal.communityBreadthAssessment = { verdict: 'CONTRADICTED', rationale: 'The complete sample does not establish independently identified public communities.', citations: [citation] };
+    return proposal;
+  };
+  const invalidProposal = (packet: ModelPacket) => {
+    const proposal = negativeProposal(packet);
+    proposal.posts[0]!.community = { key: invalidKey, citation: citationFor(packet) };
+    return proposal;
+  };
+  const complete = makeInput(true);
+  const repairedModel = mockModel({ responder: (packet, call) => {
+    if (call === 1) return invalidProposal(packet);
+    if (call === 2) {
+      assert.ok(packet.invalidProposal, 'the repair is tied to the initial unsupported association key');
+      assert.equal((packet.invalidProposal as any).posts[0]?.community?.key, invalidKey);
+      return negativeProposal(packet);
+    }
+    assert.equal(call, 3, 'the corrected proposal gets one ordinary independent full review');
+    assert.equal(packet.proposal?.posts[0]?.community, null, 'the reviewer sees the corrected full proposal with no unsupported community');
+    assert.equal(packet.proposal?.communityBreadthAssessment?.verdict, 'CONTRADICTED');
+    return keyedReviewWire(packet);
+  } });
+  const repaired = await qualifySocial(complete, SOCIAL_TOKEN, KEY, repairedModel.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+  assert.equal(repaired.code, undefined);
+  assert.equal(repairedModel.calls.length, 3, 'one proposal, one bounded selector repair, and one independent review');
+  assert.ok(repaired.proposal && repaired.review);
+  assert.equal(repaired.proposal.posts[0]?.community, null);
+  assert.equal(repaired.proposal.posts[0]?.origin, null);
+  assert.equal(repaired.proposal.posts[0]?.campaign, null);
+  assert.equal(repaired.proposal.communityBreadthAssessment?.verdict, 'CONTRADICTED');
+  assert.equal(repaired.review.decisions.find(row => row.id === 'assessment:communityBreadth')?.accepted, true);
+  assert.ok(repaired.review.sources.every(source => source.complete));
+  assert.equal(repaired.rawArtifacts['social-selector-repair-response'] !== undefined, true);
+  assert.equal(repaired.rawArtifacts['social-repair-proposal-prompt'], undefined, 'the accepted adverse judgments do not trigger a separate screening repair');
+  const facts = deriveSocial(repaired.read, repaired.proposal, repaired.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-association-test']).facts;
+  assert.equal(facts.identityReview?.verdict, 'CONTRADICTED');
+  assert.equal(facts.integrityReview?.verdict, 'CONTRADICTED');
+  assert.equal(facts.participationReview?.verdict, 'CONTRADICTED');
+  assert.equal(facts.communityBreadthReview?.verdict, 'CONTRADICTED');
+  assert.equal(facts.independentCommunityCount, null, 'no community is inferred from the truncated reference');
+  validateSocialWire(repaired.rawArtifacts, complete, SOCIAL_TOKEN, repaired.proposal, repaired.review);
+
+  await t.test('a second invalid association stays unqualified without a review call', async () => {
+    const failedModel = mockModel({ responder: (packet, call) => call === 1 || call === 2 ? invalidProposal(packet) : keyedReviewWire(packet) });
+    const failed = await qualifySocial(complete, SOCIAL_TOKEN, KEY, failedModel.fetcher, async () => {}, undefined, { screeningRepair: true });
+    assert.equal(failedModel.calls.length, 2);
+    assert.equal(failed.proposal, null);
+    assert.equal(failed.review, null);
+    assert.equal(failed.code, 'SOC_CITATION_INVALID');
+    assert.equal(failed.rawArtifacts['social-review-prompt'], undefined);
+  });
+
+  await t.test('a valid new-mode association and an unmarked legacy proposal each use no repair call', async () => {
+    const validInput = makeInput(true, `${SOCIAL_TOKEN.address} Alice points to the public group https://t.me/synthetic-community.`);
+    const validModel = mockModel({ responder: (packet, call) => {
+      if (call !== 1) return keyedReviewWire(packet);
+      const proposal = negativeProposal(packet);
+      proposal.posts[0]!.community = { key: 'https://t.me/synthetic-community', citation: citationFor(packet) };
+      return proposal;
+    } });
+    const valid = await qualifySocial(validInput, SOCIAL_TOKEN, KEY, validModel.fetcher, async () => {}, undefined, { screeningRepair: true });
+    assert.equal(valid.code, undefined, JSON.stringify(valid.rawArtifacts['social-validation-error'] ?? valid.rawArtifacts));
+    assert.equal(validModel.calls.length, 2);
+    assert.equal(valid.proposal?.posts[0]?.community?.key, 'https://t.me/synthetic-community');
+    assert.equal(valid.rawArtifacts['social-selector-repair-prompt'], undefined);
+    validateSocialWire(valid.rawArtifacts, validInput, SOCIAL_TOKEN, valid.proposal, valid.review);
+
+    const legacyInput = input();
+    const legacyModel = mockModel();
+    const legacy = await qualifySocial(legacyInput, SOCIAL_TOKEN, KEY, legacyModel.fetcher, async () => {});
+    assert.equal(legacy.code, undefined, JSON.stringify(legacy.rawArtifacts['social-validation-error'] ?? legacy.rawArtifacts));
+    assert.equal(legacyModel.calls.length, 2);
+    assert.equal(legacy.read.associationCitationMethod, undefined);
+    assert.equal(legacy.rawArtifacts['social-selector-repair-prompt'], undefined);
+    validateSocialWire(legacy.rawArtifacts, legacyInput, SOCIAL_TOKEN, legacy.proposal, legacy.review);
+  });
+
+  await t.test('wire reconstruction rejects reserialized association key, citation span, repair context, and omitted repair', () => {
+    const rewritten = (raw: Record<string, string>, artifactId: string, mutate: (wire: Record<string, any>) => void) => {
+      const envelope = JSON.parse(raw[artifactId]!) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      const wire = JSON.parse(envelope.candidates[0]!.content.parts[0]!.text) as Record<string, any>;
+      mutate(wire);
+      envelope.candidates[0]!.content.parts[0]!.text = JSON.stringify(wire);
+      raw[artifactId] = JSON.stringify(envelope);
+      return wire;
+    };
+    const invalid = (artifacts: Record<string, string>) => assert.throws(
+      () => validateSocialWire(artifacts, complete, SOCIAL_TOKEN, repaired.proposal, repaired.review),
+      /SOCIAL_PROOF_INVALID|SOC_CITATION_INVALID/,
+    );
+
+    const changedKey = structuredClone(repaired.rawArtifacts);
+    rewritten(changedKey, 'social-selector-repair-response', wire => {
+      wire.posts[0].community = { key: invalidKey, citation: citationFor(repairedModel.calls[1]!.packet) };
+    });
+    invalid(changedKey);
+
+    const changedSpan = structuredClone(repaired.rawArtifacts);
+    rewritten(changedSpan, 'social-selector-repair-response', wire => {
+      wire.posts[0].community = { key: 'https://t.me/synthetic-community', citation: { sourceId: 'post-alice-1', spanId: 'unretained-association-span' } };
+    });
+    invalid(changedSpan);
+
+    const changedContext = structuredClone(repaired.rawArtifacts);
+    const repairPacket = JSON.parse(changedContext['social-selector-repair-prompt']!) as { sources: PacketSource[] };
+    repairPacket.sources[0]!.spans[0]!.text += ' modified context';
+    changedContext['social-selector-repair-prompt'] = JSON.stringify(repairPacket);
+    invalid(changedContext);
+
+    const omittedRepair = structuredClone(repaired.rawArtifacts);
+    delete omittedRepair['social-selector-repair-prompt'];
+    delete omittedRepair['social-selector-repair-response'];
+    invalid(omittedRepair);
+  });
 });
 
 test('public-support-v2 separates full post bodies from short citations and requires an independently reviewed participation judgment', async t => {

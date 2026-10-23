@@ -8,13 +8,13 @@ import { tokenRefSchema } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
 import { requiredComparisonRecoveryParents, normalizeAttentionSearchUrl, reconstructOriginAcquisition, entryEvidenceScope, terminalPostScope, type AttentionRead } from '../providers/attention.js';
 import { parseSourceResponse, sourceSpans } from '../providers/source-model.js';
-import { comparisonSupplementForLead } from '../providers/origin-recovery.js';
+import { comparisonSupplementForLead, verifyOriginAlias } from '../providers/origin-recovery.js';
 
 /** Origin screening excludes later comparison recovery, but requires all original source text. */
 export function originSourceScope(read:AttentionRead,token:TokenRef){
   const acquisition=reconstructOriginAcquisition(read,token),sources=read.sources.filter(s=>acquisition.sourceIds.includes(s.id));
   const searched=[1,2].every(i=>read.queries[i-1]?.includes(token.address));
-  const complete=searched&&acquisition.complete&&sources.some(s=>token.chain==='solana'?s.text.includes(token.address):s.text.toLowerCase().includes(token.address.toLowerCase()));
+  const complete=searched&&acquisition.complete&&sources.some(s=>originEntryCitationAllowed(read,s.id,token,'FAIL'));
   return {method:'bounded-origin-sources-v1' as const,complete,sourceIds:acquisition.sourceIds,acquisition};
 }
 
@@ -163,11 +163,32 @@ export function narrativeSourceBound(read:AttentionRead,sourceId:string,token:To
   if(!source)return false;
   const names=(text:string)=>token.chain==='solana'?text.includes(token.address):text.toLowerCase().includes(token.address.toLowerCase());
   if(names(source.text))return true;
+  if(read.metadataLinkMethod==='onchain-metadata-v1'&&read.metadataLinks&&read.metadataUri&&read.discoveryUrls?.includes(read.metadataUri)){
+    const parent=read.sources.find(s=>s.kind==='PAGE'&&(s.url===read.metadataUri||read.originRecovery?.aliases.some(a=>a.originUrl===read.metadataUri&&a.sourceId===s.id&&verifyOriginAlias(a,read.sources,read.rawArtifacts))));
+    if(!parent)return false;
+    try{
+      const metadata=JSON.parse(parent.text);
+      if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))return false;
+      if(source.id===parent.id)return true;
+      const canonical=(value:string)=>normalizeAttentionSearchUrl(value);
+      // Only literal links in this token's acquired metadata, not recursive links
+      // or a shared name. This establishes a claimed narrative association only.
+      return Object.values(metadata).some(value=>typeof value==='string'&&canonical(value)!==null&&canonical(value)===canonical(source.url));
+    }catch{return false;}
+  }
   if(!read.metadataLinks||!read.metadataUri||!source.discoveredFrom)return false;
   const parent=read.sources.find(s=>s.url===source.discoveredFrom&&s.url===read.metadataUri&&s.kind==='PAGE'&&read.discoveryUrls?.includes(s.url)&&/\.json(?:[?]|$)/i.test(s.url)&&names(s.text));
   if(!parent)return false;
   const canonical=(value:string)=>{try{const u=new URL(value);return /^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_]+\/status\/\d+/.test(u.pathname)?`https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`:u.toString();}catch{return null;}};
   return [...parent.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].some(m=>canonical(m[0])===canonical(source.url));
+}
+
+/** Metadata may ground an inadequate-origin entry grade, never a positive origin claim. */
+export function originEntryCitationAllowed(read:AttentionRead,sourceId:string,token:TokenRef,verdict:'PASS'|'FAIL'):boolean{
+  const source=read.sources.find(s=>s.id===sourceId);
+  if(!source)return false;
+  const literal=token.chain==='solana'?source.text.includes(token.address):source.text.toLowerCase().includes(token.address.toLowerCase());
+  return literal||verdict==='FAIL'&&read.metadataLinkMethod==='onchain-metadata-v1'&&narrativeSourceBound(read,sourceId,token);
 }
 
 const citation=z.object({sourceId:z.string().min(1),quote:z.string().min(8).max(1000)}).strict();
@@ -309,7 +330,7 @@ export function qualifiedOriginScreen(read:AttentionRead,review:z.output<typeof 
   return screen;
 }
 export function qualifiedBinaryEntryDecisions(read:AttentionRead,review:z.output<typeof attentionReviewSchema>,token:TokenRef,cutoff:string){
- if(read.entryEvidenceMethod){const d=review.entryDecisions,scope=entryEvidenceScope(read,token,cutoff);if(d?.method!==(read.leadershipPositiveMethod==='source-bound-positive-v1'?'binary-public-support-v4':read.entryExecutionMethod==='entry-first-v2'?'binary-public-support-v3':'binary-public-support-v2')||!d.inspectionComplete||!scope.complete||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds))return null;const literal=(c:{sourceId:string;quote:string})=>read.sources.some(s=>s.id===c.sourceId&&s.text.includes(c.quote));if(![d.originTraceability,d.leadership,...('representations' in d?[d.representations]:[]),...('explainableThesis' in d?[d.explainableThesis]:[])].every(g=>g.citations.every(literal)))return null;if(!d.originTraceability.citations.every(c=>scope.originSourceIds.includes(c.sourceId)&&read.sources.some(s=>s.id===c.sourceId&&(token.chain==='solana'?s.text.includes(token.address):s.text.toLowerCase().includes(token.address.toLowerCase())))))return null;if((d.method==='binary-public-support-v3'||d.method==='binary-public-support-v4')&&!d.explainableThesis.citations.every(c=>narrativeSourceBound(read,c.sourceId,token)))return null;return d;}
+ if(read.entryEvidenceMethod){const d=review.entryDecisions,scope=entryEvidenceScope(read,token,cutoff);if(d?.method!==(read.leadershipPositiveMethod==='source-bound-positive-v1'?'binary-public-support-v4':read.entryExecutionMethod==='entry-first-v2'?'binary-public-support-v3':'binary-public-support-v2')||!d.inspectionComplete||!scope.complete||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds))return null;const literal=(c:{sourceId:string;quote:string})=>read.sources.some(s=>s.id===c.sourceId&&s.text.includes(c.quote));if(![d.originTraceability,d.leadership,...('representations' in d?[d.representations]:[]),...('explainableThesis' in d?[d.explainableThesis]:[])].every(g=>g.citations.every(literal)))return null;if(!d.originTraceability.citations.every(c=>scope.originSourceIds.includes(c.sourceId)&&originEntryCitationAllowed(read,c.sourceId,token,d.originTraceability.verdict)))return null;if((d.method==='binary-public-support-v3'||d.method==='binary-public-support-v4')&&!d.explainableThesis.citations.every(c=>narrativeSourceBound(read,c.sourceId,token)))return null;return d;}
 
  const d=review.entryDecisions,scope=originSourceScope(read,token);
  if(!d?.inspectionComplete||!scope.complete||!scope.sourceIds.length||JSON.stringify(scope)!==JSON.stringify(read.originScope)||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds)||!comparisonResearchComplete(read,cutoff))return null;
@@ -320,7 +341,7 @@ export function qualifiedBinaryEntryDecisions(read:AttentionRead,review:z.output
  return d;
 }
 const featureIds=['A01','A02','A03','A04','A05','A09','A10','A11','A14','A15','A16','A17'];
-export function deriveAttention(read:AttentionRead,proposal:unknown,review:unknown,token:TokenRef,cutoff:string,evidenceIds:string[],growth=false):BaselineAssessment[]{
+export function deriveAttention(read:AttentionRead,proposal:unknown,review:unknown,token:TokenRef,cutoff:string,evidenceIds:string[],growth=false,entryGroups=false):BaselineAssessment[]{
   const output=new Map<string,BaselineAssessment>();
   const routeData=(id:string,data:unknown)=>id==='A14'&&read.comparisonComplete!==undefined?{
     originRelationship:{status:'UNKNOWN',rationale:'Primary-origin relationship has not been independently qualified.',citations:[]},
@@ -447,6 +468,14 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
  if(binary&&output.get('A14')?.quality!=='KNOWN'){const prior=output.get('A14')!,d=binary.leadership;const routes:LeadershipRoutes={...(prior.data as LeadershipRoutes),reviewedPosts:p.data.posts.filter(post=>accepted(post.id)&&['CALL','NEWS','JOKE'].includes(post.role)&&!!cite(post)).map(post=>({sourceId:post.sourceId,quote:post.quote}))};if(binary.method!=='binary-public-support-v4'||validateLeadershipPositive(read,token,cutoff,binary.leadership,routes))set('A14',d.verdict==='PASS',{...(prior.data as object),entryDecisionMethod:binary.method,entryCriterion:'CAN-02',decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Public entry evidence sufficiency; factual origin and measured leadership are separate.'},true);}
   if(read.postSampleScope?.complete&&binary?.inspectionComplete&&entryEvidenceScope(read,token,cutoff).complete&&JSON.stringify(read.postSampleScope)===JSON.stringify(terminalPostScope(read))){
     for(const [id,criterion]of [['A15','ATT-01'],['A18','ATT-02']] as const){const a=output.get(id);if(a&&a.quality!=='KNOWN')a.data={method:'entry-evidence-gate-v1',entryCriterion:criterion,verdict:'FAIL',reason:'Complete bounded research and independent inspection left a declared deleted-post gap; the public sample/growth evidence standard is unmet. Actual counts and growth remain unknown.',postSampleScope:read.postSampleScope,factualAssessment:{quality:a.quality,value:a.projection?.value,data:a.data}};}
+  }
+  // A successfully searched and independently inspected empty sample is poor
+  // entry support, not an unfinished review or a claim of global inactivity.
+  const emptySearchComplete=entryGroups&&posts.length===0&&read.postSampleComplete===true&&windowValid&&read.queries.length>=2&&read.queries.some(q=>q.includes(token.address))&&read.queries.every((_,index)=>{
+    try{const packet=JSON.parse(read.rawArtifacts['attention-search-'+(index+1)]);return Array.isArray(packet.results)&&!packet.error&&(!packet.errors||Array.isArray(packet.errors)&&packet.errors.length===0)&&packet.results.every((item:{url?:unknown})=>{if(typeof item?.url!=='string')return false;const url=new URL(item.url);return url.protocol==='https:'&&!(/^(?:www\.)?(?:x|twitter)\.com$/.test(url.hostname)&&/\/status\/\d+/.test(url.pathname));});}catch{return false;}
+  });
+  if(emptySearchComplete&&binary?.inspectionComplete&&entryEvidenceScope(read,token,cutoff).complete){
+    for(const [id,criterion]of [['A15','ATT-01'],['A18','ATT-02']] as const){const a=output.get(id);if(a&&a.quality!=='KNOWN')a.data={method:'entry-evidence-gate-v1',entryCriterion:criterion,verdict:'FAIL',reason:'Successful exact-token bounded searches and independent source inspection did not establish a current post sample. This fails the entry evidence standard; actual global counts and growth remain unknown.',postSampleScope:{method:'reviewed-empty-post-scope-v1',complete:true,sourceIds:[],queries:read.queries},factualAssessment:{quality:a.quality,value:a.projection?.value,data:a.data}};}
   }
   return [...output.values()];
 }

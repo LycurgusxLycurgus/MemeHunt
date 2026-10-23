@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   bundleSchema,
+  entryGroupFactsSchema,
   liveBundleSchema,
   liveMarketSummarySchema,
   providerStatusSchema,
@@ -81,4 +82,33 @@ test('market summary caps displayed pairs while keeping total retained count sep
   assert.equal(liveMarketSummarySchema.parse(summary).pairs.length, 20);
   assert.throws(() => liveMarketSummarySchema.parse({ ...summary, pairs: Array(21).fill(pair) }));
   assert.throws(() => liveMarketSummarySchema.parse({ ...summary, provider: 'DEX' }));
+});
+
+test('assessment details accept strict optional entry-group facts and the new Shared quality mode', () => {
+  const groupIds = ['ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'] as const;
+  const groups = {
+    method: 'mandatory-entry-groups-v1' as const, token: LIVE_BUNDLE.token, cutoff: LIVE_BUNDLE.cutoff,
+    groups: groupIds.map(checkId => ({
+      checkId, status: 'UNKNOWN' as const, rationale: 'The current criterion is not qualified.', code: 'CURRENT_EVIDENCE_UNAVAILABLE',
+      featureIds: [], evidenceIds: [], availableAt: LIVE_BUNDLE.cutoff, metrics: { measured: null }, limitations: ['The needed source was unavailable.'],
+    })),
+  };
+  assert.deepEqual(entryGroupFactsSchema.parse(groups), groups);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...groups, groups: groups.groups.slice(1) }).success, false);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...groups, groups: [...groups.groups.slice(0, 4), { ...groups.groups[4]!, extra: true }] }).success, false);
+
+  const details = {
+    version: 1 as const, profile: LIVE_BUNDLE.profile, thesis: null, baseline: [], origins: {},
+    stageInputs: { circulatingMarketCapUsd: null, tokenCreatedAt: null }, groups,
+    shared: {
+      method: 'shared-evidence-v1' as const, qualityMode: 'ENTRY_GROUPS_V1' as const,
+      token: LIVE_BUNDLE.token, cutoff: LIVE_BUNDLE.cutoff, witnesses: [], freshness: [], unresolved: [],
+      semanticQualified: false, auditQualified: false, conflicts: [],
+      values: { C03: null, C04: null, C05: null, C06: null },
+    },
+  };
+  const parsed = liveBundleSchema.parse({ ...LIVE_BUNDLE, details });
+  assert.deepEqual(parsed.details, details);
+  const legacy = liveBundleSchema.parse(LIVE_BUNDLE);
+  assert.equal(legacy.details, undefined, 'legacy detailed facts remain optional');
 });

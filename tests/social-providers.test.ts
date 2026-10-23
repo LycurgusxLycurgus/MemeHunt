@@ -70,7 +70,7 @@ async function flushSocialRetryMicrotasks() {
   for (let index = 0; index < 12; index++) await Promise.resolve();
 }
 
-async function exhaustThreeReadAttempts(t: { mock: { timers: { tick: (milliseconds: number) => void } } }, pending: ReturnType<typeof collectSocialSources>) {
+async function exhaustThreeReadAttempts<T>(t: { mock: { timers: { tick: (milliseconds: number) => void } } }, pending: Promise<T>): Promise<T> {
   await flushSocialRetryMicrotasks();
   t.mock.timers.tick(1000);
   await flushSocialRetryMicrotasks();
@@ -253,6 +253,95 @@ test('a completed identity discovery with no official account claim stays distin
   assert.equal(failed.identityComplete, false, 'a failed search cannot be interpreted as an empty official identity scope');
   assert.deepEqual(failed.identitySourceIds, []);
   assert.ok(failed.codes.includes('SOC_SEARCH_HTTP_503'));
+});
+
+test('fresh source-bound social collection emits the literal-association marker while legacy collection stays unmarked', async () => {
+  const completedSearch: typeof fetch = async input => {
+    assert.ok(String(input).startsWith('https://api.search.tinyfish.ai/'));
+    return response({ results: [] });
+  };
+  const freshAttention = attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id], leadershipPositiveMethod: 'source-bound-positive-v1',
+  });
+  const fresh = await collectSocialSources(SOCIAL_TOKEN, freshAttention, 'synthetic-provider-key', completedSearch, () => SOCIAL_AVAILABLE);
+  const legacy = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', completedSearch, () => SOCIAL_AVAILABLE);
+
+  assert.equal(fresh.associationCitationMethod, 'literal-associations-v1');
+  assert.equal(fresh.inspectionRecoveryMethod, 'historical-post-inspection-v1');
+  assert.equal(legacy.associationCitationMethod, undefined, 'legacy collection without the fresh source-bound marker retains its old wire');
+  assert.equal(legacy.inspectionRecoveryMethod, undefined);
+});
+
+test('a retained required HTTP 404 or 410 is a bounded identity gap only after successful batch HTTP; whole-request failures and legacy mode stay incomplete', async t => {
+  const requiredUrl = 'https://project.example/identity-source';
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(SOCIAL_AVAILABLE) });
+  const run = async (status: number, fresh: boolean, batchHttpStatus = 200) => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url !== 'https://api.fetch.tinyfish.ai/') throw new Error(`Unexpected provider: ${url}`);
+      const request = JSON.parse(String(init?.body)) as { urls: string[] };
+      return response({
+        results: request.urls.filter(sourceUrl => sourceUrl !== requiredUrl).map(sourceUrl => ({
+          url: sourceUrl, final_url: sourceUrl, text: 'Public optional profile context.',
+        })),
+        errors: request.urls.filter(sourceUrl => sourceUrl === requiredUrl).map(sourceUrl => ({
+          url: sourceUrl, status, error: status === 404 || status === 410 ? 'page_not_found' : 'upstream unavailable',
+        })),
+      }, request.urls.includes(requiredUrl) ? batchHttpStatus : 200);
+    };
+    const read = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+      discoveryUrls: [requiredUrl], postSampleSourceIds: [POST.id],
+      ...(fresh ? { leadershipPositiveMethod: 'source-bound-positive-v1' as const } : {}),
+    }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+    const scope = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as {
+      selection: Array<{ url: string; required: boolean; status: string }>;
+    };
+    return { read, scope };
+  };
+
+  for (const status of [404, 410] as const) {
+    const { read, scope } = await run(status, true);
+    const code = status === 404 ? 'HTTP_404' : 'HTTP_410';
+    assert.equal(read.screeningConstraintMethod, 'frozen-positive-guards-v1');
+    assert.equal(read.identityComplete, true, 'a terminal public-source gap does not turn the collection into a transport outage');
+    assert.deepEqual(read.identityUnavailableSources, [{ url: requiredUrl, code }]);
+    assert.equal(read.sources.some(source => source.url === requiredUrl), false, 'the unavailable URL does not become fabricated source text');
+    assert.ok(read.codes.includes(`SOC_IDENTITY_${code}`));
+    assert.ok(scope.selection.some(row => row.url === requiredUrl && row.required && row.status === `TERMINAL_${code}`));
+    assert.deepEqual(JSON.parse(read.rawArtifacts['social-http-outcome-1']!), {
+      method: 'social-fetch-http-v1', status: 200, ok: true,
+    }, 'the per-URL gap is bound to a successful outer Fetch response');
+  }
+
+  const { read: failed, scope: failedScope } = await run(500, true);
+  assert.equal(failed.identityComplete, false, 'a 500 remains incomplete acquisition');
+  assert.equal(failed.identityUnavailableSources, undefined, 'a server error cannot be relabeled as a terminal absence');
+  assert.ok(failed.codes.includes('SOC_FETCH_URL_ERROR'));
+  assert.ok(failedScope.selection.some(row => row.url === requiredUrl && row.required && row.status === 'SOC_FETCH_URL_ERROR'));
+
+  const failedBatchPending = run(404, true, 503);
+  const { read: failedBatch, scope: failedBatchScope } = await exhaustThreeReadAttempts(t, failedBatchPending);
+  assert.equal(failedBatch.identityComplete, false, 'a 503 body cannot complete required identity acquisition');
+  assert.equal(failedBatch.identityUnavailableSources, undefined, 'a per-URL 404 inside a failed HTTP response is not a terminal source gap');
+  assert.ok(failedBatch.codes.includes('SOC_FETCH_HTTP_503'));
+  assert.deepEqual(JSON.parse(failedBatch.rawArtifacts['social-http-outcome-1']!), {
+    method: 'social-fetch-http-v1', status: 503, ok: false,
+  });
+  assert.deepEqual(JSON.parse(failedBatch.rawArtifacts['social-fetch-1']!).errors, [
+    { url: requiredUrl, status: 404, error: 'page_not_found' },
+  ], 'the failed HTTP body stays retained as diagnostic evidence');
+  assert.deepEqual(JSON.parse(failedBatch.rawArtifacts['social-collection-fetch-1-error']!), {
+    method: 'social-collection-error-v1', operation: 'FETCH', code: 'SOC_FETCH_HTTP_503', required: true,
+  });
+  assert.ok(failedBatchScope.selection.some(row => row.url === requiredUrl && row.required && row.status === 'SOC_FETCH_HTTP_503'));
+
+  const { read: legacy, scope: legacyScope } = await run(404, false);
+  assert.equal(legacy.screeningConstraintMethod, undefined, 'the new scoped fact is marker-gated');
+  assert.equal(legacy.identityComplete, false, 'legacy reconstruction keeps the earlier missing-required-page behavior');
+  assert.equal(legacy.identityUnavailableSources, undefined);
+  assert.ok(legacyScope.selection.some(row => row.url === requiredUrl && row.required && row.status === 'SOC_FETCH_URL_ERROR'));
 });
 
 test('an unavailable optional metadata URI does not poison retained website and social identity roots', async () => {

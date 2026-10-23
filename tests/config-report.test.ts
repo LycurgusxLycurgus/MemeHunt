@@ -6,8 +6,10 @@ import test from 'node:test';
 import { starterConfig, starterProfile, presetDescription, validateConfig, validateThesis, loadConfig, saveConfig, guideConfig, guideThesis, materializeThesis } from '../src/app/config.js';
 import { cleanText, explainChecks, renderSnapshot } from '../src/app/report.js';
 import { featureMetadata } from '../src/domain/catalog.js';
-import type { AssessmentDetails, EntrySnapshot, EvidenceRecord, FeatureResult } from '../src/domain/contracts.js';
+import type { AssessmentDetails, EntryGroupFacts, EntrySnapshot, EvidenceRecord, FeatureResult } from '../src/domain/contracts.js';
+import { evaluateEntry } from '../src/domain/policy.js';
 import type { BaselineAssessment } from '../src/domain/baseline.js';
+import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 
 const CUTOFF = '2026-09-29T12:00:00.000Z';
 const TOKEN = { chain: 'solana' as const, address: 'FixtureMint' };
@@ -204,6 +206,76 @@ test('explanations preserve baseline causes, refs, and settings origins; rendere
   assert.match(summary, /COLLECTION_UNIMPLEMENTED|collection not implemented/i);
   assert.throws(() => renderSnapshot(snapshot, { check: 'NO-SUCH-CHECK' }), /CHECK_NOT_FOUND/);
   assert.equal(cleanText('  a\n\t b\u0085c  '), 'a b c');
+});
+
+test('entry summary counts every UNKNOWN row while preserving required coverage and the legacy single-row explanation', () => {
+  const snapshot = sampleSnapshot();
+  const excludedRows: Array<{ checkId: string; pillar: 'ONCHAIN' | 'ATTENTION' | 'SOCIAL' | 'SHARED' }> = [
+    { checkId: 'EXE-03', pillar: 'ONCHAIN' },
+    { checkId: 'ADV-01', pillar: 'ONCHAIN' },
+    { checkId: 'ADV-02', pillar: 'ONCHAIN' },
+    { checkId: 'ADV-03', pillar: 'ATTENTION' },
+    { checkId: 'ADV-04', pillar: 'SOCIAL' },
+    { checkId: 'ADV-05', pillar: 'SHARED' },
+  ];
+  snapshot.result.checks.push(...excludedRows.map(({ checkId, pillar }) => ({
+    checkId, checklistKind: 'ENTRY' as const, role: 'ADVISORY' as const, pillar, required: false,
+    status: 'UNKNOWN' as const, reasonCode: 'FEATURE_UNKNOWN', featureRefs: [], evidenceRefs: [],
+  })));
+  const before = { ...snapshot.result, coverage: { ...snapshot.result.coverage } };
+
+  const summary = renderSnapshot(snapshot);
+  assert.match(summary, /Required coverage: 0\/1/);
+  assert.match(summary, /All checklist UNKNOWN rows: 7 \(1 inside current required coverage; 6 outside it\)\. Excluded rows are not completed capabilities\./);
+  assert.match(summary, /Entry checklist:/);
+  assert.doesNotMatch(summary, /ADV-0[1-5]/, 'the ordinary checklist still omits advisory rows');
+  assert.equal(snapshot.result.binary, before.binary);
+  assert.equal(snapshot.result.classification, before.classification);
+  assert.deepEqual(snapshot.result.coverage, before.coverage);
+
+  const expanded = renderSnapshot(snapshot, { checklist: true });
+  assert.match(expanded, /ADV-\* groups are outside the current required manifest and pillar totals\. Missing collectors in these groups remain unfinished capabilities\./);
+  for (const { checkId } of excludedRows.filter(row => row.checkId.startsWith('ADV-'))) assert.match(expanded, new RegExp(checkId));
+
+  const single = renderSnapshot(snapshot, { check: 'ID-01' });
+  assert.match(single, /^ID-01 Token identity: UNKNOWN/);
+  assert.doesNotMatch(single, /All checklist UNKNOWN rows|ADV-\*/,
+    'the concise single-row explanation remains independent of optional checklist totals');
+});
+
+test('new entry-group report shows all required rows and explains current group evidence without the legacy advisory legend', () => {
+  const snapshot = sampleSnapshot();
+  const ids = ['ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'] as const;
+  const groups: EntryGroupFacts = {
+    method: 'mandatory-entry-groups-v1', token: snapshot.token!, cutoff: snapshot.cutoff,
+    groups: ids.map((checkId, index) => ({
+      checkId, status: index === 4 ? 'UNKNOWN' : 'PASS', rationale: `${checkId} evaluates the current declared criterion and bounded source window.`,
+      code: `${checkId}_CURRENT_SCREEN`, featureIds: [`${checkId}-current-feature`], evidenceIds: [`${checkId}-current-evidence`],
+      availableAt: snapshot.cutoff, metrics: index === 0 ? { ownerClusters: 8, topShare: '0.24' } : {},
+      limitations: ['Prior-day history was not observed and is not required.'],
+    })),
+  };
+  snapshot.details!.groups = groups;
+  snapshot.features = completeFixtureEntryFeatures();
+  snapshot.result = evaluateEntry(snapshot.features, illustrativeUncalibratedProfile, snapshot.cutoff,
+    'LEGACY', undefined, false, undefined, undefined, groups);
+
+  const summary = renderSnapshot(snapshot);
+  assert.match(summary, /Required coverage: 32\/33/);
+  for (const id of ids) assert.match(summary, new RegExp(id), `${id} is visible in the ordinary required checklist`);
+  assert.match(summary, /All five entry groups are required in this policy/);
+  assert.match(summary, /ADV-01 evaluates the current declared criterion/);
+  assert.doesNotMatch(summary, /ADV-\* groups are outside the current required manifest/);
+
+  const explanation = renderSnapshot(snapshot, { check: 'ADV-01' });
+  assert.match(explanation, /Current group criterion: ADV-01 evaluates the current declared criterion/);
+  assert.match(explanation, /Current metrics: ownerClusters=8; topShare="0\.24"/);
+  assert.match(explanation, /Limitation: Prior-day history was not observed and is not required/);
+
+  const unknown = renderSnapshot(snapshot, { check: 'ADV-05' });
+  assert.match(unknown, /UNKNOWN \(DATA\)/);
+  assert.match(unknown, /ADV-05_CURRENT_SCREEN: ADV-05 evaluates the current declared criterion/);
+  assert.doesNotMatch(unknown, /FEATURE_ABSENT|unimplemented collector/i);
 });
 
 test('v2 reports origin relationship and measured attention leadership as separate judgments', () => {

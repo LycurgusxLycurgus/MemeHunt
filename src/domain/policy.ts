@@ -1,6 +1,7 @@
 import { Decimal } from 'decimal.js';
-import type { EntryCheckResult, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
-import { entryDefinitions, managementDefinitions, featureMetadata } from './catalog.js';
+import type { EntryCheckResult, EntryGroupFacts, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
+import { entryGroupFactsSchema } from './contracts.js';
+import { entryDefinitionsFor, managementDefinitions, featureMetadata } from './catalog.js';
 import { proposeLeg, reduceLedger } from './ledger.js';
 
 export type Truth = 'TRUE' | 'FALSE' | 'UNKNOWN';
@@ -63,14 +64,18 @@ export function resolveStage(cap: string | null, tokenCreatedAt: string | null, 
   return { capBand, ageBand };
 }
 
-export type EntryEvidenceGates={sample?:false;growth?:false};
-export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false,entryComparison?:boolean,entryGates?:EntryEvidenceGates): EntryResult {
+export type EntryEvidenceGates={sample?:false;growth?:false;originTraceability?:boolean};
+export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false,entryComparison?:boolean,entryGates?:EntryEvidenceGates,groups?:EntryGroupFacts): EntryResult {
+  const mandatoryGroups = groups !== undefined;
+  const parsedGroups = groups === undefined ? undefined : entryGroupFactsSchema.safeParse(groups);
+  const validGroups = parsedGroups?.success && groups?.cutoff === cutoff ? parsedGroups.data : undefined;
   const socialUsable=(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&social&&Date.parse(social.availableAt)<=Date.parse(cutoff)&&Date.parse(social.end)<=Date.parse(cutoff)&&Date.parse(social.start)<Date.parse(social.end)&&Date.parse(cutoff)-Date.parse(social.availableAt)<=900000;
   const gateWitness=(id:string)=>features.some(f=>f.id===id&&f.quality!=='STALE'&&f.evidenceIds.length>0&&Date.parse(f.availableAt)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(f.availableAt)<=900000);
-  const checks: EntryCheckResult[] = entryDefinitions.map(d => {
-    const ruleIds=d.checkId==='CAN-01'&&entryComparison!==undefined?['A09']:d.featureIds;
+  const checks: EntryCheckResult[] = entryDefinitionsFor(mandatoryGroups).map(d => {
+    const ruleIds=d.checkId==='CAN-01'&&entryComparison!==undefined?['A09']:d.checkId==='NAR-02'&&entryGates?.originTraceability!==undefined?['A03']:d.featureIds;
     let status: EntryCheckResult['status'] = boolRule(features, ruleIds, cutoff);
     if(d.checkId==='CAN-01'&&entryComparison!==undefined&&lookup(features,'A09',cutoff)?.value!==entryComparison)status='UNKNOWN';
+    if(d.checkId==='NAR-02'&&entryGates?.originTraceability!==undefined&&lookup(features,'A03',cutoff)?.value!==entryGates.originTraceability)status='UNKNOWN';
     if (d.checkId === 'CTX-01') status = !profile.sizeUsd || !profile.horizonSeconds || ['maxTransferFeeBps','maxDirectControlShare','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps','maxRemovableLiquidityShare'].some(k => profile.risk[k] === undefined) ? 'UNKNOWN' : status;
     if (d.checkId === 'CAP-01' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false)) status = 'UNKNOWN';
     if (d.checkId === 'SEC-04') status = numericLimit(features, 'O07', profile.risk.maxTransferFeeBps, 'bps', cutoff);
@@ -97,11 +102,14 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
     }
     if(attentionPolicy==='QUALIFIED_V4'&&d.checkId==='SOC-03'&&status==='UNKNOWN'&&social?.participationReview){const judgment=social.participationReview;status=!socialUsable||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';}
     if (d.checkId === 'ATT-02') { const measuredGrowth=boolRule(features,['A18'],cutoff), a=measuredGrowth==='UNKNOWN'&&entryGates?.growth===false&&gateWitness('A18')?'FAIL':measuredGrowth, s = boolRule(features,['S10'],cutoff); const reviewedCommunity=attentionPolicy==='QUALIFIED_V4'&&socialUsable?social?.communityBreadthReview:undefined;const community=s==='UNKNOWN'&&reviewedCommunity&&reviewedCommunity.verdict!=='UNRESOLVED'?(reviewedCommunity.verdict==='SUPPORTED'?'PASS':'FAIL'):s;status = a === 'PASS' || community === 'PASS' ? 'PASS' : a === 'FAIL' && community === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
+    const group = validGroups?.groups.find(item => item.checkId === d.checkId);
+    if (mandatoryGroups && d.checkId.startsWith('ADV-')) status = group?.status ?? 'UNKNOWN';
     if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL' && !(shared&&d.checkId.startsWith('DAT-')||attentionPolicy!=='LEGACY'&&d.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL')) status = 'UNKNOWN';
     if (d.role === 'ADVISORY' && d.featureIds.length === 0) status = 'UNKNOWN';
-    const evidenceRefs = [...new Set(ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
-    const reasonCode = d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
-    return { checkId: d.checkId, checklistKind: 'ENTRY' as const, role: d.role, pillar: d.pillar, required: d.required, status, reasonCode, featureRefs: ruleIds, evidenceRefs };
+    const reasonCode = group ? group.code : mandatoryGroups && d.checkId.startsWith('ADV-') ? 'ENTRY_GROUP_FACTS_INVALID' : d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
+    const featureRefs = group ? group.featureIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : ruleIds;
+    const evidenceRefs = group ? group.evidenceIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : [...new Set(ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
+    return { checkId: d.checkId, checklistKind: 'ENTRY' as const, role: d.role, pillar: d.pillar, required: d.required, status, reasonCode, featureRefs, evidenceRefs };
   }).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const required = checks.filter(c => c.required && c.status !== 'NOT_APPLICABLE');
   const has = (role: EntryCheckResult['role'], status: EntryCheckResult['status']) => checks.some(c => c.required && c.role === role && c.status === status);

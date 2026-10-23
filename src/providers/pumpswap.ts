@@ -1,8 +1,8 @@
 import { Decimal } from 'decimal.js';
 import BN from 'bn.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, type AccountInfo } from '@solana/web3.js';
-import { AccountLayout, MintLayout, getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
+import { PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, SystemProgram, type AccountInfo } from '@solana/web3.js';
+import { AccountLayout, MintLayout, getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PUMP_AMM_SDK, OFFLINE_PUMP_AMM_PROGRAM, PUMP_AMM_PROGRAM_ID, PUMP_FEE_PROGRAM_ID, GLOBAL_CONFIG_PDA, PUMP_AMM_FEE_CONFIG_PDA, pumpPoolAuthorityPda, poolPda, lpMintPda, buyQuoteInput, buyBaseInput, sellBaseInput, type SwapSolanaState } from '@pump-fun/pump-swap-sdk';
 import type { ControlFacts, HolderFacts, VenueFacts, VenueInspection } from '../domain/baseline.js';
 import type { LiveBundle, Profile, TokenRef } from '../domain/contracts.js';
@@ -23,14 +23,73 @@ function vault(info:AccountInfo<Buffer>,program:PublicKey,mint:PublicKey,pool:Pu
   if(!a.mint.equals(mint)||!a.owner.equals(pool)||a.state!==1||a.delegateOption!==0||a.closeAuthorityOption!==0)throw new Error('PUMP_ACCOUNT_BINDING');return a;
 }
 
+type ExistingWsolProof={method:'existing-wsol-roundtrip-v1';user:string;sourceId:string;sourceIndex:number};
+function cleanNativeAccount(info:AccountInfo<Buffer>|null,user:PublicKey){
+  if(!info||info.executable||!info.owner.equals(TOKEN_PROGRAM_ID)||info.data.length!==165)return null;
+  const a=AccountLayout.decode(info.data);
+  if(!a.mint.equals(NATIVE_MINT)||!a.owner.equals(user)||a.state!==1||a.isNativeOption!==1||a.delegateOption!==0||a.closeAuthorityOption!==0||BigInt(info.lamports)!==a.isNative+a.amount)return null;
+  return a;
+}
+
+/** Existing native funds are refunded by the SDK buy close, never trade proceeds. */
+function verifyExistingWsol(raw:Record<string,string>,token:TokenRef,proof:ExistingWsolProof,calc:{pool:string;quoteAtomic:string;acquiredAtomic:string;actualEntryAtomic:string;slot:number}){
+ try{
+ const fail=()=>{throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');};
+ if(proof.method!=='existing-wsol-roundtrip-v1'||!['pump-simulation-user-accounts','pump-simulation-fallback-user-accounts'].includes(proof.sourceId)||!Number.isSafeInteger(proof.sourceIndex)||proof.sourceIndex<0||proof.sourceIndex%2!==1)return fail();
+ const user=new PublicKey(proof.user),mint=new PublicKey(token.address),quote=getAssociatedTokenAddressSync(NATIVE_MINT,user,true,TOKEN_PROGRAM_ID);
+ const source=JSON.parse(raw[proof.sourceId]),sourceValue=source.result?.value?.[proof.sourceIndex],native=sourceValue?cleanNativeAccount(account(sourceValue),user):null;
+ const request=JSON.parse(raw['pump-simulation-request']),tx=VersionedTransaction.deserialize(Buffer.from(request.wireBase64,'base64')),keys=tx.message.staticAccountKeys.map(k=>k.toBase58()),sim=JSON.parse(raw['pump-roundtrip-simulation']).result,v=sim?.value;
+ if(!native||source.error||!Number.isSafeInteger(source.result?.context?.slot)||token.chain!=='solana'||request.method!=='pump-unsigned-simulation-v1'||request.token!==token.address||request.pool!==calc.pool||JSON.stringify(request.existingWsol)!==JSON.stringify(proof)||tx.message.addressTableLookups.length||tx.message.header.numRequiredSignatures!==1||tx.signatures.some(s=>s.some(b=>b!==0))||keys[0]!==proof.user||new Set(keys).size!==keys.length||!v||v.err!==null||!Number.isSafeInteger(sim.context?.slot)||sim.context.slot<source.result.context.slot||sim.context.slot<request.minContextSlot)return fail();
+ const q=keys.indexOf(quote.toBase58()),integer=(x:unknown):x is number=>typeof x==='number'&&Number.isSafeInteger(x)&&x>=0;
+ if(q<0||!Array.isArray(v.preBalances)||!Array.isArray(v.postBalances)||v.preBalances.length!==keys.length||v.postBalances.length!==keys.length||!v.preBalances.every(integer)||!v.postBalances.every(integer)||!integer(v.fee)||!Array.isArray(v.preTokenBalances)||!Array.isArray(v.postTokenBalances)||!Array.isArray(v.accounts)||v.accounts.length!==3||v.loadedAddresses?.writable?.length!==0||v.loadedAddresses?.readonly?.length!==0)return fail();
+ const preQuote=v.preTokenBalances.filter((a:any)=>a.accountIndex===q);
+ if(preQuote.length!==1||preQuote[0].mint!==NATIVE_MINT.toBase58()||preQuote[0].owner!==proof.user||preQuote[0].programId!==TOKEN_PROGRAM_ID.toBase58()||preQuote[0].uiTokenAmount?.decimals!==9||!/^(0|[1-9]\d{0,19})$/.test(preQuote[0].uiTokenAmount?.amount??'')||BigInt(v.preBalances[q])!==native.isNative+BigInt(preQuote[0].uiTokenAmount.amount)||v.postBalances[q]!==0||v.postTokenBalances.some((a:any)=>a.accountIndex===q)||BigInt(v.preBalances[0])<BigInt(calc.quoteAtomic)+30_000_000n)return fail();
+ if(v.accounts[2]!==null){const closed=account(v.accounts[2]);if(closed.lamports||closed.executable||!closed.owner.equals(PublicKey.default)||closed.data.length)return fail();}
+ const after=account(v.accounts[0]);if(after.executable||!after.owner.equals(PublicKey.default)||after.lamports!==v.postBalances[0])return fail();
+ const instructions=tx.message.compiledInstructions,byName=(name:string)=>Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix=>ix.name===name)!.discriminator);
+ const swaps=(name:string)=>instructions.flatMap((ix,i)=>keys[ix.programIdIndex]===PUMP_AMM_PROGRAM_ID.toBase58()&&Buffer.from(ix.data).subarray(0,8).equals(byName(name))?[{ix,i}]:[]),buys=swaps('buy'),sells=swaps('sell');
+ if(buys.length!==1||sells.length!==1)return fail();
+ const buy=buys[0],sell=sells[0],buyData=Buffer.from(buy.ix.data),sellData=Buffer.from(sell.ix.data);
+ if(buyData.length<24||sellData.length<24||buyData.readBigUInt64LE(8).toString()!==calc.acquiredAtomic||buyData.readBigUInt64LE(16).toString()!==calc.actualEntryAtomic||sellData.readBigUInt64LE(8).toString()!==calc.acquiredAtomic||sellData.readBigUInt64LE(16)!==0n||keys[buy.ix.accountKeyIndexes[0]]!==calc.pool||keys[sell.ix.accountKeyIndexes[0]]!==calc.pool||keys[buy.ix.accountKeyIndexes[3]]!==mint.toBase58())return fail();
+ const baseProgram=keys[buy.ix.accountKeyIndexes[11]];
+ if(![TOKEN_PROGRAM_ID.toBase58(),TOKEN_2022_PROGRAM_ID.toBase58()].includes(baseProgram))return fail();
+ const base=getAssociatedTokenAddressSync(mint,user,true,new PublicKey(baseProgram));
+ for(const {ix} of [buy,sell])if(keys[ix.accountKeyIndexes[1]]!==proof.user||keys[ix.accountKeyIndexes[3]]!==token.address||keys[ix.accountKeyIndexes[4]]!==NATIVE_MINT.toBase58()||keys[ix.accountKeyIndexes[5]]!==base.toBase58()||keys[ix.accountKeyIndexes[6]]!==quote.toBase58()||keys[ix.accountKeyIndexes[11]]!==baseProgram||keys[ix.accountKeyIndexes[12]]!==TOKEN_PROGRAM_ID.toBase58()||keys[ix.accountKeyIndexes[9]]===proof.user||keys[ix.accountKeyIndexes.at(-2)!]===proof.user)return fail();
+ const capture=JSON.parse(raw['pump-mints-vaults']);
+ if(capture.error||!Number.isSafeInteger(calc.slot)||capture.result?.context?.slot!==calc.slot||!Array.isArray(capture.result?.value))return fail();
+ const capturedMint=account(capture.result.value[3]);
+ if(capturedMint.executable||capturedMint.owner.toBase58()!==baseProgram)return fail();
+ const decimals=MintLayout.decode(capturedMint.data).decimals,baseIndex=keys.indexOf(base.toBase58());
+ const tokenBalances=(entries:any[])=>{const map=new Map<number,{mint:string;owner:string;programId:string;amount:bigint;decimals:number}>();for(const e of entries){if(!obj(e)||!integer(e.accountIndex)||e.accountIndex>=keys.length||map.has(e.accountIndex)||typeof e.mint!=='string'||typeof e.owner!=='string'||typeof e.programId!=='string'||!obj(e.uiTokenAmount)||typeof e.uiTokenAmount.amount!=='string'||!/^(0|[1-9]\d{0,19})$/.test(e.uiTokenAmount.amount)||BigInt(e.uiTokenAmount.amount)>18446744073709551615n||!integer(e.uiTokenAmount.decimals)||e.uiTokenAmount.decimals>255)return fail();map.set(e.accountIndex,{mint:e.mint,owner:e.owner,programId:e.programId,amount:BigInt(e.uiTokenAmount.amount),decimals:e.uiTokenAmount.decimals});}return map;};
+ const beforeTokens=tokenBalances(v.preTokenBalances),afterTokens=tokenBalances(v.postTokenBalances);
+ if(baseIndex<0||!v.accounts[1])return fail();
+ const afterBase=account(v.accounts[1]);
+ if(afterBase.executable||afterBase.owner.toBase58()!==baseProgram||afterBase.lamports!==v.postBalances[baseIndex])return fail();
+ const afterBaseToken=AccountLayout.decode(afterBase.data),beforeBase=beforeTokens.get(baseIndex),afterBaseBalance=afterTokens.get(baseIndex);
+ const bound=(t:typeof beforeBase)=>!!t&&t.mint===token.address&&t.owner===proof.user&&t.programId===baseProgram&&t.decimals===decimals;
+ if(!afterBaseToken.mint.equals(mint)||!afterBaseToken.owner.equals(user)||afterBaseToken.state!==1||!bound(afterBaseBalance)||afterBaseBalance!.amount!==afterBaseToken.amount||v.preBalances[baseIndex]>0&&(!bound(beforeBase)||beforeBase!.amount!==afterBaseBalance!.amount)||v.preBalances[baseIndex]===0&&(beforeBase!==undefined||afterBaseBalance!.amount!==0n))return fail();
+ const closes=instructions.flatMap((ix,i)=>keys[ix.programIdIndex]===TOKEN_PROGRAM_ID.toBase58()&&ix.data.length===1&&ix.data[0]===9&&keys[ix.accountKeyIndexes[0]]===quote.toBase58()&&keys[ix.accountKeyIndexes[1]]===proof.user&&keys[ix.accountKeyIndexes[2]]===proof.user?[i]:[]);
+ const recreated=instructions.some((ix,i)=>i>closes[0]&&i<sell.i&&keys[ix.programIdIndex]===ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()&&ix.data.length===1&&ix.data[0]===1&&keys[ix.accountKeyIndexes[0]]===proof.user&&keys[ix.accountKeyIndexes[1]]===quote.toBase58()&&keys[ix.accountKeyIndexes[2]]===proof.user&&keys[ix.accountKeyIndexes[3]]===NATIVE_MINT.toBase58()&&keys[ix.accountKeyIndexes[5]]===TOKEN_PROGRAM_ID.toBase58());
+ const funding=instructions.filter(ix=>keys[ix.programIdIndex]===SystemProgram.programId.toBase58()&&keys[ix.accountKeyIndexes[0]]===proof.user&&keys[ix.accountKeyIndexes[1]]===quote.toBase58()&&ix.data.length===12&&Buffer.from(ix.data).readUInt32LE(0)===2);
+ if(closes.length!==2||!(buy.i<closes[0]&&closes[0]<sell.i&&sell.i<closes[1])||!recreated||funding.length!==1||Buffer.from(funding[0].data).readBigUInt64LE(4).toString()!==calc.actualEntryAtomic)return fail();
+ const stack:string[]=[],events:Array<{name:string;data:Record<string,unknown>}>=[];
+ for(const line of v.logs??[]){if(typeof line!=='string')return fail();const invoke=/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[\d+\]$/.exec(line),done=/^Program ([1-9A-HJ-NP-Za-km-z]+) (?:success|failed:)/.exec(line);if(invoke)stack.push(invoke[1]);else if(done){if(stack.pop()!==done[1])return fail();}else if(stack.at(-1)===PUMP_AMM_PROGRAM_ID.toBase58()&&line.startsWith('Program data: ')){const e=OFFLINE_PUMP_AMM_PROGRAM.coder.events.decode(line.slice(14));if(e)events.push({name:e.name.toLowerCase(),data:e.data});}}
+ const match=(name:string,field:string)=>events.filter(e=>e.name===name&&String(e.data.user)===proof.user&&String(e.data.pool)===calc.pool&&String(e.data[field])===calc.acquiredAtomic),be=match('buyevent','baseAmountOut'),se=match('sellevent','baseAmountIn');
+ if(stack.length||be.length!==1||se.length!==1)return fail();const spent=String(be[0].data.userQuoteAmountIn),received=String(se[0].data.userQuoteAmountOut);
+ if(!/^(0|[1-9]\d*)$/.test(spent)||!/^(0|[1-9]\d*)$/.test(received)||BigInt(spent)>BigInt(calc.actualEntryAtomic))return fail();
+ const refund=BigInt(v.preBalances[q]),setup=BigInt(v.preBalances[0])-BigInt(v.postBalances[0])-BigInt(spent)+BigInt(received)-BigInt(v.fee)+refund;
+ if(setup<0n||v.preBalances[baseIndex]===0&&setup<BigInt(v.postBalances[baseIndex]))return fail();return {refund:refund.toString(),setup:setup.toString(),fee:String(v.fee)};
+ }catch{throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');}
+}
+
 /** Only read RPCs and unsigned simulation. No signer or send/broadcast method exists here. */
 /** Full runs recapture all coupled state once after a program-confirmed slippage failure. */
 export async function inspectPumpSwap(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s}),allowSlippageRefresh=false):Promise<PumpSwapRead>{
- const first=await inspectPumpSwapOnce(token,profile,controls,holders,minSlot,url,fetcher,now,signal,recovery,wait);
+ const first=await inspectPumpSwapOnce(token,profile,controls,holders,minSlot,url,fetcher,now,signal,recovery,wait,allowSlippageRefresh);
  if(!allowSlippageRefresh||signal?.aborted||first.inspection.errors.simulation!=='PUMP_SIMULATION_SLIPPAGE')return first;
  let floor:number;
  try{floor=verifyPumpSlippage(first.rawArtifacts,token).slot;}catch{return first;}
- const second=await inspectPumpSwapOnce(token,profile,controls,holders,Math.max(minSlot,floor),url,fetcher,now,signal,recovery,wait);
+ const second=await inspectPumpSwapOnce(token,profile,controls,holders,Math.max(minSlot,floor),url,fetcher,now,signal,recovery,wait,allowSlippageRefresh);
  const id='pump-slippage-refresh';
  second.rawArtifacts[id]=JSON.stringify({method:'pump-slippage-refresh-v1',token,minSlot,nextMinSlot:Math.max(minSlot,floor),first:{rawArtifacts:Object.fromEntries(['pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'].map(id=>[id,first.rawArtifacts[id]])),retrievedAt:Object.fromEntries(['pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'].map(id=>[id,first.retrievedAt[id]]))}});
  second.retrievedAt[id]=now();second.inspection.evidenceIds.push(id);if(second.venue)second.venue.evidenceIds.push(id);
@@ -74,13 +133,37 @@ function verifyPumpBudgetQuote(raw:Record<string,string>,token:TokenRef,profile:
 /** Recovery provenance is admitted independently from the ordinary venue receipt. */
 export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
  const raw=bundle.rawArtifacts,marker=raw['pump-slippage-refresh'],request=raw['pump-simulation-request'];
+ const nativeDecision=bundle.details?.baseline.some(a=>['O15','O16'].includes(a.id)&&(a.data as {setupMethod?:string}|null)?.setupMethod==='existing-wsol-roundtrip-v1');
+ if(nativeDecision&&(!request||!raw['pump-quote-calculation']||!raw['pump-roundtrip-simulation']))throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
  const negative=bundle.features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===false)||bundle.details?.baseline.some(a=>['O12','O16'].includes(a.id)&&(a.data as {method?:string}|null)?.method==='pump-budget-rejection-v1');
  if(!marker&&!request&&!raw['pump-quote-calculation']&&!negative)return;
  const calc=raw['pump-quote-calculation']?JSON.parse(raw['pump-quote-calculation']):null;
+ const existing=calc?.simulationProof?.existingWsol;
+ const costsClaimed=bundle.features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===true)||bundle.details?.baseline.some(a=>['O15','O16'].includes(a.id)&&a.quality==='KNOWN'&&(a.data as {costsReconciled?:boolean}|null)?.costsReconciled===true);
+ const successfulSimulation=raw['pump-roundtrip-simulation']&&JSON.parse(raw['pump-roundtrip-simulation']).result?.value?.err===null;
+ if((nativeDecision||costsClaimed&&successfulSimulation&&request&&JSON.parse(request).existingWsol)&&!existing)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
+ if(existing){
+  const verified=verifyExistingWsol(raw,bundle.token,existing,calc);
+  for(const id of [existing.sourceId,'pump-simulation-request','pump-roundtrip-simulation','pump-quote-calculation'])if(!bundle.evidence.some(e=>e.id===id&&e.sourceId===(id==='pump-simulation-request'||id==='pump-quote-calculation'?'pumpswap-derived':'pumpswap-direct')))throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
+  if(calc.simulationProof.initialQuoteRefundLamports!==verified.refund||calc.simulationProof.setupLamports!==verified.setup||calc.simulationProof.feeLamports!==verified.fee)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
+  const fee=(leg:string)=>{const id=raw[`pump-${leg}-network-fee-retry`]?`pump-${leg}-network-fee-retry`:`pump-${leg}-network-fee`,r=JSON.parse(raw[id]);if(r.error||!Number.isSafeInteger(r.result?.value)||r.result.value<0)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');return new Decimal(r.result.value);};
+  const nativeUsd=parseDexPairs(JSON.parse(raw['pump-sol-usd']),'solana',NATIVE_MINT.toBase58()).pairs.find(p=>p.baseAddress===NATIVE_MINT.toBase58()&&p.quoteAddress===USDC&&p.priceUsd!==null)?.priceUsd;
+  if(!nativeUsd||!bundle.profile.sizeUsd)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
+  const total=new Decimal(bundle.profile.sizeUsd).add(fee('entry').add(verified.setup).div(1e9).mul(nativeUsd));
+  const exit=new Decimal(calc.exitAtomic).add(new Decimal(calc.quoteAtomic).sub(calc.actualEntryAtomic)).div(1e9).mul(nativeUsd).sub(fee('exit').div(1e9).mul(nativeUsd));
+  for(const id of ['O15','O16']){const a=bundle.details?.baseline.find(a=>a.id===id),d=a?.data as {costsReconciled?:boolean;totalEntryCostUsd?:string;netExitUsd?:string}|undefined;if(!a||a.quality!=='KNOWN'||!d?.costsReconciled||d.totalEntryCostUsd!==total.toFixed()||d.netExitUsd!==exit.toFixed())throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');}
+ }
  if(!marker&&!request&&!calc?.executionFailure&&!negative)return;
  const evidence=(id:string)=>{const e=bundle.evidence.find(e=>e.id===id);if(!e||!Number.isFinite(Date.parse(e.retrievedAt))||Date.parse(e.retrievedAt)>Date.parse(bundle.cutoff))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return e;};
  const derived=(id:string)=>{const e=evidence(id);if(e.sourceId!=='pumpswap-derived'||e.accessMode!=='LOCAL_DERIVED'||e.sourceType!=='CALCULATION')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return e;};
  if(request){const q=JSON.parse(request),calc=JSON.parse(raw['pump-quote-calculation']??'null');derived('pump-simulation-request');if(q.method!=='pump-unsigned-simulation-v1'||q.token!==bundle.token.address||!calc||q.pool!==calc.pool||q.minContextSlot!==calc.slot)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');if(calc.simulationProof&&calc.simulationProof.wireBase64!==q.wireBase64)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+ if(!existing&&costsClaimed&&successfulSimulation&&request){
+  try{const simulation=JSON.parse(raw['pump-roundtrip-simulation']).result?.value,wire=VersionedTransaction.deserialize(Buffer.from(JSON.parse(request).wireBase64,'base64'));
+   if(!wire.message.staticAccountKeys.length)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+   const quote=getAssociatedTokenAddressSync(NATIVE_MINT,wire.message.staticAccountKeys[0],true,TOKEN_PROGRAM_ID),q=wire.message.staticAccountKeys.findIndex(k=>k.equals(quote));
+   if(simulation?.preBalances?.[q]>0)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
+  }catch(e){if(e instanceof Error&&e.message==='PUMP_EXISTING_WSOL_PROOF_INVALID')throw e;throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+ }
  const marked=calc?.executionFailure;
  if(marked||negative){
   if(!marker||!request||marked?.method!=='pump-budget-rejection-v1'||marked.code!=='PUMP_SIMULATION_SLIPPAGE')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
@@ -101,7 +184,7 @@ export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
  for(const id of ['pump-pool-config','pump-mints-vaults']){if(!raw[id])continue;const e=evidence(id),r=JSON.parse(raw[id]);if(r.error||!Number.isSafeInteger(r.result?.context?.slot)||r.result.context.slot<receipt.nextMinSlot||Date.parse(e.retrievedAt)<times[2])throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
 }
 
-async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s})):Promise<PumpSwapRead>{
+async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:ControlFacts|undefined,holders:HolderFacts|undefined,minSlot:number,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,recovery?:DexRecoveryOptions,wait:(ms:number,signal?:AbortSignal)=>Promise<void>=(ms,s)=>delay(ms,undefined,{signal:s}),allowExistingWsol=false):Promise<PumpSwapRead>{
   const mint=new PublicKey(token.address),poolKey=poolPda(0,pumpPoolAuthorityPda(mint),mint,NATIVE_MINT);
   const rawArtifacts:Record<string,string>={},retrievedAt:Record<string,string>={},errors:Record<string,string>={};
   let solMarket:DexRead|undefined;
@@ -185,12 +268,14 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
       const rankedOwners=[...(holders?.accounts??[])].filter(a=>BigInt(a.amount)>0n).sort((a,b)=>BigInt(a.amount)>BigInt(b.amount)?-1:BigInt(a.amount)<BigInt(b.amount)?1:0);
       let candidates=[...new Set([...rankedOwners.map(a=>a.owner).slice(0,20),pool.coinCreator.toBase58()])].filter(a=>a!==PublicKey.default.toBase58()).slice(0,21).map(a=>new PublicKey(a));
       let payerInfos=candidates.length?await multiple('pump-simulation-payers',candidates):[];
+      let nativeFallback:{user:PublicKey;base:AccountInfo<Buffer>|null;quote:AccountInfo<Buffer>;proof:ExistingWsolProof}|undefined;
       const funded=(a:AccountInfo<Buffer>|null)=>!!a&&!a.executable&&a.owner.equals(PublicKey.default)&&BigInt(a.lamports)>=BigInt(quote.toString())+30_000_000n;
       const choose=async(id:string)=>{
         const indices=payerInfos.flatMap((a,i)=>funded(a)?[i]:[]);
         if(!indices.length)return undefined;
         const keys=indices.flatMap(i=>[getAssociatedTokenAddressSync(mint,candidates[i],true,baseInfo.owner),getAssociatedTokenAddressSync(NATIVE_MINT,candidates[i],true,TOKEN_PROGRAM_ID)]);
         const infos=await multiple(id,keys);
+        if(allowExistingWsol&&!nativeFallback){const i=indices.findIndex((index,i)=>cleanNativeAccount(infos[i*2+1],candidates[index])!==null);if(i>=0)nativeFallback={user:candidates[indices[i]],base:infos[i*2],quote:infos[i*2+1]!,proof:{method:'existing-wsol-roundtrip-v1',user:candidates[indices[i]].toBase58(),sourceId:id,sourceIndex:i*2+1}};}
         let selected=indices.findIndex((_,i)=>infos[i*2]!==null&&infos[i*2+1]===null);
         if(selected<0)selected=indices.findIndex((_,i)=>infos[i*2+1]===null);
         if(selected<0)return undefined;
@@ -203,16 +288,18 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
         candidates=[...globalConfig.protocolFeeRecipients,globalConfig.admin].filter(k=>!k.equals(PublicKey.default)&&!seen.has(k.toBase58())&&!!seen.add(k.toBase58())).slice(0,8);
         payerInfos=candidates.length?await multiple('pump-simulation-fallback-payers',candidates):[];selection=await choose('pump-simulation-fallback-user-accounts');
       }
-      if(!selection)throw new Error('PUMP_SIMULATION_PAYER_UNAVAILABLE');const index=selection.index,user=candidates[index];
+      if(!selection&&!nativeFallback)throw new Error('PUMP_SIMULATION_PAYER_UNAVAILABLE');const user=selection?candidates[selection.index]:nativeFallback!.user;
       const baseAta=getAssociatedTokenAddressSync(mint,user,true,baseInfo.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true,TOKEN_PROGRAM_ID);
-      const userBaseAccountInfo=selection.base,userQuoteAccountInfo=selection.quote;
+      const userBaseAccountInfo=selection?selection.base:nativeFallback!.base,userQuoteAccountInfo=selection?selection.quote:nativeFallback!.quote,existingWsol=selection?undefined:nativeFallback!.proof;
       if(userBaseAccountInfo){owned(userBaseAccountInfo,baseInfo.owner);const a=AccountLayout.decode(userBaseAccountInfo.data);if(!a.mint.equals(mint)||!a.owner.equals(user)||a.state!==1)throw new Error('PUMP_SIMULATION_SETUP_UNSUPPORTED');}
-      if(userQuoteAccountInfo)throw new Error('PUMP_SIMULATION_EXISTING_WSOL_UNSUPPORTED');
+      if(userQuoteAccountInfo&&!existingWsol)throw new Error('PUMP_SIMULATION_EXISTING_WSOL_UNSUPPORTED');
       // The offline SDK randomly selects fee recipients for each instruction builder.
       // Pin one observed eligible recipient for both legs to avoid redundant account keys.
-      const simulationConfig={...globalConfig,protocolFeeRecipients:globalConfig.protocolFeeRecipients.map(()=>globalConfig.protocolFeeRecipients[0]),buybackFeeRecipients:globalConfig.buybackFeeRecipients.map(()=>globalConfig.buybackFeeRecipients[0])};
+      const recipient=(keys:PublicKey[])=>{const key=allowExistingWsol?keys.find(k=>!k.equals(user)&&!k.equals(PublicKey.default)):keys[0];if(!key)throw Error('PUMP_SIMULATION_SETUP_UNSUPPORTED');return key;};
+      const protocolRecipient=recipient(globalConfig.protocolFeeRecipients),buybackRecipient=recipient(globalConfig.buybackFeeRecipients);
+      const simulationConfig={...globalConfig,protocolFeeRecipients:globalConfig.protocolFeeRecipients.map(()=>protocolRecipient),buybackFeeRecipients:globalConfig.buybackFeeRecipients.map(()=>buybackRecipient)};
       const state:SwapSolanaState={globalConfig:simulationConfig,feeConfig,poolKey,poolAccountInfo:currentPoolInfo,pool,poolBaseAmount:stateArgs.baseReserve,poolQuoteAmount:stateArgs.quoteReserve,baseTokenProgram:baseInfo.owner,quoteTokenProgram:TOKEN_PROGRAM_ID,baseMint:mint,baseMintAccount,user,userBaseTokenAccount:baseAta,userQuoteTokenAccount:quoteAta,userBaseAccountInfo,userQuoteAccountInfo};
-      const buys=await PUMP_AMM_SDK.buyInstructions(state,buy.base,actualBuy.uiQuote),sells=await PUMP_AMM_SDK.sellInstructions(state,buy.base,new BN(0));
+      const buys=await PUMP_AMM_SDK.buyInstructions(state,buy.base,actualBuy.uiQuote),sells=await PUMP_AMM_SDK.sellInstructions(existingWsol?{...state,userQuoteAccountInfo:null}:state,buy.base,new BN(0));
       let blockhash='',blockSlot=stateSlot;
       const refreshBlock=async(id:string)=>{const block=await read(id,'getLatestBlockhash',[{commitment:'finalized',minContextSlot:stateSlot}]);if(!obj(block)||!obj(block.value)||typeof block.value.blockhash!=='string')throw new Error('RPC_SHAPE');blockhash=block.value.blockhash;if(obj(block.context)&&Number.isSafeInteger(block.context.slot))blockSlot=Math.max(stateSlot,Number(block.context.slot));};
       await refreshBlock('pump-blockhash');
@@ -240,7 +327,7 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
       venue.exitExternalCostUsd=exitFee.div(1e9).mul(price).toFixed();
       const combined=[ComputeBudgetProgram.setComputeUnitLimit({units:1_400_000}),...buys,...sells],tx=new VersionedTransaction(message(combined));
       const wire=Buffer.from(tx.serialize());if(wire.length>1232)throw new Error('PUMP_SIMULATION_TRANSACTION_TOO_LARGE');
-      rawArtifacts['pump-simulation-request']=JSON.stringify({method:'pump-unsigned-simulation-v1',token:token.address,pool:poolKey.toBase58(),wireBase64:wire.toString('base64'),minContextSlot:stateSlot});retrievedAt['pump-simulation-request']=now();inspection.evidenceIds.push('pump-simulation-request');
+      rawArtifacts['pump-simulation-request']=JSON.stringify({method:'pump-unsigned-simulation-v1',token:token.address,pool:poolKey.toBase58(),wireBase64:wire.toString('base64'),minContextSlot:stateSlot,...(existingWsol?{existingWsol}:{})});retrievedAt['pump-simulation-request']=now();inspection.evidenceIds.push('pump-simulation-request');
       const sim=await read('pump-roundtrip-simulation','simulateTransaction',[wire.toString('base64'),{encoding:'base64',sigVerify:false,replaceRecentBlockhash:true,commitment:'finalized',minContextSlot:stateSlot,accounts:{encoding:'base64',addresses:[user.toBase58(),baseAta.toBase58(),quoteAta.toBase58()]}}]);
       if(!obj(sim)||!obj(sim.context)||!Number.isSafeInteger(sim.context.slot)||Number(sim.context.slot)<stateSlot)throw new Error('PUMP_SIMULATION_STATE_CHANGED');
       if(!obj(sim.value)||sim.value.err!==null){const v=obj(sim.value)?sim.value:null,err=v&&obj(v.err)?v.err:null,instruction=err?.InstructionError;const slippage=Array.isArray(instruction)&&obj(instruction[1])&&instruction[1].Custom===6004&&Array.isArray(v?.logs)&&v.logs.some((line:unknown)=>typeof line==='string'&&line.includes('Error Code: ExceededSlippage. Error Number: 6004.'));throw new Error(slippage?'PUMP_SIMULATION_SLIPPAGE':'PUMP_SIMULATION_REJECTED');}
@@ -251,7 +338,7 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
       const pre=v.preBalances as number[],post=v.postBalances as number[];
       const tokens=(entries:unknown[])=>{const map=new Map<number,{mint:string;owner:string;programId:string;amount:bigint;decimals:number}>();for(const e of entries){if(!obj(e)||!integer(e.accountIndex)||e.accountIndex>=keys.length||map.has(e.accountIndex)||typeof e.mint!=='string'||typeof e.owner!=='string'||typeof e.programId!=='string'||!obj(e.uiTokenAmount)||typeof e.uiTokenAmount.amount!=='string'||!/^(0|[1-9]\d{0,19})$/.test(e.uiTokenAmount.amount)||BigInt(e.uiTokenAmount.amount)>18446744073709551615n||!integer(e.uiTokenAmount.decimals)||e.uiTokenAmount.decimals>255)throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');map.set(e.accountIndex,{mint:e.mint,owner:e.owner,programId:e.programId,amount:BigInt(e.uiTokenAmount.amount),decimals:e.uiTokenAmount.decimals});}return map;};
       const beforeTokens=tokens(v.preTokenBalances),afterTokens=tokens(v.postTokenBalances);
-      if(!Array.isArray(v.accounts)||v.accounts.length!==3||pre[quoteIndex]!==0||post[quoteIndex]!==0||beforeTokens.has(quoteIndex)||afterTokens.has(quoteIndex))throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');
+      if(!Array.isArray(v.accounts)||v.accounts.length!==3||!existingWsol&&(pre[quoteIndex]!==0||beforeTokens.has(quoteIndex))||post[quoteIndex]!==0||afterTokens.has(quoteIndex))throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');
       // Some RPCs return a closed-account tombstone instead of null.
       if(v.accounts[2]!==null){const closed=account(v.accounts[2]);if(closed.lamports!==0||closed.executable||!closed.owner.equals(PublicKey.default)||closed.data.length!==0)throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');}
       const afterBase=v.accounts[1]?account(v.accounts[1]):null,afterPayer=v.accounts[0]?account(v.accounts[0]):null;
@@ -270,11 +357,14 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
       if(!/^(0|[1-9]\d*)$/.test(spent)||!/^(0|[1-9]\d*)$/.test(received)||BigInt(spent)>BigInt(actualBuy.uiQuote.toString()))throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');
       // Native payer delta includes all retained setup rent, including program-created accounts.
       // Separate entry/exit message fees remain conservative relative to this single atomic simulation.
-      const setup=BigInt(pre[payerIndex])-BigInt(post[payerIndex])-BigInt(spent)+BigInt(received)-BigInt(v.fee as number);
+      let nativeProof:ReturnType<typeof verifyExistingWsol>|undefined;
+      if(existingWsol)try{nativeProof=verifyExistingWsol(rawArtifacts,token,existingWsol,{pool:poolKey.toBase58(),quoteAtomic:quote.toString(),acquiredAtomic:buy.base.toString(),actualEntryAtomic:actualBuy.uiQuote.toString(),slot:stateSlot});}catch{throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');}
+      const setup=BigInt(pre[payerIndex])-BigInt(post[payerIndex])-BigInt(spent)+BigInt(received)-BigInt(v.fee as number)+(nativeProof?BigInt(nativeProof.refund):0n);
       if(setup<0n||pre[baseIndex]===0&&setup<BigInt(post[baseIndex]))throw new Error('PUMP_SIMULATION_DELTA_MISMATCH');
       venue.entryExternalCostUsd=entryFee.add(setup.toString()).div(1e9).mul(price).toFixed();venue.costsReconciled=true;delete errors.execution;
+      if(existingWsol)venue.setupMethod='existing-wsol-roundtrip-v1';
       venue.simulation={setupVerified:true,buySucceeded:true,sellSucceeded:true};
-      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString()};
+      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString(),...(existingWsol?{existingWsol,initialQuoteRefundLamports:nativeProof!.refund}:{})};
     }catch(e){errors.simulation=e instanceof Error&&/^PUMP_/.test(e.message)?e.message:safeRpcCode(e);}
     rawArtifacts['pump-quote-calculation']=JSON.stringify({sdk:inspection.version,pool:poolKey.toBase58(),requestedUsd:profile.sizeUsd,quoteAtomic:quote.toString(),actualEntryAtomic:actualBuy.uiQuote.toString(),acquiredAtomic:buy.base.toString(),exitAtomic:sell.uiQuote.toString(),method:'INDEPENDENT_QUOTES',virtualQuoteReserves:pool.virtualQuoteReserves.toString(),actualQuoteReserve:quoteVault.amount.toString(),slot:stateSlot,...(recovery?{nativeUsd:solUsd,nativePriceEvidenceId:'pump-sol-usd'}:{}),simulationProof});retrievedAt['pump-quote-calculation']=now();inspection.evidenceIds.push('pump-quote-calculation');
     venue.evidenceIds=inspection.evidenceIds.filter(id=>id!=='rpc-genesis'&&id!=='pump-pool-config'&&!['pump-program','pump-program-data','pump-simulation-payers','pump-simulation-fallback-payers','pump-simulation-user-accounts'].includes(id));

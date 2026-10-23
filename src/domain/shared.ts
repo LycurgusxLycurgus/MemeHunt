@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { evaluateEntry, type EntryEvidenceGates } from './policy.js';
-import { sharedPolicyFactsSchema, type FeatureResult, type EvidenceRecord, type Observation, type Profile, type SocialPolicyFacts, type TokenRef } from './contracts.js';
+import { sharedPolicyFactsSchema, type EntryGroupFacts, type FeatureResult, type EvidenceRecord, type Observation, type Profile, type SocialPolicyFacts, type TokenRef } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
 import type { AttentionSource } from '../providers/attention.js';
 
@@ -15,7 +15,7 @@ export const sharedAuditSchema=z.object({
 export type SharedAudit=z.infer<typeof sharedAuditSchema>;
 export function hasTwoConflictSides(claim:SharedAudit['claims'][number]){return claim.disposition!=='CONFLICT'||new Set(claim.citations.map(ref=>JSON.stringify([ref.sourceId,ref.quote]))).size>=2;}
 export type SharedSource=Omit<AttentionSource,'kind'>&{kind:'PAGE'|'POST'|'INDEXED_METADATA'};
-export type SharedInputs={qualityMode?:'ENTRY_GATES_V1';token:TokenRef;cutoff:string;profile:Profile;baseline:BaselineAssessment[];features:FeatureResult[];evidence:EvidenceRecord[];observations:Observation[];social?:SocialPolicyFacts;claims:SharedClaim[];sources:SharedSource[];audit:SharedAudit|null;semanticReceiptIds:string[]};
+export type SharedInputs={qualityMode?:'ENTRY_GATES_V1'|'ENTRY_GROUPS_V1';groups?:EntryGroupFacts;token:TokenRef;cutoff:string;profile:Profile;baseline:BaselineAssessment[];features:FeatureResult[];evidence:EvidenceRecord[];observations:Observation[];social?:SocialPolicyFacts;claims:SharedClaim[];sources:SharedSource[];audit:SharedAudit|null;semanticReceiptIds:string[]};
 
 /** A reviewed entry-support decision does not resolve factual candidate binding. */
 export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|undefined{
@@ -23,18 +23,21 @@ export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|unde
  return !!d&&['binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes(d.entryDecisionMethod??'')&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&a?.projection?.value===(d.decision?.verdict==='PASS')?d.decision?.verdict==='PASS':undefined;
 }
 /** Negative entry evidence grades retain unknown factual counts and growth. */
-export function attentionEntryGates(baseline:BaselineAssessment[]):EntryEvidenceGates|undefined{
+export function attentionEntryGates(baseline:BaselineAssessment[],entryGroups=false):EntryEvidenceGates|undefined{
  const gates:EntryEvidenceGates={};
  for(const [id,criterion,key]of [['A15','ATT-01','sample'],['A18','ATT-02','growth']] as const){const a=baseline.find(a=>a.id===id&&a.quality!=='STALE'),d=a?.data as {method?:string;entryCriterion?:string;verdict?:string;postSampleScope?:{complete:boolean}}|null|undefined;if(d?.method==='entry-evidence-gate-v1'&&d.entryCriterion===criterion&&d.verdict==='FAIL'&&d.postSampleScope?.complete===true)gates[key]=false;}
+ if(entryGroups){const a=baseline.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&a.projection?.quality==='KNOWN'),d=a?.data as {method?:string;entryCriterion?:string;entryDecisionMethod?:string;decision?:{verdict?:string;citations?:unknown[]}}|null|undefined;if(d?.method==='binary-public-support-v4'&&d.entryDecisionMethod===d.method&&d.entryCriterion==='NAR-02'&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&d.decision?.citations?.length&&a?.projection?.value===(d.decision.verdict==='PASS'))gates.originTraceability=d.decision.verdict==='PASS';}
  return Object.keys(gates).length?gates:undefined;
 }
 /** Reuse the actual entry evaluator. Remove inputs only when the same decision survives. */
-export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean,entryGates?:EntryEvidenceGates){
+export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean,entryGates?:EntryEvidenceGates,groups?:EntryGroupFacts){
   const mode=social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2';
-  const rows=evaluateEntry(features,profile,cutoff,mode,social,false,entryComparison,entryGates).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
+  const rows=evaluateEntry(features,profile,cutoff,mode,social,false,entryComparison,entryGates,groups).checks.filter(c=>c.required&&!c.checkId.startsWith('DAT-'));
   return rows.map(row=>{
+    const group=groups?.groups.find(g=>g.checkId===row.checkId);
+    if(group)return {checkId:row.checkId,status:row.status as 'PASS'|'FAIL'|'UNKNOWN',featureIds:group.featureIds,evidenceIds:group.evidenceIds,route:'qualified-context'};
     let selected=[...features];
-    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social,false,entryComparison,entryGates).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
+    if(row.status!=='UNKNOWN')for(const feature of features){const trial=selected.filter(f=>f.id!==feature.id),result=evaluateEntry(trial,profile,cutoff,mode,social,false,entryComparison,entryGates,groups).checks.find(c=>c.checkId===row.checkId)!;if(result.status===row.status)selected=trial;}
     const featureIds=row.status==='UNKNOWN'?row.featureRefs:selected.map(f=>f.id);
     const socialIds=row.checkId.startsWith('SOC-')?social?.evidenceIds??[]:[];
     return {checkId:row.checkId,status:row.status as 'PASS'|'FAIL'|'UNKNOWN',featureIds,evidenceIds:[...new Set([...selected.filter(f=>featureIds.includes(f.id)).flatMap(f=>f.evidenceIds),...socialIds])],route:row.checkId.startsWith('SOC-')&&social?'qualified-social':row.checkId==='CAN-02'?'qualified-representation':'entry-policy'};
@@ -65,11 +68,13 @@ export function sharedClaims(baseline:BaselineAssessment[],social?:SocialPolicyF
 }
 
 export function deriveShared(input:SharedInputs){
-  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,input.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(input.baseline):undefined,input.qualityMode==='ENTRY_GATES_V1'?attentionEntryGates(input.baseline):undefined),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
-  const selected=new Set(witnesses.filter(w=>w.status!=='UNKNOWN').flatMap(w=>w.featureIds));
+  if(input.qualityMode==='ENTRY_GROUPS_V1'&&!input.groups)throw Error('SHARED_GROUPS_REQUIRED');
+  const gates=input.qualityMode==='ENTRY_GATES_V1'||input.qualityMode==='ENTRY_GROUPS_V1';
+  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,gates?comparisonEntryGrade(input.baseline):undefined,gates?attentionEntryGates(input.baseline,!!input.groups):undefined,input.groups),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
+  const selected=new Set(witnesses.filter(w=>w.status!=='UNKNOWN'&&w.route!=='qualified-context').flatMap(w=>w.featureIds));
   const freshness=[...selected].map(id=>{
     const f=input.features.find(f=>f.id===id)!,a=input.baseline.find(a=>a.id===id),data=a?.data as {window?:{end?:string};end?:string}|undefined;
-    const ttlSeconds=['O10','O11','O13','O14','O15','O16'].includes(id)?30:/^[AS]/.test(id)?900:300;
+    const ttlSeconds=['O10','O11','O13','O14','O15','O16',...(input.groups?['O12']:[])].includes(id)?30:/^[AS]/.test(id)?900:300;
     const refs=f.evidenceIds.map(id=>input.evidence.find(e=>e.id===id));
     const eventAt=data?.window?.end??data?.end??f.availableAt;
     const times=[eventAt,...refs.flatMap(e=>e?[e.retrievedAt,e.availableAt]:[])];
@@ -81,6 +86,11 @@ export function deriveShared(input:SharedInputs){
     const social=input.social!,refs=w.evidenceIds.map(id=>input.evidence.find(e=>e.id===id));
     const fresh=refs.length>0&&refs.every(e=>!!e&&[e.retrievedAt,e.availableAt].every(t=>Date.parse(t)<=Date.parse(input.cutoff)&&Date.parse(input.cutoff)-Date.parse(t)<=900000))&&Date.parse(input.cutoff)-Date.parse(social.end)>=0&&Date.parse(input.cutoff)-Date.parse(social.end)<=900000;
     freshness.push({featureId:w.checkId,ttlSeconds:900,eventAt:social.end,fresh,evidenceIds:w.evidenceIds});
+  }
+  for(const group of input.groups?.groups.filter(g=>g.status!=='UNKNOWN')??[]){
+    const ttlSeconds=['ADV-03','ADV-04'].includes(group.checkId)?900:300,refs=group.evidenceIds.map(id=>input.evidence.find(e=>e.id===id));
+    const fresh=refs.length>0&&[group.availableAt,...refs.flatMap(e=>e?[e.availableAt,e.retrievedAt]:[''])].every(t=>Number.isFinite(Date.parse(t))&&Date.parse(t)<=Date.parse(input.cutoff)&&Date.parse(input.cutoff)-Date.parse(t)<=ttlSeconds*1000);
+    freshness.push({featureId:group.checkId,ttlSeconds,eventAt:group.availableAt,fresh,evidenceIds:group.evidenceIds});
   }
   const sourceMap=new Map(input.sources.map(s=>[s.id,s]));
   const literal=(c:{sourceId:string;quote:string})=>sourceMap.get(c.sourceId)?.text.includes(c.quote)===true;
@@ -96,7 +106,6 @@ export function deriveShared(input:SharedInputs){
   for(const [field,values] of groups)if(new Set(values.map(v=>normalized(v.value))).size>1)conflicts.push({field,evidenceIds:[...new Set(values.flatMap(v=>v.evidenceIds))],rationale:'Different values for the same subject, field, unit and observation instant.'});
   if(auditQualified&&audit?.success)for(const c of audit.data.claims.filter(c=>c.disposition==='CONFLICT'))conflicts.push({field:c.id,evidenceIds:[...new Set(c.citations.map(c=>c.sourceId))],rationale:c.rationale});
   const complete=unresolved.length===0,fresh=freshness.length>0&&freshness.every(f=>f.fresh);
-  const gates=input.qualityMode==='ENTRY_GATES_V1';
   const values=gates?{C03:complete&&fresh,C04:complete,C05:semanticQualified,C06:complete&&auditQualified&&conflicts.length===0}:{C03:complete&&fresh?true:null,C04:complete?true:null,C05:semanticQualified?true:null,C06:complete&&auditQualified?conflicts.length===0:null};
   const facts=sharedPolicyFactsSchema.parse({method:'shared-evidence-v1',...(gates?{qualityMode:input.qualityMode}:{}),token:input.token,cutoff:input.cutoff,witnesses,freshness,unresolved,semanticQualified,auditQualified,conflicts,values});
   const evidenceIds=[...new Set([...witnesses.flatMap(w=>w.evidenceIds),...input.semanticReceiptIds,...input.evidence.filter(e=>e.id==='shared-qualified-receipt'||/^shared-(proposal|review)-response$/.test(e.id)).map(e=>e.id)])];

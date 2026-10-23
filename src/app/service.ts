@@ -2,6 +2,7 @@ import { validatePumpRecoveryBundle } from '../providers/pumpswap.js';
 import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
+import { entryGroupsForBundle } from '../providers/entry-groups.js';
 import { VersionedMessage } from '@solana/web3.js';
 import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -10,10 +11,10 @@ import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSche
 import { baselineIds, deriveBaseline, deriveHolderBounds, validateResearch } from '../domain/baseline.js';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
-import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema } from '../domain/social.js';
+import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema, canonicalSocialUrl, type SocialInput } from '../domain/social.js';
 import { deriveAttention,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
 import { emptyAttentionQualification, comparisonRequiredRecoveryPlan, decodeComparisonLeadTasks, comparisonReferenceRepairDetails, decodeNarrativePublicSupport, decodeSubmittedAttention, comparisonTargetContext, comparisonInstruction, decodeComparisonLeadArray, decodeComparisonLeadAccounting, comparisonScopeV3Schema, comparisonLeadIsAccounted, comparisonAccountingComplete, comparisonAccountingContext, comparisonAccountingInstruction, comparisonAccountingReviewInstruction, comparisonAccountingReferenceRepairInstruction, comparisonAccountingArraySchema, comparisonLeadSupportInstruction, comparisonLeadSupportRepairEligible, comparisonLeadSupportRepairValid, leadershipEntryCriterion, decodeBinaryEntryDecisions, resolvePublicEntryDecision, binaryLeadershipReviewSchema, scopedLeadershipReviewSchema, decodeLeadershipSupport, leadershipSupportProposalSchema, leadershipSupportReviewSchema, decodeComparisonCoverage, comparisonSourceLineage, comparisonLeadIsQualified } from '../providers/attention-model.js';
-import { attentionSourceText, normalizeAttentionSearchUrl, terminalPostScope, type AttentionRead } from '../providers/attention.js';
+import { attentionSourceText, normalizeAttentionSearchUrl, normalizeAttentionFetchUrl, terminalPostScope, type AttentionRead } from '../providers/attention.js';
 import { geckoPoolBinding } from '../providers/origin-recovery.js';
 import { validateSocialRepair,validateSocialWire } from '../providers/social-model.js';
 import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
@@ -30,6 +31,15 @@ function validateLiveExecution(b:LiveBundle){
  const attentionReceipt=b.rawArtifacts['attention-qualified-receipt']?JSON.parse(b.rawArtifacts['attention-qualified-receipt']):null;
  const gapMethod=attentionReceipt?.read?.comparisonRecovery?.accessGapMethod;
  const optionalPacket=(id:string)=>b.rawArtifacts[id]?JSON.parse(b.rawArtifacts[id]):undefined;
+ const firstRecovery=optionalPacket('attention-entry-first-acquisition'),fallback=optionalPacket('attention-recovery-fallback-scope');
+ const selectionMethods=[attentionReceipt?.read?.comparisonRecovery?.fallbackSelectionMethod,firstRecovery?.fallbackSelectionMethod,optionalPacket('attention-leadership-proposal-prompt')?.scope?.fallbackSelectionMethod,optionalPacket('attention-leadership-review-prompt')?.scope?.fallbackSelectionMethod];
+ if(selectionMethods.some(method=>method!==undefined)||fallback?.method==='same-parent-alternates-v2'){
+  if(selectionMethods.some(method=>method!==undefined&&method!=='observed-hosts-v1')||selectionMethods[0]!=='observed-hosts-v1'||selectionMethods[1]!=='observed-hosts-v1'||fallback?.method!=='same-parent-alternates-v2'||['attention-leadership-proposal-prompt','attention-leadership-review-prompt'].some(id=>b.rawArtifacts[id]&&optionalPacket(id)?.scope?.fallbackSelectionMethod!=='observed-hosts-v1'))throw Error('ATTENTION_HTTP_PROOF_INVALID');
+ }
+ const metadataPackets=[attentionReceipt?.read,optionalPacket('attention-acquisition-scope'),optionalPacket('attention-scope'),optionalPacket('social-attention-seed')?.read,optionalPacket('attention-proposal-prompt')?.scope,optionalPacket('attention-review-prompt')?.scope];
+ if(metadataPackets.some(p=>p?.metadataLinkMethod!==undefined)){
+  if(metadataPackets.some(p=>p&&p.metadataLinkMethod!=='onchain-metadata-v1')||!attentionReceipt?.read?.metadataLinks||!attentionReceipt.read.metadataUri||!metadataPackets[1]||!metadataPackets[2]||!metadataPackets[3])throw Error('ATTENTION_METADATA_METHOD_INVALID');
+ }
  const positivePackets=[attentionReceipt?.read,optionalPacket('attention-acquisition-scope'),optionalPacket('attention-scope'),optionalPacket('attention-proposal-prompt')?.scope,optionalPacket('attention-review-prompt')?.scope,optionalPacket('social-attention-seed')?.read,optionalPacket('attention-leadership-proposal-prompt'),optionalPacket('attention-leadership-review-prompt')];
  if(positivePackets.some(p=>p?.leadershipPositiveMethod!==undefined)||attentionReceipt?.review?.entryDecisions?.method==='binary-public-support-v4'){
   if(positivePackets.some(p=>p&&p.leadershipPositiveMethod!=='source-bound-positive-v1')||positivePackets[0]?.leadershipPositiveMethod!=='source-bound-positive-v1'||positivePackets[1]?.leadershipPositiveMethod!=='source-bound-positive-v1'||positivePackets[5]?.leadershipPositiveMethod!=='source-bound-positive-v1'||attentionReceipt?.review?.entryDecisions&&attentionReceipt.review.entryDecisions.method!=='binary-public-support-v4')throw Error('ATTENTION_LEADERSHIP_METHOD_INVALID');
@@ -88,6 +98,33 @@ function validateLiveExecution(b:LiveBundle){
     if(!['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4'].includes(social.read.reviewCriterionMethod)||decisionHash(social.read.postSampleScope)!==decisionHash(postScope)||decisionHash(social.read.targetPostIds)!==decisionHash(target)||!acquisition||acquisition.retainedAttentionSourceCount!==seed.read.sources.length)throw Error('SOCIAL_SEED_PROOF_INVALID');
   }
  }
+}
+function validateSocialUnavailableSources(b:LiveBundle,read:SocialInput,evidenceIds:string[]){
+ const scope=JSON.parse(b.rawArtifacts['social-acquisition-scope']??'null');
+ const gaps=scope?.selection?.filter((lead:any)=>/^TERMINAL_HTTP_(404|410)$/.test(lead.status))??[];
+ if(!read.identityUnavailableSources&&!gaps.length)return;
+ try{
+  if(read.screeningConstraintMethod!=='frozen-positive-guards-v1'||!read.identityUnavailableSources?.length||!b.evidence.some(e=>e.id==='social-acquisition-scope'&&e.sourceId==='social-collector'&&e.accessMode==='LOCAL_DERIVED')||!Array.isArray(scope.requestedUrlsByBatch))throw Error();
+  if(read.identityComplete&&(scope.selection.some((lead:any)=>lead.required&&!['REUSED','RETAINED','TERMINAL_HTTP_404','TERMINAL_HTTP_410'].includes(lead.status))||read.sources.length===0||read.identitySourceIds.some(id=>scope.remainingClippedSourceIds?.includes(id))))throw Error();
+  const expected=gaps.map((lead:any)=>{
+   if(!lead.required||!lead.selected||typeof lead.url!=='string')throw Error();
+   const code=lead.status.slice(9),url=canonicalSocialUrl(lead.url),status=code==='HTTP_404'?404:410;
+   const proof=scope.requestedUrlsByBatch.some((urls:string[],index:number)=>{
+    if(!Array.isArray(urls)||!urls.includes(url))return false;
+    const id='social-fetch-'+(index+1),outcomeId='social-http-outcome-'+(index+1),errorId='social-collection-fetch-'+(index+1)+'-error';
+    if(b.rawArtifacts[errorId]!==undefined||b.evidence.some(e=>e.id===errorId))return false;
+    if(!evidenceIds.includes(id)||!evidenceIds.includes(outcomeId)||!b.evidence.some(e=>e.id===id&&e.sourceId==='tinyfish-fetch'&&e.accessMode==='FREE_ACCOUNT')||!b.evidence.some(e=>e.id===outcomeId&&e.sourceId==='social-collector'&&e.sourceType==='SAMPLE_SCOPE'&&e.accessMode==='LOCAL_DERIVED'))return false;
+    const outcome=JSON.parse(b.rawArtifacts[outcomeId]);
+    if(outcome.method!=='social-fetch-http-v1'||outcome.ok!==true||!Number.isInteger(outcome.status)||outcome.status<200||outcome.status>299)return false;
+    const packet=JSON.parse(b.rawArtifacts[id]);
+    if(!Array.isArray(packet.results)||!Array.isArray(packet.errors)||packet.results.some((r:any)=>typeof r.url==='string'&&canonicalSocialUrl(r.url)===url))return false;
+    const errors=packet.errors.filter((e:any)=>typeof e.url==='string'&&canonicalSocialUrl(e.url)===url);
+    return errors.length>0&&errors.every((e:any)=>e.status===404||e.status===410)&&errors.some((e:any)=>e.status===status);
+   });
+   if(!proof)throw Error();return {url,code};
+  });
+  if(new Set(expected.map((g:{url:string})=>g.url)).size!==expected.length||decisionHash(expected)!==decisionHash(read.identityUnavailableSources))throw Error();
+ }catch{throw Error('SOCIAL_UNAVAILABLE_SOURCE_PROOF_INVALID');}
 }
 function validateHolderReconciliation(b:LiveBundle){
  const ids=['rpc-mint-raw-reconciliation-attempt-1','rpc-holder-population-reconciliation-attempt-1'];
@@ -267,6 +304,13 @@ export class Service {
       validateDexRecovery(b);
       validateFeeRecovery(b);
       validateHolderReconciliation(b);
+      let captureGroupMethod:unknown;
+      if(b.rawArtifacts['live-state-capture'])try{captureGroupMethod=JSON.parse(b.rawArtifacts['live-state-capture']).entryGroupMethod;}catch{throw Error('ENTRY_GROUP_PROOF_INVALID');}
+      const groupMarked=!!b.details?.groups||b.details?.shared?.qualityMode==='ENTRY_GROUPS_V1'||b.rawArtifacts['entry-groups-derivation']!==undefined||captureGroupMethod!==undefined;
+      if(groupMarked){
+        const proof=b.evidence.find(e=>e.id==='entry-groups-derivation'&&e.sourceId==='shared-collector'&&e.sourceType==='CALCULATION'&&e.accessMode==='LOCAL_DERIVED');
+        if(!b.details?.groups||b.details.shared?.qualityMode!=='ENTRY_GROUPS_V1'||captureGroupMethod!=='mandatory-entry-groups-v1'||!proof||proof.scope.method!=='mandatory-entry-groups-v1'||proof.availableAt!==b.cutoff||proof.retrievedAt!==b.cutoff||decisionHash(JSON.parse(b.rawArtifacts[proof.id]))!==decisionHash(b.details.groups))throw Error('ENTRY_GROUP_PROOF_INVALID');
+      }
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
       if(b.details){
         const details=b.details;
@@ -276,6 +320,7 @@ export class Service {
           if(!record)throw new Error('SOCIAL_PROOF_REQUIRED');
           const packet=JSON.parse(b.rawArtifacts[record.id]) as {read:unknown;proposal:unknown;review:unknown;token:TokenRef;cutoff:string;evidenceIds:string[]};
           const read=socialInputSchema.parse(packet.read),proposal=packet.proposal===null?null:socialProposalSchema.parse(packet.proposal),review=packet.review===null?null:socialReviewSchema.parse(packet.review);
+          validateSocialUnavailableSources(b,read,Array.isArray(packet.evidenceIds)?packet.evidenceIds:[]);
           if(tokenKey(packet.token)!==tokenKey(b.token)||packet.cutoff!==b.cutoff||!Array.isArray(packet.evidenceIds)||packet.evidenceIds.some(id=>!ids.has(id)||b.evidence.find(e=>e.id===id)?.accessMode==='USER_IMPORT'))throw new Error('SOCIAL_PROOF_INVALID');
           if(read.sources.some(source=>!packet.evidenceIds.includes(source.id))||packet.evidenceIds.some(id=>Date.parse(b.evidence.find(e=>e.id===id)!.availableAt)>Date.parse(read.qualifiedAt??read.end)))throw new Error('SOCIAL_PROOF_INVALID');
           if(proposal&&review){
@@ -315,7 +360,7 @@ export class Service {
           const proof=b.evidence.find(e=>e.id==='shared-derivation'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');
           if(!proof)throw new Error('SHARED_PROOF_REQUIRED');
           const packet=JSON.parse(b.rawArtifacts[proof.id]) as SharedInputs;
-          if(packet.qualityMode!==undefined&&packet.qualityMode!=='ENTRY_GATES_V1'||packet.qualityMode!==proof.scope.qualityMode)throw Error('SHARED_PROOF_INVALID');
+          if(packet.qualityMode!==undefined&&!['ENTRY_GATES_V1','ENTRY_GROUPS_V1'].includes(packet.qualityMode)||packet.qualityMode!==proof.scope.qualityMode||decisionHash(packet.groups??null)!==decisionHash(details.groups??null))throw Error('SHARED_PROOF_INVALID');
           const effective=expireSharedWitnesses(packet);
           const withoutShared=(fs:FeatureResult[])=>fs.filter(f=>!['C03','C04','C05','C06'].includes(f.id));
           if(tokenKey(packet.token)!==tokenKey(b.token)||packet.cutoff!==b.cutoff||decisionHash(packet.profile)!==decisionHash(b.profile)||decisionHash(withoutShared(effective.features))!==decisionHash(withoutShared(b.features))||decisionHash(packet.observations)!==decisionHash(b.observations)||decisionHash(packet.social??null)!==decisionHash(details.social??null)||decisionHash(packet.claims)!==decisionHash(sharedClaims(packet.baseline,details.social))||decisionHash(packet.evidence)!==decisionHash(b.evidence.filter(e=>e.id!==proof.id)))throw new Error('SHARED_PROOF_INVALID');
@@ -582,7 +627,7 @@ export class Service {
                   // Successful original fetches remain part of the corpus even if a local receipt deletes their source.
                   for(const [id,raw] of Object.entries(b.rawArtifacts))if(/^attention-fetch-\d+(?:-retry-\d+)?$/.test(id))try{
                     for(const r of JSON.parse(raw).results??[])if(normalizeAttentionSearchUrl(r.url)===lead.url&&typeof r.text==='string'&&r.text.trim()&&r.text.trim().toLowerCase()!=='safety check'){
-                      const record=b.evidence.find(e=>e.sourceId==='tinyfish-fetch'&&e.scope.url===normalizeAttentionSearchUrl(r.final_url??r.url)&&r.text.startsWith(b.rawArtifacts[e.id]??'')&&!!b.rawArtifacts[e.id]);
+                      const record=b.evidence.find(e=>e.sourceId==='tinyfish-fetch'&&e.scope.url===normalizeAttentionFetchUrl(r.final_url??r.url)&&r.text.startsWith(b.rawArtifacts[e.id]??'')&&!!b.rawArtifacts[e.id]);
                       if(!record||!actual.sourceIds.includes(record.id)||!fullRead.comparisonSourceIds?.includes(record.id))throw new Error('SHARED_SOURCE_INVALID');
                     }
                   }catch(error){if(error instanceof Error&&error.message==='SHARED_SOURCE_INVALID')throw error;}
@@ -600,7 +645,7 @@ export class Service {
             const fixedPosts=receipt.read.sources.filter((s:{id:string;kind:string})=>s.kind==='POST'&&(!receipt.read.postSampleSourceIds||receipt.read.postSampleSourceIds.includes(s.id)));
             const expectedSample={method:'fixed-query-sample-v1',sourceIds:fixedPosts.map((s:{id:string})=>s.id),queries:receipt.read.queries,complete:!!(receipt.read.postSampleComplete??receipt.read.complete)&&fixedPosts.every((s:{id:string;text:string;publishedAt:string|null})=>!!s.publishedAt&&Date.parse(s.publishedAt)<Date.parse(receipt.read.start)||b.rawArtifacts[s.id]===s.text)};
             if(decisionHash(receipt.read.growthSample)!==decisionHash(expectedSample))throw new Error('SHARED_PROOF_INVALID');
-            const derived=deriveAttention({...receipt.read,rawArtifacts:b.rawArtifacts},receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true);
+            const derived=deriveAttention({...receipt.read,rawArtifacts:b.rawArtifacts},receipt.proposal,receipt.review,b.token,receipt.cutoff,receipt.evidenceIds,true,!!details.groups);
             if(derived.some(a=>decisionHash(a)!==decisionHash(packet.baseline.find(x=>x.id===a.id))))throw new Error('SHARED_ATTENTION_INVALID');
             const originGrade=derived.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes((a.data as {method?:string}).method??''));
             if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};const expected={kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'};if(decisionHash(b.semantic.claims.filter(c=>c.kind==='ORIGIN'))!==decisionHash([expected]))throw Error('SHARED_ATTENTION_INVALID');}
@@ -627,6 +672,7 @@ export class Service {
           if(decisionHash(derived.facts)!==decisionHash(details.shared)||derived.assessments.some(a=>decisionHash(a)!==decisionHash(details.baseline.find(x=>x.id===a.id))||decisionHash(a.projection)!==decisionHash(b.features.find(f=>f.id===a.id))))throw new Error('SHARED_FACTS_INVALID');
         }
         for(const field of ['circulatingMarketCapUsd','tokenCreatedAt'] as const){const value=details.stageInputs[field];if(value!==null&&!b.observations.some(o=>o.field===field&&o.value===value&&o.quality==='KNOWN'&&o.evidenceIds.every(id=>b.evidence.find(e=>e.id===id)?.accessMode==='PUBLIC_API')))throw new Error('UNQUALIFIED_STAGE_INPUT');}
+        if(details.groups&&decisionHash(entryGroupsForBundle({...b,details}))!==decisionHash(details.groups))throw Error('ENTRY_GROUP_FACTS_INVALID');
       }
     }
     if (b.thesis) {
@@ -657,10 +703,13 @@ export class Service {
     return {version:1,profile:b.profile,thesis,origins:{profile:'FROZEN_INPUT'},stageInputs:stageInputs(b),baseline:deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:policyFeatures(b),evidence:b.evidence,observations:b.observations,thesis:thesis??undefined,research:b.analysisKind==='USER_IMPORT'?importedResearch(b):undefined})};
   }
   private analyzeCore(b: Bundle | LiveBundle): EntrySnapshot {
-    this.persistArtifacts(b); const social=b.analysisKind==='LIVE'?b.details?.social:undefined,entryComparison=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?comparisonEntryGrade(b.details.baseline):undefined,entryGates=b.analysisKind==='LIVE'&&b.details?.shared?.qualityMode==='ENTRY_GATES_V1'?attentionEntryGates(b.details.baseline):undefined;const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison,entryGates);
+    this.persistArtifacts(b); const liveDetails=b.analysisKind==='LIVE'?b.details:undefined,social=liveDetails?.social,groups=liveDetails?.groups;
+    const entryMode=['ENTRY_GATES_V1','ENTRY_GROUPS_V1'].includes(liveDetails?.shared?.qualityMode??'');
+    const entryComparison=entryMode?comparisonEntryGrade(liveDetails!.baseline):undefined,entryGates=entryMode?attentionEntryGates(liveDetails!.baseline,!!liveDetails!.groups):undefined;
+    const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison,entryGates,groups);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -762,7 +811,7 @@ export class Service {
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features, evidence:semantic.evidence??[] } as Bundle | LiveBundle;
     const effective=semantic.schemaVersion===1?legacyPolicyFeatures(replayBundle):semantic.policyFeatures;
     if(!Array.isArray(effective))throw new Error('UNSUPPORTED_SNAPSHOT_VERSION');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion),['research-screen-shared-v2','research-screen-shared-v3'].includes(semantic.policyVersion)?semantic.entryComparison:undefined,semantic.policyVersion==='research-screen-shared-v3'?semantic.entryGates:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion),['research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryComparison:undefined,['research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryGates:undefined,semantic.policyVersion==='research-screen-shared-v4'?semantic.details?.groups:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

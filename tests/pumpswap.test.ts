@@ -7,7 +7,7 @@ import test from 'node:test';
 import BN from 'bn.js';
 import { Decimal } from 'decimal.js';
 import { MessageV0, PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { getAssociatedTokenAddressSync, MintLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, MintLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import {
   GLOBAL_CONFIG_PDA, OFFLINE_PUMP_AMM_PROGRAM, PUMP_AMM_PROGRAM_ID, PUMP_AMM_FEE_CONFIG_PDA,
   FEE_CONFIG_SIZE_PRE_STABLE, PUMP_FEE_PROGRAM_ID, buyBaseInput, buyQuoteInput, lpMintPda, poolPda,
@@ -19,6 +19,7 @@ import { Service } from '../src/app/service.js';
 import type { AssessmentDetails, LiveBundle, TokenRef } from '../src/domain/contracts.js';
 import { TOKEN_2022_PROGRAM, UPGRADEABLE_LOADER } from '../src/providers/solana.js';
 import { inspectPumpSwap, validatePumpRecoveryBundle, verifyPumpSlippage } from '../src/providers/pumpswap.js';
+import { entryGroupsForBundle } from '../src/providers/entry-groups.js';
 
 const MINT = '3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump';
 const TOKEN: TokenRef = { chain: 'solana', address: MINT };
@@ -27,6 +28,12 @@ const SLOT = 500;
 const TINYFISH_KEY = 'pump-tinyfish-test-secret';
 const PROGRAM_DATA = new PublicKey(Buffer.alloc(32, 8));
 const PAYER = new PublicKey(Buffer.alloc(32, 23));
+const FULL_PROTOCOL_FEE_RECIPIENT = new PublicKey(Buffer.alloc(32, 240));
+const FULL_BUYBACK_FEE_RECIPIENT = new PublicKey(Buffer.alloc(32, 241));
+const fullSimulationRecipients = {
+  protocolFeeRecipients: [FULL_PROTOCOL_FEE_RECIPIENT, ...Array(7).fill(PublicKey.default)],
+  buybackFeeRecipients: [FULL_BUYBACK_FEE_RECIPIENT, ...Array(7).fill(PublicKey.default)],
+};
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const PAYLOAD_MINT_SUPPLY = 1_000_000_000_000n;
 
@@ -60,13 +67,20 @@ type Scenario = {
   freezeAuthority?: boolean;
   simulate?: boolean;
   protocolFeeRecipients?: PublicKey[];
+  buybackFeeRecipients?: PublicKey[];
   globalAdmin?: PublicKey;
   discoveryProtocolFeeRecipients?: PublicKey[];
   discoveryGlobalAdmin?: PublicKey;
   payerLamports?: number;
   payerSystem?: boolean;
   additionalFundedPayers?: PublicKey[];
+  additionalPayerLamports?: number;
   existingWsolOwners?: PublicKey[];
+  validNativeWsolOwners?: PublicKey[];
+  nativeWsolAmount?: bigint;
+  nativeWsolRentReserve?: bigint;
+  nativeWsolLamports?: number;
+  nativeWsolAccountFailure?: 'malformed' | 'wrong-program' | 'wrong-mint' | 'wrong-owner' | 'frozen' | 'delegated' | 'close-authority' | 'non-native';
   existingBaseOwners?: PublicKey[];
   simulationPayer?: PublicKey;
   preSimulationPayerLamports?: number;
@@ -113,6 +127,32 @@ function tokenAccountBytes(mint: PublicKey, owner: PublicKey, amount: bigint): B
   data.writeBigUInt64LE(amount, 64);
   data[108] = 1;
   return data;
+}
+function nativeTokenAccountBytes(
+  mint: PublicKey,
+  owner: PublicKey,
+  amount: bigint,
+  rentReserve: bigint,
+  failure?: NonNullable<Scenario['nativeWsolAccountFailure']>,
+): Buffer {
+  const actualMint = failure === 'wrong-mint' ? new PublicKey(USDC) : mint;
+  const actualOwner = failure === 'wrong-owner' ? new PublicKey(Buffer.alloc(32, 25)) : owner;
+  const data = tokenAccountBytes(actualMint, actualOwner, amount);
+  if (failure === 'frozen') data[108] = 2;
+  if (failure === 'delegated') {
+    data.writeUInt32LE(1, 72);
+    new PublicKey(Buffer.alloc(32, 26)).toBuffer().copy(data, 76);
+    data.writeBigUInt64LE(1n, 121);
+  }
+  if (failure === 'close-authority') {
+    data.writeUInt32LE(1, 129);
+    new PublicKey(Buffer.alloc(32, 27)).toBuffer().copy(data, 133);
+  }
+  if (failure !== 'non-native') {
+    data.writeUInt32LE(1, 109);
+    data.writeBigUInt64LE(rentReserve, 113);
+  }
+  return failure === 'malformed' ? data.subarray(0, 164) : data;
 }
 function rpcAccount(owner: PublicKey | string, bytes: Buffer, options: { executable?: boolean; lamports?: number } = {}) {
   return {
@@ -182,6 +222,7 @@ async function fixture(scenario: Scenario = {}) {
   const feeTier = { marketCapLamportsThreshold: new BN(0), fees: fees(20, 15, 10) };
   const globalAdmin = scenario.globalAdmin ?? new PublicKey(Buffer.alloc(32, 9));
   const protocolFeeRecipients = scenario.protocolFeeRecipients ?? Array(8).fill(PublicKey.default);
+  const buybackFeeRecipients = scenario.buybackFeeRecipients ?? Array(8).fill(PublicKey.default);
   const discoveryGlobalAdmin = scenario.discoveryGlobalAdmin ?? globalAdmin;
   const discoveryProtocolFeeRecipients = scenario.discoveryProtocolFeeRecipients ?? protocolFeeRecipients;
   const globalConfig = await sdkAccount('globalConfig', {
@@ -190,7 +231,7 @@ async function fixture(scenario: Scenario = {}) {
     coinCreatorFeeBasisPoints: new BN(25), adminSetCoinCreatorAuthority: PublicKey.default,
     whitelistPda: PublicKey.default, reservedFeeRecipient: PublicKey.default, mayhemModeEnabled: false,
     reservedFeeRecipients: Array(7).fill(PublicKey.default), isCashbackEnabled: false,
-    buybackFeeRecipients: Array(8).fill(PublicKey.default), buybackBasisPoints: new BN(0),
+    buybackFeeRecipients, buybackBasisPoints: new BN(0),
     boostAuthority: PublicKey.default, boostEnabled: false, creatorFeeConfigurable: true, maxConfigurableCreatorFeeBps: new BN(100),
   });
   const feeConfig = await sdkAccount('feeConfig', {
@@ -278,13 +319,20 @@ async function fixture(scenario: Scenario = {}) {
   const simulationPayer = scenario.simulationPayer ?? PAYER;
   const actualSpend = BigInt(expectedActualBuy.uiQuote.toString());
   const actualReceive = BigInt(expectedSell?.uiQuote.toString() ?? '0');
-  const preSimulationPayerLamports = scenario.preSimulationPayerLamports ?? payerLamports;
+  const additionalPayerLamports = scenario.additionalPayerLamports ?? payerLamports;
+  const preSimulationPayerLamports = scenario.preSimulationPayerLamports ?? (simulationPayer.equals(PAYER) ? payerLamports : additionalPayerLamports);
   const simulationFeeLamports = scenario.simulationFeeLamports ?? networkFeeLamports;
   const hasExistingBase = new Set((scenario.existingBaseOwners ?? []).map(key => key.toBase58())).has(simulationPayer.toBase58());
   let simulationSetupLamports = scenario.simulationSetupLamports ?? (hasExistingBase ? 0 : rentLamports);
   if (scenario.simulationFailure === 'negative-setup') simulationSetupLamports = -1;
   if (scenario.simulationFailure === 'underfunded-setup') simulationSetupLamports = rentLamports - 1;
-  let afterPayerLamports = preSimulationPayerLamports - Number(actualSpend) + Number(actualReceive) - simulationFeeLamports - simulationSetupLamports;
+  const validNativeWsolOwners = new Set((scenario.validNativeWsolOwners ?? []).map(key => key.toBase58()));
+  const hasExistingNativeWsol = validNativeWsolOwners.has(simulationPayer.toBase58());
+  const nativeWsolAmount = scenario.nativeWsolAmount ?? 1n;
+  const nativeWsolRentReserve = scenario.nativeWsolRentReserve ?? BigInt(rentLamports);
+  const nativeWsolLamports = scenario.nativeWsolLamports ?? Number(nativeWsolRentReserve + nativeWsolAmount);
+  const preNativeWsolLamports = hasExistingNativeWsol ? nativeWsolLamports : 0;
+  let afterPayerLamports = preSimulationPayerLamports - Number(actualSpend) + Number(actualReceive) - simulationFeeLamports - simulationSetupLamports + preNativeWsolLamports;
   if (scenario.simulationFailure === 'payer-delta') afterPayerLamports += 1;
   const baseAmountBefore = hasExistingBase ? 1n : 0n;
   const baseAmountAfter = baseAmountBefore + (scenario.simulationFailure === 'base-delta' || scenario.simulationFailure === 'existing-base-changed' ? 1n : 0n);
@@ -350,16 +398,22 @@ async function fixture(scenario: Scenario = {}) {
       return rpcResult({ context: { slot: contextSlot }, value: keys.map(key => {
         if (scenario.simulate && fundedPayerAddresses.has(key)) {
           return rpcAccount(key === PAYER.toBase58() && scenario.payerSystem === false ? TOKEN_PROGRAM_ID : PublicKey.default,
-            Buffer.alloc(0), { lamports: payerLamports });
+            Buffer.alloc(0), { lamports: key === PAYER.toBase58() ? payerLamports : scenario.additionalPayerLamports ?? payerLamports });
         }
         const associatedAccount = scenario.simulate ? associated.get(key) : undefined;
         if (associatedAccount) {
+          const ownerAddress = associatedAccount.owner.toBase58();
           const existing = associatedAccount.kind === 'quote'
-            ? existingWsolOwners.has(associatedAccount.owner.toBase58())
+            ? existingWsolOwners.has(ownerAddress) || validNativeWsolOwners.has(ownerAddress)
             : existingBaseOwners.has(associatedAccount.owner.toBase58());
-          return existing
-            ? rpcAccount(TOKEN_PROGRAM_ID, tokenAccountBytes(associatedAccount.mint, associatedAccount.owner, 1n))
-            : null;
+          if (!existing) return null;
+          if (associatedAccount.kind === 'quote' && validNativeWsolOwners.has(ownerAddress)) {
+            return rpcAccount(scenario.nativeWsolAccountFailure === 'wrong-program' ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM_ID, nativeTokenAccountBytes(
+              associatedAccount.mint, associatedAccount.owner, nativeWsolAmount, nativeWsolRentReserve,
+              scenario.nativeWsolAccountFailure,
+            ), { lamports: nativeWsolLamports });
+          }
+          return rpcAccount(TOKEN_PROGRAM_ID, tokenAccountBytes(associatedAccount.mint, associatedAccount.owner, 1n));
         }
         const missingKey = scenario.missingCaptureAccount === 'pool' ? poolKey.toBase58()
           : scenario.missingCaptureAccount === 'baseMint' ? mint.toBase58()
@@ -441,6 +495,7 @@ async function fixture(scenario: Scenario = {}) {
       postBalances[payerIndex] = afterPayerLamports;
       preBalances[baseIndex] = baseBeforeLamports;
       postBalances[baseIndex] = baseAfterLamports;
+      if (hasExistingNativeWsol) preBalances[quoteIndex] = preNativeWsolLamports;
       if (failure === 'pre-wsol') preBalances[quoteIndex] = 1;
       if (failure === 'post-wsol') postBalances[quoteIndex] = 1;
 
@@ -451,6 +506,7 @@ async function fixture(scenario: Scenario = {}) {
       });
       let preTokenBalances: unknown[] = hasExistingBase ? [tokenRecord(baseIndex, baseAmountBefore)] : [];
       let postTokenBalances: unknown[] = [tokenRecord(baseIndex, baseAmountAfter)];
+      if (hasExistingNativeWsol) preTokenBalances.push(tokenRecord(quoteIndex, nativeWsolAmount, { mint: NATIVE_MINT.toBase58(), decimals: 9 }));
       if (failure === 'missing-existing-base-pre') preTokenBalances = [];
       if (failure === 'improper-new-base-pre') preTokenBalances = [tokenRecord(baseIndex, 1n)];
       if (failure === 'pre-wsol') preTokenBalances.push(tokenRecord(quoteIndex, 1n, { mint: NATIVE_MINT.toBase58(), decimals: 9 }));
@@ -518,6 +574,8 @@ async function fixture(scenario: Scenario = {}) {
     throw new Error(`UNEXPECTED_MOCK_RPC_${request.method}`);
   };
   return { fetcher, methods, poolKey, baseVault, quoteVault, lpMint, payer: PAYER, expectedBaseAtomic: expectedBuy.base.toString(), baseAta, quoteAta,
+    get nativeWsolLamports() { return nativeWsolLamports; }, get nativeWsolAmount() { return nativeWsolAmount; },
+    get simulationSetupLamports() { return simulationSetupLamports; },
     get captureCount() { return captureCount; }, get dexCalls() { return dexCalls; } };
 }
 
@@ -525,6 +583,54 @@ const controls: ControlFacts = {
   complete: true, supplyAllowed: true, transferAllowed: true, surfaceSupported: true,
   currentFeeBps: '0', feeImmutable: true, controls: [], unsupported: [], evidenceIds: ['rpc-mint-raw'],
 };
+
+function pumpLiveBundle(read: Awaited<ReturnType<typeof inspectPumpSwap>>, profile: ReturnType<typeof starterProfile>): LiveBundle {
+  assert.ok(read.venue, 'a simulation result supplies a venue for Service admission');
+  const baseline = deriveBaseline({
+    token: TOKEN, cutoff: AT, profile, features: [], evidence: [], observations: [],
+    venueInspection: read.inspection, venue: read.venue,
+  });
+  const rawArtifacts = structuredClone(read.rawArtifacts);
+  const derivedIds = new Set(['pump-simulation-request', 'pump-quote-calculation']);
+  const evidence: LiveBundle['evidence'] = Object.entries(rawArtifacts).map(([id, raw]) => {
+    const derived = derivedIds.has(id), market = id === 'pump-sol-usd';
+    const retrievedAt = read.retrievedAt[id]!;
+    return {
+      id, sourceId: derived ? 'pumpswap-derived' : market ? 'dexscreener' : 'pumpswap-direct',
+      sourceType: derived ? 'CALCULATION' : market ? 'PUBLIC_MARKET' : 'JSON_RPC',
+      retrievedAt, availableAt: retrievedAt, contentHash: createHash('sha256').update(raw).digest('hex'),
+      adapterVersion: 'pumpswap-test-v1', accessMode: derived ? 'LOCAL_DERIVED' : 'PUBLIC_API',
+      scope: { operation: id, mint: TOKEN.address, pool: read.inspection.poolAddress },
+    };
+  });
+  return {
+    analysisKind: 'LIVE', token: TOKEN, cutoff: AT, profile, evidence, rawArtifacts, observations: [],
+    features: baseline.flatMap(row => row.projection ? [row.projection] : []),
+    collection: { rpc: { state: 'OBSERVED' }, dex: { state: 'NO_RESULTS', count: 0 }, web: { state: 'NOT_REQUESTED' } },
+    semantic: { status: 'NOT_REQUESTED', claims: [] }, market: null,
+    details: { version: 1, profile, thesis: null, baseline, origins: {}, stageInputs: { circulatingMarketCapUsd: null, tokenCreatedAt: null } },
+  };
+}
+
+function rehashPumpBundle(bundle: LiveBundle): void {
+  for (const record of bundle.evidence) {
+    const raw = bundle.rawArtifacts[record.id];
+    if (raw !== undefined) record.contentHash = createHash('sha256').update(raw).digest('hex');
+  }
+}
+
+function pumpProof(bundle: LiveBundle) {
+  const calculation = JSON.parse(bundle.rawArtifacts['pump-quote-calculation']!) as {
+    simulationProof: {
+      wireBase64: string;
+      quoteIndex: number;
+      setupLamports: string;
+      initialQuoteRefundLamports?: string;
+      existingWsol?: { method: string; user: string; sourceId: string; sourceIndex: number };
+    };
+  };
+  return calculation.simulationProof;
+}
 
 function pumpUsdRecoveryFetcher(baseFetch: typeof fetch, events: string[], status = 200) {
   const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
@@ -595,6 +701,68 @@ test('canonical PumpSwap binding and SDK quotes use the requested USD size and a
   assert.ok(Object.values(read.retrievedAt).every(at => at === AT));
   assert.equal(f.methods.some(call => call.method.toLowerCase().includes('sendtransaction')), false);
   assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), false, 'unsigned simulation was correctly withheld when no public payer was available');
+});
+
+test('current holder groups exclude only the captured canonical PumpSwap base vault', async () => {
+  const profile = starterProfile();
+  const f = await fixture();
+  const read = await inspectPumpSwap(TOKEN, profile, controls, undefined, SLOT, 'https://rpc.example', f.fetcher, () => AT);
+  const bundle = pumpLiveBundle(read, profile);
+  assert.equal(bundle.details!.baseline.find(row => row.id === 'O08')?.quality, 'KNOWN');
+
+  const addRaw = (id: string, raw: string) => {
+    bundle.rawArtifacts[id] = raw;
+    bundle.evidence.push({
+      id, sourceId: 'solana-rpc', sourceType: 'JSON_RPC', retrievedAt: AT, availableAt: AT,
+      contentHash: createHash('sha256').update(raw).digest('hex'), adapterVersion: 'entry-groups-pump-test-v1',
+      accessMode: 'PUBLIC_API', scope: { method: 'sanitized-pump-provider-fixture', mint: TOKEN.address },
+    });
+  };
+  addRaw('rpc-genesis', JSON.stringify({ result: 'solana-mainnet-genesis-fixture' }));
+  addRaw('rpc-mint-raw', JSON.stringify({ result: { context: { slot: SLOT }, value: rpcAccount(TOKEN_PROGRAM_ID, mintBytes({ supply: PAYLOAD_MINT_SUPPLY, decimals: 6 })) } }));
+  const population = [
+    { address: f.baseVault.toBase58(), owner: f.poolKey.toBase58(), amount: 700_000_000_000n },
+    ...[0, 1, 2].map(index => ({
+      address: new PublicKey(Buffer.alloc(32, 50 + index)).toBase58(),
+      owner: new PublicKey(Buffer.alloc(32, 60 + index)).toBase58(), amount: 100_000_000_000n,
+    })),
+  ];
+  addRaw('rpc-holder-population', JSON.stringify({ result: {
+    context: { slot: SLOT + 2 },
+    value: population.map(account => ({
+      pubkey: account.address,
+      account: rpcAccount(TOKEN_PROGRAM_ID, tokenAccountBytes(new PublicKey(TOKEN.address), new PublicKey(account.owner), account.amount)),
+    })),
+  } }));
+
+  const providerInput = { ...bundle, details: { baseline: bundle.details!.baseline, social: bundle.details!.social } };
+  const groups = entryGroupsForBundle(providerInput);
+  const owners = groups.groups.find(group => group.checkId === 'ADV-01')!;
+  assert.equal(owners.status, 'PASS', `the exact captured liquidity vault is not treated as a wallet owner cluster: ${JSON.stringify(owners)}`);
+  assert.equal(owners.metrics.protocolVaultSupplyFraction, '0.7');
+  assert.equal(owners.metrics.largestOwnerSupplyFraction, '0.1');
+  assert.deepEqual(owners.metrics.excludedVaults, [f.baseVault.toBase58()]);
+  assert.ok(owners.evidenceIds.includes('pump-mints-vaults'));
+
+  const damaged = structuredClone(bundle);
+  const capture = JSON.parse(damaged.rawArtifacts['pump-mints-vaults']!) as { result: { value: Array<Record<string, unknown>> } };
+  const vault = capture.result.value[5] as { data: [string, string] };
+  const vaultBytes = Buffer.from(vault.data[0], 'base64');
+  new PublicKey(Buffer.alloc(32, 99)).toBuffer().copy(vaultBytes, 32);
+  vault.data[0] = vaultBytes.toString('base64');
+  damaged.rawArtifacts['pump-mints-vaults'] = JSON.stringify(capture);
+  const rejected = entryGroupsForBundle({ ...damaged, details: { baseline: damaged.details!.baseline, social: damaged.details!.social } })
+    .groups.find(group => group.checkId === 'ADV-01')!;
+  assert.equal(rejected.status, 'UNKNOWN', 'a damaged vault owner proof cannot promote or exclude pool inventory');
+  assert.equal(rejected.code, 'GROUP_VAULT_PROOF_INVALID');
+  assert.equal(Object.hasOwn(rejected.metrics, 'largestOwnerSupplyFraction'), false);
+
+  const substituted = structuredClone(bundle);
+  substituted.evidence.find(record => record.id === 'pump-mints-vaults')!.sourceId = 'solana-rpc';
+  const sourceRejected = entryGroupsForBundle({ ...substituted, details: { baseline: substituted.details!.baseline, social: substituted.details!.social } })
+    .groups.find(group => group.checkId === 'ADV-01')!;
+  assert.equal(sourceRejected.status, 'UNKNOWN', 'changing the acquired vault artifact provenance cannot preserve the wallet-cluster exclusion');
+  assert.equal(sourceRejected.code, 'GROUP_VAULT_PROOF_INVALID');
 });
 
 test('a null blockhash-specific fee rebuilds both unsigned messages once and preserves every attempt', async () => {
@@ -1183,6 +1351,548 @@ test('a holder with existing WSOL is skipped before trying the GlobalConfig fall
   assert.equal(f.methods.some(call => /sendtransaction/i.test(call.method)), false);
 });
 
+test('full PumpSwap uses a clean existing native WSOL fallback and subtracts the initial close refund from setup', async () => {
+  const holderOwners = Array.from({ length: 20 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 80)));
+  const fallbackOwners = Array.from({ length: 7 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 110)));
+  const user = fallbackOwners[0]!;
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: holderOwners.map((owner, index) => ({ address: `unfunded-holder-${index}`, owner: owner.toBase58(), amount: String(20 - index) })),
+  };
+  const f = await fixture({
+    simulate: true, payerLamports: 1, additionalPayerLamports: 1_000_000_000, additionalFundedPayers: fallbackOwners,
+    ...fullSimulationRecipients, protocolFeeRecipients: fallbackOwners, globalAdmin: PublicKey.default,
+    buybackFeeRecipients: [FULL_BUYBACK_FEE_RECIPIENT, ...Array(7).fill(PublicKey.default)],
+    validNativeWsolOwners: fallbackOwners, simulationPayer: user,
+  });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+
+  assert.equal(read.inspection.errors.simulation, undefined);
+  assert.equal(read.inspection.errors.execution, undefined);
+  assert.equal(read.venue?.costsReconciled, true);
+  assert.deepEqual(read.venue?.simulation, { setupVerified: true, buySucceeded: true, sellSucceeded: true });
+  assert.ok(read.rawArtifacts['pump-simulation-payers'], 'the original holder and creator payer scan remains available');
+  assert.ok(read.rawArtifacts['pump-simulation-fallback-payers'], 'the configured fallback scan remains available');
+  assert.ok(read.rawArtifacts['pump-simulation-fallback-user-accounts'], 'the existing quote ATA came from its observed fallback account response');
+  const calculation = JSON.parse(read.rawArtifacts['pump-quote-calculation']!) as {
+    actualEntryAtomic: string; exitAtomic: string;
+    simulationProof: { existingWsol: { method: string; user: string; sourceId: string; sourceIndex: number }; setupLamports: string; initialQuoteRefundLamports: string; feeLamports: string };
+  };
+  const proof = calculation.simulationProof;
+  assert.deepEqual(proof.existingWsol, {
+    method: 'existing-wsol-roundtrip-v1', user: user.toBase58(),
+    sourceId: 'pump-simulation-fallback-user-accounts', sourceIndex: 1,
+  });
+  assert.equal(proof.initialQuoteRefundLamports, String(f.nativeWsolLamports));
+  assert.equal(proof.setupLamports, String(f.simulationSetupLamports), 'the native-account rent refund is removed before setup cost is measured');
+
+  const rawSimulation = JSON.parse(read.rawArtifacts['pump-roundtrip-simulation']!) as {
+    result: { value: {
+      fee: number; preBalances: number[]; postBalances: number[];
+      preTokenBalances: Array<{ accountIndex: number; mint: string; owner: string; programId: string; uiTokenAmount: { amount: string; decimals: number } }>;
+      postTokenBalances: Array<{ accountIndex: number }>;
+    } };
+  };
+  const request = JSON.parse(read.rawArtifacts['pump-simulation-request']!) as {
+    existingWsol: typeof proof.existingWsol; wireBase64: string;
+  };
+  assert.deepEqual(request.existingWsol, proof.existingWsol, 'the submitted unsigned simulation binds the same source account');
+  const tx = VersionedTransaction.deserialize(Buffer.from(request.wireBase64, 'base64'));
+  const staticKeys = tx.message.staticAccountKeys.map(key => key.toBase58());
+  const quoteAta = getAssociatedTokenAddressSync(NATIVE_MINT, user, true, TOKEN_PROGRAM_ID).toBase58();
+  const quoteIndex = staticKeys.indexOf(quoteAta);
+  assert.ok(quoteIndex >= 0);
+  assert.equal(rawSimulation.result.value.preBalances[quoteIndex], f.nativeWsolLamports, 'the pre-vector includes native reserve plus token amount');
+  assert.equal(rawSimulation.result.value.postBalances[quoteIndex], 0, 'the SDK closed the quote ATA after the roundtrip');
+  assert.deepEqual(rawSimulation.result.value.preTokenBalances.filter(row => row.accountIndex === quoteIndex).map(row => ({
+    mint: row.mint, owner: row.owner, programId: row.programId, amount: row.uiTokenAmount.amount, decimals: row.uiTokenAmount.decimals,
+  })), [{ mint: NATIVE_MINT.toBase58(), owner: user.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58(), amount: String(f.nativeWsolAmount), decimals: 9 }]);
+  assert.equal(rawSimulation.result.value.postTokenBalances.some(row => row.accountIndex === quoteIndex), false);
+  const formulaSetup = BigInt(rawSimulation.result.value.preBalances[0]!)
+    - BigInt(rawSimulation.result.value.postBalances[0]!)
+    - BigInt(calculation.actualEntryAtomic)
+    + BigInt(calculation.exitAtomic)
+    - BigInt(rawSimulation.result.value.fee)
+    + BigInt(rawSimulation.result.value.preBalances[quoteIndex]!);
+  assert.equal(proof.setupLamports, formulaSetup.toString(), 'adding the preexisting quote balance cancels the buy-close refund');
+
+  const instructions = tx.message.compiledInstructions;
+  const keyAt = (index: number) => staticKeys[index]!;
+  const buyDiscriminator = Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix => ix.name === 'buy')!.discriminator);
+  const sellDiscriminator = Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix => ix.name === 'sell')!.discriminator);
+  const buys = instructions.flatMap((ix, index) => keyAt(ix.programIdIndex) === PUMP_AMM_PROGRAM_ID.toBase58()
+    && Buffer.from(ix.data).subarray(0, 8).equals(buyDiscriminator) ? [index] : []);
+  const sells = instructions.flatMap((ix, index) => keyAt(ix.programIdIndex) === PUMP_AMM_PROGRAM_ID.toBase58()
+    && Buffer.from(ix.data).subarray(0, 8).equals(sellDiscriminator) ? [index] : []);
+  const quoteCloses = instructions.flatMap((ix, index) => keyAt(ix.programIdIndex) === TOKEN_PROGRAM_ID.toBase58()
+    && ix.data.length === 1 && ix.data[0] === 9 && keyAt(ix.accountKeyIndexes[0]!) === quoteAta ? [index] : []);
+  const quoteRecreates = instructions.flatMap((ix, index) => keyAt(ix.programIdIndex) === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()
+    && ix.data.length === 1 && ix.data[0] === 1 && keyAt(ix.accountKeyIndexes[1]!) === quoteAta ? [index] : []);
+  assert.equal(buys.length, 1);
+  assert.equal(sells.length, 1);
+  const swaps = [...buys, ...sells].map(index => instructions[index]!);
+  const protocolRecipients = swaps.map(ix => keyAt(ix.accountKeyIndexes[9]!));
+  const buybackRecipients = swaps.map(ix => keyAt(ix.accountKeyIndexes.at(-2)!));
+  assert.equal(new Set(protocolRecipients).size, 1, 'both swap legs use the same observed protocol fee recipient');
+  assert.equal(new Set(buybackRecipients).size, 1, 'both swap legs use the same observed buyback fee recipient');
+  assert.ok(protocolRecipients.every(recipient => recipient !== user.toBase58()), 'neither leg pays the public simulation subject as protocol fee recipient');
+  assert.ok(buybackRecipients.every(recipient => recipient !== user.toBase58()), 'neither leg pays the public simulation subject as buyback fee recipient');
+  assert.equal(quoteCloses.length, 2, 'the buy closes the original WSOL ATA and the sell closes the recreated ATA');
+  assert.equal(quoteRecreates.length, 1, 'the sell builder was given a missing quote account and recreates it');
+  assert.ok(buys[0]! < quoteCloses[0]! && quoteCloses[0]! < quoteRecreates[0]! && quoteRecreates[0]! < sells[0]! && sells[0]! < quoteCloses[1]!);
+  assert.ok(tx.signatures.every(signature => signature.every(byte => byte === 0)));
+  assert.equal(tx.message.addressTableLookups.length, 0);
+  assert.equal(f.methods.some(call => /sendtransaction/i.test(call.method)), false);
+});
+
+test('full PumpSwap still prefers a funded candidate with an absent WSOL ATA', async () => {
+  const second = new PublicKey(Buffer.alloc(32, 130));
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [
+      { address: 'holder-with-native-wsol', owner: PAYER.toBase58(), amount: '2' },
+      { address: 'holder-with-absent-wsol', owner: second.toBase58(), amount: '1' },
+    ],
+  };
+  const f = await fixture({
+    simulate: true, ...fullSimulationRecipients, additionalFundedPayers: [second], validNativeWsolOwners: [PAYER], simulationPayer: second,
+  });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+  const request = JSON.parse(read.rawArtifacts['pump-simulation-request']!) as { existingWsol?: unknown };
+  const calculation = JSON.parse(read.rawArtifacts['pump-quote-calculation']!) as { simulationProof: { existingWsol?: unknown } };
+
+  assert.equal(read.inspection.errors.simulation, undefined);
+  assert.equal(read.venue?.costsReconciled, true);
+  assert.equal(request.existingWsol, undefined);
+  assert.equal(calculation.simulationProof.existingWsol, undefined);
+  assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), true);
+});
+
+test('partial PumpSwap keeps its existing payer-unavailable behavior when only a native WSOL candidate exists', async () => {
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [{ address: 'holder-with-native-wsol', owner: PAYER.toBase58(), amount: '1' }],
+  };
+  const f = await fixture({ simulate: true, validNativeWsolOwners: [PAYER] });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT);
+
+  assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
+  assert.equal(read.venue?.costsReconciled, false);
+  assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), false);
+});
+
+test('full PumpSwap leaves malformed, mismatched, frozen, delegated and non-native quote ATAs unknown', async t => {
+  const unsupported: Array<{ name: string; scenario: Partial<Scenario> }> = [
+    { name: 'malformed account bytes', scenario: { nativeWsolAccountFailure: 'malformed' } },
+    { name: 'wrong token program', scenario: { nativeWsolAccountFailure: 'wrong-program' } },
+    { name: 'wrong mint', scenario: { nativeWsolAccountFailure: 'wrong-mint' } },
+    { name: 'wrong token owner', scenario: { nativeWsolAccountFailure: 'wrong-owner' } },
+    { name: 'frozen token state', scenario: { nativeWsolAccountFailure: 'frozen' } },
+    { name: 'delegated token account', scenario: { nativeWsolAccountFailure: 'delegated' } },
+    { name: 'close authority present', scenario: { nativeWsolAccountFailure: 'close-authority' } },
+    { name: 'non-native quote token account', scenario: { nativeWsolAccountFailure: 'non-native' } },
+    { name: 'lamports do not match reserve and amount', scenario: { nativeWsolLamports: 2_039_282 } },
+  ];
+  for (const item of unsupported) {
+    await t.test(item.name, async () => {
+      const holders: HolderFacts = {
+        supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+        accounts: [{ address: 'holder-with-unsupported-wsol', owner: PAYER.toBase58(), amount: '1' }],
+      };
+      const f = await fixture({ simulate: true, validNativeWsolOwners: [PAYER], ...item.scenario });
+      const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+        undefined, undefined, undefined, true);
+
+      assert.equal(read.inspection.bindingVerified, true);
+      assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
+      assert.equal(read.inspection.errors.execution, 'PUMP_TRANSACTION_COSTS_UNAVAILABLE');
+      assert.equal(read.venue?.costsReconciled, false);
+      assert.equal(read.venue?.simulation, undefined);
+      assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), false);
+      assert.ok(read.rawArtifacts['pump-quote-calculation'], 'the valid independent quote survives an unusable payer account');
+    });
+  }
+});
+
+test('existing native WSOL plus an existing base ATA records no setup rent', async () => {
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [{ address: 'holder-with-native-wsol-and-base-ata', owner: PAYER.toBase58(), amount: '1' }],
+  };
+  const f = await fixture({ simulate: true, ...fullSimulationRecipients, existingBaseOwners: [PAYER], validNativeWsolOwners: [PAYER] });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+  const calculation = JSON.parse(read.rawArtifacts['pump-quote-calculation']!) as { simulationProof: { setupLamports: string } };
+  const rawSimulation = JSON.parse(read.rawArtifacts['pump-roundtrip-simulation']!) as {
+    result: { value: { preTokenBalances: Array<{ accountIndex: number; uiTokenAmount: { amount: string } }>; postTokenBalances: Array<{ accountIndex: number; uiTokenAmount: { amount: string } }> } };
+  };
+  const tx = VersionedTransaction.deserialize(Buffer.from(String(f.methods.find(call => call.method === 'simulateTransaction')?.params[0]), 'base64'));
+  const baseIndex = tx.message.staticAccountKeys.findIndex(key => key.equals(f.baseAta));
+
+  assert.equal(read.inspection.errors.simulation, undefined);
+  assert.equal(read.venue?.costsReconciled, true);
+  assert.equal(calculation.simulationProof.setupLamports, '0');
+  assert.ok(rawSimulation.result.value.preTokenBalances.some(row => row.accountIndex === baseIndex && row.uiTokenAmount.amount === '1'));
+  assert.ok(rawSimulation.result.value.postTokenBalances.some(row => row.accountIndex === baseIndex && row.uiTokenAmount.amount === '1'));
+});
+
+test('full existing-WSOL simulation stays unknown when every observed fee recipient is the public payer', async () => {
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: [{ address: 'holder-with-native-wsol', owner: PAYER.toBase58(), amount: '1' }],
+  };
+  const f = await fixture({
+    simulate: true, protocolFeeRecipients: [PAYER, ...Array(7).fill(PublicKey.default)],
+    buybackFeeRecipients: [PAYER, ...Array(7).fill(PublicKey.default)], validNativeWsolOwners: [PAYER],
+  });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+
+  assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_SETUP_UNSUPPORTED');
+  assert.equal(read.venue?.costsReconciled, false);
+  assert.equal(read.venue?.simulation, undefined);
+  assert.equal(f.methods.some(call => call.method === 'simulateTransaction'), false);
+  assert.equal(read.rawArtifacts['pump-quote-calculation'] !== undefined, true, 'independent quotes remain observable without a qualified simulation');
+});
+
+test('Service admits and replays UNKNOWN when existing-WSOL runtime cost validation fails after a successful RPC simulation', async () => {
+  const fallbackOwners = Array.from({ length: 7 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 110)));
+  const user = fallbackOwners[0]!;
+  const holderOwners = Array.from({ length: 20 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 80)));
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: holderOwners.map((owner, index) => ({ address: `unfunded-holder-${index}`, owner: owner.toBase58(), amount: String(20 - index) })),
+  };
+  const profile = starterProfile();
+  const f = await fixture({
+    simulate: true, ...fullSimulationRecipients, payerLamports: 1, additionalPayerLamports: 1_000_000_000,
+    additionalFundedPayers: fallbackOwners, protocolFeeRecipients: fallbackOwners,
+    buybackFeeRecipients: [FULL_BUYBACK_FEE_RECIPIENT, ...Array(7).fill(PublicKey.default)],
+    globalAdmin: PublicKey.default, validNativeWsolOwners: fallbackOwners, simulationPayer: user,
+    simulationFailure: 'underfunded-setup',
+  });
+  const read = await inspectPumpSwap(TOKEN, profile, controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+    undefined, undefined, undefined, true);
+
+  assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_DELTA_MISMATCH');
+  assert.equal(read.venue?.costsReconciled, false);
+  assert.equal(read.venue?.simulation, undefined);
+  const bundle = pumpLiveBundle(read, profile);
+  const request = JSON.parse(bundle.rawArtifacts['pump-simulation-request']!) as { existingWsol?: { method: string; user: string } };
+  const simulation = JSON.parse(bundle.rawArtifacts['pump-roundtrip-simulation']!) as { result: { value: { err: unknown } } };
+  const calculation = JSON.parse(bundle.rawArtifacts['pump-quote-calculation']!) as { simulationProof?: unknown };
+  assert.deepEqual(request.existingWsol, {
+    method: 'existing-wsol-roundtrip-v1', user: user.toBase58(),
+    sourceId: 'pump-simulation-fallback-user-accounts', sourceIndex: 1,
+  });
+  assert.equal(simulation.result.value.err, null, 'the RPC executed successfully but local cost reconciliation rejected the payer delta');
+  assert.equal(calculation.simulationProof, undefined, 'a failed local cost check cannot retain a certified monetary proof');
+  assert.equal(bundle.details!.baseline.find(row => row.id === 'O15')?.quality, 'MISSING');
+  assert.equal(bundle.details!.baseline.find(row => row.id === 'O16')?.quality, 'MISSING');
+
+  const directory = mkdtempSync(join(tmpdir(), 'pump-existing-wsol-unknown-'));
+  try {
+    const database = join(directory, 'unknown.sqlite');
+    const writer = new Service(database);
+    let snapshotId = '';
+    let snapshotHash = '';
+    try {
+      const saved = writer.analyzeLive(bundle);
+      snapshotId = saved.id;
+      snapshotHash = saved.hash;
+      assert.equal(saved.details?.baseline.find(row => row.id === 'O16')?.quality, 'MISSING');
+    } finally { writer.close(); }
+
+    const reopened = new Service(database);
+    try {
+      const replay = reopened.replay(snapshotId);
+      assert.equal(replay.hash, snapshotHash);
+      assert.deepEqual(replay, reopened.show(snapshotId));
+      assert.equal(replay.details?.baseline.find(row => row.id === 'O16')?.quality, 'MISSING');
+    } finally { reopened.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Service saves and replays existing native WSOL proof and rejects fully rehashed tampering or proof stripping', async t => {
+  const fallbackOwners = Array.from({ length: 7 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 110)));
+  const user = fallbackOwners[0]!;
+  const holderOwners = Array.from({ length: 20 }, (_, index) => new PublicKey(Buffer.alloc(32, index + 80)));
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
+    accounts: holderOwners.map((owner, index) => ({ address: `unfunded-holder-${index}`, owner: owner.toBase58(), amount: String(20 - index) })),
+  };
+  const profile = starterProfile();
+  const makeBundle = async (existingBase: boolean): Promise<LiveBundle> => {
+    const f = await fixture({
+      simulate: true, payerLamports: 1, additionalPayerLamports: 1_000_000_000, additionalFundedPayers: fallbackOwners,
+      ...fullSimulationRecipients, protocolFeeRecipients: fallbackOwners, globalAdmin: PublicKey.default,
+      buybackFeeRecipients: [FULL_BUYBACK_FEE_RECIPIENT, ...Array(7).fill(PublicKey.default)],
+      validNativeWsolOwners: fallbackOwners, simulationPayer: user,
+      ...(existingBase ? { existingBaseOwners: [user] } : {}),
+    });
+    const read = await inspectPumpSwap(TOKEN, profile, controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT,
+      undefined, undefined, undefined, true);
+    return pumpLiveBundle(read, profile);
+  };
+  const bundle = await makeBundle(false);
+  const existingBaseBundle = await makeBundle(true);
+  const proof = pumpProof(bundle);
+  assert.equal(proof.existingWsol?.method, 'existing-wsol-roundtrip-v1');
+
+  const directory = mkdtempSync(join(tmpdir(), 'pump-existing-wsol-'));
+  try {
+    for (const [name, accepted] of [['new base ATA', bundle], ['existing base ATA', existingBaseBundle]] as const) {
+      await t.test(`Service saves and replays native WSOL proof with ${name}`, async () => {
+        const simulation = JSON.parse(accepted.rawArtifacts['pump-roundtrip-simulation']!) as {
+          result: { value: { preBalances: number[] } };
+        };
+        const tx = VersionedTransaction.deserialize(Buffer.from(pumpProof(accepted).wireBase64, 'base64'));
+        const baseIndex = tx.message.staticAccountKeys.findIndex(key => key.equals(getAssociatedTokenAddressSync(
+          new PublicKey(TOKEN.address), user, true, TOKEN_PROGRAM_ID,
+        )));
+        assert.notEqual(baseIndex, -1);
+        assert.equal(simulation.result.value.preBalances[baseIndex]! > 0, name === 'existing base ATA');
+        if (name === 'existing base ATA') assert.equal(pumpProof(accepted).setupLamports, '0');
+
+        const database = join(directory, `accepted-${name.startsWith('new') ? 'new' : 'existing'}-base.sqlite`);
+        const writer = new Service(database);
+        let snapshotId = '';
+        let snapshotHash = '';
+        try {
+          const saved = writer.analyzeLive(accepted);
+          snapshotId = saved.id;
+          snapshotHash = saved.hash;
+          assert.equal(saved.details?.baseline.find(row => row.id === 'O15')?.quality, 'KNOWN');
+          assert.equal(saved.details?.baseline.find(row => row.id === 'O16')?.quality, 'KNOWN');
+          assert.equal((saved.details?.baseline.find(row => row.id === 'O15')?.data as { setupMethod?: string }).setupMethod, 'existing-wsol-roundtrip-v1');
+        } finally { writer.close(); }
+
+        const reopened = new Service(database);
+        try {
+          const replay = reopened.replay(snapshotId);
+          assert.equal(replay.hash, snapshotHash);
+          assert.deepEqual(replay, reopened.show(snapshotId));
+        } finally { reopened.close(); }
+      });
+    }
+
+    const mutateArtifact = (candidate: LiveBundle, id: string, update: (value: Record<string, any>) => void) => {
+      const value = JSON.parse(candidate.rawArtifacts[id]!) as Record<string, any>;
+      update(value);
+      candidate.rawArtifacts[id] = JSON.stringify(value);
+    };
+    const tampering: Array<{ name: string; source?: LiveBundle; mutate: (candidate: LiveBundle) => void }> = [
+      {
+        name: 'returned base account is missing',
+        mutate: candidate => mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => { simulation.result.value.accounts[1] = null; }),
+      },
+      {
+        name: 'returned base account uses a different token program',
+        mutate: candidate => mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+          simulation.result.value.accounts[1].owner = TOKEN_2022_PROGRAM;
+        }),
+      },
+      {
+        name: 'returned base account has a different mint',
+        mutate: candidate => mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+          const account = simulation.result.value.accounts[1];
+          const bytes = Buffer.from(account.data[0], 'base64');
+          new PublicKey(Buffer.alloc(32, 28)).toBuffer().copy(bytes, 0);
+          account.data[0] = bytes.toString('base64');
+        }),
+      },
+      {
+        name: 'returned base account has a different token owner',
+        mutate: candidate => mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+          const account = simulation.result.value.accounts[1];
+          const bytes = Buffer.from(account.data[0], 'base64');
+          new PublicKey(Buffer.alloc(32, 29)).toBuffer().copy(bytes, 32);
+          account.data[0] = bytes.toString('base64');
+        }),
+      },
+      {
+        name: 'post base quantity changed while returned account matches but initial quantity differs',
+        source: existingBaseBundle,
+        mutate: candidate => {
+          const tx = VersionedTransaction.deserialize(Buffer.from(pumpProof(candidate).wireBase64, 'base64'));
+          const baseIndex = tx.message.staticAccountKeys.findIndex(key => key.equals(getAssociatedTokenAddressSync(
+            new PublicKey(TOKEN.address), user, true, TOKEN_PROGRAM_ID,
+          )));
+          assert.notEqual(baseIndex, -1);
+          mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+            const value = simulation.result.value;
+            const returned = value.accounts[1];
+            const bytes = Buffer.from(returned.data[0], 'base64');
+            const changed = bytes.readBigUInt64LE(64) + 1n;
+            bytes.writeBigUInt64LE(changed, 64);
+            returned.data[0] = bytes.toString('base64');
+            const post = value.postTokenBalances.find((row: { accountIndex: number }) => row.accountIndex === baseIndex);
+            assert.ok(post);
+            post.uiTokenAmount.amount = changed.toString();
+          });
+        },
+      },
+      {
+        name: 'captured base mint decimals disagree with simulation token vectors',
+        mutate: candidate => mutateArtifact(candidate, 'pump-mints-vaults', capture => {
+          const account = capture.result.value[3];
+          const bytes = Buffer.from(account.data[0], 'base64');
+          bytes[44] = (bytes[44]! + 1) % 256;
+          account.data[0] = bytes.toString('base64');
+        }),
+      },
+      {
+        name: 'new base setup is one lamport below the returned base account rent',
+        mutate: candidate => {
+          const proof = pumpProof(candidate);
+          const oldSetup = BigInt(proof.setupLamports);
+          assert.ok(oldSetup > 0n);
+          const tx = VersionedTransaction.deserialize(Buffer.from(proof.wireBase64, 'base64'));
+          const baseIndex = tx.message.staticAccountKeys.findIndex(key => key.equals(getAssociatedTokenAddressSync(
+            new PublicKey(TOKEN.address), user, true, TOKEN_PROGRAM_ID,
+          )));
+          assert.notEqual(baseIndex, -1);
+          mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+            const value = simulation.result.value;
+            assert.equal(value.preBalances[baseIndex], 0, 'the rent guard case starts with no base ATA');
+            assert.equal(BigInt(value.postBalances[baseIndex]), oldSetup,
+              'the unmodified setup exactly covers the returned base ATA rent');
+            value.postBalances[0] += 1;
+            value.accounts[0].lamports = value.postBalances[0];
+          });
+          mutateArtifact(candidate, 'pump-quote-calculation', calculation => {
+            calculation.simulationProof.setupLamports = (oldSetup - 1n).toString();
+          });
+          const nativePairs = JSON.parse(candidate.rawArtifacts['pump-sol-usd']!) as Array<{
+            baseToken?: { address?: string }; quoteToken?: { address?: string }; priceUsd?: string;
+          }>;
+          const nativeUsd = nativePairs.find(pair => pair.baseToken?.address === NATIVE_MINT.toBase58()
+            && pair.quoteToken?.address === USDC)?.priceUsd;
+          assert.ok(nativeUsd);
+          const feeId = candidate.rawArtifacts['pump-entry-network-fee-retry'] ? 'pump-entry-network-fee-retry' : 'pump-entry-network-fee';
+          const entryFee = JSON.parse(candidate.rawArtifacts[feeId]!).result.value as number;
+          const lowerTotal = new Decimal(candidate.profile.sizeUsd!).add(
+            new Decimal(entryFee).add((oldSetup - 1n).toString()).div(1e9).mul(nativeUsd),
+          ).toFixed();
+          for (const row of candidate.details!.baseline.filter(row => row.id === 'O15' || row.id === 'O16')) {
+            (row.data as Record<string, unknown>).totalEntryCostUsd = lowerTotal;
+          }
+        },
+      },
+      {
+        name: 'source receipt slot moved beyond its simulation',
+        mutate: candidate => mutateArtifact(candidate, proof.existingWsol!.sourceId, source => { source.result.context.slot += 1; }),
+      },
+      {
+        name: 'native account flag removed from the observed quote ATA',
+        mutate: candidate => mutateArtifact(candidate, proof.existingWsol!.sourceId, source => {
+          const account = source.result.value[proof.existingWsol!.sourceIndex];
+          const bytes = Buffer.from(account.data[0], 'base64');
+          bytes.writeUInt32LE(0, 109);
+          account.data[0] = bytes.toString('base64');
+        }),
+      },
+      {
+        name: 'initial quote refund scalar changed',
+        mutate: candidate => mutateArtifact(candidate, 'pump-quote-calculation', calculation => { calculation.simulationProof.initialQuoteRefundLamports = '0'; }),
+      },
+      {
+        name: 'existing WSOL proof method marker changed in both receipts',
+        mutate: candidate => {
+          mutateArtifact(candidate, 'pump-quote-calculation', calculation => { calculation.simulationProof.existingWsol.method = 'unverified'; });
+          mutateArtifact(candidate, 'pump-simulation-request', request => { request.existingWsol.method = 'unverified'; });
+        },
+      },
+      {
+        name: 'submitted wire no longer recreates the quote ATA for sell',
+        mutate: candidate => {
+          const request = JSON.parse(candidate.rawArtifacts['pump-simulation-request']!) as { wireBase64: string };
+          const calculation = JSON.parse(candidate.rawArtifacts['pump-quote-calculation']!) as { simulationProof: { wireBase64: string } };
+          const tx = VersionedTransaction.deserialize(Buffer.from(request.wireBase64, 'base64'));
+          const keys = tx.message.staticAccountKeys.map(key => key.toBase58());
+          const quoteAta = getAssociatedTokenAddressSync(NATIVE_MINT, user, true, TOKEN_PROGRAM_ID).toBase58();
+          const create = tx.message.compiledInstructions.find(ix => keys[ix.programIdIndex] === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()
+            && ix.data.length === 1 && ix.data[0] === 1 && keys[ix.accountKeyIndexes[1]!] === quoteAta);
+          assert.ok(create, 'the original wire contains the sell-side quote ATA recreation');
+          create.data[0] = 0;
+          const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+          request.wireBase64 = wireBase64;
+          calculation.simulationProof.wireBase64 = wireBase64;
+          candidate.rawArtifacts['pump-simulation-request'] = JSON.stringify(request);
+          candidate.rawArtifacts['pump-quote-calculation'] = JSON.stringify(calculation);
+        },
+      },
+      {
+        name: 'submitted buy and sell wire make the public payer its own protocol fee recipient',
+        mutate: candidate => {
+          const request = JSON.parse(candidate.rawArtifacts['pump-simulation-request']!) as { wireBase64: string };
+          const calculation = JSON.parse(candidate.rawArtifacts['pump-quote-calculation']!) as { simulationProof: { wireBase64: string } };
+          const tx = VersionedTransaction.deserialize(Buffer.from(request.wireBase64, 'base64'));
+          const keys = tx.message.staticAccountKeys.map(key => key.toBase58());
+          const buyDiscriminator = Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix => ix.name === 'buy')!.discriminator);
+          const sellDiscriminator = Buffer.from(OFFLINE_PUMP_AMM_PROGRAM.idl.instructions.find(ix => ix.name === 'sell')!.discriminator);
+          const swaps = tx.message.compiledInstructions.filter(ix => keys[ix.programIdIndex] === PUMP_AMM_PROGRAM_ID.toBase58()
+            && (Buffer.from(ix.data).subarray(0, 8).equals(buyDiscriminator)
+              || Buffer.from(ix.data).subarray(0, 8).equals(sellDiscriminator)));
+          assert.equal(swaps.length, 2, 'the original wire contains both Pump swap legs');
+          for (const ix of swaps) {
+            assert.notEqual(keys[ix.accountKeyIndexes[9]!], user.toBase58(), 'the original protocol recipient is not the public payer');
+            ix.accountKeyIndexes[9] = 0;
+          }
+          const wireBase64 = Buffer.from(tx.serialize()).toString('base64');
+          request.wireBase64 = wireBase64;
+          calculation.simulationProof.wireBase64 = wireBase64;
+          candidate.rawArtifacts['pump-simulation-request'] = JSON.stringify(request);
+          candidate.rawArtifacts['pump-quote-calculation'] = JSON.stringify(calculation);
+        },
+      },
+      {
+        name: 'pre-simulation quote lamports no longer match the native ATA',
+        mutate: candidate => mutateArtifact(candidate, 'pump-roundtrip-simulation', simulation => {
+          const calculation = JSON.parse(candidate.rawArtifacts['pump-quote-calculation']!) as { simulationProof: { quoteIndex: number } };
+          simulation.result.value.preBalances[calculation.simulationProof.quoteIndex] += 1;
+        }),
+      },
+    ];
+    for (const tamper of tampering) {
+      await t.test(tamper.name, async () => {
+        const candidate = structuredClone(tamper.source ?? bundle);
+        tamper.mutate(candidate);
+        rehashPumpBundle(candidate);
+        const verifier = new Service(join(directory, `${tampering.indexOf(tamper)}.sqlite`));
+        try {
+          assert.throws(() => verifier.analyzeLive(candidate), /PUMP_EXISTING_WSOL_PROOF_INVALID/);
+        } finally { verifier.close(); }
+      });
+    }
+
+    await t.test('proof artifacts removed while the new O15/O16 setup marker remains', async () => {
+      const candidate = structuredClone(bundle);
+      const removed = new Set([
+        proof.existingWsol!.sourceId, 'pump-simulation-request', 'pump-roundtrip-simulation', 'pump-quote-calculation',
+      ]);
+      for (const id of removed) delete candidate.rawArtifacts[id];
+      candidate.evidence = candidate.evidence.filter(record => !removed.has(record.id));
+      const clearRemovedEvidenceRefs = (value: unknown): void => {
+        if (!value || typeof value !== 'object') return;
+        if (Array.isArray(value)) { for (const item of value) clearRemovedEvidenceRefs(item); return; }
+        const row = value as Record<string, unknown>;
+        if (Array.isArray(row.evidenceIds)) row.evidenceIds = row.evidenceIds.filter(id => typeof id !== 'string' || !removed.has(id));
+        for (const child of Object.values(row)) clearRemovedEvidenceRefs(child);
+      };
+      clearRemovedEvidenceRefs(candidate);
+      rehashPumpBundle(candidate);
+      const verifier = new Service(join(directory, 'stripped-proof.sqlite'));
+      try {
+        assert.throws(() => verifier.analyzeLive(candidate), /PUMP_EXISTING_WSOL_PROOF_INVALID/,
+          'a known existing-WSOL cost decision cannot survive removal of every supporting artifact');
+      } finally { verifier.close(); }
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('unfunded or non-system GlobalConfig candidates remain unknown and retain safe fallback evidence', async t => {
   for (const scenario of [
     { label: 'insufficient lamports', payerLamports: 1 },
@@ -1247,7 +1957,7 @@ test('incomplete, malformed or inconsistent single-response simulation proof rem
 });
 
 test('full PumpSwap retries one verified 6004 failure at its state floor and Service admission rejects rehashed marker tampering', async () => {
-  const f = await fixture({ simulate: true, simulationFailure: 'slippage', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
+  const f = await fixture({ simulate: true, ...fullSimulationRecipients, simulationFailure: 'slippage', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
   const holders: HolderFacts = {
     supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
     accounts: [{ address: 'candidate-token-account', owner: f.payer.toBase58(), amount: '1' }],
@@ -1387,7 +2097,7 @@ test('full PumpSwap retries one verified 6004 failure at its state floor and Ser
   assert.equal(partial.rawArtifacts['pump-slippage-refresh'], undefined);
 
   const abortController = new AbortController();
-  const cancelFixture = await fixture({ simulate: true, simulationFailure: 'slippage' });
+  const cancelFixture = await fixture({ simulate: true, ...fullSimulationRecipients, simulationFailure: 'slippage' });
   const cancelFetcher: typeof fetch = async (input, init) => {
     const response = await cancelFixture.fetcher(input, init);
     if (String(input).startsWith('https://rpc.example')
@@ -1400,7 +2110,7 @@ test('full PumpSwap retries one verified 6004 failure at its state floor and Ser
     'caller cancellation after the verified first failure prevents a second inspection');
   assert.equal(cancelled.rawArtifacts['pump-slippage-refresh'], undefined);
 
-  const wrongProgramFixture = await fixture({ simulate: true, simulationFailure: 'slippage-wrong-program' });
+  const wrongProgramFixture = await fixture({ simulate: true, ...fullSimulationRecipients, simulationFailure: 'slippage-wrong-program' });
   const wrongProgram = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', wrongProgramFixture.fetcher, () => AT,
     undefined, undefined, undefined, true);
   assert.equal(wrongProgram.inspection.errors.simulation, 'PUMP_SIMULATION_SLIPPAGE');
@@ -1411,7 +2121,7 @@ test('full PumpSwap retries one verified 6004 failure at its state floor and Ser
 
 test('two verified Pump 6004 failures derive only a known entry-cost rejection and survive Service replay', async () => {
   const profile = starterProfile();
-  const f = await fixture({ simulate: true, simulationFailure: 'slippage-persistent', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
+  const f = await fixture({ simulate: true, ...fullSimulationRecipients, simulationFailure: 'slippage-persistent', slippageSlot: SLOT + 10, retryCaptureSlot: SLOT + 15 });
   const holders: HolderFacts = {
     supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
     accounts: [{ address: 'candidate-token-account', owner: f.payer.toBase58(), amount: '1' }],

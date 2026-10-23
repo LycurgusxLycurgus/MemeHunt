@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { z } from 'zod';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { comparisonPublicScopeFacts, deriveAttention, originSourceScope, qualifiedBinaryEntryDecisions, qualifiedComparisonEvidence } from '../src/domain/attention.js';
+import { comparisonPublicScopeFacts, deriveAttention, narrativeSourceBound, originEntryCitationAllowed, originSourceScope, qualifiedBinaryEntryDecisions, qualifiedComparisonEvidence } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import { collectAttentionSources, entryEvidenceScope, reconstructOriginAcquisition, type AttentionRead } from '../src/providers/attention.js';
 import { geminiSettings } from '../src/providers/gemini.js';
-import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonRequiredRecoveryPlan, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, leadershipOptions, qualifyAttention } from '../src/providers/attention-model.js';
+import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonRequiredRecoveryPlan, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, leadershipOptions, qualifyAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
 import { geckoPoolBinding, originRecoveryQuery } from '../src/providers/origin-recovery.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 
@@ -50,6 +51,74 @@ function linkedReferenceRead(): AttentionRead {
   read.metadataUri = metadataUrl;
   read.comparisonComplete = true;
   read.comparisonSourceIds = [comparisonApiId];
+  return read;
+}
+
+function base32(bytes: Buffer): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+  let bits = 0, value = 0, result = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      result += alphabet[(value >> bits) & 31];
+    }
+    value &= (1 << bits) - 1;
+  }
+  if (bits) result += alphabet[(value << (5 - bits)) & 31];
+  return `b${result}`;
+}
+
+function rawCid(text: string): string {
+  return base32(Buffer.concat([Buffer.from([0x01, 0x55, 0x12, 0x20]), createHash('sha256').update(text).digest()]));
+}
+
+function metadataAssociationRead(options: {
+  metadataUri?: string; metadataText?: string; childUrl?: string; childText?: string; useVerifiedAlias?: boolean;
+} = {}): AttentionRead {
+  const childUrl = options.childUrl ?? 'https://riverlantern.example/community';
+  const metadataText = options.metadataText ?? JSON.stringify({ name: 'River Lantern', website: childUrl });
+  const metadataUri = options.metadataUri ?? 'https://metadata.example/token/opaque';
+  const cidAlias = options.useVerifiedAlias === true;
+  const originUrl = cidAlias ? `https://ipfs.io/ipfs/${rawCid(metadataText)}` : metadataUri;
+  const metadataSourceUrl = cidAlias
+    ? `https://gateway.pinata.cloud/ipfs/${new URL(originUrl).pathname.split('/')[2]}`
+    : metadataUri;
+  const metadata = { id: 'token-metadata-json', url: metadataSourceUrl, text: metadataText,
+    publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' as const };
+  const child = { id: 'dex-seeded-website', url: childUrl,
+    text: options.childText ?? 'River Lantern tells a neighborhood story through shared local art.',
+    publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' as const };
+  const searchUrls = ['https://public.example/source', originUrl, childUrl];
+  const read: AttentionRead = {
+    sources: [
+      { id: 'page-1', url: searchUrls[0]!, text: 'A complete public page without a literal token address.',
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+      metadata,
+      child,
+    ],
+    rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: searchUrls.map(url => ({ url })), errors: [] }),
+      'attention-search-2': JSON.stringify({ results: searchUrls.map(url => ({ url })), errors: [] }),
+      'attention-fetch-1': JSON.stringify({ results: [
+        { url: searchUrls[0]!, final_url: searchUrls[0]!, text: 'A complete public page without a literal token address.' },
+        ...(cidAlias ? [] : [{ url: metadataUri, final_url: metadataUri, text: metadataText }]),
+        { url: childUrl, final_url: childUrl, text: child.text },
+      ], errors: [] }),
+      ...(cidAlias ? { 'attention-origin-fetch-1': JSON.stringify({ results: [
+        { url: metadataSourceUrl, final_url: metadataSourceUrl, text: metadataText },
+      ], errors: [] }) } : {}),
+    },
+    queries: [`"${TOKEN.address}" narrative origin catalyst`, `"${TOKEN.address}" exact posts`],
+    complete: true, postSampleComplete: true, codes: [], start: '2026-09-30T12:00:00.000Z', end: CUTOFF,
+    discoveryUrls: [originUrl, childUrl], metadataLinks: true, metadataUri: originUrl,
+    metadataLinkMethod: 'onchain-metadata-v1',
+  };
+  if (cidAlias) read.originRecovery = { aliases: [{
+    method: 'raw-cid-sha256-v1', originUrl, sourceId: metadata.id, responseId: 'attention-origin-fetch-1', resultIndex: 0,
+  }], comparisonSupplementIds: [] };
+  read.originScope = originSourceScope(read, TOKEN);
   return read;
 }
 
@@ -350,6 +419,140 @@ test('a one-hop mint-metadata reference can support A01 after independent review
   assert.equal(invalidOrigin.requests.length, 1, 'an ineligible metadata-linked A03 selector is rejected before independent review');
   assert.equal(rejected.code, 'ATT_MODEL_INVALID');
   assert.equal(rejected.proposal, null);
+});
+
+test('fresh on-chain metadata binds exact-URI and verified CID-alias sources for narrative review without becoming origin proof', async t => {
+  for (const [name, read] of [
+    ['exact opaque URI', metadataAssociationRead()],
+    ['verified raw-CID alias', metadataAssociationRead({ useVerifiedAlias: true })],
+  ] as const) {
+    await t.test(name, async () => {
+      const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+      const metadata = read.sources.find(source => source.id === 'token-metadata-json')!;
+      assert.equal(child.discoveredFrom, undefined, 'the already DEX-seeded website needs no invented discovery parent');
+      assert.equal(metadata.text.includes(TOKEN.address), false, 'the metadata document contains no mint string');
+      assert.equal(narrativeSourceBound(read, child.id, TOKEN), true,
+        'one literal website URL in the exact on-chain metadata binds this fetched page for narrative assessment');
+      assert.equal(narrativeSourceBound(read, metadata.id, TOKEN), true,
+        'the acquired metadata page itself is within the bounded narrative association');
+      assert.equal(read.originScope?.complete, true, 'complete exact-token searches plus acquired metadata and linked page close the original scope');
+      assert.ok(read.originScope?.sourceIds.includes(child.id));
+      assert.equal(originEntryCitationAllowed(read, child.id, TOKEN, 'FAIL'), true,
+        'a completed reviewed inadequate-origin entry grade can cite an associated original source');
+      assert.equal(originEntryCitationAllowed(read, child.id, TOKEN, 'PASS'), false,
+        'metadata association alone cannot support positive origin');
+
+      const mock = mockModel(packet => packet.proposal ? reviewWire(packet) : proposalWire(packet, {
+        claims: [{ id: 'claim-metadata-reference', feature: 'A01', value: true,
+          summary: 'The exact metadata-linked website describes the River Lantern community narrative.',
+          citations: [{ sourceId: child.id, spanId: spanId(packet, child.id, 'River Lantern tells') }] }],
+      }));
+      const qualified = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+      assert.equal(qualified.code, undefined);
+      assert.equal(mock.requests.length, 2, 'the associated source uses the established proposal and independent-review pair');
+      assert.ok((mock.requests[0]!.packet.eligibleClaimSourceIds as string[]).includes(child.id));
+      assert.ok((mock.requests[1]!.packet.sources as PacketSource[]).some(source => source.id === child.id),
+        'the independent reviewer receives the exact associated source in the unchanged full review catalog');
+      assert.equal(deriveAttention(qualified.scope!, qualified.proposal, qualified.review, TOKEN, CUTOFF, ['source', 'proposal', 'review'])
+        .find(row => row.id === 'A01')?.quality, 'KNOWN');
+    });
+  }
+
+  await t.test('unmarked legacy scope does not gain association from an already seeded page', () => {
+    const legacy = metadataAssociationRead();
+    delete legacy.metadataLinkMethod;
+    assert.equal(narrativeSourceBound(legacy, 'dex-seeded-website', TOKEN), false,
+      'the new relationship rule is opt-in and cannot alter marker-absent replay');
+    assert.equal(originEntryCitationAllowed(legacy, 'dex-seeded-website', TOKEN, 'FAIL'), false);
+  });
+
+  await t.test('wrong URI, invalid alias, non-JSON metadata, unlinked, transitive, and name-only candidates stay unbound', () => {
+    const wrongUri = metadataAssociationRead();
+    wrongUri.metadataUri = 'https://metadata.example/another-opaque-uri';
+    assert.equal(narrativeSourceBound(wrongUri, 'dex-seeded-website', TOKEN), false);
+
+    const invalidAlias = metadataAssociationRead({ useVerifiedAlias: true });
+    const aliasFetch = JSON.parse(invalidAlias.rawArtifacts['attention-origin-fetch-1']!) as { results: Array<{ text: string }> };
+    aliasFetch.results[0]!.text += ' changed after CID verification';
+    invalidAlias.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(aliasFetch);
+    assert.equal(narrativeSourceBound(invalidAlias, 'dex-seeded-website', TOKEN), false);
+
+    const nonJson = metadataAssociationRead({ metadataText: 'not a JSON object' });
+    assert.equal(narrativeSourceBound(nonJson, 'dex-seeded-website', TOKEN), false);
+
+    const unlinked = metadataAssociationRead({ metadataText: JSON.stringify({ name: 'River Lantern', symbol: 'RIVER' }) });
+    assert.equal(narrativeSourceBound(unlinked, 'dex-seeded-website', TOKEN), false);
+
+    const transitive = metadataAssociationRead();
+    transitive.sources.push({ id: 'transitive-grandchild', url: 'https://riverlantern.example/grandchild',
+      text: 'This third page repeats the River Lantern name but is two links away.',
+      publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    assert.equal(narrativeSourceBound(transitive, 'transitive-grandchild', TOKEN), false);
+
+    const tickerOnly = metadataAssociationRead({ metadataText: JSON.stringify({ name: 'River Lantern', symbol: 'RIVER' }),
+      childUrl: 'https://unrelated.example/river-lantern' });
+    assert.equal(narrativeSourceBound(tickerOnly, 'dex-seeded-website', TOKEN), false);
+  });
+});
+
+test('binary public-origin review permits metadata-associated FAIL and rejects metadata-only PASS', () => {
+  const read = metadataAssociationRead();
+  read.entryEvidenceMethod = 'public-support-v2';
+  read.entryExecutionMethod = 'entry-first-v1';
+  read.comparisonComplete = true;
+  read.comparisonSourceIds = [];
+  read.comparisonAcquisition = { originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 0, leads: [] };
+  read.rawArtifacts['attention-search-3'] = JSON.stringify({ results: [], errors: [] });
+  assert.equal(entryEvidenceScope(read, TOKEN, CUTOFF).complete, true, 'the original source and search packet is complete before grading');
+
+  const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+  const page = read.sources.find(source => source.id === 'page-1')!;
+  const citation = (source: typeof child) => ({ sourceId: source.id, spanId: sourceSpans(source.id, source.text)[0]!.id });
+  const wire = (verdict: 'PASS' | 'FAIL', source: typeof child) => ({
+    originTraceability: { verdict, rationale: 'This is an independently reviewed bounded public-origin grade.', citation: citation(source) },
+    leadership: { verdict: 'FAIL' as const, rationale: 'The complete sample does not establish primary leadership or measured attention.', citation: citation(page) },
+    representations: { verdict: 'FAIL' as const, rationale: 'The complete comparison sample does not bind an adequate representation set.', citation: citation(page) },
+    inspectionComplete: true,
+  });
+
+  const acceptedFailure = resolvePublicEntryDecision(wire('FAIL', child), read, TOKEN, CUTOFF);
+  assert.equal(acceptedFailure.originTraceability.verdict, 'FAIL');
+  assert.equal(acceptedFailure.originTraceability.citations[0]?.sourceId, child.id,
+    'a metadata-associated source is valid for a completed independently reviewed inadequate-origin grade');
+
+  assert.throws(() => resolvePublicEntryDecision(wire('PASS', child), read, TOKEN, CUTOFF), /ATT_MODEL_ENTRY_INSPECTION_INVALID|ZodError/,
+    'metadata-only association cannot enter the positive-origin citation selector');
+});
+
+test('associated narrative claims remain unqualified after provider failure or independent-review rejection', async t => {
+  await t.test('a model-provider 503 leaves the claim unqualified', async () => {
+    const read = metadataAssociationRead();
+    let calls = 0;
+    const result = await qualifyAttention(read, TOKEN, KEY, async () => {
+      calls++;
+      return new Response(`provider overload ${calls}`, { status: 503 });
+    }, async () => {});
+    assert.equal(result.code, 'ATT_MODEL_HTTP_503');
+    assert.equal(result.proposal, null);
+    assert.equal(result.review, null);
+    assert.notEqual(deriveAttention(read, result.proposal, result.review, TOKEN, CUTOFF, ['source'])
+      .find(row => row.id === 'A01')?.quality, 'KNOWN');
+  });
+
+  await t.test('a rejected independent review leaves the proposed linked claim unqualified', async () => {
+    const read = metadataAssociationRead();
+    const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+    const mock = mockModel(packet => packet.proposal ? reviewWire(packet, false) : proposalWire(packet, {
+      claims: [{ id: 'claim-rejected-metadata', feature: 'A01', value: true,
+        summary: 'The linked website describes the neighborhood narrative.',
+        citations: [{ sourceId: child.id, spanId: spanId(packet, child.id, 'River Lantern tells') }] }],
+    }));
+    const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+    assert.equal(result.code, undefined);
+    assert.equal(result.review?.decisions[0]?.accepted, false);
+    assert.notEqual(deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['source', 'proposal', 'review'])
+      .find(row => row.id === 'A01')?.quality, 'KNOWN');
+  });
 });
 
 type TransportReceipt = {
@@ -5488,6 +5691,82 @@ test('structural v4 qualification cannot let an unrooted canonical-origin route 
     'the structurally valid but source-ineligible leadership positive does not set CAN-02');
 });
 
+test('current empty attention searches fail only the new entry gate after complete independent inspection', () => {
+  const fixture = () => {
+    const read = publicEntryRead();
+    read.leadershipPositiveMethod = 'source-bound-positive-v1';
+    read.queries = [`"${TOKEN.address}" base narrative origin catalyst`, `"${TOKEN.address}" (site:x.com OR site:twitter.com)`, 'River Lantern representations'];
+    read.postSampleComplete = true;
+    const scope = entryEvidenceScope(read, TOKEN, CUTOFF);
+    assert.equal(scope.complete, true, JSON.stringify(scope));
+    const citation = (sourceId: string) => ({ sourceId, quote: read.sources.find(source => source.id === sourceId)!.text });
+    const review = {
+      entryDecisions: {
+        method: 'binary-public-support-v4' as const,
+        originTraceability: { verdict: 'FAIL' as const, rationale: 'The complete reviewed sources do not establish a current primary origin route.', citations: [citation('origin-source')] },
+        leadership: { verdict: 'FAIL' as const, basis: 'EVIDENCE_INADEQUACY' as const, rationale: 'The complete reviewed sources do not establish current independent public attention.', citations: [citation('origin-source')] },
+        representations: { verdict: 'FAIL' as const, rationale: 'The retained comparison scope does not establish complete public representation.', citations: [citation('comparison-source')] },
+        explainableThesis: { verdict: 'FAIL' as const, rationale: 'The retained source does not explain a current public token narrative.', citations: [citation('origin-source')] },
+        inspectionComplete: true,
+        sourceIds: scope.sourceIds,
+      },
+      decisions: [],
+      candidateSet: { complete: false, rationale: 'The bounded sample does not establish a complete representation set.' },
+      originRelationship: { status: 'UNKNOWN' as const, citations: [], rationale: 'No dated primary project post establishes the origin relationship.' },
+    };
+    const proposal = { claims: [], posts: [], competitors: [] };
+    assert.equal(qualifiedBinaryEntryDecisions(read, review, TOKEN, CUTOFF)?.method, 'binary-public-support-v4');
+    return { read, review, proposal };
+  };
+  const rowsFor = (value: ReturnType<typeof fixture>, entryGroups: boolean) => deriveAttention(
+    value.read, value.proposal, value.review, TOKEN, CUTOFF, ['source', 'review'], true, entryGroups,
+  );
+  const gate = (rows: ReturnType<typeof rowsFor>, id: 'A15' | 'A18') => rows.find(row => row.id === id)!;
+
+  const complete = fixture();
+  const currentRows = rowsFor(complete, true);
+  for (const id of ['A15', 'A18'] as const) {
+    const row = gate(currentRows, id);
+    assert.equal(row.quality, 'MISSING', `${id} remains a factual count/growth measurement, not an inferred zero`);
+    assert.equal(row.projection?.value, null, `${id} has no computed factual count or growth value`);
+    const data = row.data as { method?: string; entryCriterion?: string; verdict?: string; postSampleScope?: { method?: string; complete?: boolean; sourceIds?: string[] }; factualAssessment?: { quality?: string; value?: boolean | null } };
+    assert.equal(data.method, 'entry-evidence-gate-v1');
+    assert.equal(data.verdict, 'FAIL');
+    assert.equal(data.postSampleScope?.method, 'reviewed-empty-post-scope-v1');
+    assert.equal(data.postSampleScope?.complete, true);
+    assert.deepEqual(data.postSampleScope?.sourceIds, []);
+    assert.equal(data.factualAssessment?.quality, 'MISSING', 'entry failure does not invent factual counts or growth');
+    assert.equal(data.factualAssessment?.value, null);
+  }
+
+  const legacyRows = rowsFor(complete, false);
+  for (const id of ['A15', 'A18'] as const) {
+    assert.equal(gate(legacyRows, id).quality, 'MISSING', 'legacy calls keep their prior result');
+    assert.notEqual((gate(legacyRows, id).data as { method?: string }).method, 'entry-evidence-gate-v1');
+  }
+
+  const unresolved = (mutate: (value: ReturnType<typeof fixture>) => void, name: string) => {
+    const value = fixture();
+    mutate(value);
+    const rows = rowsFor(value, true);
+    for (const id of ['A15', 'A18'] as const) {
+      assert.equal(gate(rows, id).quality, 'MISSING', `${name}: ${id}`);
+      assert.equal(gate(rows, id).projection?.value, null, `${name}: ${id}`);
+      assert.notEqual((gate(rows, id).data as { method?: string }).method, 'entry-evidence-gate-v1', `${name}: ${id}`);
+    }
+  };
+  unresolved(value => {
+    value.read.postSampleComplete = false;
+    value.read.rawArtifacts['attention-search-2'] = JSON.stringify({ error: 'search transport timeout' });
+  }, 'transport failure');
+  unresolved(value => {
+    value.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [{ url: 'https://x.com/account/status/123' }], errors: [] });
+  }, 'an omitted discovered post');
+  unresolved(value => {
+    (value.review.entryDecisions as { inspectionComplete: boolean }).inspectionComplete = false;
+  }, 'incomplete independent inspection');
+});
+
 test('fresh entry-first v2 independently grades the explainable thesis and rejects unbound anchors', () => {
   const run = (options: { finalVerdict?: 'PASS' | 'FAIL'; wrongDraft?: boolean; wrongAnchor?: boolean; omitFinal?: boolean } = {}) => {
     const read = publicEntryRead();
@@ -5803,9 +6082,15 @@ test('real original timeout plus successful own alternate acquisition dispatches
     });
     assert.equal(result.code, undefined);
     assert.equal(result.scope?.entryExecutionMethod, 'entry-first-v2');
+    assert.equal(result.scope?.comparisonRecovery?.fallbackSelectionMethod, 'observed-hosts-v1');
     assert.equal(result.scope?.comparisonRecovery?.accessGapMethod, 'own-acquired-alternates-v1');
+    assert.equal(JSON.parse(result.scope?.rawArtifacts['attention-recovery-fallback-scope'] ?? 'null').method,
+      'same-parent-alternates-v2', 'fresh acquisition-only qualification emits the versioned fallback receipt even with no fallback rounds');
+    assert.equal(result.scope?.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(result.scope?.comparisonRecovery),
+      'the acquisition marker is the exact serialized qualified receipt');
     assert.equal(result.scope?.comparisonComplete, false);
     assert.equal(result.scope?.comparisonQualification, undefined, 'the recovery does not create factual comparison accounting');
+    assert.equal(result.scope?.comparisonCoverage, undefined, 'entry support does not invent comparison counts or completeness');
     const scope = entryEvidenceScope(result.scope!, TOKEN, CUTOFF);
     assert.equal(scope.complete, true, JSON.stringify(scope));
     assert.deepEqual(scope.gaps.map(gap => [gap.code, gap.cause, gap.originalAttemptIds]),
@@ -5826,7 +6111,13 @@ test('real original timeout plus successful own alternate acquisition dispatches
     for (const packet of entryPackets) {
       assert.equal(packet.accessGapMethod, 'own-acquired-alternates-v1');
       assert.match(String(packet.instruction), /contents and indexed-subject relationship remain unresolved/);
-      const packetScope = packet.scope as { gaps: Array<{ code: string; cause: string }>; sourceIds: string[] };
+      const packetScope = packet.scope as {
+        fallbackSelectionMethod?: string; comparisonComplete?: boolean;
+        gaps: Array<{ code: string; cause: string }>; sourceIds: string[];
+      };
+      assert.equal(packetScope.fallbackSelectionMethod, 'observed-hosts-v1');
+      assert.notEqual(packetScope.comparisonComplete, true,
+        'the public-entry packet does not claim factual comparison completion');
       assert.ok(packetScope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP' && gap.cause === 'ATT_FETCH_TIMEOUT'));
       assert.ok(packetScope.sourceIds.some(id => id.startsWith('attention-recovery-page-')));
       assert.equal((packet.recoveryQueries as Array<{ query: string }>)[0]?.query, query);

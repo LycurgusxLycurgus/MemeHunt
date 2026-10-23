@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { deriveAttention, originSourceScope } from '../src/domain/attention.js';
+import { deriveAttention, narrativeSourceBound, originEntryCitationAllowed, originSourceScope } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import { attentionInitialPageLimit, attentionSourceLimit, attentionSubmittedSources, collectAttentionSources, comparisonRecoveryFallback, comparisonRecoverySelection, entryEvidenceScope, normalizeAttentionSearchUrl, originSeedLinks, recoverComparisonSources, terminalPostScope, type AttentionRead } from '../src/providers/attention.js';
+import { attentionInitialPageLimit, attentionSourceLimit, attentionSubmittedSources, collectAttentionSources, comparisonRecoveryFallback, comparisonRecoverySelection, entryEvidenceScope, normalizeAttentionFetchUrl, normalizeAttentionSearchUrl, originSeedLinks, recoverComparisonSources, terminalPostScope, type AttentionRead } from '../src/providers/attention.js';
 import { binaryEntryDecisionProgram, qualifyAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
 import { originRecoveryQuery, verifyOriginAlias } from '../src/providers/origin-recovery.js';
 
@@ -424,6 +424,123 @@ test('TinyFish search redirects normalize only the observed public wrapper and r
     searchArtifactId: 'attention-search-3', resultIndex: 0, url: wrapped, normalizedUrl: destination,
     urlMethod: 'tinyfish-search-redirect-v1', title, snippet,
   });
+});
+
+test('fetch final-resource fragments normalize without loosening public-source admission', async t => {
+  const requestedOrigin = 'https://public.example/river-lantern-origin';
+  const comparison = 'https://index.example/river-lantern-representation';
+  const redirectedOrigin = `${requestedOrigin}#transactions`;
+  const originText = `The River Lantern project identifies token ${token.address} as its original deployment.`;
+  const comparisonText = `The indexed River Lantern representation records token ${token.address}.`;
+  const cutoff = '2026-10-01T12:00:00.000Z';
+
+  assert.equal(normalizeAttentionFetchUrl(redirectedOrigin), requestedOrigin,
+    'a browser fragment does not change the HTTP resource retained by Fetch');
+  assert.equal(normalizeAttentionFetchUrl('https://twitter.com/Community_Author/status/901/photo/1#transactions'),
+    'https://x.com/community_author/status/901',
+    'fragment normalization preserves the existing canonical X status identity');
+  assert.equal(normalizeAttentionFetchUrl('https://public.example/path?section=launch#transactions'),
+    'https://public.example/path?section=launch', 'benign functional query parameters survive fragment removal');
+  for (const [name, value] of [
+    ['HTTP URL', 'http://public.example/page#transactions'],
+    ['credentialed URL', 'https://user:password@public.example/page#transactions'],
+    ['loopback IP', 'https://127.0.0.1/page#transactions'],
+    ['private IP', 'https://10.0.0.8/page#transactions'],
+    ['private hostname', 'https://service.internal/page#transactions'],
+    ['API key query', 'https://public.example/page?api_key=secret#transactions'],
+    ['token query', 'https://public.example/page?token=secret#transactions'],
+    ['signature query', 'https://public.example/page?signature=secret#transactions'],
+  ] as const) await t.test(name, () => assert.equal(normalizeAttentionFetchUrl(value), null));
+
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      if (query.includes('River Lantern')) return search([comparison]);
+      if (query.includes('site:x.com')) return search([]);
+      return search([requestedOrigin]);
+    }
+    const body = JSON.parse(String(init.body)) as { urls: string[] };
+    return json({ results: body.urls.map(requested => ({
+      url: requested,
+      final_url: requested === requestedOrigin ? redirectedOrigin : requested,
+      text: requested === requestedOrigin ? originText : comparisonText,
+    })), errors: [] });
+  });
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => cutoff, 'River Lantern',
+    [requestedOrigin], undefined, 'public-support-v2');
+  const origin = read.sources.find(source => source.url === requestedOrigin);
+  assert.ok(origin, 'the acquired page is stored under the fragment-free final HTTP resource');
+  assert.equal(origin.text, originText);
+  assert.ok(Object.entries(read.rawArtifacts).some(([id, raw]) => /^attention-fetch-\d+$/.test(id)
+    && JSON.parse(raw).results.some((row: { url: string; final_url: string; text: string }) =>
+      row.url === requestedOrigin && row.final_url === redirectedOrigin && row.text === originText)),
+  'the retained provider receipt preserves the original fragment-bearing response and exact body');
+  const scope = entryEvidenceScope(read, token, cutoff);
+  assert.equal(scope.complete, true, JSON.stringify({ scope, origin: read.originScope }));
+  assert.ok(scope.originSourceIds.includes(origin.id), 'the verified origin scope admits the source after URL normalization');
+
+  const moved = structuredClone(read);
+  for (const [id, raw] of Object.entries(moved.rawArtifacts)) if (/^attention-fetch-\d+(?:-retry-1)?$/.test(id)) {
+    const packet = JSON.parse(raw) as { results: Array<{ url: string; final_url?: string; text: string }> };
+    for (const row of packet.results) if (row.url === requestedOrigin) row.final_url = 'https://moved.example/other-resource#transactions';
+    moved.rawArtifacts[id] = JSON.stringify(packet);
+  }
+  assert.equal(entryEvidenceScope(moved, token, cutoff).complete, false,
+    'changing the final fetched resource cannot preserve admission for a source stored under the original URL');
+
+  const changedBody = structuredClone(read);
+  const acquisitionId = Object.keys(changedBody.rawArtifacts).find(id => /^attention-fetch-\d+$/.test(id)
+    && JSON.parse(changedBody.rawArtifacts[id]!).results.some((row: { url: string }) => row.url === requestedOrigin));
+  assert.ok(acquisitionId);
+  const acquisition = JSON.parse(changedBody.rawArtifacts[acquisitionId]!) as { results: Array<{ url: string; text: string }> };
+  acquisition.results.find(row => row.url === requestedOrigin)!.text += ' changed after acquisition';
+  changedBody.rawArtifacts[acquisitionId] = JSON.stringify(acquisition);
+  assert.equal(entryEvidenceScope(changedBody, token, cutoff).complete, false,
+    'a body that no longer matches the exact retained fetch receipt cannot be admitted');
+
+  const unrequestedMock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) {
+      const query = new URL(url).searchParams.get('query') ?? '';
+      if (query.includes('River Lantern')) return search([comparison]);
+      if (query.includes('site:x.com')) return search([]);
+      return search([requestedOrigin]);
+    }
+    return json({ results: [{ url: 'https://unrequested.example/page', final_url: redirectedOrigin, text: originText }], errors: [] });
+  });
+  const unrequested = await collectAttentionSources(token, KEY, unrequestedMock.fetcher, () => cutoff, 'River Lantern',
+    [requestedOrigin], undefined, 'public-support-v2');
+  assert.ok(unrequested.codes.includes('ATT_FETCH_BINDING'), 'an unrequested result row remains rejected even with a safe normalized final resource');
+});
+
+test('metadata association cannot fill a linked-page fetch outage or complete its origin scope', async () => {
+  const metadataUri = 'https://metadata.example/token/opaque';
+  const linkedUrl = 'https://riverlantern.example/community';
+  const metadataText = JSON.stringify({ name: 'River Lantern', website: linkedUrl });
+  const cutoff = '2026-10-01T12:00:00.000Z';
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    return json({
+      results: requested.includes(metadataUri) ? [{ url: metadataUri, final_url: metadataUri, text: metadataText }] : [],
+      errors: requested.includes(linkedUrl) ? [{ url: linkedUrl, status: 503, error: 'target_unreachable' }] : [],
+    });
+  });
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => cutoff, undefined,
+    [metadataUri, linkedUrl], undefined, 'public-support-v2');
+  read.metadataLinks = true;
+  read.metadataUri = metadataUri;
+  read.metadataLinkMethod = 'onchain-metadata-v1';
+  read.originScope = originSourceScope(read, token);
+
+  assert.equal(read.sources.some(source => source.url === metadataUri && source.text === metadataText), true,
+    'the exact opaque URI metadata response remains available as acquired evidence');
+  assert.equal(read.sources.some(source => source.url === linkedUrl), false,
+    'an HTTP 503 page never enters the retained source catalog');
+  assert.equal(narrativeSourceBound(read, 'missing-linked-page', token), false);
+  assert.equal(originEntryCitationAllowed(read, 'missing-linked-page', token, 'FAIL'), false);
+  assert.equal(read.originScope?.complete, false, JSON.stringify(read.originScope));
+  assert.equal(entryEvidenceScope(read, token, cutoff).complete, false,
+    'a linked-page outage remains an acquisition gap and cannot qualify a negative-origin grade');
 });
 
 test('collector preserves functional page queries, removes tracking keys, and binds the requested URL', async () => {
@@ -1350,26 +1467,32 @@ test('public-support scope requires an effective Fetch outcome for each actual s
     hits: string[],
     responses: Array<{ results: unknown[]; errors: unknown[] }>,
     initialSources: AttentionRead['sources'] = [origin],
+    fallbackSelectionMethod?: 'observed-hosts-v1',
   ) => {
     let fetchCall = 0;
+    let searchCalls = 0;
     const requested: string[][] = [];
     const mock = mockFetch((url, init) => {
-      if (url.includes('api.search.tinyfish.ai')) return json({
-        results: hits.map((hit, resultIndex) => ({ url: hit, title: `Indexed result ${resultIndex + 1}`, snippet: 'A public market index record.' })),
-        errors: [],
-      });
+      if (url.includes('api.search.tinyfish.ai')) {
+        searchCalls++;
+        return json({
+          results: hits.map((hit, resultIndex) => ({ url: hit, title: `Indexed result ${resultIndex + 1}`, snippet: 'A public market index record.' })),
+          errors: [],
+        });
+      }
       requested.push((JSON.parse(String(init.body)) as { urls: string[] }).urls);
       return json(responses[fetchCall++] ?? { results: [], errors: [] });
     });
     const skipUrls = [...initialSources.map(source => source.url), leadUrl];
     const recovery = await recoverComparisonSources(token, KEY, [query], skipUrls,
       Math.min(8, 32 - initialSources.length), mock.fetcher, () => cutoff,
-      [{ leadId: 'lead-1', originalUrl: leadUrl }], true, 'public-support-v2');
-    return { recovery, requested };
+      [{ leadId: 'lead-1', originalUrl: leadUrl }], true, 'public-support-v2', fallbackSelectionMethod);
+    return { recovery, requested, searchCalls };
   };
 
   const makeRead = (recovery: Awaited<ReturnType<typeof recoverComparisonSources>>,
-    initialSources: AttentionRead['sources'] = [origin]): AttentionRead => {
+    initialSources: AttentionRead['sources'] = [origin],
+    fallbackSelectionMethod?: 'observed-hosts-v1'): AttentionRead => {
     const rawArtifacts: Record<string, string> = {
       'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
       'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
@@ -1400,6 +1523,7 @@ test('public-support scope requires an effective Fetch outcome for each actual s
     }));
     const search = JSON.parse(recovery.rawArtifacts['attention-search-1']!) as { results: unknown[] };
     return {
+      ...(fallbackSelectionMethod ? { entryExecutionMethod: 'entry-first-v2' as const } : {}),
       entryEvidenceMethod: 'public-support-v2', sources: [...initialSources, ...recoveredSources], rawArtifacts,
       queries: ['exact token origin', 'exact token account', 'named comparison'], complete: false,
       codes: ['ATT_FETCH_URL_ERROR'], start: '2026-10-19T12:00:00.000Z', end: cutoff,
@@ -1414,6 +1538,14 @@ test('public-support scope requires an effective Fetch outcome for each actual s
         queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', query,
         state: 'OBSERVED', descriptorComplete: true, resultCount: search.results.length, availableAt: cutoff,
       }] },
+      ...(fallbackSelectionMethod ? { comparisonRecovery: {
+        method: 'comparison-acquisition-v1' as const, fallbackSelectionMethod, selectedLeadIds: ['lead-1'],
+        recoveryQueries: [{
+          queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', query,
+          state: 'OBSERVED', descriptorComplete: true, resultCount: search.results.length, availableAt: cutoff,
+        }],
+        recoveryCapped: false, sourceLineage: [],
+      } } : {}),
     };
   };
 
@@ -1552,6 +1684,141 @@ test('public-support scope requires an effective Fetch outcome for each actual s
   [leadUrl, selectedUrl, sameHostAlternateUrl], new Set());
   assert.deepEqual(ownParentFallback, [{ failedUrl: selectedUrl, parentId: 'lead-1', url: nextPageUrl }],
     'fallback skips already tried URLs and never borrows a result owned by another lead');
+
+  const blockedFirst = 'https://blocked.example/stack-overflow';
+  const unknownPdf = 'https://papers.example/market-scan.pdf';
+  const observedInitial = 'https://www.working.example/initial-page';
+  const workingAlternate = 'https://working.example/lower-ranked-alternate';
+  const previouslyTriedWorkingUrl = 'https://working.example/already-requested';
+  const crossParentWorkingUrl = 'https://working.example/other-parent';
+  const rankedCandidates = [
+    { searchArtifactId: 'attention-search-1', resultIndex: 0, url: 'https://blocked.example/retry-the-blocked-host' },
+    { searchArtifactId: 'attention-search-1', resultIndex: 1, url: unknownPdf },
+    { searchArtifactId: 'attention-search-1', resultIndex: 2, url: workingAlternate },
+    { searchArtifactId: 'attention-search-1', resultIndex: 3, url: previouslyTriedWorkingUrl },
+    { searchArtifactId: 'attention-search-2', resultIndex: 0, url: crossParentWorkingUrl },
+  ];
+  const observedPolicy = { method: 'observed-hosts-v1' as const, priorSelections: [] };
+  const observedFallback = comparisonRecoveryFallback([{ parentId: 'lead-1', url: blockedFirst }], rankedCandidates,
+    [{ leadId: 'lead-1', originalUrl: leadUrl }, { leadId: 'lead-2', originalUrl: null }],
+    [leadUrl, blockedFirst, previouslyTriedWorkingUrl], new Set([observedInitial]), observedPolicy);
+  assert.deepEqual(observedFallback, [{ failedUrl: blockedFirst, parentId: 'lead-1', url: workingAlternate }],
+    'a validated body from this recovery makes its host outrank the lower-ranked unknown PDF and failed host; tried and cross-parent URLs stay ineligible');
+  const legacyFallback = comparisonRecoveryFallback([{ parentId: 'lead-1', url: blockedFirst }], rankedCandidates,
+    [{ leadId: 'lead-1', originalUrl: leadUrl }, { leadId: 'lead-2', originalUrl: null }],
+    [leadUrl, blockedFirst, previouslyTriedWorkingUrl], new Set([observedInitial]));
+  assert.deepEqual(legacyFallback, [{ failedUrl: blockedFirst, parentId: 'lead-1', url: unknownPdf }],
+    'without the opt-in policy the legacy immediate-host/result-rank order is preserved');
+
+  const chainA = 'https://host-a.example/first-block';
+  const chainB = 'https://host-b.example/second-unreachable';
+  const chainC = 'https://host-c.example/untried';
+  const ancestryFallback = comparisonRecoveryFallback([{ parentId: 'lead-1', url: chainB }], [
+    { searchArtifactId: 'attention-search-1', resultIndex: 0, url: 'https://host-a.example/retry-old-host' },
+    { searchArtifactId: 'attention-search-1', resultIndex: 1, url: chainC },
+    { searchArtifactId: 'attention-search-1', resultIndex: 2, url: 'https://host-b.example/retry-current-host' },
+  ], [{ leadId: 'lead-1', originalUrl: leadUrl }], [leadUrl, chainA, chainB], new Set(), {
+    method: 'observed-hosts-v1', priorSelections: [{ failedUrl: chainA, parentId: 'lead-1', url: chainB }],
+  });
+  assert.deepEqual(ancestryFallback, [{ failedUrl: chainB, parentId: 'lead-1', url: chainC }],
+    'with no observed working host, a new host outranks both the earlier failed ancestry and immediate failed host');
+
+  const tiedQueryOrdinal = comparisonRecoveryFallback([{ parentId: 'lead-1', url: blockedFirst }], [
+    { searchArtifactId: 'attention-search-1', resultIndex: 0, url: 'https://tie-a.example/first-query' },
+    { searchArtifactId: 'attention-search-2', resultIndex: 0, url: 'https://tie-b.example/second-query' },
+  ], [{ leadId: 'lead-1', originalUrl: leadUrl }, { leadId: 'lead-1', originalUrl: leadUrl }],
+  [leadUrl, blockedFirst], new Set(), observedPolicy);
+  assert.deepEqual(tiedQueryOrdinal, [{ failedUrl: blockedFirst, parentId: 'lead-1', url: 'https://tie-a.example/first-query' }],
+    'query ordinal provides the final stable tie-break for same-parent candidates');
+
+  const knownHostBlocked = 'https://blocked.example/first-attempt';
+  const knownHostInitial = 'https://working.example/acquired-in-initial-recovery-batch';
+  const knownHostBatch = [knownHostBlocked, knownHostInitial,
+    ...Array.from({ length: 6 }, (_, index) => `https://initial-${index + 1}.example/page`)];
+  const knownHostFirstAlternate = 'https://working.example/first-alternate';
+  const knownHostSecondAlternate = 'https://working.example/second-alternate';
+  const knownHostBlockedRepeat = 'https://blocked.example/retry-earlier-host';
+  const temptingUnknownPdf = 'https://papers.example/unread-market-scan.pdf';
+  const knownHostSequence = await collectRecovery([
+    ...knownHostBatch, knownHostFirstAlternate, knownHostBlockedRepeat, temptingUnknownPdf, knownHostSecondAlternate,
+  ], [
+    { results: knownHostBatch.slice(1).map(url => ({ url, final_url: url, text: `Validated body for ${url}.` })),
+      errors: [{ url: knownHostBlocked, status: 403, error: 'bot_blocked' }] },
+    { results: [], errors: [{ url: knownHostFirstAlternate, error: 'target_unreachable' }] },
+    { results: [{ url: knownHostSecondAlternate, final_url: knownHostSecondAlternate,
+      text: `Validated body for ${knownHostSecondAlternate}.` }], errors: [] },
+  ], [origin], 'observed-hosts-v1');
+  assert.deepEqual(knownHostSequence.requested, [knownHostBatch, [knownHostFirstAlternate], [knownHostSecondAlternate]],
+    'the actual producer uses a host with a validated body in the initial recovery batch, then selects a different same-parent URL after target_unreachable');
+  assert.equal(knownHostSequence.searchCalls, 1, 'both fallback rounds reuse the one recovery Search response');
+  const knownHostReceipt = JSON.parse(knownHostSequence.recovery.rawArtifacts['attention-fallback-scope']!) as {
+    method: string; rounds: Array<{ batch: number; selections: Array<{ failedUrl: string; parentId: string; url: string }> }>;
+  };
+  assert.equal(knownHostReceipt.method, 'same-parent-alternates-v2');
+  assert.deepEqual(knownHostReceipt.rounds.map(round => round.selections[0]), [
+    { failedUrl: knownHostBlocked, parentId: 'lead-1', url: knownHostFirstAlternate },
+    { failedUrl: knownHostFirstAlternate, parentId: 'lead-1', url: knownHostSecondAlternate },
+  ]);
+  const knownHostRead = makeRead(knownHostSequence.recovery, [origin], 'observed-hosts-v1');
+  const knownHostScope = entryEvidenceScope(knownHostRead, token, cutoff);
+  assert.equal(knownHostScope.complete, true, JSON.stringify(knownHostScope));
+  assert.equal(knownHostScope.fallbackSelectionMethod, 'observed-hosts-v1');
+  assert.deepEqual(knownHostScope.gaps.filter(gap => gap.code === 'RECOVERED_ALTERNATE').map(gap => gap.url).sort(),
+    [knownHostBlocked, knownHostFirstAlternate].sort(), 'the exact body in the second fallback batch resolves both earlier failures');
+  assert.ok(JSON.parse(knownHostRead.rawArtifacts['attention-recovery-fetch-2']!).errors
+    .some((error: { url: string; error: string }) => error.url === knownHostFirstAlternate && error.error === 'target_unreachable'),
+  'the recovered path retains the first fallback error in its owning raw batch');
+  assert.equal(knownHostScope.gaps.some(gap => gap.url === knownHostFirstAlternate && gap.code === 'TARGET_BLOCKED'), false,
+    'target_unreachable remains an unresolved acquisition error unless the later selected body is acquired');
+
+  const ancestryA = 'https://ancestry-a.example/blocked';
+  const ancestryB = 'https://ancestry-b.example/unreachable';
+  const ancestryC = 'https://ancestry-c.example/untried';
+  const staleCatalogPage: AttentionRead['sources'][number] = {
+    id: 'attention-page-stale-catalog', url: 'https://ancestry-c.example/catalog-page',
+    text: 'An older catalog body exists on the eventual alternate host.', publishedAt: null, authorId: null,
+    availableAt: cutoff, kind: 'PAGE',
+  };
+  const ancestryInitialBatch = [ancestryA,
+    ...Array.from({ length: 7 }, (_, index) => `https://unrelated-${index + 1}.example/retained-page`)];
+  const ancestrySequence = await collectRecovery([
+    ...ancestryInitialBatch, ancestryB, ancestryC, 'https://ancestry-a.example/retry', 'https://ancestry-b.example/retry',
+  ], [
+    { results: ancestryInitialBatch.slice(1).map(url => ({ url, final_url: url, text: `Validated body for ${url}.` })),
+      errors: [{ url: ancestryA, status: 403, error: 'bot_blocked' }] },
+    { results: [], errors: [{ url: ancestryB, error: 'target_unreachable' }] },
+    { results: [{ url: ancestryC, final_url: ancestryC, text: `Fresh body for ${ancestryC}.` }], errors: [] },
+  ], [origin, staleCatalogPage], 'observed-hosts-v1');
+  assert.deepEqual(ancestrySequence.requested, [ancestryInitialBatch, [ancestryB], [ancestryC]],
+    'without a recovery-owned working host, actual production prefers the untried C after A is blocked and B is unreachable');
+  assert.equal(ancestrySequence.searchCalls, 1);
+  const ancestryRead = makeRead(ancestrySequence.recovery, [origin, staleCatalogPage], 'observed-hosts-v1');
+  const ancestryScope = entryEvidenceScope(ancestryRead, token, cutoff);
+  assert.equal(ancestryScope.complete, true, JSON.stringify(ancestryScope));
+  assert.deepEqual(ancestryScope.gaps.filter(gap => gap.code === 'RECOVERED_ALTERNATE').map(gap => gap.url).sort(),
+    [ancestryA, ancestryB].sort());
+  assert.equal(ancestryScope.gaps.some(gap => gap.url === ancestryB && gap.code === 'TARGET_BLOCKED'), false);
+  assert.ok(JSON.parse(ancestryRead.rawArtifacts['attention-fetch-1']!).results
+    .some((result: { url: string }) => result.url === staleCatalogPage.url),
+  'the adversarial fixture really contains a pre-existing catalog body on C’s host');
+
+  const incompleteKnownHost = await collectRecovery([
+    ...knownHostBatch, knownHostFirstAlternate, knownHostBlockedRepeat, temptingUnknownPdf, knownHostSecondAlternate,
+  ], [
+    { results: knownHostBatch.slice(1).map(url => ({ url, final_url: url, text: `Validated body for ${url}.` })),
+      errors: [{ url: knownHostBlocked, status: 403, error: 'bot_blocked' }] },
+    { results: [], errors: [{ url: knownHostFirstAlternate, error: 'target_unreachable' }] },
+    { results: [], errors: [{ url: knownHostSecondAlternate, error: 'target_unreachable' }] },
+  ], [origin], 'observed-hosts-v1');
+  const incompleteKnownHostRead = makeRead(incompleteKnownHost.recovery, [origin], 'observed-hosts-v1');
+  const incompleteKnownHostScope = entryEvidenceScope(incompleteKnownHostRead, token, cutoff);
+  assert.equal(incompleteKnownHostScope.complete, false, JSON.stringify(incompleteKnownHostScope));
+  assert.ok(incompleteKnownHostScope.blockers.includes('ATT_ENTRY_RECOVERY_FETCH_INCOMPLETE'));
+  assert.equal(incompleteKnownHostScope.gaps.some(gap => [knownHostFirstAlternate, knownHostSecondAlternate].includes(gap.url)
+    && gap.code === 'TARGET_BLOCKED'), false, 'target_unreachable cannot become a terminal block or a reviewable negative gap');
+  const incompleteProgram = binaryEntryDecisionProgram(incompleteKnownHostRead, {}, {}, token, cutoff, {});
+  assert.deepEqual(incompleteProgram.next(), { value: null, done: true },
+    'missing the selected alternate’s own body leaves the public-entry decision unavailable');
 
   const bounded = await collectRecovery([selectedUrl, unselectedUrl], [
     { results: [{ url: selectedUrl, final_url: selectedUrl, text: selectedText }], errors: [] },

@@ -1,12 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, resolveStage } from '../src/domain/policy.js';
+import { entryGroupFactsSchema, type EntryGroupFacts } from '../src/domain/contracts.js';
 import {
   completeFixtureEntryFeatures, FIXTURE_CUTOFF, fixtureEpisode, fixtureFeature,
   fixturePosition, illustrativeUncalibratedProfile,
 } from '../examples/fixtures.js';
 
 const predicate = (feature: string, value: string | boolean, unit: string, op: 'eq' | 'gt' = 'eq') => ({ op, feature, value, unit } as const);
+const entryGroupIds = ['ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'] as const;
+function entryGroups(statuses: Partial<Record<typeof entryGroupIds[number], 'PASS'|'FAIL'|'UNKNOWN'>> = {}): EntryGroupFacts {
+  return {
+    method: 'mandatory-entry-groups-v1', token: { chain: 'solana', address: 'FIXTURE_TOKEN' }, cutoff: FIXTURE_CUTOFF,
+    groups: entryGroupIds.map(checkId => ({
+      checkId, status: statuses[checkId] ?? 'PASS', rationale: `${checkId} current-screen rationale`, code: `${checkId}_CURRENT_SCREEN`,
+      featureIds: [`${checkId}-feature`], evidenceIds: [`${checkId}-evidence`], availableAt: FIXTURE_CUTOFF,
+      metrics: { currentWindowMinutes: 5 }, limitations: ['Prior-day history is unmeasured and not required.'],
+    })),
+  };
+}
 
 test('typed predicates use three-valued logic, cutoff availability, and decimal comparisons', () => {
   const observed = [
@@ -32,6 +44,55 @@ test('entry policy emits the stable 33 rows and fails closed when required evide
   assert.ok(result.checks.every(row => row.status === 'UNKNOWN'));
 });
 
+test('entry group facts are strict, versioned, and require each of the five exact IDs once', () => {
+  const facts = entryGroups();
+  assert.deepEqual(entryGroupFactsSchema.parse(facts), facts);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...facts, method: 'other' }).success, false);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...facts, unexpected: true }).success, false);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...facts, groups: facts.groups.slice(0, 4) }).success, false);
+  assert.equal(entryGroupFactsSchema.safeParse({ ...facts, groups: [facts.groups[0]!, ...facts.groups.slice(1, 4), facts.groups[0]!] }).success, false);
+  const group = facts.groups[0]!;
+  assert.equal(entryGroupFactsSchema.safeParse({ ...facts, groups: [{ ...group, extra: true }, ...facts.groups.slice(1)] }).success, false);
+});
+
+test('new group facts override only their rows and preserve legacy 27-check replay behavior', () => {
+  const features = completeFixtureEntryFeatures();
+  const legacy = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF);
+  assert.equal(legacy.coverage.total, 27);
+  assert.equal(legacy.checks.find(row => row.checkId === 'ADV-01')?.required, false);
+  assert.equal(legacy.checks.find(row => row.checkId === 'EXE-03')?.role, 'ADVISORY');
+
+  const groups = entryGroups({ 'ADV-01': 'FAIL' });
+  const current = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'LEGACY', undefined, false, undefined, undefined, groups);
+  assert.equal(current.coverage.total, 33);
+  const first = current.checks.find(row => row.checkId === 'ADV-01')!;
+  assert.deepEqual([first.required, first.role, first.status, first.reasonCode], [true, 'OPPORTUNITY', 'FAIL', 'ADV-01_CURRENT_SCREEN']);
+  assert.deepEqual(first.featureRefs, ['ADV-01-feature']);
+  assert.deepEqual(first.evidenceRefs, ['ADV-01-evidence']);
+  assert.equal(current.checks.find(row => row.checkId === 'ADV-02')?.status, 'PASS');
+  assert.deepEqual(current.checks.find(row => row.checkId === 'EXE-03') && [
+    current.checks.find(row => row.checkId === 'EXE-03')!.required,
+    current.checks.find(row => row.checkId === 'EXE-03')!.role,
+  ], [true, 'HARD_GATE']);
+  assert.equal(current.classification, 'WATCH', 'a failed group opportunity is not reclassified as a hard-gate rejection');
+});
+
+test('new manifest makes O12 simulation a hard gate and cutoff-mismatched group facts unresolved', () => {
+  const features = completeFixtureEntryFeatures({ O12: false });
+  const current = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'LEGACY', undefined, false, undefined, undefined, entryGroups());
+  assert.equal(current.checks.find(row => row.checkId === 'EXE-03')?.status, 'FAIL');
+  assert.equal(current.classification, 'REJECTED');
+
+  const staleFacts = { ...entryGroups(), cutoff: '2025-12-31T23:59:59.000Z' } as EntryGroupFacts;
+  const invalid = evaluateEntry(completeFixtureEntryFeatures(), illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'LEGACY', undefined, false, undefined, undefined, staleFacts);
+  const groups = invalid.checks.filter(row => row.checkId.startsWith('ADV-'));
+  assert.ok(groups.every(row => row.required && row.status === 'UNKNOWN' && row.reasonCode === 'ENTRY_GROUP_FACTS_INVALID'));
+  assert.equal(invalid.classification, 'INSUFFICIENT_DATA');
+});
+
 test('a reviewed CAN-01 public PASS does not require unresolved factual A10 binding', () => {
   const features = completeFixtureEntryFeatures({ A09: true });
   const binding = features.find(feature => feature.id === 'A10')!;
@@ -48,6 +109,33 @@ test('a reviewed CAN-01 public PASS does not require unresolved factual A10 bind
   assert.equal(can01?.status, 'PASS');
   assert.deepEqual(can01?.featureRefs, ['A09'], 'the reviewed entry judgment is scoped to A09');
   assert.equal(binding.value, null, 'the entry-grade override does not fill factual A10');
+});
+
+test('new origin review grades NAR-02 from canonical A03 without inventing the optional A04 fact', () => {
+  const features = completeFixtureEntryFeatures({ A03: true });
+  const catalyst = features.find(feature => feature.id === 'A04')!;
+  catalyst.value = null;
+  catalyst.quality = 'MISSING';
+
+  const missingReceipt = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF, 'QUALIFIED_V4');
+  assert.equal(missingReceipt.checks.find(row => row.checkId === 'NAR-02')?.status, 'UNKNOWN',
+    'legacy and old-mode callers still need both static feature rules');
+
+  const reviewedPass = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+    'QUALIFIED_V4', undefined, false, undefined, { originTraceability: true });
+  const pass = reviewedPass.checks.find(row => row.checkId === 'NAR-02')!;
+  assert.equal(pass.status, 'PASS');
+  assert.deepEqual(pass.featureRefs, ['A03'], 'the reviewed whole origin/catalyst criterion is scoped to its canonical A03 grade');
+  assert.equal(catalyst.value, null, 'the gate does not synthesize the optional catalyst dependency');
+
+  const reviewedFail = evaluateEntry(completeFixtureEntryFeatures({ A03: false }), illustrativeUncalibratedProfile,
+    FIXTURE_CUTOFF, 'QUALIFIED_V4', undefined, false, undefined, { originTraceability: false });
+  assert.equal(reviewedFail.checks.find(row => row.checkId === 'NAR-02')?.status, 'FAIL');
+
+  const mismatched = evaluateEntry(completeFixtureEntryFeatures({ A03: false }), illustrativeUncalibratedProfile,
+    FIXTURE_CUTOFF, 'QUALIFIED_V4', undefined, false, undefined, { originTraceability: true });
+  assert.equal(mismatched.checks.find(row => row.checkId === 'NAR-02')?.status, 'UNKNOWN',
+    'a gate receipt that disagrees with the known canonical A03 projection cannot decide the row');
 });
 
 test('complete evidence cannot fill missing user-owned size, horizon, or risk settings', () => {
