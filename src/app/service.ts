@@ -1,5 +1,6 @@
 import { validatePumpRecoveryBundle } from '../providers/pumpswap.js';
 import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
+import {CREATOR_COVERAGE_REQUEST_CAP,EPISODE_COVERAGE_REQUEST_CAP} from '../providers/advisory-creator-coverage.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
@@ -32,7 +33,7 @@ import { reconstructAdvisory } from './advisory.js';
 import { HOLDER_ARCHIVE_ADAPTER, unpackHolderPopulation } from '../providers/advisory-topology.js';
 
 /** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
-const ADVISORY_SCREENS=Array.from({length:21},(_,i)=>`research-screen-advisory-v${i+1}`);
+const ADVISORY_SCREENS=Array.from({length:29},(_,i)=>`research-screen-advisory-v${i+1}`);
 
 /** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
 function validateAdvisoryDexBaseline(b:LiveBundle){
@@ -292,7 +293,9 @@ export class Service {
     const parsed = trustedLive ? liveBundleSchema.parse(input) : bundleSchema.parse(input);
     const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE'), ...(parsed.exitProofs ? { exitProofs: parsed.exitProofs.map(p => ({...p,token:normalizeToken(p.token,parsed.analysisKind==='FIXTURE')})) } : {}) };
     if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length || b.exitProofs?.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
-    if (b.evidence.length > 1000 || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
+    const nativeCoverage=(()=>{try{const proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32'].includes(proof?.method)&&!!proof.creatorCoverage;}catch{return false;}})();
+    const nativeReceipts=nativeCoverage?b.evidence.filter(e=>e.sourceId==='advisory-creatorCoverage'||e.id.startsWith('advisory-creatorCoverage-')).length:0;
+    if (b.evidence.length-nativeReceipts > 1000 || nativeReceipts>(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method==='advisory-provenance-v32'?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP) || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
     const ids = new Set(b.evidence.map(e => e.id));
     if (ids.size !== b.evidence.length || new Set(b.features.map(f => f.id)).size !== b.features.length) throw new Error('DUPLICATE_BUNDLE_ID');
     for (const e of b.evidence) if (Date.parse(e.availableAt) > Date.parse(b.cutoff) || Date.parse(e.retrievedAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EVIDENCE');
@@ -302,13 +305,13 @@ export class Service {
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
       const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
       if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
-      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
+      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? nativeCoverage?64_000_000:24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','advisory-creatorAccounting':'PUBLIC_API','advisory-creatorCoverage':'PUBLIC_API','advisory-creatorRoutes':'FREE_ACCOUNT','advisory-creatorEpisode':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED' };
         // Launchpad access is per receipt: only the keyed Lighthouse read is a free account; the Llama summaries are public.
-        const access = e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
+        const access = e.sourceId==='advisory-creatorEpisode' ? (e.id==='advisory-creatorEpisode-helius'?'FREE_ACCOUNT':'PUBLIC_API') : e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
         if (access !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -348,14 +351,14 @@ export class Service {
       if(hasAdvisoryEvidence)validateAdvisoryDexBaseline(b);
       if(b.details){
         const details=b.details;
-        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify(details).length>2_000_000)throw new Error('INVALID_ASSESSMENT_DETAILS');
+        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify(details).length>(nativeCoverage?8_000_000:2_000_000))throw new Error('INVALID_ASSESSMENT_DETAILS');
         if(details.advisory){
           const record=b.evidence.find(e=>e.id==='advisory-derivation'&&e.sourceId==='advisory-collector'&&e.accessMode==='LOCAL_DERIVED');
           if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
-            // Fresh persistence requires proof v24 source-review isolation and demand-only foreign capability recovery; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v24')throw new Error('ADVISORY_PROOF_INVALID');
+            // Fresh persistence requires proof v32 with explicit optional closed-episode sources; historical snapshots replay their recorded facts.
+            if(proof.method!=='advisory-provenance-v32')throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
@@ -784,7 +787,7 @@ export class Service {
     const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,liveDetails?.advisory,entryComparison,entryGates,groups);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v21':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v29':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');

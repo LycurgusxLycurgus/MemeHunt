@@ -2,7 +2,7 @@ import type { TokenRef } from '../domain/contracts.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import { creatorPageRequest, creatorTransactionRequest, decodeCreatorInventory, type CreatorInventoryReceipts, type CreatorReuse, type CreatorRole, type CreatorTape } from './advisory-creator-inventory.js';
 import { CREATOR_LIFETIME_METHOD, deriveO25CreatorLifetime } from './advisory-creator-lifetime.js';
-import { CREATOR_FAILED_FEES_METHOD, FAILED_FEE_RECEIPT_CAP, classifyCreatorFailedFees, type FailedFeeReceipt, type FailedIndexRow } from './advisory-creator-failed-fees.js';
+import { CREATOR_FAILED_FEES_METHOD, FAILED_FEE_RECEIPT_CAP, EXPANDED_FAILED_FEE_RECEIPT_CAP, classifyCreatorFailedFees, type FailedFeeReceipt, type FailedIndexRow } from './advisory-creator-failed-fees.js';
 
 /** S15 for the S13 creation signer (CREATOR_ONLY): realized target-mint position performance in SOL lamports, recomputed from O25's ledger over O24's raw receipts, with every successful and failed direct network fee and each trade-fee component reported beside it, never netted into a PnL. */
 export const CREATOR_PERFORMANCE_METHOD='creator-only-target-position-performance-v1' as const;
@@ -81,7 +81,7 @@ function reader(r:CreatorInventoryReceipts,reuse:CreatorReuse,cutoff:number){
 
 /** Every S15 prerequisite recomputed from the same raw receipts: KNOWN O25, a supported zero-held position, the complete failed index from O24's own wallet pages within the dedicated cap, and a successful creator-paid target census equal to the ledger.
  * The collector admits reads only when this is ready; the provider repeats it, so no passed wallet, index or cached fact is trusted. */
-export function creatorPerformanceGate(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,cutoff:string,evidenceIds:string[]):CreatorPerformanceGate{
+export function creatorPerformanceGate(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,cutoff:string,evidenceIds:string[],expanded=false):CreatorPerformanceGate{
  const lifetime=deriveO25CreatorLifetime(token,role,tape,inventory,reuse,cutoff,evidenceIds);
  try{
   if(lifetime.quality!=='KNOWN')throw new Unready(lifetime.quality,'S15_O25_PREREQUISITE_UNRESOLVED');
@@ -104,7 +104,7 @@ export function creatorPerformanceGate(token:TokenRef,role:CreatorRole,tape:Crea
   }
   const since=rows.filter(r=>r.slot>=role.creationSlot&&r.slot<=catalogSlot),successful=since.filter(r=>r.err===null),failedRows=since.filter(r=>r.err!==null);
   if(since.length!==w.rowsSinceCreation||successful.length!==w.successfulInspected)fail('S15_INDEX_PROJECTION');
-  if(failedRows.length>FAILED_FEE_RECEIPT_CAP)throw new Unready('TRUNCATED','S15_FAILED_INDEX_CAP');
+  if(failedRows.length>(expanded?EXPANDED_FAILED_FEE_RECEIPT_CAP:FAILED_FEE_RECEIPT_CAP))throw new Unready('TRUNCATED','S15_FAILED_INDEX_CAP');
   const targets=[...new Set([history.account,...w.otherCurrentAccounts.map(a=>a.account)])],targetSet=new Set([role.mint,...targets]);
   // Successful creator-paid transactions that reference the target must be exactly the ledger trades with the same meta.fee; any other one is an unsupported non-trade cost.
   const census=new Map<string,string>();
@@ -120,8 +120,8 @@ export function creatorPerformanceGate(token:TokenRef,role:CreatorRole,tape:Crea
 }
 
 /** KNOWN only with a ready gate and a COMPLETE classification of every recomputed failed row; any gap or unknown held valuation leaves the whole record unresolved. Forged or misfiled failed receipts throw. */
-export function deriveS15CreatorPerformance(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,failed:FailedFeeReceipt[]|null,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
- const gate=creatorPerformanceGate(token,role,tape,inventory,reuse,cutoff,evidenceIds);
+export function deriveS15CreatorPerformance(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,failed:FailedFeeReceipt[]|null,cutoff:string,evidenceIds:string[],expanded=false):AdvisoryMetric{
+ const gate=creatorPerformanceGate(token,role,tape,inventory,reuse,cutoff,evidenceIds,expanded);
  const base={method:CREATOR_PERFORMANCE_METHOD,token,
   cohort:{kind:'CREATOR_ONLY',wallet:role.wallet,basis:'S13_SIGNED_CREATION_ROLE_VIA_O24_O25',creationSignature:role.creationSignature,creationSlot:role.creationSlot,identity:null,control:null},
   quote:{asset:'SOL',unit:'lamports',decimals:9,usdBasis:null,trackerValuesUsed:false},basis:{lifetimeMethod:CREATOR_LIFETIME_METHOD,lifetimeReasonCode:gate.ready?gate.scope.lifetime.reasonCode:gate.lifetime.reasonCode,failedFeeMethod:CREATOR_FAILED_FEES_METHOD},
@@ -131,7 +131,7 @@ export function deriveS15CreatorPerformance(token:TokenRef,role:CreatorRole,tape
  if(!gate.ready)return metric(gate.quality,{status:'PREREQUISITE_UNRESOLVED',...empty},gate.code);
  const s=gate.scope,d=s.lifetime.data as any,p=s.position;
  if(failed===null)return metric('MISSING',{status:'FAILED_FEES_NOT_COLLECTED',failedIndexedRows:s.failedRows.length,...empty},'S15_FAILED_FEES_NOT_COLLECTED');
- const fees=classifyCreatorFailedFees({actor:role.wallet,mint:role.mint,targetAccounts:s.targets,creationSlot:role.creationSlot,headSlot:s.catalogSlot,cutoff,rows:s.failedRows,receipts:failed});
+ const fees=classifyCreatorFailedFees({actor:role.wallet,mint:role.mint,targetAccounts:s.targets,creationSlot:role.creationSlot,headSlot:s.catalogSlot,cutoff,rows:s.failedRows,receipts:failed},expanded);
  // Orphan, misfiled, re-requested, rehashed, re-clocked or rebound receipts invalidate the proof rather than a metric.
  if(fees.status==='INVALID')fail(fees.reasonCode);
  if(fees.actor!==role.wallet||fees.mint!==role.mint||fees.coverage.indexedRows!==s.failedRows.length||JSON.stringify(fees.targetSet)!==JSON.stringify([role.mint,...s.targets]))fail('S15_FAILED_FEE_SCOPE');

@@ -8,6 +8,7 @@ export const FAILED_FEE_ADAPTER='creator-failed-fee-archive-v1' as const,FAILED_
 // Provider sourceId of every S15 failed receipt. Membership is this sourceId OR the reserved prefix, so a misfiled entry cannot leave the namespace.
 export const FAILED_FEE_SOURCE_ID='advisory-creator-failed-fees' as const;
 // Dedicated cap from the accepted complete creator index (130 failed rows since creation); a larger index fails closed.
+export const EXPANDED_FAILED_FEE_RECEIPT_CAP=256,NATIVE_FAILED_FEE_RECEIPT_CAP=512,EPISODE_FAILED_FEE_RECEIPT_CAP=1024;
 export const FAILED_FEE_RECEIPT_CAP=130,FAILED_FEE_RESPONSE_BYTES=500_000,FAILED_FEE_SOURCE_LIMIT=3*FAILED_FEE_RESPONSE_BYTES;
 const CLASSES=['TARGET_ASSOCIATED_CHARGED','NOT_ACTOR_CHARGED','UNRESOLVED','UNAVAILABLE','MISSING'] as const;
 const SETTLED=new Set<string>(CLASSES.slice(0,2));
@@ -29,7 +30,7 @@ export type FailedFeeReceipt={id:string;sourceId:string;adapterVersion:string;re
 /** rows: the accepted complete failed index since creation. targetAccounts: creator-owned target-mint accounts from the accepted lifetime census. receipts: every stored evidence entry, unfiltered. */
 export type FailedFeeInput={actor:string;mint:string;targetAccounts:string[];creationSlot:number;headSlot:number;cutoff:string;rows:FailedIndexRow[];receipts:FailedFeeReceipt[]};
 export type FailedFeeClass=typeof CLASSES[number];
-export type FailedFeeRow={signature:string;slot:number;blockTime:number;classification:FailedFeeClass;code:string|null;version:'legacy'|0|null;feePayer:string|null;actorSigner:boolean|null;targetReference:boolean|null;lookupKeys:number|null;metaFeeLamports:string|null;actorChargedLamports:string|null;foreignMintReferencesObserved:string[]};
+export type FailedFeeRow={signature:string;slot:number;blockTime:number;classification:FailedFeeClass;code:string|null;version:'legacy'|0|1|null;feePayer:string|null;actorSigner:boolean|null;targetReference:boolean|null;lookupKeys:number|null;metaFeeLamports:string|null;actorChargedLamports:string|null;foreignMintReferencesObserved:string[]};
 export type FailedFeeResult={method:typeof CREATOR_FAILED_FEES_METHOD;status:'COMPLETE'|'INCOMPLETE'|'INVALID';reasonCode:string;actor:string|null;mint:string|null;targetSet:string[];
  coverage:{indexedRows:number;receipts:number;settled:number;unresolved:number;unavailable:number;missing:number;complete:boolean};counts:Record<FailedFeeClass,number>;
  failedTargetAssociatedChargedTransactionOverheadLamports:string|null;
@@ -73,7 +74,7 @@ export const unpackCreatorFailedFeeReceipt=(stored:string):string=>unpackDemandR
 function unpacked(stored:string):string{try{return unpackCreatorFailedFeeReceipt(stored);}catch{return invalid('S15_FAILED_ARCHIVE_INVALID');}}
 
 /** One jsonParsed receipt against its index row. Identity mismatches are forgeries (INVALID); unsupported shapes stay UNRESOLVED. */
-function decodeRow(raw:string,row:FailedIndexRow,ctx:Context):Body{
+function decodeRow(raw:string,row:FailedIndexRow,ctx:Context,version1=false):Body{
  const unresolved=(code:string,extra:Partial<Body>={}):Body=>({...blank(),...extra,classification:'UNRESOLVED',code});
  const unavailable=(code:string):Body=>({...blank(),classification:'UNAVAILABLE',code});
  let env:unknown=null;try{env=JSON.parse(raw);}catch{return unresolved('ENVELOPE_INVALID');}
@@ -84,7 +85,7 @@ function decodeRow(raw:string,row:FailedIndexRow,ctx:Context):Body{
  if(!object(v)||!object(v.transaction)||!object(v.transaction.message)||!Array.isArray(v.transaction.signatures)||!object(v.meta))return unresolved('SHAPE_INVALID');
  const message:Record<string,any>=v.transaction.message,meta:Record<string,any>=v.meta,signatures:unknown[]=v.transaction.signatures;
  if(signatures[0]!==row.signature||v.slot!==row.slot||v.blockTime!==row.blockTime||v.transactionIndex!==undefined&&row.transactionIndex!==null&&v.transactionIndex!==row.transactionIndex||meta.err===null||meta.err===undefined||canonical(meta.err)!==canonical(row.err))invalid('S15_FAILED_RECEIPT_BINDING');
- const version=v.version==='legacy'||v.version===0?v.version as 'legacy'|0:null;
+ const version=v.version==='legacy'||v.version===0||version1&&v.version===1?v.version as 'legacy'|0|1:null;
  if(version===null)return unresolved('VERSION_UNSUPPORTED');
  if(meta.status!==undefined&&canonical(meta.status)!==canonical({Err:row.err}))return unresolved('STATUS_MISMATCH',{version});
  const list:unknown=message.accountKeys;
@@ -129,12 +130,12 @@ function result(input:FailedFeeInput,status:FailedFeeResult['status'],reasonCode
 }
 
 /** Classifies every accepted failed index row; any forgery yields INVALID and any unsettled row leaves the total null. */
-export function classifyCreatorFailedFees(input:FailedFeeInput):FailedFeeResult{
+export function classifyCreatorFailedFees(input:FailedFeeInput,expanded=false,version1=false,episode=false):FailedFeeResult{
  let targets:string[]=[];
  try{
   if(!object(input)||!isKey(input.actor)||!isKey(input.mint)||!Array.isArray(input.targetAccounts)||!input.targetAccounts.every(isKey)||new Set(input.targetAccounts).size!==input.targetAccounts.length||input.targetAccounts.includes(input.mint)||input.targetAccounts.includes(input.actor)||!integer(input.creationSlot)||!integer(input.headSlot)||input.creationSlot>input.headSlot||!Array.isArray(input.rows)||!Array.isArray(input.receipts))invalid('S15_FAILED_INPUT_INVALID');
   const cutoff=nanos(input.cutoff);if(cutoff===null)return invalid('S15_FAILED_INPUT_INVALID');
-  if(input.rows.length>FAILED_FEE_RECEIPT_CAP)invalid('S15_FAILED_INDEX_CAP');
+  if(input.rows.length>(episode?EPISODE_FAILED_FEE_RECEIPT_CAP:version1?NATIVE_FAILED_FEE_RECEIPT_CAP:expanded?EXPANDED_FAILED_FEE_RECEIPT_CAP:FAILED_FEE_RECEIPT_CAP))invalid('S15_FAILED_INDEX_CAP');
   const expected=new Map<string,FailedIndexRow>();
   for(const r of input.rows){
    if(!object(r)||!isSignature(r.signature)||expected.has(failedFeeReceiptId(r.signature))||!integer(r.slot)||r.slot<input.creationSlot||r.slot>input.headSlot||!integer(r.blockTime)||BigInt(r.blockTime)*NANOS>cutoff||r.err===null||r.err===undefined||r.confirmationStatus!=='finalized'||!(r.transactionIndex===null||integer(r.transactionIndex)))invalid('S15_FAILED_INPUT_INVALID');
@@ -162,7 +163,7 @@ export function classifyCreatorFailedFees(input:FailedFeeInput):FailedFeeResult{
    if(!receipt){rows.push({...head,...blank(),classification:'MISSING',code:'RECEIPT_MISSING'});continue;}
    const raw=unpacked(receipt.stored);
    storedBytes+=Buffer.byteLength(receipt.stored,'utf8');sourceBytes+=Buffer.byteLength(raw,'utf8');
-   rows.push({...head,...decodeRow(raw,row,ctx)});
+   rows.push({...head,...decodeRow(raw,row,ctx,version1)});
   }
   const complete=rows.every(r=>SETTLED.has(r.classification));
   return result(input,complete?'COMPLETE':'INCOMPLETE',complete?'S15_FAILED_FEES_COMPLETE':'S15_FAILED_FEES_INCOMPLETE',targets,rows,byId.size,storedBytes,sourceBytes);

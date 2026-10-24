@@ -20,8 +20,8 @@ import { CALLER_REQUEST_CAP } from '../src/providers/advisory-caller-history.js'
 import { CREATOR_INVENTORY_REQUEST_CAP } from '../src/providers/advisory-creator-inventory-collector.js';
 import { CREATOR_FAILED_FEE_REQUEST_CAP } from '../src/providers/advisory-creator-performance-collector.js';
 import { archiveCreatorFailedFeeReceipt,failedFeeReceiptId,failedFeeRequest,FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../src/providers/advisory-creator-failed-fees.js';
-import { WINDOW_ARCHIVE_ADAPTER,WINDOW_ARCHIVE_SOURCE_BYTES,WINDOW_DENSE_PAGE_LIMIT,WINDOW_DENSE_REQUEST_CAP } from '../src/providers/advisory-window.js';
-import { legacyWindowBundle } from './window-legacy-fixtures.js';
+import { WINDOW_ARCHIVE_ADAPTER,WINDOW_ARCHIVE_SOURCE_BYTES,WINDOW_DENSE_PAGE_LIMIT,WINDOW_EXPANDED_PAGE_LIMIT,WINDOW_DENSE_REQUEST_CAP } from '../src/providers/advisory-window.js';
+import { legacyWindowBundle,legacyDenseWindowBundle } from './window-legacy-fixtures.js';
 import { HOLDER_ARCHIVE_ADAPTER,unpackHolderPopulation } from '../src/providers/advisory-topology.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { makeSocialFixture,SOCIAL_TOKEN,SOCIAL_CUTOFF } from './social-fixtures.js';
@@ -51,10 +51,10 @@ const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evi
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v24');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v32');assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v23');
+  assert.equal(facts.method,'advisory-measurements-v31');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
@@ -62,7 +62,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
   // Older proofs replay only plain legacy windows: the same fixture's exact proof-v20 form rebuilds facts v21, and every older relabel is compared with that frozen result.
   const {bundle:v20Bundle,proof:v20}=legacyWindowBundle(bundle),rebuild=(p:unknown)=>reconstructAdvisory(token,at,v20Bundle.details!.baseline,v20Bundle.evidence,v20Bundle.rawArtifacts,p,v20Bundle.thesis??null,v20Bundle.features),facts20=rebuild(v20);
   assert.equal(facts20.method,'advisory-measurements-v21');
-  assert.equal((facts.metrics.find(m=>m.id==='O28')!.data as {acquisition?:{version:string}}).acquisition?.version,'window-dense-v1');assert.equal(Object.hasOwn(facts20.metrics.find(m=>m.id==='O28')!.data as object,'acquisition'),false);
+  assert.equal((facts.metrics.find(m=>m.id==='O28')!.data as {acquisition?:{version:string}}).acquisition?.version,'window-dense-v2');assert.equal(Object.hasOwn(facts20.metrics.find(m=>m.id==='O28')!.data as object,'acquisition'),false);
   // Archived window receipts never replay under an older proof, and plain legacy receipts never satisfy proof v21.
   assert.throws(()=>reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,{...proof,method:'advisory-provenance-v20'},bundle.thesis??null,bundle.features),/ADVISORY_PROOF_INVALID/);
   assert.throws(()=>rebuild({...v20,method:'advisory-provenance-v21'}),/ADVISORY_PROOF_INVALID/);
@@ -98,7 +98,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
       for(const expected of ['Supplementary one-hour demand (not A30; not counted): NOT_ELIGIBLE / SELECTED_POOL_WINDOW_INCOMPLETE.','baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z','no zero is inferred'])assert.ok(text.includes(expected),expected);
     }finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v21');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v29');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -133,7 +133,7 @@ test('complete selected hour stores exact demand archives through live collectio
     assert.equal(original,bodies.get(JSON.stringify(proof.demand.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
   }
   // Proof v21 stores every selected-window receipt as an exact window-archive-v1 archive with a sole request scope and the stored archive hash; the original body and its source hash are recoverable byte for byte.
-  assert.equal(proof.method,'advisory-provenance-v24');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_DENSE_PAGE_LIMIT);
+  assert.equal(proof.method,'advisory-provenance-v32');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_EXPANDED_PAGE_LIMIT);
   const windowIds=proof.window.artifactIds as Record<string,string>;
   assert.deepEqual(bundle.evidence.filter(e=>e.sourceId==='advisory-window').map(e=>e.id).sort(),Object.values(windowIds).sort());
   for(const [key,id] of Object.entries(windowIds)){
@@ -179,13 +179,18 @@ test('complete selected hour stores exact demand archives through live collectio
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
-test('fresh proof v24 dispatch is required for persistence while legacy v23 reconstruction stays frozen',async()=>{
+test('fresh proof v29 dispatch is required while legacy v25, v24 and v23 reconstruction stay frozen',async()=>{
   const {complete}=await completeHourFetcher();
   const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:complete,now:()=>at});
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!;
-  assert.deepEqual([proof.method,facts.method],['advisory-provenance-v24','advisory-measurements-v23']);
-  const oldProof={...proof,method:'advisory-provenance-v23'};
-  const old=reconstructAdvisory(token,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,oldProof,bundle.thesis??null,bundle.features);
+  assert.deepEqual([proof.method,facts.method],['advisory-provenance-v32','advisory-measurements-v31']);
+  const legacy=legacyDenseWindowBundle(bundle),rebuild=(method:string)=>reconstructAdvisory(token,at,legacy.bundle.details!.baseline,legacy.bundle.evidence,legacy.bundle.rawArtifacts,{...legacy.proof,method},legacy.bundle.thesis??null,legacy.bundle.features),oldFacts=rebuild('advisory-provenance-v27');
+  const prior25=rebuild('advisory-provenance-v25');
+  assert.deepEqual(prior25,{...oldFacts,method:'advisory-measurements-v24'});
+  const previous=rebuild('advisory-provenance-v24');
+  assert.deepEqual(previous,{...oldFacts,method:'advisory-measurements-v23'});
+  const oldProof={...legacy.proof,method:'advisory-provenance-v23'};
+  const old=rebuild('advisory-provenance-v23');
   assert.equal(old.method,'advisory-measurements-v22');
   assert.equal(old.supplements!.shortDemand.coverage.logRecovery?.unresolvedForeignSwaps,undefined);
   const oldShort=structuredClone(old.supplements!.shortDemand) as any;
@@ -539,7 +544,7 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(Object.keys(proof.topology.artifactIds).length,0);assert.ok(m.evidenceIds.includes('rpc-holder-population'));
   // Proof v22 stores the canonical holder body as one exact holder-population-archive-v1 archive: same id, source, scope and clock; the stored hash is the container's and the original body is recoverable byte for byte.
   const sha=(raw:string)=>createHash('sha256').update(raw).digest('hex'),holder=bundle.evidence.find(e=>e.id==='rpc-holder-population')!,stored=bundle.rawArtifacts['rpc-holder-population']!,container=JSON.parse(stored);
-  assert.equal(proof.method,'advisory-provenance-v24');assert.equal(unpackHolderPopulation(stored),populationBody);
+  assert.equal(proof.method,'advisory-provenance-v32');assert.equal(unpackHolderPopulation(stored),populationBody);
   assert.deepEqual([holder.sourceId,holder.sourceType,holder.accessMode,holder.adapterVersion,holder.scope,holder.retrievedAt,holder.availableAt,holder.contentHash],['solana-rpc','JSON_RPC','PUBLIC_API',HOLDER_ARCHIVE_ADAPTER,{operation:'rpc-holder-population',commitment:'finalized',mint:token.address,fullAccountData:true},at,at,sha(stored)]);
   assert.deepEqual([container.method,container.encoding,container.sourceBytes,container.sourceHash],['advisory-demand-rpc-archive-v1','DEFLATE_RAW_BASE64',Buffer.byteLength(populationBody),sha(populationBody)]);
   assert.deepEqual(bundle.evidence.filter(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER).map(e=>e.id),['rpc-holder-population']);
@@ -568,4 +573,33 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   for(const [name,b,code] of tampered)assert.throws(()=>rebuild(b,proof),{message:code},name);
   const directory=mkdtempSync(join(tmpdir(),'advisory-topology-live-')),service=new Service(join(directory,'live.sqlite'));
   try{const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);const forged=structuredClone(bundle);(forged.details!.advisory!.metrics.find(m=>m.id==='O21')!.data as any).approvedExposure.effectiveAtomic='100';assert.throws(()=>service.analyzeLive(forged),/ADVISORY_PROOF/);assert.throws(()=>service.analyzeLive(tampered[0]![1]),/ADVISORY_PROOF_INVALID/);}finally{service.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('creator-mode advisory recovers DEX discovery through the existing exact JSON fallback and produces the complete demand tape without Gemini',async()=>{
+ const {complete}=await completeHourFetcher();let recoveryCalls=0,creatorCalls=0;
+ const fixture:typeof fetch=async(input,init)=>{
+  const url=String(input);
+  if(url.includes('/token-pairs/'))return new Response('',{status:502});
+  if(url==='https://api.fetch.tinyfish.ai/'){
+   const q=JSON.parse(String(init?.body));
+   assert.equal((init?.headers as Record<string,string>)['X-API-Key'],'recovery-key');
+   if(q.format==='html'){
+    recoveryCalls++;const target=q.urls[0],reply=await complete(target,{headers:{accept:'application/json'}}),raw=await reply.text();
+    return new Response(JSON.stringify({results:[{url:target,final_url:target,format:'html',text:raw}],errors:[]}));
+   }
+   creatorCalls++;return new Response('',{status:404});
+  }
+  assert.ok(!url.includes('generativelanguage'),'Gemini must stay disabled');
+  return complete(input,init);
+ };
+ const b=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'recovery-key',fetcher:fixture,now:()=>at});
+ assert.ok(recoveryCalls>=1&&creatorCalls===1);assert.ok(b.evidence.some(e=>e.id==='dex-pairs-fetch-selection'));
+ assert.equal(b.details!.advisory!.metrics.find(m=>m.id==='A30')!.quality,'KNOWN');
+ assert.ok(!JSON.stringify(b).includes('recovery-key'));
+ const directory=mkdtempSync(join(tmpdir(),'creator-dex-recovery-'));
+ try{const service=new Service(join(directory,'isolated.sqlite'));try{
+  const saved=service.analyzeLive(b);assert.deepEqual(service.replay(saved.id),saved);
+  const changed=structuredClone(b);changed.rawArtifacts['dex-pairs-fetch-response']=JSON.stringify({results:[],errors:[]});rehash(changed,'dex-pairs-fetch-response');
+  assert.throws(()=>service.analyzeLive(changed),/DEX_RECOVERY_PROOF_INVALID|DEX_FETCH_SHAPE/);
+ }finally{service.close();}}finally{rmSync(directory,{recursive:true,force:true});}
 });

@@ -7,12 +7,14 @@ import { decodeCreatorRole, type CreatorRoleDecode } from './advisory-creator-ro
 import type { CreatorRoleReceipts } from './advisory-creator-role.js';
 import type { CreatorInventoryReceipts, CreatorReuse, CreatorRole, CreatorTape } from './advisory-creator-inventory.js';
 import { creatorInventoryReuse, creatorInventoryRole, creatorInventoryTape } from './advisory-creator-inventory-collector.js';
-import { FAILED_FEE_ADAPTER, FAILED_FEE_RECEIPT_CAP, FAILED_FEE_RESPONSE_BYTES, FAILED_FEE_SOURCE_ID, archiveCreatorFailedFeeReceipt, failedFeeReceiptId, failedFeeRequest, type FailedFeeReceipt, type FailedIndexRow } from './advisory-creator-failed-fees.js';
+import { FAILED_FEE_ADAPTER, FAILED_FEE_RECEIPT_CAP, EXPANDED_FAILED_FEE_RECEIPT_CAP, FAILED_FEE_RESPONSE_BYTES, FAILED_FEE_SOURCE_ID, archiveCreatorFailedFeeReceipt, failedFeeReceiptId, failedFeeRequest, type FailedFeeReceipt, type FailedIndexRow } from './advisory-creator-failed-fees.js';
 import { creatorPerformanceGate, deriveS15CreatorPerformance } from './advisory-creator-performance.js';
 import { safeRpcCode, solanaRpc } from './solana.js';
 
 /** Dedicated allowance: one getTransaction per failed row of the accepted complete index (130); admitted retries count against it. */
 export const CREATOR_FAILED_FEE_REQUEST_CAP=FAILED_FEE_RECEIPT_CAP;
+/** Proof v25 admits a bounded set up to 256 failed rows (140 observed); storage/deadline remain independent ceilings. */
+export const EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP=EXPANDED_FAILED_FEE_RECEIPT_CAP;
 /** Stage ceiling on stored archive containers: 2.27x the 439,802 B measured for all 130 actual receipts. It fits the 1,213,295 B root measured under the unchanged 24 MB cap (stored 22,786,705 B), but that is no guarantee for other bundles; the app aggregate and metadata guard remains mandatory. */
 export const CREATOR_FAILED_FEE_STORED_BYTES=1_000_000;
 const CONCURRENCY=2,ENVELOPE_RESERVE=1_024;
@@ -23,9 +25,9 @@ export type FailedFeePrior=ReadonlyMap<string,{request:unknown;raw:string;retrie
 const envelope=(code:string)=>JSON.stringify({jsonrpc:'2.0',id:1,error:{code}});
 
 /** Bounded acquisition of receipts for the indexed failed transactions referencing the creator key once every S13/O24/O25/tape and position prerequisite holds; null when the stage is not admitted. Every retained body, error envelopes included, is an exact archive with its request and clock; nothing throws. */
-export async function collectCreatorFailedFees(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,prior:FailedFeePrior,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<CreatorFailedFeeReceipts|null>{
+export async function collectCreatorFailedFees(token:TokenRef,role:CreatorRole,tape:CreatorTape,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,prior:FailedFeePrior,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,expanded=false):Promise<CreatorFailedFeeReceipts|null>{
  let rows:FailedIndexRow[];
- try{const gate=creatorPerformanceGate(token,role,tape,inventory,reuse,now(),[]);if(!gate.ready)return null;rows=gate.scope.failedRows;}catch{return null;}
+ try{const gate=creatorPerformanceGate(token,role,tape,inventory,reuse,now(),[],expanded);if(!gate.ready)return null;rows=gate.scope.failedRows;}catch{return null;}
  const r:CreatorFailedFeeReceipts={rawArtifacts:{},retrievedAt:{},requests:{}};
  let stored=0,reserved=0,fresh=0,halted=false;
  const keep=(id:string,request:Request,container:string,at:string)=>{r.requests[id]=request;r.rawArtifacts[id]=container;r.retrievedAt[id]=at;stored+=Buffer.byteLength(container);};
@@ -40,7 +42,7 @@ export async function collectCreatorFailedFees(token:TokenRef,role:CreatorRole,t
   pending.push(row);
  }
  const read=async(row:FailedIndexRow)=>{
-  if(halted||signal?.aborted||fresh>=CREATOR_FAILED_FEE_REQUEST_CAP||stored+reserved+ENVELOPE_RESERVE>CREATOR_FAILED_FEE_STORED_BYTES){halted=true;return;}
+  if(halted||signal?.aborted||fresh>=(expanded?EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP:CREATOR_FAILED_FEE_REQUEST_CAP)||stored+reserved+ENVELOPE_RESERVE>CREATOR_FAILED_FEE_STORED_BYTES){halted=true;return;}
   const id=failedFeeReceiptId(row.signature),request=failedFeeRequest(row.signature),got:{raw?:string;at?:string}={};
   fresh++;reserved+=ENVELOPE_RESERVE;
   try{await solanaRpc(rpcUrl,request.method,request.params,fetcher,FAILED_FEE_RESPONSE_BYTES,signal,body=>{got.raw=body;got.at=now();});}
@@ -57,13 +59,13 @@ export async function collectCreatorFailedFees(token:TokenRef,role:CreatorRole,t
 }
 
 /** Live entry after the inventory task: recomputes cohort, tape and reuse exactly as replay will, then collects. Never throws. */
-export async function collectCreatorFailedFeesRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,inventory:CreatorInventoryReceipts,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,foreignFlowRecovery=false):Promise<CreatorFailedFeeReceipts|null>{
+export async function collectCreatorFailedFeesRun(token:TokenRef,role:CreatorRoleReceipts,window:AdvisoryWindowReuse&{data:AdvisoryWindowHistory},demand:AdvisoryWindowReuse,inventory:CreatorInventoryReceipts,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,foreignFlowRecovery=false,expanded=false,recoverCreation=false):Promise<CreatorFailedFeeReceipts|null>{
  try{
-  const cutoff=now(),cohort=creatorInventoryRole(token,decodeCreatorRole(token,role,cutoff));
+  const cutoff=now(),cohort=creatorInventoryRole(token,decodeCreatorRole(token,role,cutoff,true,true,recoverCreation));
   if(!cohort)return null;
   const tape=creatorInventoryTape(window.data,window,decodeAdvisoryDemandWindows(token,window.data,window,demand.rawArtifacts,demand.retrievedAt,demand.requests,cutoff,true,foreignFlowRecovery));
   if(!tape)return null;
-  return await collectCreatorFailedFees(token,cohort,tape,inventory,creatorInventoryReuse([['advisory-creatorRole-',role],['advisory-window-',window]]),new Map(),rpcUrl,fetcher,now,signal);
+  return await collectCreatorFailedFees(token,cohort,tape,inventory,creatorInventoryReuse([['advisory-creatorRole-',role],['advisory-window-',window]]),new Map(),rpcUrl,fetcher,now,signal,expanded);
  }catch{return null;}
 }
 
@@ -76,8 +78,8 @@ export function failedFeeReceiptsOf(r:CreatorFailedFeeReceipts):FailedFeeReceipt
 }
 
 /** Replay: the cohort is the S13 role recomputed from its own receipts; failed receipts without a KNOWN role and a complete tape are orphans. */
-export function replayCreatorPerformance(token:TokenRef,role:CreatorRoleDecode|null,tape:CreatorTape|null,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,failed:FailedFeeReceipt[]|null,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
+export function replayCreatorPerformance(token:TokenRef,role:CreatorRoleDecode|null,tape:CreatorTape|null,inventory:CreatorInventoryReceipts,reuse:CreatorReuse,failed:FailedFeeReceipt[]|null,cutoff:string,evidenceIds:string[],expanded=false):AdvisoryMetric{
  const cohort=role?creatorInventoryRole(token,role):null;
  if(!cohort||!tape)throw new Error('ADVISORY_PROOF_INVALID');
- return deriveS15CreatorPerformance(token,cohort,tape,inventory,reuse,failed,cutoff,evidenceIds);
+ return deriveS15CreatorPerformance(token,cohort,tape,inventory,reuse,failed,cutoff,evidenceIds,expanded);
 }

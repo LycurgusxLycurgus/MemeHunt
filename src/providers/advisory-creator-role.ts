@@ -36,20 +36,20 @@ export type CreatorRoleReceipts={rawArtifacts:Record<string,string>;retrievedAt:
 export const creatorRoleCoinUrl=(mint:string)=>`https://pump.fun/coin/${mint}`;
 /** Native TinyFish fetch body; links:true returns the page link list used for the profile binding. */
 export const creatorRolePageRequest=(mint:string)=>({method:'POST',url:'https://api.fetch.tinyfish.ai/',body:{urls:[creatorRoleCoinUrl(mint)],format:'markdown',links:true,ttl:0,per_url_timeout_ms:8000}});
-export const creatorRoleIndexRequest=(wallet:string):Request=>({method:'getSignaturesForAddress',params:[wallet,{limit:INDEX_LIMIT,commitment:'finalized'}]});
+export const creatorRoleIndexRequest=(wallet:string,before?:string):Request=>({method:'getSignaturesForAddress',params:[wallet,{limit:INDEX_LIMIT,commitment:'finalized',...(before?{before}:{})}]});
 export const creatorRoleTransactionRequest=(signature:string):Request=>({method:'getTransaction',params:[signature,{commitment:'finalized',encoding:'jsonParsed',maxSupportedTransactionVersion:1}]});
 
 export type PublicCreatorRole={
- method:'pump-public-creator-role-v1';
- abi:{source:string;sha256:string;program:string;instruction:'create_v2';event:'CreateEvent';argumentTailBytes:number;eventTailBytes:number;appendedFields:'LENGTH_BOUNDED_NOT_INTERPRETED'};
+ method:'pump-public-creator-role-v1'|'pump-public-creator-role-v2';
+ abi:{source:string;sha256:string;program:string;instruction:'create_v2';event:'CreateEvent';argumentTailBytes:number;eventTailBytes:number;appendedFields:'LENGTH_BOUNDED_NOT_INTERPRETED'|'CREATION_FLAGS_AND_QUOTE_DECODED'};
  token:TokenRef;wallet:string;
  actor:{kind:'PUBLIC_PUMP_PROFILE';id:string;profileUrl:string};
  relationship:'PUBLIC_PROFILE_CREATOR_CLAIM_CONFIRMED_BY_SIGNED_CREATE_V2';
  role:'TOKEN_CREATION_SIGNER_AND_DECLARED_CREATOR';
  validity:{kind:'HISTORICAL_TRANSACTION';validAt:string;validUntil:null;ongoingControlAsserted:false};
- creation:{signature:string;slot:number;at:string;instructionIndex:number;feePayer:string;walletIsFeePayer:boolean;bondingCurve:string;mintAuthority:string;tokenProgram:string;mintFundedBy:string;mintCloseAuthority:'NOT_INITIALIZED';uniqueness:'MINT_ALLOCATED_AND_INITIALIZED_IN_THIS_TRANSACTION'};
+ creation:{holderReward?:boolean;eventFeeRecipient?:string;logCoverage?:'COMPLETE_TRANSACTION'|'COMPLETE_CREATION_FRAME_BEFORE_LATER_TRUNCATION';quoteMint?:string|null;signature:string;slot:number;at:string;instructionIndex:number;feePayer:string;walletIsFeePayer:boolean;bondingCurve:string;mintAuthority:string;tokenProgram:string;mintFundedBy:string;mintCloseAuthority:'NOT_INITIALIZED';uniqueness:'MINT_ALLOCATED_AND_INITIALIZED_IN_THIS_TRANSACTION'};
  publicClaim:{pageUrl:string;observedAt:string;profileLinks:number;visibleCreatorLabel:string;pagePublishedDate:string|null;pagePublishedDateUsedAsBirthProof:false};
- walletIndex:{retrievedAt:string;returned:number;limit:number;providerIndexExhausted:boolean;oldestRetainedAt:string|null};
+ walletIndex:{before?:string;retrievedAt:string;returned:number;limit:number;providerIndexExhausted:boolean;oldestRetainedAt:string|null};
  cutoff:string;personIdentityAsserted:false;socialAccountBound:false;currentFeeBeneficiaryAsserted:false;
  limitations:string[];
 };
@@ -75,6 +75,7 @@ function reader(b:Buffer,start:number,code:string){
   key(){return new PublicKey(take(32)).toBase58();},
   i64(){return take(8).readBigInt64LE(0);},
   rest(){return b.length-o;},
+  tail(){return b.subarray(o);},
  };
 }
 function rpcResult(raw:string):unknown{
@@ -121,7 +122,7 @@ function indexRows(value:unknown,retrieved:number){
 }
 
 /** Executed top-level create_v2 with typed prefixes, mint allocation/initialization, complete frames and bound event. */
-function verifyCreation(value:unknown,expected:{signature:string;slot:number;blockTime:number},mint:string,retrieved:number){
+function verifyCreation(value:unknown,expected:{signature:string;slot:number;blockTime:number},mint:string,retrieved:number,recoverCreation=false){
  if(value===null)fail('TRANSACTION_UNAVAILABLE');
  const tx=value as any;
  if(!obj(tx)||!obj(tx.meta)||!obj(tx.transaction)||!obj(tx.transaction.message))fail('TRANSACTION_SHAPE');
@@ -142,17 +143,17 @@ function verifyCreation(value:unknown,expected:{signature:string;slot:number;blo
   groups.set(g.index,g.instructions);
  }
  // The complete executed trace binds every top-level and inner instruction to its logged program frame before either a creation or an absence conclusion.
- const logs=meta.logMessages;if(logs.some((l:unknown)=>typeof l!=='string'))fail('TRANSACTION_SHAPE');if(logs.includes('Log truncated'))fail('LOG_TRUNCATED');
- const frames:Array<Array<{program:string;depth:number}>>=top.map(()=>[]),dataLogs:Array<{top:number;payload:string;position:number}>=[],stack:string[]=[];let current=-1;
+ const logs=meta.logMessages;if(logs.some((l:unknown)=>typeof l!=='string'))fail('TRANSACTION_SHAPE');const truncated=logs.includes('Log truncated');if(truncated&&(!recoverCreation||logs.at(-1)!=='Log truncated'||logs.filter((l:string)=>l==='Log truncated').length!==1))fail('LOG_TRUNCATED');
+ const frames:Array<Array<{program:string;depth:number}>>=top.map(()=>[]),dataLogs:Array<{top:number;payload:string;position:number}>=[],stack:string[]=[],closed=new Set<number>();let current=-1;
  for(const line of logs as string[]){
   let r=line.match(INVOKE);
   if(r){const depth=Number(r[2]);if(depth!==stack.length+1)fail('LOG_INCOMPLETE');if(depth===1){current++;if(current>=top.length||top[current].programId!==r[1])fail('LOG_INCOMPLETE');}else frames[current]!.push({program:r[1]!,depth});stack.push(r[1]!);continue;}
   r=line.match(RESULT);
-  if(r){if(stack.pop()!==r[1])fail('LOG_INCOMPLETE');if(r[2]!=='success')fail('FRAME_FAILED');continue;}
+  if(r){if(stack.pop()!==r[1])fail('LOG_INCOMPLETE');if(r[2]!=='success')fail('FRAME_FAILED');if(!stack.length)closed.add(current);continue;}
   if(line.startsWith('Program data: ')&&stack.length===1)dataLogs.push({top:current,payload:line.slice(14),position:frames[current]!.length});
  }
- if(stack.length||current!==top.length-1)fail('LOG_INCOMPLETE');
- for(const [i,frame] of frames.entries()){const g=groups.get(i)??[];if(frame.length!==g.length||frame.some((f,j)=>f.program!==g[j].programId||f.depth!==g[j].stackHeight))fail('LOG_INCOMPLETE');}
+ if(!truncated&&(stack.length||current!==top.length-1))fail('LOG_INCOMPLETE');
+ for(const [i,frame] of frames.entries()){if(truncated&&!closed.has(i))continue;const g=groups.get(i)??[];if(frame.length!==g.length||frame.some((f,j)=>f.program!==g[j].programId||f.depth!==g[j].stackHeight))fail('LOG_INCOMPLETE');}
  const inner=[...groups.values()].flat(),all=[...top,...inner];
  // Only a top-level create binds the creating user to a transaction signer; a CPI create stays unsupported.
  const tagged=(ix:any)=>ix.programId===PUMP_PROGRAM&&typeof ix.data==='string'&&ix.data.length>0&&bytes58(ix.data,DATA_CHARS).subarray(0,8).equals(CREATE_TAG);
@@ -162,6 +163,7 @@ function verifyCreation(value:unknown,expected:{signature:string;slot:number;blo
  // entry is one of the explicitly supported parsed forms below, with exact fields and every account role a resolved transaction key that is not the
  // target mint (transferChecked may name it as its mint). Raw, unknown, incomplete or otherwise unsupported critical entries cannot certify absence.
  if(!creates.length){
+  if(truncated)fail('LOG_TRUNCATED');
   const role=(x:unknown)=>typeof x==='string'&&flags.has(x)&&x!==mint,exact=(i:Record<string,unknown>,names:string[])=>JSON.stringify(Object.keys(i).sort())===JSON.stringify([...names].sort());
   const amount=(t:unknown)=>obj(t)&&Object.keys(t).every(k=>['amount','decimals','uiAmount','uiAmountString'].includes(k))&&typeof t.amount==='string'&&/^\d{1,20}$/.test(t.amount)&&integer(t.decimals)&&t.decimals<=255;
   const supported=(e:any)=>{
@@ -174,19 +176,32 @@ function verifyCreation(value:unknown,expected:{signature:string;slot:number;blo
  if(creates.length>1)fail('CREATE_DUPLICATE');
  const index:number=creates[0],ix=top[index],accounts=ix.accounts;
  if(!Array.isArray(accounts)||accounts.some((a:unknown)=>typeof a!=='string'||!flags.has(a)))fail('CREATE_ACCOUNTS');
- // Remaining accounts select a non-SOL quote mint per the IDL docs; that path is outside this contract.
- if(accounts.length>16)fail('QUOTE_PATH_UNSUPPORTED');if(accounts.length!==16)fail('CREATE_ACCOUNTS');
+ // Remaining account layout: official docs/instructions/COIN_CREATION.md and CREATE_WITH_PUMP_COIN_QUOTE.md (retrieved2026-10-19).
+ // Quote layout is independent of the narrow signer role; no SOL cost or price is derived here.
+ if(truncated&&(!closed.has(index)||current<=index))fail('LOG_TRUNCATED');
+ if(accounts.length>16&&!recoverCreation)fail('QUOTE_PATH_UNSUPPORTED');
+ if(![16,...(recoverCreation?[19,20]:[])].includes(accounts.length))fail('CREATE_ACCOUNTS');
  if(accounts[0]!==mint)fail('CREATE_MINT_MISMATCH');
  const program=new PublicKey(PUMP_PROGRAM),seedProgram=new PublicKey(Uint8Array.from(PINNED_CREATE_V2.mayhemSeedProgram)),mintKey=new PublicKey(mint);
  const pda=(seeds:Buffer[],owner=program)=>PublicKey.findProgramAddressSync(seeds,owner)[0].toBase58();
  const bondingCurve=pda([Buffer.from('bonding-curve'),mintKey.toBuffer()]),mintAuthority=pda([Buffer.from('mint-authority')]),eventAuthority=pda([Buffer.from('__event_authority')]);
  const expectedAccounts:(string|null)[]=[mint,mintAuthority,bondingCurve,getAssociatedTokenAddressSync(mintKey,new PublicKey(bondingCurve),true,new PublicKey(TOKEN_2022_PROGRAM)).toBase58(),pda([Buffer.from('global')]),null,SYSTEM,TOKEN_2022_PROGRAM,ATA,PINNED_CREATE_V2.mayhemProgram,pda([Buffer.from('global-params')],seedProgram),pda([Buffer.from('sol-vault')],seedProgram),pda([Buffer.from('mayhem-state'),mintKey.toBuffer()],seedProgram),null,eventAuthority,PUMP_PROGRAM];
  for(const [i,[,role]] of PINNED_CREATE_V2.accounts.entries()){const a:string=accounts[i],f=flags.get(a)!;if(expectedAccounts[i]!==null&&a!==expectedAccounts[i]||role.includes('w')&&!f.writable||role.includes('s')&&!f.signer)fail('CREATE_ACCOUNTS');}
+ let quoteMint:string|null=null;
+ if(accounts.length>16){
+  quoteMint=accounts[16];const quoteProgram=accounts[18];
+  if(quoteMint===mint||![LEGACY_TOKEN_PROGRAM,TOKEN_2022_PROGRAM].includes(quoteProgram)||!flags.get(accounts[17])!.writable||accounts[17]!==getAssociatedTokenAddressSync(new PublicKey(quoteMint!),new PublicKey(bondingCurve),true,new PublicKey(quoteProgram)).toBase58()||accounts.length===20&&accounts[19]!==pda([Buffer.from('quote-control')]))fail('CREATE_QUOTE_ACCOUNTS');
+ }
  const user:string=accounts[5];
  const args=reader(bytes58(ix.data),8,'CREATE_ARGUMENTS'),name=args.string(),symbol=args.string(),uri=args.string(),creatorArg=args.key(),argumentTailBytes=args.rest();
  if(argumentTailBytes>PINNED_CREATE_V2.argumentTailMaxBytes)fail('ABI_UNSUPPORTED');
- // The holder-reward path redirects creator to a PDA, so creator=user excludes it without decoding the tail.
+ // A signer claim always binds the creator argument to user; holder-reward event recipients are verified separately below.
  if(creatorArg!==user)fail('SIGNED_ROLE_CONTRADICTION');
+ const argTail=args.tail();let holderReward=false;
+ if(recoverCreation){
+  if(![1,2,10,11].includes(argTail.length)||argTail[0]!>1||argTail.length>=2&&argTail[1]!>1||argTail.length===11&&argTail[10]!>1)fail('CREATE_ARGUMENTS');
+  holderReward=argTail.length===11&&argTail[10]===1;
+ }
  const info=(e:any)=>obj(e.parsed)&&obj(e.parsed.info)?e.parsed.info:null,type=(e:any)=>obj(e.parsed)&&typeof e.parsed.type==='string'?e.parsed.type as string:null;
  const group=groups.get(index)??[];
  const alloc=group.findIndex(e=>info(e)?.newAccount===mint),init=group.findIndex(e=>type(e)==='initializeMint2'&&info(e)?.mint===mint);
@@ -212,37 +227,43 @@ function verifyCreation(value:unknown,expected:{signature:string;slot:number;blo
  const event={name:ev.string(),symbol:ev.string(),uri:ev.string(),mint:ev.key(),bondingCurve:ev.key(),user:ev.key(),creator:ev.key(),timestamp:ev.i64()},eventTailBytes=ev.rest();
  if(eventTailBytes>PINNED_CREATE_V2.eventTailMaxBytes)fail('ABI_UNSUPPORTED');
  if(event.name!==name||event.symbol!==symbol||event.uri!==uri||event.mint!==mint||event.bondingCurve!==bondingCurve||event.timestamp!==BigInt(tx.blockTime))fail('EVENT_BINDING');
- if(event.user!==user||event.creator!==user)fail('SIGNED_ROLE_CONTRADICTION');
- return{user,instructionIndex:index,feePayer:keys[0].pubkey as string,bondingCurve,mintAuthority,argumentTailBytes,eventTailBytes};
+ if(recoverCreation){
+  const tail=ev.tail();
+  if(![115,116].includes(tail.length)||tail[64]!>1||tail[65]!>1||tail[114]!>1||new PublicKey(tail.subarray(32,64)).toBase58()!==TOKEN_2022_PROGRAM||tail[64]!==argTail[0]||(argTail.length>=2?argTail[1]:0)!==tail[65]||Boolean(tail[114])!==holderReward||argTail.length>=10&&argTail.readBigUInt64LE(2)!==tail.readBigUInt64LE(106)||new PublicKey(tail.subarray(66,98)).toBase58()!==(!quoteMint||quoteMint==='So11111111111111111111111111111111111111112'?SYSTEM:quoteMint))fail('EVENT_BINDING');
+ }
+ const feeRecipient=holderReward?pda([Buffer.from('holder-rewards'),mintKey.toBuffer()]):user;
+ if(event.user!==user||event.creator!==feeRecipient)fail('SIGNED_ROLE_CONTRADICTION');
+ return{user,holderReward,eventFeeRecipient:event.creator,quoteMint,logCoverage:truncated?'COMPLETE_CREATION_FRAME_BEFORE_LATER_TRUNCATION' as const:'COMPLETE_TRANSACTION' as const,instructionIndex:index,feePayer:keys[0].pubkey as string,bondingCurve,mintAuthority,argumentTailBytes,eventTailBytes};
 }
 
 /** S13 narrow public creator-role binding: wallet-to-token creation role only, never a person, social account or ongoing control. */
-export function verifyPublicCreatorRole(token:TokenRef,receipts:CreatorRoleReceipts,cutoff:string):PublicCreatorRole{
+export function verifyPublicCreatorRole(token:TokenRef,receipts:CreatorRoleReceipts,cutoff:string,indexBefore?:string,recoverCreation=false):PublicCreatorRole{
  if(token.chain!=='solana'||!isAddress(token.address))fail('SCOPE');
  const mint=token.address,cut=Date.parse(cutoff);if(!Number.isFinite(cut))fail('SCOPE');
  const clock=(id:string)=>{const t=Date.parse(receipts.retrievedAt[id]??'');if(!Number.isFinite(t))fail('RECEIPT');if(t>cut)fail('CLOCK');return t;};
  const declared=(id:string,expected:unknown)=>{const raw=receipts.rawArtifacts[id];if(JSON.stringify(receipts.requests[id])!==JSON.stringify(expected)||typeof raw!=='string')fail('RECEIPT');return raw;};
  const pageRaw=declared(R.page,creatorRolePageRequest(mint)),pageAt=clock(R.page),claim=publicClaim(pageRaw,mint),wallet=claim.wallet;
- const indexRaw=declared(R.walletIndex,creatorRoleIndexRequest(wallet)),indexAt=clock(R.walletIndex),rows=indexRows(rpcResult(indexRaw),indexAt);
+ if(indexBefore!==undefined&&!isSignature(indexBefore))fail('RECEIPT');
+ const indexRaw=declared(R.walletIndex,creatorRoleIndexRequest(wallet,indexBefore)),indexAt=clock(R.walletIndex),rows=indexRows(rpcResult(indexRaw),indexAt);
  const params=(receipts.requests[R.transaction] as any)?.params,signature:unknown=Array.isArray(params)?params[0]:undefined;
  if(!isSignature(signature))fail('RECEIPT');
  const txRaw=declared(R.transaction,creatorRoleTransactionRequest(signature)),txAt=clock(R.transaction);
  const row=rows.find(r=>r.signature===signature);if(!row||row.err!==null||row.blockTime===null)fail('INDEX_SIGNATURE');
- const blockTime=row.blockTime,creation=verifyCreation(rpcResult(txRaw),{signature,slot:row.slot,blockTime},mint,txAt);
+ const blockTime=row.blockTime,creation=verifyCreation(rpcResult(txRaw),{signature,slot:row.slot,blockTime},mint,txAt,recoverCreation);
  if(creation.user!==wallet)fail('PROFILE_ROLE_CONTRADICTION');
  if(blockTime*1000>pageAt||blockTime*1000>indexAt)fail('CLOCK');
  const validAt=new Date(blockTime*1000).toISOString(),dated=rows.flatMap(r=>r.blockTime===null?[]:[r.blockTime]);
  return{
-  method:'pump-public-creator-role-v1',
-  abi:{source:PUMP_CREATE_ABI_SOURCE,sha256:PUMP_CREATE_ABI_HASH,program:PUMP_PROGRAM,instruction:'create_v2',event:'CreateEvent',argumentTailBytes:creation.argumentTailBytes,eventTailBytes:creation.eventTailBytes,appendedFields:'LENGTH_BOUNDED_NOT_INTERPRETED'},
+  method:recoverCreation?'pump-public-creator-role-v2':'pump-public-creator-role-v1',
+  abi:{source:PUMP_CREATE_ABI_SOURCE,sha256:PUMP_CREATE_ABI_HASH,program:PUMP_PROGRAM,instruction:'create_v2',event:'CreateEvent',argumentTailBytes:creation.argumentTailBytes,eventTailBytes:creation.eventTailBytes,appendedFields:recoverCreation?'CREATION_FLAGS_AND_QUOTE_DECODED':'LENGTH_BOUNDED_NOT_INTERPRETED'},
   token:{chain:'solana',address:mint},wallet,
   actor:{kind:'PUBLIC_PUMP_PROFILE',id:`PUBLIC_PUMP_PROFILE:${wallet}`,profileUrl:claim.profileUrl},
   relationship:'PUBLIC_PROFILE_CREATOR_CLAIM_CONFIRMED_BY_SIGNED_CREATE_V2',
   role:'TOKEN_CREATION_SIGNER_AND_DECLARED_CREATOR',
   validity:{kind:'HISTORICAL_TRANSACTION',validAt,validUntil:null,ongoingControlAsserted:false},
-  creation:{signature,slot:row.slot,at:validAt,instructionIndex:creation.instructionIndex,feePayer:creation.feePayer,walletIsFeePayer:creation.feePayer===wallet,bondingCurve:creation.bondingCurve,mintAuthority:creation.mintAuthority,tokenProgram:TOKEN_2022_PROGRAM,mintFundedBy:wallet,mintCloseAuthority:'NOT_INITIALIZED',uniqueness:'MINT_ALLOCATED_AND_INITIALIZED_IN_THIS_TRANSACTION'},
+  creation:{...(recoverCreation?{holderReward:creation.holderReward,eventFeeRecipient:creation.eventFeeRecipient,quoteMint:creation.quoteMint,logCoverage:creation.logCoverage}:{}),signature,slot:row.slot,at:validAt,instructionIndex:creation.instructionIndex,feePayer:creation.feePayer,walletIsFeePayer:creation.feePayer===wallet,bondingCurve:creation.bondingCurve,mintAuthority:creation.mintAuthority,tokenProgram:TOKEN_2022_PROGRAM,mintFundedBy:wallet,mintCloseAuthority:'NOT_INITIALIZED',uniqueness:'MINT_ALLOCATED_AND_INITIALIZED_IN_THIS_TRANSACTION'},
   publicClaim:{pageUrl:creatorRoleCoinUrl(mint),observedAt:new Date(pageAt).toISOString(),profileLinks:claim.profileLinks,visibleCreatorLabel:claim.label,pagePublishedDate:claim.publishedDate,pagePublishedDateUsedAsBirthProof:false},
-  walletIndex:{retrievedAt:new Date(indexAt).toISOString(),returned:rows.length,limit:INDEX_LIMIT,providerIndexExhausted:rows.length<INDEX_LIMIT,oldestRetainedAt:dated.length?new Date(Math.min(...dated)*1000).toISOString():null},
+  walletIndex:{...(indexBefore?{before:indexBefore}:{}),retrievedAt:new Date(indexAt).toISOString(),returned:rows.length,limit:INDEX_LIMIT,providerIndexExhausted:rows.length<INDEX_LIMIT,oldestRetainedAt:dated.length?new Date(Math.min(...dated)*1000).toISOString():null},
   cutoff:new Date(cut).toISOString(),personIdentityAsserted:false,socialAccountBound:false,currentFeeBeneficiaryAsserted:false,
   limitations:[
    'Wallet-to-token creation role only: no person, name, team, social handle or off-chain controller is identified.',
@@ -250,7 +271,7 @@ export function verifyPublicCreatorRole(token:TokenRef,receipts:CreatorRoleRecei
    'Social and website links on the coin page are not bound to the wallet.',
    'Page published_date is retained as a page claim and never used as the creation clock or birth proof; the bounded collector uses it only as a candidate-discovery hint.',
    'Wallet index exhaustion below its limit is a provider observation, not archival completeness; the creation proof rests on the transaction.',
-   'Only the pinned create_v2 accounts and argument/event prefixes are decoded; appended fields are length-bounded and uninterpreted. The published IDL is mutable and does not attest the deployed program; runtime account, argument, event and frame consistency carry the proof.',
+   recoverCreation?'Pinned create_v2 signer, quote account layout, argument/event creation flags and holder-reward recipient PDA are verified. A complete creation frame may precede later terminal log truncation; no later trade semantics are inferred. The mutable published IDL does not independently attest deployed code.':'Only the pinned create_v2 accounts and argument/event prefixes are decoded; appended fields are length-bounded and uninterpreted. The published IDL is mutable and does not attest the deployed program; runtime account, argument, event and frame consistency carry the proof.',
   ],
  };
 }

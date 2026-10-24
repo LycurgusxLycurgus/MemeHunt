@@ -19,6 +19,7 @@ import {
   type Profile,
   type TokenRef,
 } from './domain/contracts.js';
+import { collectIndexedCreatorPosition,replayIndexedCreatorPosition } from './providers/indexed-creator-position.js';
 import { probeDexScreener } from './providers/dexscreener.js';
 import { decodeSolanaAddress, inspectSolanaRpc } from './providers/solana.js';
 
@@ -127,7 +128,7 @@ const rpcRecovery = (code: string): string => {
 };
 
 export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<number> {
-  if(argv[0]&&!['analyze','reassess','help','profile','config','research','doctor','market','show','explain','replay','diff','case','thesis','position','journal','backup','capabilities'].includes(argv[0])&&!argv[0].startsWith('-'))argv=['analyze',...argv];
+  if(argv[0]&&!['creator-position','creator-position-replay','analyze','reassess','help','profile','config','research','doctor','market','show','explain','replay','diff','case','thesis','position','journal','backup','capabilities'].includes(argv[0])&&!argv[0].startsWith('-'))argv=['analyze',...argv];
   const env = runtime.env ?? process.env;
   const stdout = runtime.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = runtime.stderr ?? ((text: string) => { process.stderr.write(text); });
@@ -149,6 +150,12 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
     const requestedChecklist=flagValue(argv,'checklist');
     if(requestedChecklist&&!requestedChecklist.startsWith('--')&&!['entry','management'].includes(requestedChecklist))throw new CliError('INVALID_CHECKLIST','Choose entry or management.');
+    if(cmd==='creator-position'||cmd==='creator-position-replay'){
+      if(cmd==='creator-position-replay'){output(replayIndexedCreatorPosition(fileJson(flagValue(argv,'file'))));return 0;}
+      const mint=argv[1];if(!mint||mint.startsWith('--'))throw new CliError('INVALID_SOLANA_ADDRESS','Provide a Solana mint.');
+      if(!env.SOLANA_TRACKER_API_KEY)throw new CliError('SOLANA_TRACKER_KEY_MISSING','Configure SOLANA_TRACKER_API_KEY privately. This lookup reads provider-reported USD positions and opens no database.');
+      output(await collectIndexedCreatorPosition(mint,env.SOLANA_TRACKER_API_KEY,runtime.fetcher??fetch,runtime.now));return 0;
+    }
     if (cmd === 'capabilities') {
       output({
         chains: ['solana', 'bsc', 'base', 'robinhood'],
@@ -162,10 +169,12 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--advisory] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
         advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
+        creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
+        creatorHistory: '--partial --advisory --creator-history explicitly permits the bounded TinyFish Pump creator page, DEX JSON recovery and public creator history for Solana; needs TINYFISH_API_KEY, uses no Gemini.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
         other: 'Use --bundle for offline fixture/import analysis; reassess requires --bundle.',
         networkCheck: 'doctor --network makes one bounded mainnet RPC check; no database, account lookup, or hosted providers. Plain doctor stays offline.',
@@ -238,6 +247,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
+      if(hasFlag(argv,'creator-history')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Creator history is a live analyze mode; use --partial --advisory.');
       if (fullRequested && partialRequested) throw new Error('ANALYSIS_MODES_CONFLICT');
       if ((fullRequested || partialRequested) && (cmd === 'reassess' || hasBundle)) throw new Error('MODE_FLAG_ONLY_FOR_LIVE');
       if (hasProfile && (cmd === 'reassess' || hasBundle)) throw new Error('PROFILE_ONLY_FOR_LIVE');
@@ -281,6 +291,9 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const token = parseToken({ chain, address:chain==='solana'?argv[1]:argv[1].toLowerCase() });
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
+        const creatorHistory=hasFlag(argv,'creator-history');
+        if(creatorHistory&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Use --creator-history with --partial --advisory for a Solana address.');
+        if(creatorHistory&&!env.TINYFISH_API_KEY)throw new CliError('TINYFISH_KEY_MISSING','Creator history requires TINYFISH_API_KEY for the bounded official Pump page fetch.');
         const parsedProfile = hasProfile ? profileSchema.safeParse(fileJson(profilePath)) : undefined;
         if (parsedProfile && !parsedProfile.success) throw new Error('INVALID_PROFILE');
         let profile = parsedProfile?.success ? parsedProfile.data : saved?.profile??starterConfig().profile;
@@ -314,7 +327,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
             ...(missing.length ? [`Full mode is missing: ${missing.join(', ')}.`, localKeySetup, keySetupInstructions(missing)] : []),
           ].join('\n'));
         }
-        if (partialRequested) stderr('PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
+        if (partialRequested) stderr(creatorHistory?'CREATOR_HISTORY_MODE: --creator-history approves the bounded TinyFish Pump creator page and DEX JSON recovery plus public RPC/DEX history; Gemini is skipped.\n':'PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
         if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini for this analysis.\n');
         if(!saved&&!hasProfile){
           let initial=starterConfig();
@@ -332,7 +345,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
-          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : {}),
+          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : creatorHistory?{tinyfishKey:env.TINYFISH_API_KEY!}:{}),
+          ...(hasFlag(argv,'advisory') && env.HELIUS_API_KEY ? { heliusKey: env.HELIUS_API_KEY } : {}),
           ...(hasFlag(argv,'advisory') && env.SOLANA_TRACKER_API_KEY ? { solanaTrackerKey: env.SOLANA_TRACKER_API_KEY } : {}),
           semanticEnabled: fullApproved,
           fetcher: runtime.fetcher ?? fetch,

@@ -33,7 +33,7 @@ const i64=(n:number)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));retu
 const names=['Parasite','PARASITE','https://ipfs.io/ipfs/example'];
 function creationTx():any{
  const data=Buffer.concat([Buffer.from(PINNED_CREATE_V2.discriminator),...names.map(str),decodeSolanaAddress(wallet),Buffer.alloc(10)]);
- const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.alloc(115)]);
+ const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.concat([Buffer.alloc(32),decodeSolanaAddress(TOKEN_2022_PROGRAM),Buffer.alloc(51)])]);
  const writable=new Set([wallet,mint,createAccounts[2],createAccounts[3],createAccounts[9],createAccounts[11],createAccounts[12],createAccounts[13]]);
  const keys=[...new Set([wallet,...createAccounts,CB])].map(pubkey=>({pubkey,signer:pubkey===wallet||pubkey===mint,writable:writable.has(pubkey),source:'transaction'}));
  const pre=keys.map(k=>k.pubkey===wallet?5_000_000_000:k.pubkey===mint?0:1),post=keys.map((k,i)=>k.pubkey===mint?2_753_360:pre[i]!);
@@ -106,7 +106,7 @@ const metric=(facts:{metrics:Array<{id:string}>},id:string)=>facts.metrics.find(
 
 test('fresh proof v20 derives O25 from the same typed role, tape, inventory receipts and reuse as O24, keeps S15 unready without failed-fee reads, persists under policy v20 and replays exactly',async()=>{
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!,o24=metric(facts,'O24'),o25=metric(facts,'O25'),d=o25.data,i=o24.data;
- assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v24','advisory-measurements-v23',50,null]);
+ assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v32','advisory-measurements-v31',50,null]);
  // S15 needs a target position; this created, never-funded account has none, so the gate is unready, no failed-fee read is admitted and the descriptor stays null, never a zero.
  const s15=metric(facts,'S15');
  assert.deepEqual([proof.creatorFailedFees,s15.quality,s15.reasonCode,s15.data.status,s15.data.position,s15.data.networkFees,s15.data.basis.lifetimeReasonCode],[null,'MISSING','S15_NO_TARGET_POSITION','PREREQUISITE_UNRESOLVED',null,null,'CREATOR_LIFETIME_VECTOR_OBSERVED']);
@@ -144,7 +144,7 @@ test('fresh proof v20 derives O25 from the same typed role, tape, inventory rece
    assert.throws(()=>writer.analyzeLive(claimed),REJECTED);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v21');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v29');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -182,7 +182,7 @@ test('a v20 proof without creator-inventory receipts keeps the O25 and S15 regis
  setProof(b,p);
  const facts=reconstruct(b,p),o25=metric(facts,'O25');
  const s15=metric(facts,'S15');
- assert.deepEqual([facts.method,o25.quality,o25.reasonCode,o25.data,o25.evidenceIds,p.creatorFailedFees,s15.reasonCode,s15.data],['advisory-measurements-v23','MISSING','INVENTORY_COST_AND_AGE_HISTORY_REQUIRED',null,[],null,'TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null]);
+ assert.deepEqual([facts.method,o25.quality,o25.reasonCode,o25.data,o25.evidenceIds,p.creatorFailedFees,s15.reasonCode,s15.data],['advisory-measurements-v31','MISSING','INVENTORY_COST_AND_AGE_HISTORY_REQUIRED',null,[],null,'TRANSFER_AWARE_ACTOR_COST_BASIS_REQUIRED',null]);
 });
 
 test('a failed inventory read leaves O24 unpromoted and O25 at the inherited quality without any vector',async()=>{

@@ -164,3 +164,26 @@ test('archive reuse: exact round trip; trailing input, bombs, plain bodies and o
   }
   assert.throws(() => archiveCreatorFailedFeeReceipt('x'.repeat(FAILED_FEE_SOURCE_LIMIT + 1)), /S15_FAILED_ARCHIVE_SOURCE_LIMIT/);
 });
+
+test('expanded proof admits exactly 256 complete failed receipts; legacy cap and all-or-nothing totals remain',()=>{
+ const rows=Array.from({length:256},(_,i)=>srow(i)),receipts=rows.map(r=>receipt(r,synthetic(r,{keys:[MINT]})));
+ const complete=classifyCreatorFailedFees(input(rows,receipts),true);
+ assert.equal(complete.status,'COMPLETE');assert.equal(complete.coverage.settled,256);assert.equal(complete.failedTargetAssociatedChargedTransactionOverheadLamports,'1280000');
+ assert.equal(classifyCreatorFailedFees(input(rows,receipts)).reasonCode,'S15_FAILED_INDEX_CAP');
+ const missing=classifyCreatorFailedFees(input(rows,receipts.slice(1)),true);assert.equal(missing.status,'INCOMPLETE');assert.equal(missing.failedTargetAssociatedChargedTransactionOverheadLamports,null);
+ assert.equal(classifyCreatorFailedFees(input([...rows,srow(256)],receipts),true).reasonCode,'S15_FAILED_INDEX_CAP');
+});
+
+test('native proof30 explicitly enables version1 fee-only receipts while historical classification remains strict',()=>{
+ const row=srow(190),raw=synthetic(row,{keys:[CANONICAL],mutate:v=>{v.version=1;}}),r=receipt(row,raw);
+ const old=classifyCreatorFailedFees(input([row],[r]),true);assert.equal(old.status,'INCOMPLETE');assert.equal(old.rows[0]!.code,'VERSION_UNSUPPORTED');
+ const current=classifyCreatorFailedFees(input([row],[r]),true,true);assert.equal(current.status,'COMPLETE');assert.equal(current.rows[0]!.version,1);assert.equal(current.failedTargetAssociatedChargedTransactionOverheadLamports,'5000');
+});
+
+
+test('proof32 admits 1024 fee-only rows only with explicit episode capacity; all older 512-row semantics stay frozen',()=>{
+ const rows=Array.from({length:1024},(_,i)=>srow(i)),receipts=rows.map(r=>receipt(r,synthetic(r,{keys:[MINT]})));
+ const current=classifyCreatorFailedFees(input(rows,receipts),true,true,true);assert.equal(current.status,'COMPLETE');assert.equal(current.coverage.settled,1024);assert.equal(current.failedTargetAssociatedChargedTransactionOverheadLamports,'5120000');
+ assert.equal(classifyCreatorFailedFees(input(rows,receipts),true,true).reasonCode,'S15_FAILED_INDEX_CAP');assert.equal(classifyCreatorFailedFees(input([...rows,srow(1024)],receipts),true,true,true).reasonCode,'S15_FAILED_INDEX_CAP');
+ assert.equal(classifyCreatorFailedFees(input(rows,receipts.slice(1)),true,true,true).status,'INCOMPLETE');
+});

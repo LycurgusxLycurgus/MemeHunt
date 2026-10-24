@@ -41,13 +41,17 @@ function read(id:string,expected:Request,receipts:ReceiptSet,cutoff:string){
 
 /** Executed instructions in runtime order: each top-level instruction, then its CPIs. */
 type Step={ix:any;depth:number;top:number;executed:boolean};
-function steps(value:any):Step[]{
+export function recordedWindowInstructions(value:any):Step[]{
  const instructions=value?.transaction?.message?.instructions,inner=value?.meta?.innerInstructions;
  if(!Array.isArray(instructions)||!Array.isArray(inner))fail('ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');
  const groups=new Map<number,any[]>();for(const g of inner){if(!object(g)||!integer(g.index)||g.index>=instructions.length||groups.has(g.index)||!Array.isArray(g.instructions))fail('ADVISORY_ACCOUNTS_INNER_SHAPE');groups.set(g.index,g.instructions);}
  const list:Step[]=[];
  instructions.forEach((ix:any,top:number)=>{if(!object(ix)||typeof ix.programId!=='string')fail('ADVISORY_ACCOUNTS_TRANSACTION_SHAPE');list.push({ix,depth:1,top,executed:false});let previous=1;
   for(const x of groups.get(top)??[]){if(!object(x)||typeof x.programId!=='string'||!integer(x.stackHeight)||x.stackHeight<2||x.stackHeight>previous+1)fail('ADVISORY_ACCOUNTS_INNER_DEPTH');list.push({ix:x,depth:x.stackHeight,top,executed:false});previous=x.stackHeight;}});
+ return list;
+}
+function steps(value:any):Step[]{
+ const list=recordedWindowInstructions(value);
  // RPC innerInstructions includes attempted CPIs, including effects rolled back by
  // a caught failure. Bind every position to its runtime frame before using legs.
  const logs=value?.meta?.logMessages;

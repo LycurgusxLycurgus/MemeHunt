@@ -1,3 +1,7 @@
+import {decodeCreatorEpisode,CREATOR_EPISODE_REQUEST_CAP,type CreatorEpisodeReceipts} from '../providers/advisory-creator-episode.js';
+import {decodeCreatorRoutes,CREATOR_ROUTE_REQUEST_CAP,type CreatorRouteReceipts} from '../providers/advisory-creator-routes.js';
+import {decodeCreatorCoverage,CREATOR_COVERAGE_REQUEST_CAP,EPISODE_COVERAGE_REQUEST_CAP} from '../providers/advisory-creator-coverage.js';
+import { decodeCreatorQuoteAccounting,CREATOR_QUOTE_REQUEST_CAP } from '../providers/advisory-creator-quote.js';
 import { deriveAuthorityTopology, HOLDER_ARCHIVE_ADAPTER, type TopologyReceipts } from '../providers/advisory-topology.js';
 import { deriveO30Window, type AutomationReceipts } from '../providers/advisory-automation.js';
 import { z } from 'zod';
@@ -7,7 +11,7 @@ import { thesisSchema, type Thesis, type FeatureResult } from '../domain/contrac
 import type { TokenRef,EvidenceRecord } from '../domain/contracts.js';
 import { deriveAdvisory } from '../domain/advisory.js';
 import { decodeAdvisoryWalletHistory,deriveWalletHistoryMetrics } from '../providers/advisory-wallet-history.js';
-import { decodeAdvisoryWindow,deriveO28Window,unpackAdvisoryWindowReceipts,WINDOW_ARCHIVE_ADAPTER,WINDOW_DENSE_REQUEST_CAP } from '../providers/advisory-window.js';
+import { decodeAdvisoryWindow,deriveO28Window,unpackAdvisoryWindowReceipts,WINDOW_ARCHIVE_ADAPTER,WINDOW_DENSE_REQUEST_CAP,WINDOW_EXPANDED_REQUEST_CAP } from '../providers/advisory-window.js';
 import { decodeAdvisoryWindowAccounts,deriveO26Window } from '../providers/advisory-window-accounts.js';
 import { decodeAdvisoryDemandWindows,deriveA30DemandWindows,DEMAND_REQUEST_CAP,DEMAND_ARCHIVE_ADAPTER } from '../providers/advisory-demand-windows.js';
 import { deriveAdvisoryDemand } from '../domain/advisory-demand.js';
@@ -23,16 +27,16 @@ import { CALLER_REQUEST_CAP } from '../providers/advisory-caller-history.js';
 import { deriveO23Synchrony } from '../providers/advisory-synchrony.js';
 import { deriveO29ReservePath } from '../providers/advisory-reserve-path.js';
 import { deriveShortDemandReport,type ShortDemandReport } from '../providers/advisory-short-demand.js';
-import { decodeCreatorRole,creatorRoleS13,CREATOR_RECEIPT_CAP } from '../providers/advisory-creator-role-collector.js';
+import { decodeCreatorRole,creatorRoleS13,CREATOR_RECEIPT_CAP,CREATOR_LEGACY_RECEIPT_CAP,EXPANDED_CREATOR_RECEIPT_CAP } from '../providers/advisory-creator-role-collector.js';
 import { decodeLaunchpadContext,deriveC16Launchpad,uncollectedC16,type LaunchpadRequest } from '../providers/advisory-launchpad.js';
 import { creatorInventoryReuse,creatorInventoryRole,creatorInventoryTape,replayCreatorInventory,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
 import { deriveO25CreatorLifetime } from '../providers/advisory-creator-lifetime.js';
-import { replayCreatorPerformance,CREATOR_FAILED_FEE_REQUEST_CAP } from '../providers/advisory-creator-performance-collector.js';
+import { replayCreatorPerformance,CREATOR_FAILED_FEE_REQUEST_CAP,EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP } from '../providers/advisory-creator-performance-collector.js';
 import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID,type FailedFeeReceipt } from '../providers/advisory-creator-failed-fees.js';
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24','advisory-provenance-v25','advisory-provenance-v26','advisory-provenance-v27','advisory-provenance-v28','advisory-provenance-v29','advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -42,6 +46,10 @@ export const advisoryProofSchema=z.object({
   launchpad:descriptor.nullable().optional(),
   creatorInventory:descriptor.nullable().optional(),
   creatorFailedFees:descriptor.nullable().optional(),
+  creatorAccounting:descriptor.nullable().optional(),
+  creatorCoverage:descriptor.nullable().optional(),
+  creatorRoutes:descriptor.nullable().optional(),
+  creatorEpisode:descriptor.nullable().optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
 export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -63,12 +71,25 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if((version>=10)!==!!proof.demand||!proof.demand&&evidence.some(e=>e.sourceId==='advisory-demand'))throw new Error('ADVISORY_PROOF_INVALID');
   // Both caller keys exist from v11 (null when not collected); caller receipts, selection or classification without their descriptor are rejected.
   const callerVersion=version>=11;
-  // Caller origin remains pinned to v3 from proof v12. Fresh proof v24 alone isolates optional persistence in the main v4 source review.
+  // Caller origin remains pinned to v3 from proof v12. Proof v24 and later isolate optional persistence in the main v4 source review.
   const callerSemanticWire:AdvisorySemanticWire=version>=12?'v3':'v2';
   const semanticWire:AdvisorySemanticWire=version>=24?'v4':callerSemanticWire;
   if(callerVersion!==(proof.callers!==undefined)||callerVersion!==(proof.callerSemantic!==undefined)||!proof.callers&&(!!proof.callerSemantic||evidence.some(e=>e.sourceId==='advisory-callers'||e.id==='advisory-callers-selection'))||!proof.callerSemantic&&evidence.some(e=>e.id.startsWith('advisory-callerSemantic-')))throw new Error('ADVISORY_PROOF_INVALID');
   // Proof v15 carries an explicit creatorRole key (null when not collected); earlier proofs may carry only null and never derive the role, and creator receipts without a descriptor are orphans.
   if((version>=15?proof.creatorRole===undefined:!!proof.creatorRole)||!proof.creatorRole&&evidence.some(e=>e.sourceId==='advisory-creator-role'||e.id.startsWith('advisory-creatorRole-')))throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorRole){const owned=evidence.filter(e=>e.sourceId==='advisory-creator-role'||e.id.startsWith('advisory-creatorRole-')).map(e=>e.id).sort(),declared=Object.values(proof.creatorRole.artifactIds).sort();if(new Set(declared).size!==declared.length||JSON.stringify(owned)!==JSON.stringify(declared))throw new Error('ADVISORY_PROOF_INVALID');}
+  const episodeOwned=evidence.filter(e=>e.sourceId==='advisory-creatorEpisode'||e.id.startsWith('advisory-creatorEpisode-'));
+  if((version>=32?proof.creatorEpisode===undefined:!!proof.creatorEpisode)||proof.creatorEpisode&&(!proof.creatorAccounting||!proof.creatorRoutes||!proof.creatorCoverage)||!proof.creatorEpisode&&episodeOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorEpisode){const ids=Object.values(proof.creatorEpisode.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(episodeOwned.map(e=>e.id).sort())!==JSON.stringify(ids))throw new Error('ADVISORY_PROOF_INVALID');}
+  const routeOwned=evidence.filter(e=>e.sourceId==='advisory-creatorRoutes'||e.id.startsWith('advisory-creatorRoutes-'));
+  if((version>=31?proof.creatorRoutes===undefined:!!proof.creatorRoutes)||proof.creatorRoutes&&!proof.creatorAccounting||!proof.creatorRoutes&&routeOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorRoutes){const ids=Object.values(proof.creatorRoutes.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(routeOwned.map(e=>e.id).sort())!==JSON.stringify(ids))throw new Error('ADVISORY_PROOF_INVALID');}
+  const coverageOwned=evidence.filter(e=>e.sourceId==='advisory-creatorCoverage'||e.id.startsWith('advisory-creatorCoverage-'));
+  if((version>=30?proof.creatorCoverage===undefined:!!proof.creatorCoverage)||proof.creatorCoverage&&!proof.creatorAccounting||!proof.creatorCoverage&&coverageOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorCoverage){const ids=Object.values(proof.creatorCoverage.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(coverageOwned.map(e=>e.id).sort())!==JSON.stringify(ids))throw new Error('ADVISORY_PROOF_INVALID');}
+  const accountingOwned=evidence.filter(e=>e.sourceId==='advisory-creatorAccounting'||e.id.startsWith('advisory-creatorAccounting-'));
+  if((version>=29?proof.creatorAccounting===undefined:!!proof.creatorAccounting)||proof.creatorAccounting&&!proof.creatorRole||!proof.creatorAccounting&&accountingOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorAccounting){const declared=Object.values(proof.creatorAccounting.artifactIds).sort();if(new Set(declared).size!==declared.length||JSON.stringify(accountingOwned.map(e=>e.id).sort())!==JSON.stringify(declared))throw new Error('ADVISORY_PROOF_INVALID');}
   // Proof v17 carries an explicit launchpad key (null without a key or after a failed collector); earlier proofs may carry only null and never derive C16 from receipts, and launchpad receipts without a descriptor are orphans.
   if((version>=17?proof.launchpad===undefined:!!proof.launchpad)||!proof.launchpad&&evidence.some(e=>e.sourceId==='advisory-launchpad'||e.id.startsWith('advisory-launchpad-')))throw new Error('ADVISORY_PROOF_INVALID');
   // A populated descriptor owns the complete launchpad catalog: every source- or prefix-identified record is exactly one declared artifact, so no extra, missing or duplicate receipt can persist unvalidated.
@@ -90,16 +111,16 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   const holderOwned=evidence.filter(e=>e.id==='rpc-holder-population'||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
   if(version<22&&holderOwned.some(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER))throw new Error('ADVISORY_PROOF_INVALID');
   if(version>=22&&(holderOwned.length>1||holderOwned.some(e=>e.id!=='rpc-holder-population'||e.adapterVersion!==HOLDER_ARCHIVE_ADAPTER||typeof rawArtifacts[e.id]!=='string')||!holderOwned.length&&Object.hasOwn(rawArtifacts,'rpc-holder-population')))throw new Error('ADVISORY_PROOF_INVALID');
-  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory'|'creatorFailedFees')=>{
+  const resolve=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory'|'creatorFailedFees'|'creatorAccounting'|'creatorCoverage'|'creatorRoutes'|'creatorEpisode')=>{
     const d=proof[namespace]! ,raw:Record<string,string>={},times:Record<string,string>={};
     const keys=Object.keys(d.requests);
     // Trader-account receipts are absent when the selected window is incomplete; a collected failed-fee stage over a creator with no failed rows is empty.
-    if((keys.length===0&&namespace!=='trades'&&namespace!=='accounts'&&namespace!=='automation'&&namespace!=='topology'&&namespace!=='demand'&&namespace!=='creatorFailedFees')||keys.length>(namespace==='demand'?DEMAND_REQUEST_CAP:namespace==='callers'?CALLER_REQUEST_CAP:namespace==='creatorRole'?CREATOR_RECEIPT_CAP:namespace==='creatorInventory'?CREATOR_INVENTORY_REQUEST_CAP:namespace==='creatorFailedFees'?CREATOR_FAILED_FEE_REQUEST_CAP:namespace==='window'&&version>=21?WINDOW_DENSE_REQUEST_CAP:64)||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
+    if((keys.length===0&&namespace!=='trades'&&namespace!=='accounts'&&namespace!=='automation'&&namespace!=='topology'&&namespace!=='demand'&&namespace!=='creatorFailedFees')||keys.length>(namespace==='creatorEpisode'?CREATOR_EPISODE_REQUEST_CAP:namespace==='creatorRoutes'?CREATOR_ROUTE_REQUEST_CAP:namespace==='creatorCoverage'?(version>=32?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP):namespace==='creatorAccounting'?CREATOR_QUOTE_REQUEST_CAP:namespace==='demand'?DEMAND_REQUEST_CAP:namespace==='callers'?CALLER_REQUEST_CAP:namespace==='creatorRole'?(version>=27?EXPANDED_CREATOR_RECEIPT_CAP:version>=26?CREATOR_RECEIPT_CAP:CREATOR_LEGACY_RECEIPT_CAP):namespace==='creatorInventory'?CREATOR_INVENTORY_REQUEST_CAP:namespace==='creatorFailedFees'?(version>=25?EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP:CREATOR_FAILED_FEE_REQUEST_CAP):namespace==='window'&&version>=21?(version>=28?WINDOW_EXPANDED_REQUEST_CAP:WINDOW_DENSE_REQUEST_CAP):64)||JSON.stringify(keys.sort())!==JSON.stringify(Object.keys(d.artifactIds).sort()))throw new Error('ADVISORY_PROOF_INVALID');
     for(const [key,id] of Object.entries(d.artifactIds)){
       const record=evidence.find(e=>e.id===id);
       const model=namespace==='semantic'||namespace==='callerSemantic',hosted=model&&(key.includes('prompt')||key.includes('response'));
       const source=model?(hosted?'gemini':'advisory-collector'):namespace==='creatorRole'?'advisory-creator-role':namespace==='creatorInventory'?'advisory-creator-inventory':namespace==='creatorFailedFees'?FAILED_FEE_SOURCE_ID:`advisory-${namespace}`;
-      const access=model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API';
+      const access=model?(hosted?'FREE_ACCOUNT':'LOCAL_DERIVED'):namespace==='creatorRoutes'||namespace==='creatorEpisode'&&key==='helius'||namespace==='launchpad'&&key==='lighthouse'?'FREE_ACCOUNT':'PUBLIC_API';
       // Current demand receipts bind the known archive adapter, a sole exact request scope, the stored archive hash and a unique id; the archive's own source hash is checked on unpack. Older namespaces keep their recorded checks.
       if(namespace==='demand'&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!==DEMAND_ARCHIVE_ADAPTER||!record.scope||JSON.stringify(Object.keys(record.scope))!=='["request"]'||JSON.stringify(record.scope.request)!==JSON.stringify(d.requests[key])||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
       // Failed-fee receipts bind the S15 archive adapter, a sole exact request scope, the stored archive hash and a unique id; the classifier re-checks request, hash and clock against the recomputed failed index.
@@ -107,13 +128,13 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
       // Proof v21 window receipts bind the window archive adapter, a sole exact request scope, the stored archive hash and a unique id; the archive's own source length/hash and the namespace ceiling are checked on unpack.
       if(namespace==='window'&&version>=21&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!==WINDOW_ARCHIVE_ADAPTER||!record.scope||JSON.stringify(Object.keys(record.scope))!=='["request"]'||JSON.stringify(record.scope.request)!==JSON.stringify(d.requests[key])||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
       // Caller receipts and caller classification bind the live adapter, a sole exact request scope, the stored content hash and a unique id.
-      if((namespace==='callers'||namespace==='callerSemantic'||namespace==='creatorRole'||namespace==='launchpad'||namespace==='creatorInventory')&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!=='live-v1'||!record.scope||Object.keys(record.scope).join()!=='request'||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
+      if((namespace==='callers'||namespace==='callerSemantic'||namespace==='creatorRole'||namespace==='launchpad'||namespace==='creatorInventory'||namespace==='creatorAccounting'||namespace==='creatorCoverage'||namespace==='creatorRoutes'||namespace==='creatorEpisode')&&(!record||evidence.filter(e=>e.id===id).length!==1||record.adapterVersion!=='live-v1'||!record.scope||Object.keys(record.scope).join()!=='request'||typeof rawArtifacts[id]!=='string'||record.contentHash!==createHash('sha256').update(rawArtifacts[id]!).digest('hex')))throw new Error('ADVISORY_PROOF_INVALID');
       if(id!==`advisory-${namespace}-${key}`||!record||record.sourceId!==source||record.accessMode!==access||record.sourceType!=='HISTORICAL_RECEIPT'||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||advisoryHash(record.scope.request)!==advisoryHash(d.requests[key])||typeof rawArtifacts[id]!=='string')throw new Error('ADVISORY_PROOF_INVALID');
       if(model&&advisoryHash(d.requests[key])!==advisoryHash({operation:key,modelRequests:advisorySemanticRequests()}))throw new Error('ADVISORY_PROOF_INVALID');
       raw[key]=rawArtifacts[id]!;times[key]=record.retrievedAt;
     }
     // Proof v21 window archives are unpacked here, before any consumer reads them, so every decoder and reuse path sees the exact original bodies.
-    const plain=namespace==='window'&&version>=21?(()=>{try{return unpackAdvisoryWindowReceipts({rawArtifacts:raw,retrievedAt:times,requests:d.requests as Record<string,{method:string;params:unknown[]}>}).rawArtifacts;}catch{throw new Error('ADVISORY_PROOF_INVALID');}})():raw;
+    const plain=namespace==='window'&&version>=21?(()=>{try{return unpackAdvisoryWindowReceipts({rawArtifacts:raw,retrievedAt:times,requests:d.requests as Record<string,{method:string;params:unknown[]}>},version>=28).rawArtifacts;}catch{throw new Error('ADVISORY_PROOF_INVALID');}})():raw;
     return {raw:plain,times,requests:d.requests,ids:Object.values(d.artifactIds)};
   };
   const thesisRecord=evidence.find(e=>e.id===proof.thesisContextId&&e.sourceId==='local-config'&&e.accessMode==='LOCAL_DERIVED'&&e.sourceType==='CONFIG'&&e.availableAt===cutoff);
@@ -155,12 +176,12 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   // Proof v15 appends the exact public creator-role decode to S13 after the co-signing edges; failures keep the prior S13 quality and disclose every candidate.
   // Proof v18 keeps this decode and its receipts so the inventory cohort is recomputed from S13 itself, never read from a claim.
   let roleDecode:ReturnType<typeof decodeCreatorRole>|null=null,roleReceipts:{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,unknown>;ids:string[]}|null=null,inventoryReplayed=false,failedReplayed=false;
-  if(version>=15&&proof.creatorRole){const c=resolve('creatorRole'),prior=[...additionalMetrics].reverse().find(m=>m.id==='S13');roleReceipts={rawArtifacts:c.raw,retrievedAt:c.times,requests:c.requests,ids:c.ids};roleDecode=decodeCreatorRole(token,roleReceipts,cutoff);additionalMetrics.push(creatorRoleS13(prior,roleDecode,c.ids));}
+  if(version>=15&&proof.creatorRole){const c=resolve('creatorRole'),prior=[...additionalMetrics].reverse().find(m=>m.id==='S13');roleReceipts={rawArtifacts:c.raw,retrievedAt:c.times,requests:c.requests,ids:c.ids};roleDecode=decodeCreatorRole(token,roleReceipts,cutoff,version>=26,version>=27,version>=28);additionalMetrics.push(creatorRoleS13(prior,roleDecode,c.ids));}
   additionalMetrics.push(...deriveAdvisoryDemand(tradeData,socialMetrics.find(m=>m.id==='A19'),cutoff,[...chain.ids,...trades.ids]));
   let shortDemand:ShortDemandReport|undefined;
   if(proof.window){
     const w=resolve('window'),windowRequests=w.requests as Record<string,{method:string;params:unknown[]}>;
-    const windowData=decodeAdvisoryWindow(token,proof.pool,proof.window.end,w.raw,w.times,windowRequests,cutoff,version>=5,version>=6,version>=21,version>=23);
+    const windowData=decodeAdvisoryWindow(token,proof.pool,proof.window.end,w.raw,w.times,windowRequests,cutoff,version>=5,version>=6,version>=21,version>=23,version>=28);
     additionalMetrics.push(deriveO28Window(windowData,w.ids));
     // Appended after the bounded-sample O26 so complete account coverage supersedes it; an incomplete window keeps the older value.
     if(proof.accounts){const a=resolve('accounts'),history=decodeAdvisoryWindowAccounts(token,windowData,{rawArtifacts:w.raw,retrievedAt:w.times,requests:windowRequests},a.raw,a.times,a.requests as Record<string,{method:string;params:unknown[]}>,cutoff),metric=deriveO26Window(history,windowData,[...w.ids,...a.ids]);if(metric)additionalMetrics.push(metric);}
@@ -185,7 +206,7 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
         if(version>=20&&cohort&&tape){
           const f=proof.creatorFailedFees?resolve('creatorFailedFees'):null;
           const failed:FailedFeeReceipt[]|null=f?failedOwned.map(e=>({id:e.id.startsWith(FAILED_FEE_EVIDENCE_PREFIX)?e.id.slice(FAILED_FEE_EVIDENCE_PREFIX.length):e.id,sourceId:e.sourceId,adapterVersion:e.adapterVersion,request:e.scope.request,retrievedAt:e.retrievedAt,contentHash:e.contentHash,stored:rawArtifacts[e.id]??''})):null;
-          const s15=replayCreatorPerformance(token,roleDecode,tape,inventory,reuse,failed,cutoff,[...inventoryIds,...(f?.ids??[])]);
+          const s15=replayCreatorPerformance(token,roleDecode,tape,inventory,reuse,failed,cutoff,[...inventoryIds,...(f?.ids??[])],version>=25);
           // Receipts are admitted only after the S15 gate holds, so a populated descriptor over an unready gate is an orphan catalog.
           if(f&&(s15.data as {status?:unknown}).status==='PREREQUISITE_UNRESOLVED')throw new Error('ADVISORY_PROOF_INVALID');
           failedReplayed=!!f;additionalMetrics.push(s15);}}}
@@ -198,7 +219,19 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if(proof.creatorInventory&&!inventoryReplayed)throw new Error('ADVISORY_PROOF_INVALID');
   // A populated failed-fee descriptor is valid only when its S15 replay consumed it over a ready gate.
   if(proof.creatorFailedFees&&!failedReplayed)throw new Error('ADVISORY_PROOF_INVALID');
+  if(proof.creatorAccounting){
+    if(!roleDecode||roleDecode.quality!=='KNOWN')throw new Error('ADVISORY_PROOF_INVALID');
+    const a=resolve('creatorAccounting'),accounting=decodeCreatorQuoteAccounting(token,roleDecode,{rawArtifacts:a.raw,retrievedAt:a.times,requests:a.requests as Record<string,{method:string;params:unknown[]}>},cutoff,version>=30);
+    const coverage=proof.creatorCoverage?(()=>{const c=resolve('creatorCoverage');return decodeCreatorCoverage(token,roleDecode,accounting.account,{rawArtifacts:c.raw,retrievedAt:c.times,requests:c.requests as Record<string,{method:string;params:unknown[]}>},cutoff,JSON.parse(a.raw.index??'{"result":[]}').result?.filter((x:any)=>x.err===null).map((x:any)=>x.signature)??[],{slot:accounting.coverage.headSlot,amountAtomic:accounting.coverage.canonicalHeadAtomic},version>=32);})():null;
+    const routes=proof.creatorRoutes?(()=>{const r=resolve('creatorRoutes');return decodeCreatorRoutes(roleDecode,accounting,{rawArtifacts:a.raw,retrievedAt:a.times,requests:a.requests as Record<string,{method:string;params:unknown[]}>},{rawArtifacts:r.raw,retrievedAt:r.times,requests:r.requests as CreatorRouteReceipts['requests']},cutoff);})():null;
+    const routeCoverageComplete=!!routes?.canonicalComplete&&coverage?.wholeWalletComplete===true&&coverage.failedFees.payerCensusComplete;
+    const nativeRouteAccounting=routes?{...routes,routeCoverageComplete,unallocatedCosts:{...routes.unallocatedCosts,creatorFailedFees:coverage?.failedFees??null}}:null;
+    const episode=version>=32&&proof.creatorEpisode?decodeCreatorEpisode(roleDecode,accounting,{rawArtifacts:a.raw,retrievedAt:a.times,requests:a.requests as Record<string,{method:string;params:unknown[]}>},routes,coverage,proof.creatorEpisode?(()=>{const e=resolve('creatorEpisode');return{rawArtifacts:e.raw,retrievedAt:e.times,requests:e.requests as CreatorEpisodeReceipts['requests']};})():null,cutoff):null;
+    const prior=[...additionalMetrics].reverse().find(m=>m.id==='S15');
+    additionalMetrics.push({id:'S15',quality:episode?.status==='KNOWN'||prior?.quality==='KNOWN'?'KNOWN':'MISSING',unit:'scoped-record',reasonCode:episode?.status==='KNOWN'?episode.reasonCode:prior?.quality==='KNOWN'?prior.reasonCode:episode?episode.reasonCode:routeCoverageComplete?'S15_NATIVE_LEDGER_COMPLETE_UNALLOCATED_COSTS':routes?'S15_NATIVE_ROUTE_COVERAGE_INCOMPLETE':(accounting.coverage.unresolved.length||version>=30&&(!accounting.coverage.indexComplete||!accounting.canonicalContinuity?.complete))?'S15_NATIVE_ACCOUNTING_EXECUTION_INCOMPLETE':coverage?.wholeWalletComplete&&coverage.failedFees.payerCensusComplete?'S15_NATIVE_ECONOMICS_UNRESOLVED':'S15_COMPLETE_CREATOR_COVERAGE_REQUIRED',
+      data:{...(episode?{closedTargetEpisode:episode}:{}),...(prior?.data&&typeof prior.data==='object'?prior.data:{}),nativeQuoteAccounting:accounting,...(version>=31?{nativeRouteAccounting}:{}),...(version>=30?{creatorCoverage:coverage}:{}),completeCreatorPerformance:episode?.status==='KNOWN'||prior?.quality==='KNOWN'},evidenceIds:[...new Set([...(prior?.evidenceIds??[]),...roleReceipts!.ids,...a.ids,...(proof.creatorRoutes?Object.values(proof.creatorRoutes.artifactIds):[]),...(proof.creatorCoverage?Object.values(proof.creatorCoverage.artifactIds):[]),...(proof.creatorEpisode?Object.values(proof.creatorEpisode.artifactIds):[])])]});
+  }
   let supplements:{shortDemand:ShortDemandReport}|undefined;
   if(version>=16){if(!shortDemand)throw new Error('ADVISORY_PROOF_INVALID');supplements={shortDemand};}
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=32?'advisory-measurements-v31':version>=31?'advisory-measurements-v30':version>=30?'advisory-measurements-v29':version>=29?'advisory-measurements-v28':version>=28?'advisory-measurements-v27':version>=27?'advisory-measurements-v26':version>=26?'advisory-measurements-v25':version>=25?'advisory-measurements-v24':version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
 }

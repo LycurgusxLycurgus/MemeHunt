@@ -32,7 +32,7 @@ const i64=(n:number)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));retu
 const names=['Parasite','PARASITE','https://ipfs.io/ipfs/example'];
 function creationTx():any{
  const data=Buffer.concat([Buffer.from(PINNED_CREATE_V2.discriminator),...names.map(str),decodeSolanaAddress(wallet),Buffer.alloc(10)]);
- const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.alloc(115)]);
+ const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.concat([Buffer.alloc(32),decodeSolanaAddress(TOKEN_2022_PROGRAM),Buffer.alloc(51)])]);
  const writable=new Set([wallet,mint,createAccounts[2],createAccounts[3],createAccounts[9],createAccounts[11],createAccounts[12],createAccounts[13]]);
  const keys=[...new Set([wallet,...createAccounts,CB])].map(pubkey=>({pubkey,signer:pubkey===wallet||pubkey===mint,writable:writable.has(pubkey),source:'transaction'}));
  const pre=keys.map(k=>k.pubkey===wallet?5_000_000_000:k.pubkey===mint?0:1),post=keys.map((k,i)=>k.pubkey===mint?2_753_360:pre[i]!);
@@ -104,7 +104,7 @@ const REJECTED=/ADVISORY_PROOF_INVALID|LIVE_PROVENANCE_INVALID|FUTURE_EVIDENCE|D
 
 test('a KNOWN creator inventory is fresh proof v20 and facts v21, persists under policy v20 and replays exactly',async()=>{
  const bundle=await live(),proof=proofOf(bundle),facts=bundle.details!.advisory!,o24=facts.metrics.find(m=>m.id==='O24')!;
- assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v24','advisory-measurements-v23',50,null]);
+ assert.deepEqual([proof.method,facts.method,facts.metrics.length,proof.launchpad],['advisory-provenance-v32','advisory-measurements-v31',50,null]);
  assert.deepEqual([o24.quality,(o24.data as any).method,(o24.data as any).cohort.wallet,facts.metrics.find(m=>m.id==='S13')!.quality,facts.metrics.find(m=>m.id==='A30')!.quality],['KNOWN','creator-signer-wallet-inventory-v1',wallet,'KNOWN','KNOWN']);
  // C16 and the one-hour supplement keep their accepted wiring; the supplement stays outside the 50 metrics.
  assert.equal(facts.metrics.find(m=>m.id==='C16')!.reasonCode,'LAUNCHPAD_RECEIPTS_NOT_COLLECTED');assert.ok(facts.supplements?.shortDemand);
@@ -113,7 +113,7 @@ test('a KNOWN creator inventory is fresh proof v20 and facts v21, persists under
  try{
   const writer=new Service(file);let id='';try{id=writer.analyzeLive(bundle).id;}finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v21');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v29');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 

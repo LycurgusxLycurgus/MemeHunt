@@ -54,7 +54,7 @@ type Request={method:string;params:unknown[]};
 type Row={signature:string;slot:number;blockTime:number;err:unknown;transactionIndex:number|null};
 type Steps=ReturnType<typeof executedWindowInstructions>;
 type Read=(id:string,expected:Request)=>{value:any;at:number};
-type TradeEvent={mint:string;solAmount:bigint;tokenAmount:bigint;isBuy:boolean;user:string;feeRecipient:string;fee:bigint;creator:string;creatorFee:bigint;tail:Record<string,unknown>;tailFields:number};
+type TradeEvent={timestamp:bigint;feeBasisPoints:bigint;creatorFeeBasisPoints:bigint;mint:string;solAmount:bigint;tokenAmount:bigint;isBuy:boolean;user:string;feeRecipient:string;fee:bigint;creator:string;creatorFee:bigint;tail:Record<string,unknown>;tailFields:number};
 type Events={list:Steps;found:Array<{event:TradeEvent;top:number}>};
 type Balance={pre:bigint;post:bigint;decimals:number;created:boolean};
 type Entry={signature:string;slot:number;blockTime:number;side:'BUY'|'SELL';instruction:string;ixName:string|null;units:bigint;decimals:number;coreQuote:bigint;protocolFee:bigint;buybackFee:bigint;creatorFee:bigint;creatorFeeToOwnVault:boolean;feeModel:string;userQuote:bigint;networkFee:bigint;deposits:bigint;canonicalPre:bigint;canonicalPost:bigint;eventTailFields:number};
@@ -81,13 +81,13 @@ function eventReader(b:Buffer){
  };
 }
 /** Pinned TradeEvent of the target mint: fixed prefix through creator_fee, then appended IDL fields; other mints are skipped before any further decode. */
-function tradeEvent(data:Buffer,mint:string):TradeEvent|null{
+export function decodePumpTradeEvent(data:Buffer,mint:string):TradeEvent|null{
  if(data.length<16||!data.subarray(0,8).equals(EVENT_IX_TAG)||!data.subarray(8,16).equals(TRADE_TAG))return null;
  const r=eventReader(data.subarray(16));
  if(r.key()!==mint)return null;
- const solAmount=r.u64(),tokenAmount=r.u64(),isBuy=r.bool(),user=r.key();r.i64();
+ const solAmount=r.u64(),tokenAmount=r.u64(),isBuy=r.bool(),user=r.key(),timestamp=r.i64();
  for(let i=0;i<4;i++)r.u64(); // virtual/real SOL and token reserves are not O25 inputs
- const feeRecipient=r.key();r.u64();const fee=r.u64(),creator=r.key();r.u64();const creatorFee=r.u64();
+ const feeRecipient=r.key(),feeBasisPoints=r.u64(),fee=r.u64(),creator=r.key(),creatorFeeBasisPoints=r.u64(),creatorFee=r.u64();
  const tail:Record<string,unknown>={};let tailFields=0;
  for(const [name,type] of TAIL){
   if(!r.left())break;
@@ -96,7 +96,7 @@ function tradeEvent(data:Buffer,mint:string):TradeEvent|null{
   tailFields++;
  }
  if(r.left())unresolved('O25_EVENT_UNPINNED_TAIL');
- return{mint,solAmount,tokenAmount,isBuy,user,feeRecipient,fee,creator,creatorFee,tail,tailFields};
+ return{timestamp,feeBasisPoints,creatorFeeBasisPoints,mint,solAmount,tokenAmount,isBuy,user,feeRecipient,fee,creator,creatorFee,tail,tailFields};
 }
 const instructionName=(tag:Buffer,isBuy:boolean)=>Object.entries(isBuy?PUMP_TRADE_ABI.buys:PUMP_TRADE_ABI.sells).find(([,d])=>tag.equals(Buffer.from(d)))?.[0]??null;
 const ATA_PROGRAM=new PublicKey(PUMP_TRADE_ABI.associatedTokenProgram),FEE_PROGRAM=new PublicKey(PUMP_TRADE_ABI.feeProgram),SHARING_PROGRAM=new PublicKey(Uint8Array.from(PUMP_TRADE_ABI.sharingConfigProgram));
@@ -104,10 +104,10 @@ const seed=(a:string)=>new PublicKey(a).toBuffer(),derived=(program:PublicKey,..
 const ata=(owner:string,program:string,mint:string)=>derived(ATA_PROGRAM,seed(owner),seed(program),seed(mint)),quoteAta=(owner:string)=>ata(owner,LEGACY_TOKEN_PROGRAM,WSOL);
 type Bound={instruction:string;amount:bigint;limit:bigint;optionBools:number[];buyback:Set<string>};
 /** The executed top-level trade instruction must be one supported pinned-IDL encoding: exact Borsh arguments (only trailing OptionBools may be absent, as the actual launch buy_v2 shows), every fixed account by position with PDAs re-derived, constants equal, IDL writable flags and the creator as signer, remaining accounts only after every fixed role, and exact-token amount semantics. */
-function bindInstruction(ix:any,flags:Map<string,any>,role:CreatorRole,account:string,event:TradeEvent):Bound{
+export function bindPumpTradeInstruction(ix:any,flags:Map<string,any>,role:CreatorRole,account:string,event:TradeEvent,quote?:{mint:string;program:string}):Bound{
  const data=bytes58(ix.data),instruction=instructionName(data.subarray(0,8),event.isBuy);
  if(!instruction)unresolved('O25_TRADE_INSTRUCTION');
- const layout=(PUMP_TRADE_ABI.layouts as Record<string,{accounts:string;optionBools:number}|undefined>)[instruction];
+ const layout=quote&&instruction==='buy_exact_quote_in_v2'?PUMP_TRADE_ABI.layouts.buy_v2:(PUMP_TRADE_ABI.layouts as Record<string,{accounts:string;optionBools:number}|undefined>)[instruction];
  if(!layout)unresolved('O25_TRADE_VARIANT_UNSUPPORTED');
  const args=data.subarray(8),optionBools=[...args.subarray(16)];
  if(args.length<16||optionBools.length>layout.optionBools||optionBools.some(b=>b>1))unresolved('O25_TRADE_ARGS');
@@ -115,14 +115,17 @@ function bindInstruction(ix:any,flags:Map<string,any>,role:CreatorRole,account:s
  if(accounts.length<roles.length||!accounts.every(a=>typeof a==='string'&&flags.has(a)))unresolved('O25_TRADE_ROLE');
  const base=at(names.includes('token_program')?'token_program':'base_token_program');
  if(!tokenPrograms.has(base))unresolved('O25_TRADE_ROLE');
+ const quoteMint=quote?.mint??WSOL,quoteProgram=quote?.program??LEGACY_TOKEN_PROGRAM;
+ const quoteAta=(owner:string)=>ata(owner,quoteProgram,quoteMint);
+ if(!tokenPrograms.has(quoteProgram))unresolved('O25_TRADE_ROLE');
  const curve=pda(Buffer.from('bonding-curve'),seed(role.mint)),vault=pda(Buffer.from('creator-vault'),seed(event.creator)),volume=pda(Buffer.from('user_volume_accumulator'),seed(role.wallet));
  // Expected account per IDL role; null marks a role the IDL leaves unconstrained (buyback recipient, the ignored SOL-trade quote user account).
  const want:Record<string,()=>string|null>={
-  global:()=>pda(Buffer.from('global')),fee_recipient:()=>event.feeRecipient,mint:()=>role.mint,base_mint:()=>role.mint,quote_mint:()=>WSOL,
-  token_program:()=>base,base_token_program:()=>base,quote_token_program:()=>LEGACY_TOKEN_PROGRAM,associated_token_program:()=>ATA_PROGRAM.toBase58(),system_program:()=>SYSTEM,
+  global:()=>pda(Buffer.from('global')),fee_recipient:()=>event.feeRecipient,mint:()=>role.mint,base_mint:()=>role.mint,quote_mint:()=>quoteMint,
+  token_program:()=>base,base_token_program:()=>base,quote_token_program:()=>quoteProgram,associated_token_program:()=>ATA_PROGRAM.toBase58(),system_program:()=>SYSTEM,
   associated_quote_fee_recipient:()=>quoteAta(event.feeRecipient),buyback_fee_recipient:()=>null,associated_quote_buyback_fee_recipient:()=>quoteAta(at('buyback_fee_recipient')),
   bonding_curve:()=>curve,associated_bonding_curve:()=>ata(curve,base,role.mint),associated_base_bonding_curve:()=>ata(curve,base,role.mint),associated_quote_bonding_curve:()=>quoteAta(curve),
-  user:()=>role.wallet,associated_user:()=>account,associated_base_user:()=>account,associated_quote_user:()=>null,
+  user:()=>role.wallet,associated_user:()=>account,associated_base_user:()=>account,associated_quote_user:()=>quote?quoteAta(role.wallet):null,
   creator_vault:()=>vault,associated_creator_vault:()=>quoteAta(vault),sharing_config:()=>derived(SHARING_PROGRAM,Buffer.from('sharing-config'),seed(role.mint)),
   global_volume_accumulator:()=>pda(Buffer.from('global_volume_accumulator')),user_volume_accumulator:()=>volume,associated_user_volume_accumulator:()=>quoteAta(volume),
   fee_config:()=>derived(FEE_PROGRAM,Buffer.from('fee_config'),Buffer.from(PUMP_TRADE_ABI.feeConfigSeed)),fee_program:()=>FEE_PROGRAM.toBase58(),event_authority:()=>EVENT_AUTHORITY,program:()=>PUMP_PROGRAM,
@@ -133,11 +136,11 @@ function bindInstruction(ix:any,flags:Map<string,any>,role:CreatorRole,account:s
  });
  if(account!==ata(role.wallet,base,role.mint))unresolved('O25_TRADE_ROLE');
  const ixName=event.tail.ixName;
- if(ixName!==undefined&&ixName!==(event.isBuy?'buy':'sell'))unresolved('O25_TRADE_INSTRUCTION');
+ if(ixName!==undefined&&ixName!==(instruction==='buy_exact_quote_in_v2'?'buy_exact_quote_in':event.isBuy?'buy':'sell'))unresolved('O25_TRADE_INSTRUCTION');
  // Ordinary exact-token trades: the amount argument is the executed token amount (a partial fill short of it is unsupported). The core-quote bound is only a cheap first gate; trade() checks the limit against the reconciled post-fee user quote.
  const amount=args.readBigUInt64LE(0),limit=args.readBigUInt64LE(8);
- if(amount===0n||amount!==event.tokenAmount||(event.isBuy?limit<event.solAmount:limit>event.solAmount))unresolved('O25_TRADE_AMOUNT');
- return{instruction,amount,limit,optionBools,buyback:new Set(names.includes('buyback_fee_recipient')?[at('buyback_fee_recipient')]:accounts.slice(roles.length) as string[])};
+ if(amount===0n||(quote&&instruction==='buy_exact_quote_in_v2'?event.tokenAmount<limit:amount!==event.tokenAmount)||(instruction!=='buy_exact_quote_in_v2'&&(event.isBuy?limit<(quote?event.tail.quoteAmount as bigint:event.solAmount):limit>(quote?event.tail.quoteAmount as bigint:event.solAmount))))unresolved('O25_TRADE_AMOUNT');
+ return{instruction,amount:instruction==='buy_exact_quote_in_v2'?event.tokenAmount:amount,limit:instruction==='buy_exact_quote_in_v2'?amount:limit,optionBools,buyback:new Set(names.includes('buyback_fee_recipient')?[at('buyback_fee_recipient')]:accounts.slice(roles.length) as string[])};
 }
 
 /** Read-only view of O24's own receipts and its exact reuse map: same ids, requests, bodies and clocks; nothing is rewritten. */
@@ -175,7 +178,7 @@ function creatorEvents(value:any,role:CreatorRole):Events{
  const found:Events['found']=[];
  for(const s of list){
   if(s.depth<2||s.ix.programId!==PUMP_PROGRAM||typeof s.ix.data!=='string')continue;
-  const event=tradeEvent(bytes58(s.ix.data),role.mint);
+  const event=decodePumpTradeEvent(bytes58(s.ix.data),role.mint);
   if(!event||!s.executed)continue;
   if(s.depth!==2||!Array.isArray(s.ix.accounts)||s.ix.accounts.length!==1||s.ix.accounts[0]!==EVENT_AUTHORITY)unresolved('O25_EVENT_AUTHORITY');
   found.push({event,top:s.top});
@@ -223,7 +226,7 @@ function trade(value:any,role:CreatorRole,account:string,row:Row,ev:Events,bal:B
  if((t.cashback??0n)!==0n||(t.holderRewards??0n)!==0n||Array.isArray(t.shareholders)&&t.shareholders.length>0||t.quoteMint!==undefined&&t.quoteMint!==SYSTEM&&t.quoteMint!==WSOL)unresolved('O25_TRADE_SEMANTICS_UNSUPPORTED');
  const ix=message.instructions[top];
  if(!object(ix)||ix.programId!==PUMP_PROGRAM||!Array.isArray(ix.accounts)||typeof ix.data!=='string')unresolved('O25_TRADE_INSTRUCTION');
- const bound=bindInstruction(ix,new Map<string,any>(list.map((k:any)=>[k.pubkey,k])),role,account,event),instruction=bound.instruction;
+ const bound=bindPumpTradeInstruction(ix,new Map<string,any>(list.map((k:any)=>[k.pubkey,k])),role,account,event),instruction=bound.instruction;
  if(ev.list.some(s=>s.executed&&s.top!==top&&leg(s,account)))unresolved('O25_CANONICAL_LEG_OUTSIDE_TRADE');
  if([...meta.preTokenBalances,...meta.postTokenBalances].some((b:any)=>b?.mint===role.mint&&b?.owner===role.wallet&&keys[b.accountIndex]!==account))unresolved('O25_NON_CANONICAL_ACCOUNT');
  if(event.tokenAmount===0n||bal.post-bal.pre!==(event.isBuy?event.tokenAmount:-event.tokenAmount))unresolved('O25_TOKEN_IDENTITY');

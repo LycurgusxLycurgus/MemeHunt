@@ -298,3 +298,36 @@ test('the collector rebuilds all 130 corpus receipts from prior bodies with zero
  assert.equal(m.quality,'KNOWN');
  assert.deepEqual(data(m).failedTransactionsReferencingCreator.rows,data(corpusS15()).failedTransactionsReferencingCreator.rows);
 });
+
+/** Extend only the synthetic failed index, retaining all actual successful O25 receipts and their economic proof. */
+function expandedInventory(count:number){
+ const r=actual(),v=JSON.parse(r.rawArtifacts['creator-wallet-page-0']!);
+ const i=v.result.findIndex((x:any)=>x.err!==null&&x.slot>=role.creationSlot),sample=v.result[i];
+ v.result.splice(i+1,0,...Array.from({length:count-130},(_,n)=>({...sample,signature:encode58(createHash('sha512').update(`s15-expanded-${n}`).digest())})));
+ r.rawArtifacts['creator-wallet-page-0']=JSON.stringify(v);return r;
+}
+test('proof v25 admission resolves a 140-row failed index only after every receipt, preserving legacy truncation',async()=>{
+ const inventory=expandedInventory(140),g=creatorPerformanceGate(token,role,tape,inventory,new Map(),CUTOFF,['ev'],true);
+ assert.ok(g.ready);const rows=g.scope.failedRows;assert.equal(rows.length,140);
+ const byRow=new Map(rows.map(r=>[r.signature,r])),p=probe();
+ const got=await collectCreatorFailedFees(token,role,tape,inventory,new Map(),new Map(),'http://rpc.test',rpcFetcher(sig=>failedBody(byRow.get(sig)!),p),()=>CLOCK,undefined,true);
+ assert.ok(got);assert.equal(p.calls.length,140);assert.ok(p.max<=2);
+ const receipts=failedFeeReceiptsOf(got),derive=(r:FailedFeeReceipt[]|null)=>deriveS15CreatorPerformance(token,role,tape,inventory,new Map(),r,CUTOFF,['ev'],true);
+ const known=derive(receipts);assert.equal(known.quality,'KNOWN');assert.equal(data(known).networkFees.failedIndexedRows,140);
+ assert.equal(data(known).position.realizedQuoteResultLamports,'1349721804');
+ assert.deepEqual([s15(receipts,inventory).quality,s15(receipts,inventory).reasonCode],['TRUNCATED','S15_FAILED_INDEX_CAP']);
+ const missing=derive(receipts.slice(1));assert.equal(missing.quality,'TRUNCATED');assertNoPerformance(data(missing));
+ const error=structuredClone(receipts);error[0]!.stored=archiveCreatorFailedFeeReceipt(JSON.stringify({jsonrpc:'2.0',id:1,result:null}));error[0]!.contentHash=sha(error[0]!.stored);
+ assert.equal(derive(error).quality,'TRUNCATED');
+ const forged=structuredClone(receipts);forged[0]!.contentHash='0'.repeat(64);assert.throws(()=>derive(forged),/S15_FAILED_RECEIPT_HASH/);
+});
+
+test('expanded failed-fee collector admits 256 rows but refuses 257 before any read',async()=>{
+ for(const count of [256,257]){
+  const inventory=expandedInventory(count),gate=creatorPerformanceGate(token,role,tape,inventory,new Map(),CUTOFF,['ev'],true),p=probe();
+  const rows=gate.ready?new Map(gate.scope.failedRows.map(r=>[r.signature,r])):new Map();
+  const got=await collectCreatorFailedFees(token,role,tape,inventory,new Map(),new Map(),'http://rpc.test',rpcFetcher(sig=>failedBody(rows.get(sig)!),p),()=>CLOCK,undefined,true);
+  if(count===257){assert.equal(got,null);assert.equal(p.calls.length,0);assert.deepEqual(gate.ready?null:[gate.quality,gate.code],['TRUNCATED','S15_FAILED_INDEX_CAP']);}
+  else{assert.ok(got);assert.equal(p.calls.length,256);assert.ok(p.max<=2);assert.equal(deriveS15CreatorPerformance(token,role,tape,inventory,new Map(),failedFeeReceiptsOf(got),CUTOFF,['ev'],true).quality,'KNOWN');}
+ }
+});

@@ -31,7 +31,7 @@ const label=(w:string)=>`${w.slice(0,4)}\u2026${w.slice(-4)}`,names=['Parasite',
 /** Same signed create_v2 structure as the role decoder tests, for the real mint address. */
 function creationTx():any{
  const data=Buffer.concat([Buffer.from(PINNED_CREATE_V2.discriminator),...names.map(str),decodeSolanaAddress(wallet),Buffer.alloc(10)]);
- const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.alloc(115)]);
+ const event=Buffer.concat([Buffer.from(PINNED_CREATE_V2.eventDiscriminator),...names.map(str),decodeSolanaAddress(mint),decodeSolanaAddress(bondingCurve),decodeSolanaAddress(wallet),decodeSolanaAddress(wallet),i64(T),Buffer.concat([Buffer.alloc(32),decodeSolanaAddress(TOKEN_2022_PROGRAM),Buffer.alloc(51)])]);
  const writable=new Set([wallet,mint,accounts[2],accounts[3],accounts[9],accounts[11],accounts[12],accounts[13]]);
  const keys=[...new Set([wallet,...accounts,CB])].map(pubkey=>({pubkey,signer:pubkey===wallet||pubkey===mint,writable:writable.has(pubkey),source:'transaction'}));
  const pre=keys.map(k=>k.pubkey===wallet?5_000_000_000:k.pubkey===mint?0:1),post=keys.map((k,i)=>k.pubkey===mint?2_753_360:pre[i]!);
@@ -87,11 +87,11 @@ test('page failures, missing metadata and over-cap windows stop discovery with d
  assert.deepEqual(Object.keys(r.requests),['page']);assert.deepEqual([decodeCreatorRole(token,r,cutoff).quality,decodeCreatorRole(token,r,cutoff).reasonCode],['MISSING','WEB_FETCH_HTTP_404']);
  ({r}=await collect({page:page(wallet,null)}));
  assert.deepEqual(Object.keys(r.requests),['page']);assert.equal(decodeCreatorRole(token,r,cutoff).reasonCode,'CREATOR_DISCOVERY_DATE_UNAVAILABLE');
- const crowded=Array.from({length:9},(_,i)=>row(sig(20+i),slot+9-i,T+i));
+ const crowded=Array.from({length:33},(_,i)=>row(sig(20+i),slot+33-i,T+33-i));
  ({r}=await collect({rows:crowded}));
  const d=decodeCreatorRole(token,r,cutoff);
  assert.deepEqual(Object.keys(r.requests),['page','index']);
- assert.deepEqual([d.quality,d.reasonCode,d.binding,(d.data.candidates as any[]).map(c=>c.outcome)],['TRUNCATED','CREATOR_CANDIDATES_OVER_CAP',null,Array(9).fill('NOT_SELECTED')]);
+ assert.deepEqual([d.quality,d.reasonCode,d.binding,(d.data.candidates as any[]).map(c=>c.outcome)],['TRUNCATED','CREATOR_CANDIDATES_OVER_CAP',null,Array(33).fill('NOT_SELECTED')]);
 });
 
 test('an unverifiable candidate blocks the binding, and a profile contradicted by the signed creation is invalid',async()=>{
@@ -231,7 +231,7 @@ const rehash=(bundle:{evidence:Array<{id:string;contentHash:string}>;rawArtifact
 test('live collection persists one verified S13 creator role through Service and rejects forged, downgraded, orphaned and claimed receipts',async()=>{
  const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'tinyfish-live-key',fetcher:liveFetcher,now:()=>at});
  const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,s13=facts.metrics.find(m=>m.id==='S13')!;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v24','advisory-measurements-v23']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v32','advisory-measurements-v31']);
  assert.deepEqual(Object.keys(proof.creatorRole.artifactIds),['page','index','transaction-0','transaction-1']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-role');
  assert.ok(receipts.length===4&&receipts.every(e=>e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'&&Object.keys(e.scope).join()==='request'));
@@ -255,6 +255,153 @@ test('live collection persists one verified S13 creator role through Service and
    for(const [name,candidate] of cases)assert.throws(()=>writer.analyzeLive(candidate),/ADVISORY_PROOF_INVALID/,name);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v21');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v29');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+// More than one RPC page is needed even though the supported creation window is narrow.
+const pageSignature=(n:number)=>{const b=Buffer.alloc(64,1);b.writeUInt32BE(n,0);return encodeSolanaAddress(b);};
+const recentPage=(n=0)=>Array.from({length:1000},(_,i)=>row(pageSignature(1000+n*1000+i),slot+100_000-n*1000-i,T+100_000-n*1000-i));
+function paginationFetcher(pages:unknown[],fallback:typeof fetch=fake().fetcher,onPage?:(i:number)=>void){
+ const requests:any[]=[];
+ const fetcher:typeof fetch=async(input,init)=>{
+  if(String(input)!=='https://api.fetch.tinyfish.ai/'&&init?.method==='POST'){
+   const request=JSON.parse(String(init.body));
+   if(request.method==='getSignaturesForAddress'&&request.params[0]===wallet){
+    const i=requests.length;requests.push(request);onPage?.(i);
+    return new Response(JSON.stringify(pages[i]??{jsonrpc:'2.0',id:1,result:[]}));
+   }
+  }
+  return fallback(input,init);
+ };
+ return{fetcher,requests};
+}
+const rpcPage=(rows:unknown[])=>({jsonrpc:'2.0',id:1,result:rows});
+
+test('creator pagination reaches a later creation page, binds its exact cursor, and preserves legacy single-page semantics',async()=>{
+ const pages=[recentPage(),baseRows()],f=paginationFetcher(pages.map(rpcPage));
+ const r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ assert.equal(f.requests.length,2);
+ assert.equal(f.requests[1].params[1].before,pages[0]!.at(-1)!.signature);
+ assert.deepEqual(Object.keys(r.requests),['page','index','index-1','transaction-0','transaction-1']);
+ const d=decodeCreatorRole(token,r,cutoff);
+ assert.deepEqual([d.quality,d.binding?.wallet,d.data.indexPages,d.data.indexReturned],['KNOWN',wallet,2,1003]);
+ assert.equal(d.binding?.walletIndex.before,pages[0]!.at(-1)!.signature);
+ assert.throws(()=>decodeCreatorRole(token,r,cutoff,false),/ADVISORY_CREATOR_ROLE_RECEIPT/);
+ const legacy=await collectCreatorRole(token,'secret','https://rpc.example',paginationFetcher([rpcPage(pages[0]!)]).fetcher,clock(),undefined,false);
+ assert.equal(decodeCreatorRole(token,legacy,cutoff,false).reasonCode,'CREATOR_INDEX_WINDOW_NOT_REACHED');
+ assert.equal(decodeCreatorRole(token,legacy,cutoff,false).data.method,'pump-public-creator-role-collection-v1');
+});
+
+test('a discovery window crossing page boundaries checks candidates from both pages before binding',async()=>{
+ const first=[...recentPage().slice(0,999),baseRows()[0]!],second=baseRows().slice(1);
+ const f=paginationFetcher([rpcPage(first),rpcPage(second)]),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ const d=decodeCreatorRole(token,r,cutoff);
+ assert.equal(d.quality,'KNOWN');
+ assert.deepEqual((d.data.candidates as any[]).map(c=>[c.signature,c.outcome]),[[transferSig,'NON_CREATE'],[createSig,'VERIFIED_CREATION']]);
+ const bad=structuredClone(r);bad.rawArtifacts['transaction-0']=JSON.stringify({jsonrpc:'2.0',id:1,result:null});
+ assert.equal(decodeCreatorRole(token,bad,cutoff).reasonCode,'CREATOR_CANDIDATE_UNVERIFIED');
+});
+
+test('pagination stops on exhaustion, unavailable or malformed pages, repeats, time reversal and null clocks without a creation claim',async()=>{
+ const first=recentPage(),cases:Array<[string,unknown,string]>=[
+  ['empty',rpcPage([]),'CREATOR_CANDIDATE_NONE'],
+  ['short',rpcPage(first.slice(0,1).map(v=>({...v,signature:pageSignature(99999),slot:slot+1,blockTime:T-1000}))),'CREATOR_CANDIDATE_NONE'],
+  ['rpc-error',{jsonrpc:'2.0',id:1,error:{code:-32009}},'CREATOR_ROLE_UNAVAILABLE'],
+  ['shape',rpcPage([{}]),'CREATOR_ROLE_INDEX_SHAPE'],
+  ['repeat',rpcPage(first),'CREATOR_INDEX_NONPROGRESS'],
+  ['untimed',rpcPage([{...baseRows()[1],blockTime:null}]),'CREATOR_INDEX_UNTIMED_ROWS'],
+  ['time-reversal',rpcPage([{...baseRows()[1],blockTime:T+110_000}]),'CREATOR_INDEX_TIME_ORDER'],
+ ];
+ for(const [name,last,code] of cases){
+  const f=paginationFetcher([rpcPage(first),last]),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+  const d=decodeCreatorRole(token,r,cutoff);
+  assert.deepEqual([f.requests.length,d.reasonCode,d.binding],[2,code,null],name);
+  assert.ok(!Object.keys(r.requests).some(k=>k.startsWith('transaction')),name);
+ }
+});
+
+test('sixteen-page cap and cancellation preserve incomplete evidence without more reads',async()=>{
+ const f=paginationFetcher(Array.from({length:16},(_,i)=>rpcPage(recentPage(i)))),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ const d=decodeCreatorRole(token,r,cutoff);
+ assert.deepEqual([f.requests.length,d.quality,d.reasonCode,d.data.indexReturned],[16,'TRUNCATED','CREATOR_INDEX_PAGE_CAP',16000]);
+ const controller=new AbortController(),cancel=paginationFetcher([rpcPage(recentPage())],undefined,()=>controller.abort());
+ const partial=await collectCreatorRole(token,'secret','https://rpc.example',cancel.fetcher,clock(),controller.signal);
+ assert.equal(cancel.requests.length,1);assert.notEqual(decodeCreatorRole(token,partial,cutoff).quality,'KNOWN');
+});
+
+test('replay rejects cursor, page catalog and clock tampering, and stops at missing continuation',async()=>{
+ const f=paginationFetcher([rpcPage(recentPage()),rpcPage(baseRows())]),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ const changes:Array<(x:typeof r)=>void>=[
+  x=>{(x.requests['index-1'] as any).params[1].before=olderSig;},
+  x=>{x.retrievedAt['index-1']=new Date(Date.parse(x.retrievedAt.index!)-1).toISOString();},
+  x=>{x.retrievedAt['index-1']='2026-10-11T00:00:00.000Z';},
+  x=>{delete x.requests['index-1'];delete x.rawArtifacts['index-1'];delete x.retrievedAt['index-1'];},
+  x=>{x.requests['index-2']=x.requests['index-1'];x.rawArtifacts['index-2']=x.rawArtifacts['index-1']!;x.retrievedAt['index-2']=x.retrievedAt['index-1']!;},
+  x=>{x.retrievedAt.orphan=cutoff;},
+ ];
+ for(const change of changes){const x=structuredClone(r);change(x);assert.throws(()=>decodeCreatorRole(token,x,cutoff),/ADVISORY_CREATOR_ROLE_RECEIPT/);}
+ const partial=structuredClone(r);for(const key of ['index-1','transaction-0','transaction-1']){delete partial.requests[key];delete partial.rawArtifacts[key];delete partial.retrievedAt[key];}
+ assert.equal(decodeCreatorRole(token,partial,cutoff).reasonCode,'CREATOR_INDEX_WINDOW_NOT_REACHED');
+});
+
+test('creator receipt byte ceiling retains a sanitized unresolved error instead of an oversized page',async()=>{
+ const first=rpcPage(recentPage()),oversize={...rpcPage(baseRows()),padding:'x'.repeat(2_000_001)};
+ const f=paginationFetcher([first,oversize]),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ assert.ok(Buffer.byteLength(r.rawArtifacts['index-1']!)<128);
+ assert.notEqual(decodeCreatorRole(token,r,cutoff).quality,'KNOWN');
+ assert.ok(Object.values(r.rawArtifacts).reduce((n,v)=>n+Buffer.byteLength(v),0)<=6_000_000);
+});
+
+test('multi-page live receipts persist and replay, with orphan, duplicate, raw hash and legacy downgrade rejection',async()=>{
+ const f=paginationFetcher([rpcPage(recentPage()),rpcPage(baseRows())],liveFetcher);
+ const b=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'secret',fetcher:f.fetcher,now:()=>at});
+ const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);
+ assert.equal(b.details!.advisory!.metrics.find(m=>m.id==='S13')!.quality,'KNOWN');
+ assert.throws(()=>reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,{...proof,method:'advisory-provenance-v25'},b.thesis??null,b.features));
+ const directory=mkdtempSync(join(tmpdir(),'creator-pagination-'));
+ try{const service=new Service(join(directory,'isolated.sqlite'));try{
+  const saved=service.analyzeLive(b);assert.deepEqual(service.replay(saved.id),saved);
+  for(const kind of ['orphan','duplicate','hash','cursor','downgrade']){
+   const x=structuredClone(b),p=JSON.parse(x.rawArtifacts['advisory-derivation']!);
+   const record=x.evidence.find(e=>e.id==='advisory-creatorRole-index-1')!;
+   if(kind==='orphan'){x.evidence.push({...record,id:'advisory-creatorRole-orphan'});x.rawArtifacts['advisory-creatorRole-orphan']=x.rawArtifacts[record.id]!;}
+   if(kind==='duplicate')x.evidence.push(structuredClone(record));
+   if(kind==='hash')x.rawArtifacts[record.id]+=' ';
+   if(kind==='cursor'){p.creatorRole.requests['index-1'].params[1].before=olderSig;record.scope={request:p.creatorRole.requests['index-1']};}
+   if(kind==='downgrade')p.method='advisory-provenance-v25';
+   x.rawArtifacts['advisory-derivation']=JSON.stringify(p);rehash(x,'advisory-derivation');
+   assert.throws(()=>service.analyzeLive(x),kind==='duplicate'?/DUPLICATE_BUNDLE_ID/:kind==='hash'?/ARTIFACT_HASH_OR_SIZE/:/ADVISORY_PROOF_INVALID/,kind);
+  }
+ }finally{service.close();}}finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+
+test('aggregate creator storage ceiling stops pagination before six megabytes without discarding retained pages',async()=>{
+ const pages=Array.from({length:5},(_,i)=>({...rpcPage(recentPage(i)),padding:'x'.repeat(1_600_000)}));
+ const f=paginationFetcher(pages),r=await collectCreatorRole(token,'secret','https://rpc.example',f.fetcher,clock());
+ assert.ok(f.requests.length<5);
+ assert.ok(Object.values(r.rawArtifacts).reduce((n,v)=>n+Buffer.byteLength(v),0)<=6_000_000);
+ assert.equal(JSON.parse(r.rawArtifacts[`index-${f.requests.length-1}`]!).error.code,'RPC_RESPONSE_LIMIT');
+ assert.notEqual(decodeCreatorRole(token,r,cutoff).quality,'KNOWN');
+});
+
+test('expanded creator discovery reads every one of 32 candidates with two in flight; legacy 26 remains capped at eight',async()=>{
+ const transfers=Array.from({length:31},(_,i)=>({signature:pageSignature(50000+i),slot:slot+31-i,at:T+31-i}));
+ const rows=[...transfers.map(t=>row(t.signature,t.slot,t.at)),row(createSig,slot,T),row(olderSig,slot-1000,T-86400)];
+ const base=fake({rows}),map=new Map(transfers.map(t=>[t.signature,t]));let active=0,maxActive=0,count=0;
+ const fetcher:typeof fetch=async(input,init)=>{
+  if(String(input)!=='https://api.fetch.tinyfish.ai/'&&init?.method==='POST'){
+   const q=JSON.parse(String(init.body)),t=q.method==='getTransaction'?map.get(q.params[0]):undefined;
+   if(t){active++;maxActive=Math.max(active,maxActive);count++;await new Promise(r=>setTimeout(r,1));active--;return new Response(JSON.stringify({jsonrpc:'2.0',id:1,result:transferTx(t.signature,t.at,t.slot)}));}
+  }
+  return base.fetcher(input,init);
+ };
+ const r=await collectCreatorRole(token,'secret','https://rpc.example',fetcher,clock()),decoded=decodeCreatorRole(token,r,cutoff);
+ assert.deepEqual([decoded.quality,decoded.data.candidateCap,(decoded.data.candidates as unknown[]).length,count],['KNOWN',32,32,31]);assert.ok(maxActive<=2&&maxActive>0);
+ const partial=structuredClone(r);delete partial.requests['transaction-31'];delete partial.rawArtifacts['transaction-31'];delete partial.retrievedAt['transaction-31'];
+ assert.equal(decodeCreatorRole(token,partial,cutoff).reasonCode,'CREATOR_CANDIDATE_UNVERIFIED');
+ assert.throws(()=>decodeCreatorRole(token,r,cutoff,true,false),/ADVISORY_CREATOR_ROLE_RECEIPT/);
+ const legacy=await collectCreatorRole(token,'secret','https://rpc.example',base.fetcher,clock(),undefined,true,false);
+ assert.deepEqual([Object.keys(legacy.requests),decodeCreatorRole(token,legacy,cutoff,true,false).reasonCode],[['page','index'],'CREATOR_CANDIDATES_OVER_CAP']);
 });

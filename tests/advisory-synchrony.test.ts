@@ -193,7 +193,7 @@ function liveFetcher(rows: Row[], transactions: Map<string, unknown>, mutate: (r
       const result = method === 'getGenesisHash' ? SOLANA_MAINNET_GENESIS : method === 'getSlot' ? liveAnchor : method === 'getBlockTime' ? liveEnd + 60
         : method === 'getSignaturesForAddress' ? (request.params[0] === pool && options.limit === 1000 ? structuredClone(rows) : [])
         : method === 'getAccountInfo' && request.params[0] === pool ? { context: { slot: liveAnchor + 1 }, value: { owner: program, executable: false, lamports: 1, data: [poolData, 'base64'] } }
-        : method === 'getTransaction' && options.encoding === 'json' && transactions.has(request.params[0]) ? structuredClone(transactions.get(request.params[0]))
+        : method === 'getTransaction' && transactions.has(request.params[0]) ? (options.encoding==='jsonParsed'?projectCompiledTransaction(structuredClone(transactions.get(request.params[0]))):structuredClone(transactions.get(request.params[0])))
         : { context: { slot: 1 }, value: null };
       return new Response(JSON.stringify(mutate(request, { jsonrpc: '2.0', id: 1, result })));
     }
@@ -216,7 +216,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v24', 'advisory-measurements-v23', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v32', 'advisory-measurements-v31', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -248,7 +248,7 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v21'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v29'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -268,7 +268,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   const transactions = new Map<string, unknown>([...liveTransactions(old), [inScope[0]!.signature, swaps(inScope[0]!, [b58(U4)], [U4])], [inScope[1]!.signature, routed(inScope[1]!, K, P)], [inScope[2]!.signature, swaps(inScope[2]!, [b58(U1)], [U1])], [inScope[3]!.signature, swaps(inScope[3]!, [b58(U1)], [U1])]]);
   const live = (mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, transactions, mutate), now: () => liveAt });
   const bundle = await live(), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!, s = facts.supplements!.shortDemand;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v24', 'advisory-measurements-v23', 50, 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v32', 'advisory-measurements-v31', 50, 'KNOWN']);
   assert.deepEqual([s.status, s.reportEnd, s.baseline.start, s.baseline.end, s.measured.start], ['COMPLETE', '2026-10-10T12:00:00.000Z', '2026-10-10T10:00:00.000Z', '2026-10-10T11:00:00.000Z', '2026-10-10T11:00:00.000Z']);
   assert.deepEqual(s.windows.map(w => w.condition), [false, false, false, false, false, true]);
   assert.deepEqual(s.windows.map(w => w.firstObservedBuyerCount), [0, 0, 0, 0, 0, 1]);
@@ -278,7 +278,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   // The persisted report equals the production provider over the same retained window and demand receipts.
   const receipts = (namespace: 'window' | 'demand') => { const d = proof[namespace] as { requests: Record<string, { method: string; params: unknown[] }>; artifactIds: Record<string, string> }, keys = Object.entries(d.artifactIds);
     return { rawArtifacts: Object.fromEntries(keys.map(([k, id]) => [k, bundle.rawArtifacts[id]!])), retrievedAt: Object.fromEntries(keys.map(([k, id]) => [k, bundle.evidence.find(e => e.id === id)!.retrievedAt])), requests: d.requests, ids: keys.map(([, id]) => id) }; };
-  const archived = receipts('window'), w = { ...archived, rawArtifacts: unpackAdvisoryWindowReceipts(archived).rawArtifacts }, d = receipts('demand'), windowData = decodeAdvisoryWindow(token, proof.pool, proof.window.end, w.rawArtifacts, w.retrievedAt, w.requests, liveAt, true, true, true);
+  const archived = receipts('window'), w = { ...archived, rawArtifacts: unpackAdvisoryWindowReceipts(archived,true).rawArtifacts }, d = receipts('demand'), windowData = decodeAdvisoryWindow(token, proof.pool, proof.window.end, w.rawArtifacts, w.retrievedAt, w.requests, liveAt, true, true, true, true, true);
   assert.equal(s.coverage.logRecovery!.unresolvedForeignSwaps,0);
   assert.equal(decodeAdvisoryShortDemand(token,windowData,w,d.rawArtifacts,d.retrievedAt,d.requests,liveAt,[...w.ids,...d.ids]).coverage.logRecovery!.unresolvedForeignSwaps,undefined);
   assert.deepEqual(s, decodeAdvisoryShortDemand(token, windowData, w, d.rawArtifacts, d.retrievedAt, d.requests, liveAt, [...w.ids, ...d.ids],true));
@@ -326,8 +326,8 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
   // An in-scope receipt gap nulls every value; a gap before the two-hour start is excluded and disclosed while canonical A30 stays missing.
-  const failing = (signature: string) => (request: RpcRequest, body: any) => request.method === 'getTransaction' && request.params[0] === signature ? { jsonrpc: '2.0', id: 1, error: { code: -32009, message: 'unavailable' } } : body;
-  const gap = (await live(failing(inScope[1]!.signature))).details!.advisory!, earlier = (await live(failing(old[0]!.signature))).details!.advisory!;
+  const failing = (signature: string) => (request: RpcRequest, body: any) => request.method === 'getTransaction' && request.params[1]?.encoding==='json' && request.params[0] === signature ? { jsonrpc: '2.0', id: 1, error: { code: -32009, message: 'unavailable' } } : body;
+  const gap = (await live(failing(inScope[3]!.signature))).details!.advisory!, earlier = (await live(failing(old[0]!.signature))).details!.advisory!;
   const g = gap.supplements!.shortDemand, e = earlier.supplements!.shortDemand;
   assert.deepEqual([gap.metrics.find(m => m.id === 'A30')!.quality, earlier.metrics.find(m => m.id === 'A30')!.quality], ['MISSING', 'MISSING']);
   assert.deepEqual([g.status, g.reasonCode, g.satisfiedWindows, g.share, g.baseline.meaningfulBuyers, g.coverage.scopeUnresolvedTransactions.map(t => t.code)], ['INCOMPLETE', 'ADVISORY_SHORT_DEMAND_SCOPE_TRANSACTION_UNRESOLVED', null, null, null, ['RPC_REMOTE_-32009']]);

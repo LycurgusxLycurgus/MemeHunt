@@ -49,10 +49,11 @@ function swap(reference: Row, quote = '1000'): any {
     accountKeys: [...new Set(accounts)].map(pubkey => ({ pubkey, signer: pubkey === user.toBase58() })), instructions: [{ programId: program, accounts, data: encodeSolanaAddress(data) }] } },
     meta: { err: null, preTokenBalances: [], postTokenBalances: [], innerInstructions: [], logMessages: [`Program ${program} invoke [1]`, `Program data: ${payload}`, `Program ${program} success`] } };
 }
-type Options = { clock?: Clock; raw?: (request: RpcRequest, page: number) => string | undefined; bodies?: Map<string, any>; delay?: number; dense?: boolean };
+type Options = { clock?: Clock; raw?: (request: RpcRequest, page: number) => string | undefined; bodies?: Map<string, any>; delay?: number; dense?: boolean; expanded?:boolean; quote?:PublicKey };
 async function harness(pages: Row[][], options: Options = {}) {
+  const poolAddress=options.quote?poolPda(0,creator,new PublicKey(token.address),options.quote).toBase58():pool;
   const clock = options.clock ?? SYNTHETIC, dense = options.dense ?? true, calls: RpcRequest[] = [], flight = { now: 0, max: 0 };
-  const poolData = await sdk.coder.accounts.encode('pool', { ...defaults('pool'), creator, baseMint: new PublicKey(token.address), quoteMint: NATIVE_MINT, poolBaseTokenAccount: baseVault, poolQuoteTokenAccount: quoteVault });
+  const poolData = await sdk.coder.accounts.encode('pool', { ...defaults('pool'), creator, baseMint: new PublicKey(token.address), quoteMint: options.quote??NATIVE_MINT, poolBaseTokenAccount: baseVault, poolQuoteTokenAccount: quoteVault });
   const fetcher: typeof fetch = async (_input, init) => {
     const request = JSON.parse(String(init?.body)) as RpcRequest; calls.push(request);
     flight.now++; flight.max = Math.max(flight.max, flight.now);
@@ -74,8 +75,8 @@ async function harness(pages: Row[][], options: Options = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
     } finally { flight.now--; }
   };
-  const collected = await collectAdvisoryWindow(token, pool, 'https://rpc.example', fetcher, () => clock.cutoff, clock.end, undefined, undefined, true, true, dense);
-  const decode = (asDense = dense) => decodeAdvisoryWindow(token, pool, clock.end, collected.rawArtifacts, collected.retrievedAt, collected.requests, clock.cutoff, true, true, asDense);
+  const collected = await collectAdvisoryWindow(token, poolAddress, 'https://rpc.example', fetcher, () => clock.cutoff, clock.end, undefined, undefined, true, true, dense, false, options.expanded??false);
+  const decode = (asDense = dense) => decodeAdvisoryWindow(token, poolAddress, clock.end, collected.rawArtifacts, collected.retrievedAt, collected.requests, clock.cutoff, true, true, asDense, false, options.expanded??false);
   const count = (method: string) => calls.filter(r => r.method === method).length;
   return { collected, decode, calls, count, flight, fetcher };
 }
@@ -254,4 +255,35 @@ test('first live dense-hour snapshot replays its original incomplete v3 evidence
   assert.equal(history.pages.length, 4);
   assert.equal(history.transactions.length, 30);
   assert.equal(Object.hasOwn(history, 'acquisition'), false);
+});
+
+
+test('expanded acquisition reaches past5000 newer references and decodes all70 selected receipts',async()=>{
+ const newer=Array.from({length:5000},(_,i)=>row(i+1,endS+20));
+ const hour=Array.from({length:70},(_,i)=>row(i+5001,startS+50));
+ const pages=Array.from({length:5},(_,i)=>newer.slice(i*1000,i*1000+1000));pages.push([...hour,row(5071,startS-1)]);
+ const x=await harness(pages,{expanded:true,delay:1}),h=x.decode();
+ assert.equal(h.complete,true);assert.equal(h.acquisition!.version,'window-dense-v2');assert.equal(h.acquisition!.newerReferences,5000);
+ assert.equal(h.successfulSignatures,70);assert.equal(x.count('getTransaction'),70);assert.equal(x.flight.max,2);assert.equal(h.indexComplete,true);
+ assert.deepEqual(x.calls.filter(r=>r.method==='getSignaturesForAddress').map(r=>r.params[1].limit),Array(6).fill(1000));
+ const archived=archiveAdvisoryWindowReceipts(x.collected,true),plain=unpackAdvisoryWindowReceipts(archived,true);
+ assert.deepEqual(plain.rawArtifacts,x.collected.rawArtifacts);assert.throws(()=>unpackAdvisoryWindowReceipts(archived),/ARCHIVE_MEMBERSHIP/);
+ const forged=structuredClone(x.collected);(forged.requests['window-page-1']!.params[1] as any).before=sig(999999);
+ assert.throws(()=>decodeAdvisoryWindow(token,pool,SYNTHETIC.end,forged.rawArtifacts,forged.retrievedAt,forged.requests,SYNTHETIC.cutoff,true,true,true,false,true),/RECEIPT_MEMBERSHIP/);
+});
+test('expanded acquisition never samples a1025-success hour and caps16 full newer pages without transaction reads',async()=>{
+ const hour=Array.from({length:1025},(_,i)=>row(i+1,startS+100));
+ let x=await harness([hour.slice(0,1000),[...hour.slice(1000),row(1026,startS-1)]],{expanded:true});
+ assert.equal(x.count('getTransaction'),0);assert.equal(x.decode().reasonCode,'ADVISORY_WINDOW_TRANSACTION_CAP');
+ const newer=Array.from({length:16000},(_,i)=>row(i+1,endS+20));
+ x=await harness(Array.from({length:16},(_,i)=>newer.slice(i*1000,i*1000+1000)),{expanded:true});
+ assert.equal(x.count('getSignaturesForAddress'),16);assert.equal(x.count('getTransaction'),0);assert.equal(x.decode().reasonCode,'ADVISORY_WINDOW_PAGE_CAP');
+});
+
+test('expanded source index can be complete while a verified nonWSOL pool stops before all trade reads',async()=>{
+ const quote=new PublicKey(Buffer.alloc(32,17)),x=await harness([[row(1,startS+1),row(2,startS-1)]],{expanded:true,quote}),h=x.decode();
+ assert.equal(h.indexComplete,true);assert.equal(h.complete,false);assert.equal(h.reasonCode,'ADVISORY_WINDOW_QUOTE_UNSUPPORTED');
+ assert.deepEqual(h.poolAdmission,{quoteMint:quote.toBase58(),status:'UNSUPPORTED_QUOTE'});assert.equal(x.count('getTransaction'),0);assert.equal(x.count('getAccountInfo'),1);
+ assert.equal(deriveO28Window(h,[]).quality,'MISSING');
+ const archived=archiveAdvisoryWindowReceipts(x.collected,true);assert.deepEqual(unpackAdvisoryWindowReceipts(archived,true).rawArtifacts,x.collected.rawArtifacts);
 });

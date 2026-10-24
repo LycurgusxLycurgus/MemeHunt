@@ -1,9 +1,10 @@
+import {truncatedQuoteCandidates} from './advisory-creator-quote-execution.js';
 import { PublicKey } from '@solana/web3.js';
 import { NATIVE_MINT_2022, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import type { TokenRef } from '../domain/contracts.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import type { DemandHistory } from './advisory-demand-windows.js';
-import { accountTokenView, executedWindowInstructions, type AccountLeg } from './advisory-window-accounts.js';
+import { accountTokenView, executedWindowInstructions, recordedWindowInstructions, type AccountLeg } from './advisory-window-accounts.js';
 import { LEGACY_TOKEN_PROGRAM, TOKEN_2022_PROGRAM, decodeSolanaAddress } from './solana.js';
 
 export const CREATOR_INVENTORY_METHOD='creator-signer-wallet-inventory-v1' as const;
@@ -216,6 +217,8 @@ const TOKEN_FORMS:Record<string,Form>={
  initializeTokenMetadata:{keys:['metadata','updateAuthority','mint','mintAuthority'],values:{name:text,symbol:text,uri:text},subjects:[]},
  updateTokenMetadataAuthority:{keys:['metadata','updateAuthority'],nullable:['newAuthority'],subjects:[]},
 };
+// Native proof30 only: this mint-level initialization cannot alter a foreign account amount. The tracked mint is explicitly rejected below.
+const NATIVE_WALLET_TOKEN_FORMS:Record<string,Form>={...TOKEN_FORMS,initializeTransferFeeConfig:{keys:['mint'],nullable:['transferFeeConfigAuthority','withdrawWithheldAuthority'],values:{maximumFee:integer,transferFeeBasisPoints:v=>integer(v)&&Number(v)<=10000},subjects:[]}};
 // The associated account must be the derivation of its wallet, mint and token program; the System and token program fields must be their immutable canonical ids.
 const ATA_FORM:Form={keys:['source','account','wallet','mint'],values:{systemProgram:v=>v===SYSTEM_PROGRAM,tokenProgram:v=>typeof v==='string'&&tokenPrograms.has(v)},subjects:['account']};
 const ATA_FORMS:Record<string,Form>={create:ATA_FORM,createIdempotent:ATA_FORM};
@@ -230,14 +233,14 @@ function receiptKeys(value:any):Set<string>{
  return new Set(list.map((k:any)=>k.pubkey as string));
 }
 /** Every attempted Token, Token-2022 and associated-account instruction of a receipt's complete runtime trace as a supported form, with the token accounts it acts on and the mint and owner facts its fields establish. */
-function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET'){
+function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET',attemptedSuperset=false){
  // Absence is certified only over the complete runtime trace: every top-level and inner instruction bound in order to its logged invoke frame and outcome.
  // A dropped, added or reordered instruction, or an incomplete or truncated log, is never read as unrelated activity; parsed forms alone never stand in for the trace.
  let trace:Steps;
- try{trace=executedWindowInstructions(value);}catch{fail(`CREATOR_${scope}_RUNTIME_TRACE_UNRESOLVED`);}
+ try{try{trace=executedWindowInstructions(value);}catch(error){if(!attemptedSuperset)throw error;trace=truncatedQuoteCandidates(value,true).map(s=>({...s,executed:false}));}if(attemptedSuperset&&trace.some(s=>!keys.has(s.ix.programId)))fail(`CREATOR_${scope}_RUNTIME_TRACE_UNRESOLVED`);}catch{fail(`CREATOR_${scope}_RUNTIME_TRACE_UNRESOLVED`);}
  const facts:Facts=new Map(),ixs:Array<{type:string;info:Record<string,any>;subjects:string[]}>=[];
  for(const {ix} of trace){
-  const ata=ix.programId===ATA_PROGRAM,table=ata?ATA_FORMS:TOKEN_FORMS,p=ix.parsed;
+  const ata=ix.programId===ATA_PROGRAM,table=ata?ATA_FORMS:attemptedSuperset?NATIVE_WALLET_TOKEN_FORMS:TOKEN_FORMS,p=ix.parsed;
   if(!ata&&!tokenPrograms.has(ix.programId))continue;
   if(!object(p)||typeof p.type!=='string'||!object(p.info)||!Object.hasOwn(table,p.type))fail(`CREATOR_${scope}_TOKEN_FORM_UNRESOLVED`);
   const type:string=p.type,info:Record<string,any>=p.info,form=table[type]!,key=(f:string)=>typeof info[f]==='string'&&keys.has(info[f]);
@@ -257,12 +260,14 @@ function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET'){
  }
  return{ixs,facts};
 }
+/** Shared native boundary: every critical parsed form and referenced key must be complete before any committed-amount witness is accepted. */
+export function validateNativeCreatorTokenForms(value:any):void{tokenForms(value,receiptKeys(value),'WALLET',true);}
 /** Returns a code when a creator-referencing receipt touches, or cannot exclude touching, another creator-owned target-mint account, including one opened and closed inside it.
  * System instructions are not inspected: only the token program owning a token account can change its amount, owner or lifecycle. */
-function walletTouch(value:any,role:CreatorRole,account:string):string|null{
+export function walletTouch(value:any,role:CreatorRole,account:string,attemptedSuperset=false):string|null{
  const keys=receiptKeys(value),list=value.transaction.message.accountKeys;
  if(!keys.has(role.wallet))fail('CREATOR_WALLET_INDEX_INCONSISTENT');
- const {ixs,facts}=tokenForms(value,keys,'WALLET');
+ const {ixs,facts}=tokenForms(value,keys,'WALLET',attemptedSuperset);
  // Raw balances add each listed account's mint and owner; accounts opened and closed inside the receipt resolve only from their parsed initialization.
  for(const rows of [value.meta?.preTokenBalances,value.meta?.postTokenBalances]){
   if(!Array.isArray(rows))fail('CREATOR_INVENTORY_BALANCE_SHAPE');
@@ -273,6 +278,7 @@ function walletTouch(value:any,role:CreatorRole,account:string):string|null{
   }
  }
  for(const {type,info,subjects} of ixs){
+  if(attemptedSuperset&&type==='initializeTransferFeeConfig'&&info.mint===role.mint)return 'CREATOR_WALLET_TARGET_EXTENSION_UNRESOLVED';
   // Creator authority over the target mint is outside this proof; other mint-level forms hold no inventory.
   if((info.mint??info.metadata)===role.mint&&(!subjects.length||type.startsWith('mintTo'))&&MINT_AUTHORITY_FIELDS.some(f=>info[f]===role.wallet))return 'CREATOR_WALLET_TARGET_MINT_AUTHORITY';
   // Every token account acted on must resolve from this receipt alone: its mint, and for the target mint its single owner.
