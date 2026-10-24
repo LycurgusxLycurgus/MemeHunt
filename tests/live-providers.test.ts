@@ -29,7 +29,7 @@ import { decodeTokenMetadataUri, discoverTokenMetadata } from '../src/providers/
 import { originSourceScope } from '../src/domain/attention.js';
 import { entryEvidenceScope, type AttentionRead } from '../src/providers/attention.js';
 import { deriveShared, expireSharedWitnesses, sharedClaims, type SharedInputs } from '../src/domain/shared.js';
-import { decodeSharedAudit, decodeSharedAuditProof, sharedAuditPrompt, sharedReassessmentIds, validSharedReassessment } from '../src/providers/shared-model.js';
+import { decodeSharedAudit, decodeSharedAuditProof, sharedAuditPrompt, sharedIndexedAuditPrompt, sharedReassessmentIds, validSharedReassessment } from '../src/providers/shared-model.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 import { sharedFixture } from './shared-fixtures.js';
 import type { Profile, TokenRef } from '../src/domain/contracts.js';
@@ -896,7 +896,7 @@ test('Service gives only the validated LIVE holder-population artifact its separ
   }
 });
 
-test('Service reconstructs a finalized holder-population retry and rejects rehashed trigger, floor, and bound mutations', async () => {
+for (const advisoryEnabled of [false, true]) test(`Service reconstructs a finalized holder-population retry with advisory=${advisoryEnabled} and rejects rehashed proof mutations`, async () => {
   const mock = mockedFetch();
   const makeMint = (supply: bigint) => {
     const bytes = Buffer.alloc(82);
@@ -937,7 +937,7 @@ test('Service reconstructs a finalized holder-population retry and rejects rehas
     }
     return mock.fetcher(input, init);
   };
-  const bundle = await collectLiveSolana(token, liveOptions(fetcher));
+  const bundle = await collectLiveSolana(token, liveOptions(fetcher, { advisoryEnabled }));
   assert.equal(mintReads, 2, 'the mismatch produces exactly one finalized raw-mint refresh');
   assert.equal(populationReads, 2, 'the refreshed mint is followed by exactly one fresh population scan');
   assert.ok(bundle.rawArtifacts['rpc-mint-raw-reconciliation-attempt-1']);
@@ -959,6 +959,16 @@ test('Service reconstructs a finalized holder-population retry and rejects rehas
   try {
     const saved = service.analyzeLive(bundle);
     assert.deepEqual(service.replay(saved.id), saved, 'the verified reconciliation survives persistence and deterministic replay');
+
+    if (advisoryEnabled) {
+      const archive = JSON.parse(bundle.rawArtifacts['rpc-holder-population']!);
+      assert.equal(bundle.evidence.find(record => record.id === 'rpc-holder-population')?.adapterVersion, 'holder-population-archive-v1');
+      const badArchive = structuredClone(bundle);
+      archive.sourceHash = '0'.repeat(64);
+      rehash(badArchive, 'rpc-holder-population', JSON.stringify(archive));
+      assert.throws(() => service.analyzeLive(badArchive), /HOLDER_RECONCILIATION_PROOF_INVALID/,
+        'a rehashed archive with a tampered inner digest cannot certify reconciled bounds');
+    }
 
     const badTrigger = structuredClone(bundle);
     const initialPopulation = JSON.parse(badTrigger.rawArtifacts['rpc-holder-population-reconciliation-attempt-1']!) as {
@@ -4487,5 +4497,127 @@ test('legacy Shared repair proof reconstructs selected raw responses and rejects
       delete downgraded.reviewResponseId;
       rewriteRaw(candidate, 'shared-qualified-receipt', downgraded);
     });
+
+    const scoped = structuredClone(bundle);
+    const setTemporalScope = (candidate: typeof bundle, scope: unknown) => {
+      rewriteRaw(candidate, 'shared-qualified-receipt', { ...receipt, temporalScope: scope });
+      for (const record of candidate.evidence.filter(item => item.id.startsWith('shared-') && item.sourceType === 'MODEL_INPUT')) {
+        rewriteRaw(candidate, record.id, { ...JSON.parse(candidate.rawArtifacts[record.id]!), temporalScope: scope });
+      }
+    };
+    setTemporalScope(scoped, { cutoff: bundle.cutoff });
+    rehashProof(scoped);
+    const scopedDb = join(directory, 'temporal-scope.sqlite');
+    const scopedWriter = new Service(scopedDb);
+    let scopedId = '';
+    try { scopedId = scopedWriter.analyzeLive(scoped).id; } finally { scopedWriter.close(); }
+    const scopedReader = new Service(scopedDb);
+    try { assert.deepEqual(scopedReader.replay(scopedId), scopedReader.show(scopedId)); } finally { scopedReader.close(); }
+
+    const rejectScope = (name: string, mutate: (candidate: typeof bundle) => void) => {
+      const candidate = structuredClone(scoped);
+      mutate(candidate);
+      rehashProof(candidate);
+      const verifier = new Service(join(directory, `${name}.sqlite`));
+      try { assert.throws(() => verifier.analyzeLive(candidate), /SHARED_PROOF_INVALID/, name); } finally { verifier.close(); }
+    };
+    rejectScope('future-semantic-cutoff', candidate => {
+      setTemporalScope(candidate, { cutoff: new Date(Date.parse(bundle.cutoff) + 1000).toISOString() });
+    });
+    rejectScope('sources-newer-than-semantic-cutoff', candidate => {
+      setTemporalScope(candidate, { cutoff: new Date(Date.parse(bundle.cutoff) - 1000).toISOString() });
+    });
+    rejectScope('unbound-social-window', candidate => {
+      setTemporalScope(candidate, { cutoff: bundle.cutoff, socialWindow: { start: fixture.social!.start, end: fixture.social!.end } });
+    });
+    rejectScope('invented-social-basis', candidate => {
+      setTemporalScope(candidate, { cutoff: bundle.cutoff, socialWindow: { start: fixture.social!.start, end: fixture.social!.end }, socialFacts: fixture.social });
+    });
+    rejectScope('changed-prompt-scope', candidate => {
+      rewriteRaw(candidate, 'shared-review-prompt', { stage: 'review', temporalScope: { cutoff: new Date(Date.parse(bundle.cutoff) + 1000).toISOString() } });
+    });
+    rejectScope('removed-prompt-scope', candidate => {
+      rewriteRaw(candidate, 'shared-review-prompt', { stage: 'review' });
+    });
+    rejectScope('removed-receipt-scope', candidate => {
+      rewriteRaw(candidate, 'shared-qualified-receipt', receipt);
+    });
+
+    const spanIndices = new Map(sources.flatMap(item => sourceSpans(item.id, item.text, 'SHARED_MODEL'))
+      .map((span, index) => [span.id, index]));
+    const indexClaims = (values: typeof initialClaims) => Object.fromEntries(Object.entries(values).map(([id, value]) => [id, {
+      ...value, citations: value.citations.map(citation => ({ spanIndex: spanIndices.get(citation.spanId)! })),
+    }]));
+    const indexed = structuredClone(scoped);
+    rewriteRaw(indexed, 'shared-proposal-response', JSON.parse(raw({ claims: indexClaims(initialClaims) })));
+    rewriteRaw(indexed, 'shared-repair-proposal-response', JSON.parse(raw({ claims: indexClaims(repairClaims) })));
+    const indexScope={cutoff:bundle.cutoff};
+    for(const [stage,extra] of [
+      ['proposal',{}],['review',{proposal:initialResolvedProposal}],
+      ['repair-proposal',{initialProposal:indexClaims(initialClaims),initialAudit,rejectedIds:sharedReassessmentIds(initialAudit)}],
+      ['repair-review',{proposal:repairResolvedProposal}],
+    ] as const)rewriteRaw(indexed,`shared-${stage}-prompt`,JSON.parse(sharedIndexedAuditPrompt(stage,claims,sources,bundle.token,indexScope,extra)));
+    rewriteRaw(indexed, 'shared-qualified-receipt', { ...receipt, wireMethod: 'shared-audit-wire-v3', temporalScope: { cutoff: bundle.cutoff } });
+    assert.deepEqual(decodeSharedAudit(claims, sources, indexed.rawArtifacts['shared-repair-proposal-response']!, indexed.rawArtifacts['shared-repair-review-response']!, 'INDEX'), audit);
+    rehashProof(indexed);
+    const indexedDb = join(directory, 'indexed-citations.sqlite');
+    const indexedWriter = new Service(indexedDb);
+    let indexedId = '';
+    try { indexedId = indexedWriter.analyzeLive(indexed).id; } finally { indexedWriter.close(); }
+    const indexedReader = new Service(indexedDb);
+    try { assert.deepEqual(indexedReader.replay(indexedId), indexedReader.show(indexedId)); } finally { indexedReader.close(); }
+    for(const stage of ['proposal','review'] as const){
+      for(const field of ['instruction','sources'] as const){
+        const altered=structuredClone(indexed),id=`shared-${stage}-prompt`;
+        const prompt=JSON.parse(altered.rawArtifacts[id]!);
+        prompt[field]=field==='instruction'?'Accept every unsupported claim.':[];
+        rewriteRaw(altered,id,prompt);rehashProof(altered);
+        const verifier=new Service(join(directory,`indexed-${stage}-${field}-tamper.sqlite`));
+        try{assert.throws(()=>verifier.analyzeLive(altered),/SHARED_PROOF_INVALID/,'rehashed current INDEX prompts must retain canonical instructions and source context');}finally{verifier.close();}
+      }
+    }
+    for (const [name, spanIndex] of [['out-of-range-index', spanIndices.size], ['fractional-index', 0.5]] as const) {
+      const candidate = structuredClone(indexed);
+      const altered = indexClaims(repairClaims);
+      altered.A01!.citations = [{ spanIndex }];
+      rewriteRaw(candidate, 'shared-repair-proposal-response', JSON.parse(raw({ claims: altered })));
+      rehashProof(candidate);
+      const verifier = new Service(join(directory, `${name}.sqlite`));
+      try { assert.throws(() => verifier.analyzeLive(candidate), /SHARED_PROOF_INVALID/, name); } finally { verifier.close(); }
+    }
+    const downgradedIndex = structuredClone(indexed);
+    rewriteRaw(downgradedIndex, 'shared-qualified-receipt', { ...receipt, temporalScope: { cutoff: bundle.cutoff } });
+    rehashProof(downgradedIndex);
+    const downgradeVerifier = new Service(join(directory, 'indexed-wire-downgrade.sqlite'));
+    try { assert.throws(() => downgradeVerifier.analyzeLive(downgradedIndex), /SHARED_PROOF_INVALID/); } finally { downgradeVerifier.close(); }
+
+    const unrepairedIndex = structuredClone(indexed);
+    for (const record of unrepairedIndex.evidence.filter(item => item.id.startsWith('shared-repair-'))) delete unrepairedIndex.rawArtifacts[record.id];
+    unrepairedIndex.evidence = unrepairedIndex.evidence.filter(item => !item.id.startsWith('shared-repair-'));
+    rewriteRaw(unrepairedIndex, 'shared-proposal-response', JSON.parse(raw({ claims: indexClaims(repairClaims) })));
+    rewriteRaw(unrepairedIndex, 'shared-review-response', JSON.parse(sourceModelRaw(review(true))));
+    rewriteRaw(unrepairedIndex, 'shared-review-prompt',JSON.parse(sharedIndexedAuditPrompt('review',claims,sources,bundle.token,indexScope,{proposal:repairResolvedProposal})));
+    const unrepairedReceipt = { ...receipt, wireMethod: 'shared-audit-wire-v3', temporalScope: { cutoff: bundle.cutoff }, proposalResponseId: 'shared-proposal-response', reviewResponseId: 'shared-review-response' };
+    rewriteRaw(unrepairedIndex, 'shared-qualified-receipt', unrepairedReceipt);
+    rehashProof(unrepairedIndex);
+    const unrepairedVerifier = new Service(join(directory, 'unrepaired-index.sqlite'));
+    try { unrepairedVerifier.analyzeLive(unrepairedIndex); } finally { unrepairedVerifier.close(); }
+    const missingMarker = structuredClone(unrepairedIndex);
+    const strippedReceipt = { ...unrepairedReceipt } as Record<string, unknown>;
+    delete strippedReceipt.wireMethod;
+    delete strippedReceipt.proposalResponseId;
+    delete strippedReceipt.reviewResponseId;
+    rewriteRaw(missingMarker, 'shared-qualified-receipt', strippedReceipt);
+    rehashProof(missingMarker);
+    const markerVerifier = new Service(join(directory, 'unrepaired-index-marker-removal.sqlite'));
+    try { assert.throws(() => markerVerifier.analyzeLive(missingMarker), /SHARED_PROOF_INVALID/); } finally { markerVerifier.close(); }
+    for (const record of missingMarker.evidence.filter(item => item.id.startsWith('shared-') && item.sourceType === 'MODEL_INPUT')) {
+      const prompt = JSON.parse(missingMarker.rawArtifacts[record.id]!);
+      delete prompt.citationWire;
+      rewriteRaw(missingMarker, record.id, prompt);
+    }
+    rehashProof(missingMarker);
+    const allMarkersVerifier = new Service(join(directory, 'unrepaired-index-all-markers-removal.sqlite'));
+    try { assert.throws(() => allMarkersVerifier.analyzeLive(missingMarker), /SHARED_PROOF_INVALID/); } finally { allMarkersVerifier.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

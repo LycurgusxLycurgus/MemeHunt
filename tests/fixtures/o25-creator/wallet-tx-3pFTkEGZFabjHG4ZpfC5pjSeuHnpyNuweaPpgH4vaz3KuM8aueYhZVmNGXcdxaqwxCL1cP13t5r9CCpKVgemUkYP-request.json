@@ -1,0 +1,1 @@
+{"request": {"method": "getTransaction", "params": ["3pFTkEGZFabjHG4ZpfC5pjSeuHnpyNuweaPpgH4vaz3KuM8aueYhZVmNGXcdxaqwxCL1cP13t5r9CCpKVgemUkYP", {"commitment": "finalized", "encoding": "jsonParsed", "maxSupportedTransactionVersion": 1}]}, "retrievedAt": "2026-10-12T05:00:27.319620+00:00", "http": 200}

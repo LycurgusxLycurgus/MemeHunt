@@ -266,7 +266,10 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
     let simulationProof:Record<string,unknown>|undefined;
     try{
       const rankedOwners=[...(holders?.accounts??[])].filter(a=>BigInt(a.amount)>0n).sort((a,b)=>BigInt(a.amount)>BigInt(b.amount)?-1:BigInt(a.amount)<BigInt(b.amount)?1:0);
-      let candidates=[...new Set([...rankedOwners.map(a=>a.owner).slice(0,20),pool.coinCreator.toBase58()])].filter(a=>a!==PublicKey.default.toBase58()).slice(0,21).map(a=>new PublicKey(a));
+      const observedOwners=[...new Set(rankedOwners.map(a=>a.owner))].slice(0,allowExistingWsol?20:50);
+      let candidates=[...new Set([...observedOwners,...(observedOwners.length<50?[pool.coinCreator.toBase58()]:[])])].filter(a=>a!==PublicKey.default.toBase58()).map(a=>new PublicKey(a));
+      let payerSource='HOLDER_OBSERVATION',payerAccountsEvidenceId='pump-simulation-payers',ataAccountsEvidenceId='pump-simulation-user-accounts';
+      let payerSourceEvidenceIds=holders?.evidenceIds??[];
       let payerInfos=candidates.length?await multiple('pump-simulation-payers',candidates):[];
       let nativeFallback:{user:PublicKey;base:AccountInfo<Buffer>|null;quote:AccountInfo<Buffer>;proof:ExistingWsolProof}|undefined;
       const funded=(a:AccountInfo<Buffer>|null)=>!!a&&!a.executable&&a.owner.equals(PublicKey.default)&&BigInt(a.lamports)>=BigInt(quote.toString())+30_000_000n;
@@ -286,6 +289,8 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
         // Verified protocol configuration supplies public simulation subjects, never user identity.
         const seen=new Set(candidates.map(k=>k.toBase58()));
         candidates=[...globalConfig.protocolFeeRecipients,globalConfig.admin].filter(k=>!k.equals(PublicKey.default)&&!seen.has(k.toBase58())&&!!seen.add(k.toBase58())).slice(0,8);
+        payerSource='VERIFIED_PROTOCOL_CONFIG';payerSourceEvidenceIds=['pump-pool-config','pump-mints-vaults'];
+        payerAccountsEvidenceId='pump-simulation-fallback-payers';ataAccountsEvidenceId='pump-simulation-fallback-user-accounts';
         payerInfos=candidates.length?await multiple('pump-simulation-fallback-payers',candidates):[];selection=await choose('pump-simulation-fallback-user-accounts');
       }
       if(!selection&&!nativeFallback)throw new Error('PUMP_SIMULATION_PAYER_UNAVAILABLE');const user=selection?candidates[selection.index]:nativeFallback!.user;
@@ -364,7 +369,8 @@ async function inspectPumpSwapOnce(token:TokenRef,profile:Profile,controls:Contr
       venue.entryExternalCostUsd=entryFee.add(setup.toString()).div(1e9).mul(price).toFixed();venue.costsReconciled=true;delete errors.execution;
       if(existingWsol)venue.setupMethod='existing-wsol-roundtrip-v1';
       venue.simulation={setupVerified:true,buySucceeded:true,sellSucceeded:true};
-      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString(),...(existingWsol?{existingWsol,initialQuoteRefundLamports:nativeProof!.refund}:{})};
+      simulationProof={method:'SIMULATION_PRE_POST_BALANCES',wireBase64:wire.toString('base64'),staticAccountKeys:keys,payerIndex,baseIndex,quoteIndex,slot:sim.context.slot,evidenceId:'pump-roundtrip-simulation',feeLamports:String(v.fee),setupLamports:setup.toString(),...(existingWsol?{existingWsol,initialQuoteRefundLamports:nativeProof!.refund}:{}),
+        ...(selection?{payerSelection:{source:payerSource,sourceEvidenceIds:payerSourceEvidenceIds,candidateOwners:candidates.map(key=>key.toBase58()),selectedIndex:selection.index,payerAccountsEvidenceId,ataAccountsEvidenceId}}:{})};
     }catch(e){errors.simulation=e instanceof Error&&/^PUMP_/.test(e.message)?e.message:safeRpcCode(e);}
     rawArtifacts['pump-quote-calculation']=JSON.stringify({sdk:inspection.version,pool:poolKey.toBase58(),requestedUsd:profile.sizeUsd,quoteAtomic:quote.toString(),actualEntryAtomic:actualBuy.uiQuote.toString(),acquiredAtomic:buy.base.toString(),exitAtomic:sell.uiQuote.toString(),method:'INDEPENDENT_QUOTES',virtualQuoteReserves:pool.virtualQuoteReserves.toString(),actualQuoteReserve:quoteVault.amount.toString(),slot:stateSlot,...(recovery?{nativeUsd:solUsd,nativePriceEvidenceId:'pump-sol-usd'}:{}),simulationProof});retrievedAt['pump-quote-calculation']=now();inspection.evidenceIds.push('pump-quote-calculation');
     venue.evidenceIds=inspection.evidenceIds.filter(id=>id!=='rpc-genesis'&&id!=='pump-pool-config'&&!['pump-program','pump-program-data','pump-simulation-payers','pump-simulation-fallback-payers','pump-simulation-user-accounts'].includes(id));

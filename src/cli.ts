@@ -19,6 +19,7 @@ import {
   type Profile,
   type TokenRef,
 } from './domain/contracts.js';
+import { collectIndexedCreatorPosition,replayIndexedCreatorPosition } from './providers/indexed-creator-position.js';
 import { probeDexScreener } from './providers/dexscreener.js';
 import { decodeSolanaAddress, inspectSolanaRpc } from './providers/solana.js';
 
@@ -59,7 +60,7 @@ const knownErrorCodes = new Set([
   'CASE_NOT_FOUND', 'TOKEN_CASE_MISMATCH', 'NO_ACTIVE_THESIS', 'NO_THESIS_AT_CUTOFF',
   'INVALID_EPISODE_TIMELINE', 'EPISODE_NOT_FOUND', 'SNAPSHOT_NOT_FOUND', 'SNAPSHOT_HASH_MISMATCH',
   'REPLAY_RESULT_MISMATCH', 'POSITION_NOT_FOUND', 'POSITION_ALREADY_EXISTS', 'IDEMPOTENCY_CONFLICT',
-  'JOURNAL_LIMIT', 'BACKUP_TARGET_EXISTS', 'INVALID_SUCCESSOR_TIME', 'SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR',
+  'JOURNAL_LIMIT', 'BACKUP_TARGET_EXISTS', 'SUCCESSOR_PLAN_BASIS_REQUIRED', 'EXIT_PROOFS_REQUIRE_REASSESSMENT', 'FUTURE_EXIT_PROOF', 'INVALID_SUCCESSOR_TIME', 'SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR',
   'PROVIDER_EMPTY_RESPONSE', 'INVALID_SEMANTIC_PACKET', 'HOSTED_SEMANTIC_DISABLED', 'GEMINI_KEY_MISSING',
   'GEMINI_JSON', 'DEX_SHAPE', 'NONFINITE_NUMBER', 'UNSERIALIZABLE_VALUE', 'PREDICATE_TYPE',
   'PREDICATE_NUMBER', 'PREDICATE_LIMIT', 'PREDICATE_EMPTY', 'PREDICATE_SHAPE', 'PREDICATE_UNIT',
@@ -127,7 +128,7 @@ const rpcRecovery = (code: string): string => {
 };
 
 export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<number> {
-  if(argv[0]&&!['analyze','reassess','help','profile','config','research','doctor','market','show','explain','replay','diff','case','thesis','position','journal','backup','capabilities'].includes(argv[0])&&!argv[0].startsWith('-'))argv=['analyze',...argv];
+  if(argv[0]&&!['creator-position','creator-position-replay','analyze','reassess','help','profile','config','research','doctor','market','show','explain','replay','diff','case','thesis','position','journal','backup','capabilities'].includes(argv[0])&&!argv[0].startsWith('-'))argv=['analyze',...argv];
   const env = runtime.env ?? process.env;
   const stdout = runtime.stdout ?? ((text: string) => { process.stdout.write(text); });
   const stderr = runtime.stderr ?? ((text: string) => { process.stderr.write(text); });
@@ -149,6 +150,12 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
     const requestedChecklist=flagValue(argv,'checklist');
     if(requestedChecklist&&!requestedChecklist.startsWith('--')&&!['entry','management'].includes(requestedChecklist))throw new CliError('INVALID_CHECKLIST','Choose entry or management.');
+    if(cmd==='creator-position'||cmd==='creator-position-replay'){
+      if(cmd==='creator-position-replay'){output(replayIndexedCreatorPosition(fileJson(flagValue(argv,'file'))));return 0;}
+      const mint=argv[1];if(!mint||mint.startsWith('--'))throw new CliError('INVALID_SOLANA_ADDRESS','Provide a Solana mint.');
+      if(!env.SOLANA_TRACKER_API_KEY)throw new CliError('SOLANA_TRACKER_KEY_MISSING','Configure SOLANA_TRACKER_API_KEY privately. This lookup reads provider-reported USD positions and opens no database.');
+      output(await collectIndexedCreatorPosition(mint,env.SOLANA_TRACKER_API_KEY,runtime.fetcher??fetch,runtime.now));return 0;
+    }
     if (cmd === 'capabilities') {
       output({
         chains: ['solana', 'bsc', 'base', 'robinhood'],
@@ -162,9 +169,13 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
+        creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
+        a12Candidates: '--advisory --a12-candidates FILE imports a raw-source-bound independently reviewed factual candidate catalog and quotes the canonical PumpSwap index0 quote-verified route scope for every member. No other-venue or simulated execution claim.',
+        creatorHistory: '--partial --advisory --creator-history explicitly permits the bounded TinyFish Pump creator page, DEX JSON recovery and public creator history for Solana; needs TINYFISH_API_KEY, uses no Gemini.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
         other: 'Use --bundle for offline fixture/import analysis; reassess requires --bundle.',
         networkCheck: 'doctor --network makes one bounded mainnet RPC check; no database, account lookup, or hosted providers. Plain doctor stays offline.',
@@ -214,6 +225,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         networkCheck: 'Use doctor --network for one mainnet RPC connectivity check; no snapshot or hosted calls.',
         tinyfishKeyPresent: !!env.TINYFISH_API_KEY,
         geminiKeyPresent: !!env.GEMINI_API_KEY,
+        solanaTrackerKeyPresent: !!env.SOLANA_TRACKER_API_KEY,
         fullPassKeysPresent: missing.length === 0,
         fullPassMissingKeys: missing,
         fullPassApproval: '--full or interactive y/yes per analysis run',
@@ -236,6 +248,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
+      if(hasFlag(argv,'creator-history')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Creator history is a live analyze mode; use --partial --advisory.');
       if (fullRequested && partialRequested) throw new Error('ANALYSIS_MODES_CONFLICT');
       if ((fullRequested || partialRequested) && (cmd === 'reassess' || hasBundle)) throw new Error('MODE_FLAG_ONLY_FOR_LIVE');
       if (hasProfile && (cmd === 'reassess' || hasBundle)) throw new Error('PROFILE_ONLY_FOR_LIVE');
@@ -279,6 +292,10 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const token = parseToken({ chain, address:chain==='solana'?argv[1]:argv[1].toLowerCase() });
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
+        if(flagValue(argv,'a12-candidates')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A12_ADVISORY_REQUIRED','Use --a12-candidates FILE with --advisory for a Solana address.');
+        const creatorHistory=hasFlag(argv,'creator-history');
+        if(creatorHistory&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Use --creator-history with --partial --advisory for a Solana address.');
+        if(creatorHistory&&!env.TINYFISH_API_KEY)throw new CliError('TINYFISH_KEY_MISSING','Creator history requires TINYFISH_API_KEY for the bounded official Pump page fetch.');
         const parsedProfile = hasProfile ? profileSchema.safeParse(fileJson(profilePath)) : undefined;
         if (parsedProfile && !parsedProfile.success) throw new Error('INVALID_PROFILE');
         let profile = parsedProfile?.success ? parsedProfile.data : saved?.profile??starterConfig().profile;
@@ -312,7 +329,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
             ...(missing.length ? [`Full mode is missing: ${missing.join(', ')}.`, localKeySetup, keySetupInstructions(missing)] : []),
           ].join('\n'));
         }
-        if (partialRequested) stderr('PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
+        if (partialRequested) stderr(creatorHistory?'CREATOR_HISTORY_MODE: --creator-history approves the bounded TinyFish Pump creator page and DEX JSON recovery plus public RPC/DEX history; Gemini is skipped.\n':'PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
         if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini for this analysis.\n');
         if(!saved&&!hasProfile){
           let initial=starterConfig();
@@ -326,10 +343,14 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         if(active&&explicitThesis)stderr('FROZEN_THESIS: management uses the saved episode. Use thesis successor to change it explicitly.\n');
         const live = await collectLiveToken(token, {
           profile,
+          advisoryEnabled:hasFlag(argv,'advisory'),
+          ...(flagValue(argv,'a12-candidates')?{a12CandidateSet:fileJson(flagValue(argv,'a12-candidates')) as import('./providers/advisory-exit-capacity-custom.js').A12CandidateSet}:{}),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
-          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : {}),
+          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : creatorHistory?{tinyfishKey:env.TINYFISH_API_KEY!}:{}),
+          ...(hasFlag(argv,'advisory') && env.HELIUS_API_KEY ? { heliusKey: env.HELIUS_API_KEY } : {}),
+          ...(hasFlag(argv,'advisory') && env.SOLANA_TRACKER_API_KEY ? { solanaTrackerKey: env.SOLANA_TRACKER_API_KEY } : {}),
           semanticEnabled: fullApproved,
           fetcher: runtime.fetcher ?? fetch,
           ...(runtime.now ? { now: runtime.now } : {}),
@@ -352,7 +373,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     if (cmd === 'diff') { service = new Service(flagValue(argv, 'db')); output(service.diff(argv[1] ?? '', argv[2] ?? '')); return 0; }
     if (cmd === 'case' && argv[1] === 'show') { service = new Service(flagValue(argv, 'db')); output(service.showCase(argv[2] ?? '')); return 0; }
     if (cmd === 'case' && argv[1] === 'close') { service = new Service(flagValue(argv, 'db')); service.closeCase(argv[2] ?? ''); output({ closed: argv[2] }); return 0; }
-    if (cmd === 'thesis' && argv[1] === 'successor') { service = new Service(flagValue(argv, 'db')); output(service.successor(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as any, (runtime.now ?? (() => new Date().toISOString()))())); return 0; }
+    if (cmd === 'thesis' && argv[1] === 'successor') { service = new Service(flagValue(argv, 'db')); output(service.successor(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as any, (runtime.now ?? (() => new Date().toISOString()))(), ({continue:'CONTINUE','fresh-start':'FRESH_START'} as const)[flagValue(argv,'basis') as 'continue'|'fresh-start'])); return 0; }
     if (cmd === 'position' && argv[1] === 'record') { service = new Service(flagValue(argv, 'db')); output(service.recordPosition(fileJson(flagValue(argv, 'file')) as PositionRecord)); return 0; }
     if (cmd === 'position' && argv[1] === 'event') { service = new Service(flagValue(argv, 'db')); output(service.appendPositionEvent(argv[2] ?? '', fileJson(flagValue(argv, 'file')) as PositionEvent)); return 0; }
     if (cmd === 'journal') { service = new Service(flagValue(argv, 'db')); service.journal(argv[1] ?? '', String(flagValue(argv, 'text') ?? '')); output({ saved: true }); return 0; }
@@ -371,7 +392,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   try {
     const envPath = resolve(process.cwd(), '.env');
     if (existsSync(envPath)) process.loadEnvFile(envPath);
-    void runCli(process.argv.slice(2)).then(code => { if (code !== 0) process.exitCode = code; });
+    const keepAlive=setInterval(()=>{},1000);
+    try { process.exitCode=await runCli(process.argv.slice(2)); } finally { clearInterval(keepAlive); }
   } catch {
     process.stderr.write('ENV_FILE_ERROR: Could not load the local .env file.\n');
     process.exitCode = 2;

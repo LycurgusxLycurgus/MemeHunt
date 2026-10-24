@@ -45,7 +45,7 @@ test('future thesis successor cannot change historical reassessment and remains 
     assert.equal(before.result.thesisState, 'INVALIDATED');
     assert.equal(before.result.proposal, 'EXIT_REVIEW');
 
-    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2);
+    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2, 'CONTINUE');
     assert.equal(service.caseFor(entry.token)?.episodeId, successor.id);
     assert.deepEqual(service.episode(initialEpisode.id), initialEpisode);
 
@@ -83,8 +83,8 @@ test('successive episodes resolve intermediate cutoffs to the matching thesis', 
     const initialId = service.caseFor(entry.token)?.episodeId;
     assert.ok(initialId);
 
-    const second = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2);
-    const third = service.successor(entry.caseId, thesisInvalidatedByO03(true), JAN_3);
+    const second = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2, 'CONTINUE');
+    const third = service.successor(entry.caseId, thesisInvalidatedByO03(true), JAN_3, 'CONTINUE');
 
     const firstPeriod = service.reassess(entry.caseId, bundleAt('2026-01-01T12:00:00.000Z'));
     const secondPeriod = service.reassess(entry.caseId, bundleAt('2026-01-02T12:00:00.000Z'));
@@ -141,7 +141,7 @@ test('successor ordering compares instants and rejected successors leave history
   try {
     const entry = service.analyze(bundleAt(JAN_1, illustrativeFixtureThesis));
     const offsetSuccessorAt = '2025-12-31T20:00:00-05:00';
-    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), offsetSuccessorAt);
+    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), offsetSuccessorAt, 'CONTINUE');
 
     const beforeSuccessor = service.reassess(entry.caseId, bundleAt('2026-01-01T00:30:00.000Z'));
     const atSuccessor = service.reassess(entry.caseId, bundleAt(offsetSuccessorAt));
@@ -154,7 +154,7 @@ test('successor ordering compares instants and rejected successors leave history
 
     const rejectedTimes = ['2026-01-01T01:00:00.000Z', '2026-01-01T00:59:59.000Z'];
     for (const at of rejectedTimes) {
-      assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), at), {
+      assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), at, 'CONTINUE'), {
         message: 'SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR',
       });
       assert.equal(service.caseFor(entry.token)?.episodeId, successor.id);
@@ -165,12 +165,12 @@ test('successor ordering compares instants and rejected successors leave history
       assert.deepEqual(service.episode(successor.id), successor);
     }
 
-    assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), 'not-a-time'), {
+    assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), 'not-a-time', 'CONTINUE'), {
       message: 'INVALID_SUCCESSOR_TIME',
     });
     assert.equal(service.caseFor(entry.token)?.episodeId, successor.id);
 
-    const later = service.successor(entry.caseId, thesisInvalidatedByO03(true), '2026-01-01T01:00:01.000Z');
+    const later = service.successor(entry.caseId, thesisInvalidatedByO03(true), '2026-01-01T01:00:01.000Z', 'CONTINUE');
     assert.equal(later.supersedesEpisodeId, successor.id);
     assert.equal(service.caseFor(entry.token)?.episodeId, later.id);
   } finally {
@@ -210,7 +210,7 @@ test('legacy non-increasing episode timeline fails closed without changing saved
     assert.throws(() => reopened.reassess(entry.caseId, bundleAt('2026-01-01T12:00:00.000Z')), {
       message: 'INVALID_EPISODE_TIMELINE',
     });
-    assert.throws(() => reopened.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_3), {
+    assert.throws(() => reopened.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_3, 'CONTINUE'), {
       message: 'INVALID_EPISODE_TIMELINE',
     });
     assert.deepEqual(reopened.show(entry.id), entry);
@@ -227,11 +227,11 @@ test('closed cases reject new historical management while saved snapshots still 
     const entry = service.analyze(bundleAt(JAN_1, illustrativeFixtureThesis));
     const oldBundle = bundleAt('2026-01-01T12:00:00.000Z');
     const management = service.reassess(entry.caseId, oldBundle);
-    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2);
+    const successor = service.successor(entry.caseId, thesisInvalidatedByO03(false), JAN_2, 'CONTINUE');
 
     service.closeCase(entry.caseId);
     assert.throws(() => service.reassess(entry.caseId, oldBundle), { message: 'NO_ACTIVE_THESIS' });
-    assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), JAN_3), { message: 'NO_ACTIVE_THESIS' });
+    assert.throws(() => service.successor(entry.caseId, thesisInvalidatedByO03(true), JAN_3, 'CONTINUE'), { message: 'NO_ACTIVE_THESIS' });
     assert.equal(service.caseFor(entry.token)?.episodeId, successor.id);
     assert.deepEqual(service.show(management.id), management);
     assert.deepEqual(service.replay(management.id), management);

@@ -1,11 +1,13 @@
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { metadataPda, MPL_TOKEN_METADATA_PROGRAM_ID } from '@pump-fun/pump-swap-sdk';
 import { PublicKey } from '@solana/web3.js';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { runCli } from '../src/cli.js';
 import { collectLiveSolana } from '../src/app/live.js';
@@ -216,7 +218,8 @@ function mockPublicProviders(fetchValue: unknown = { results: [{
 async function invoke(argv: string[], runtime: Parameters<typeof runCli>[1] = {}, jsonOutput = true) {
   const args = [...argv];
   let ownedDirectory: string | undefined;
-  let dbPath = args[args.indexOf('--db') + 1];
+  const dbIndex = args.indexOf('--db');
+  let dbPath = dbIndex < 0 ? undefined : args[dbIndex + 1];
   if (!dbPath) {
     ownedDirectory = temporaryDirectory();
     dbPath = join(ownedDirectory, 'isolated.sqlite');
@@ -2290,7 +2293,7 @@ test('live CLI reassessment selects the frozen thesis episode applicable at its 
       service.successor(caseId, {
         ...illustrativeFixtureThesis,
         invalidation: [{ op: 'eq', feature: 'O03', value: false, unit: 'bool' }],
-      }, '2026-09-30T00:00:00.000Z');
+      }, '2026-09-30T00:00:00.000Z', 'CONTINUE');
     } finally {
       service.close();
     }
@@ -2311,8 +2314,64 @@ test('live CLI reassessment selects the frozen thesis episode applicable at its 
     assert.equal(second.checklistKind, 'MANAGEMENT');
     assert.notEqual(second.episodeId, first.episodeId);
     const reopened = new Service(dbPath);
-    try { assert.equal(reopened.showCase(caseId!).episodeId, second.episodeId); } finally { reopened.close(); }
+    try {
+      assert.equal(reopened.showCase(caseId!).episodeId, second.episodeId);
+      const saved=JSON.parse(afterSuccessor.stdout);
+      assert.deepEqual(reopened.replay(saved.id),saved);
+      const db=new DatabaseSync(dbPath);
+      try { const row=db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id) as {semantic:string};assert.equal(JSON.parse(row.semantic).policyVersion,'thesis-management-v8'); } finally {db.close();}
+    } finally { reopened.close(); }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('creator-history authorizes bounded creator and DEX recovery fetches and rejects missing mode/key before collection',async()=>{
+ const directory=temporaryDirectory(),dbPath=join(directory,'creator-history.sqlite');
+ const isolated=(args:string[],runtime:Parameters<typeof runCli>[1])=>invoke([...args,'--db',dbPath,'--config',join(directory,'config.json')],runtime);
+ try{
+ const mock=mockPublicProviders(undefined,{accountValue:{owner:TOKEN_2022_PROGRAM,data:{program:'spl-token-2022',parsed:{type:'mint',info:{supply:'5000000',decimals:6,mintAuthority:null,freezeAuthority:null}}}}}),urls:string[]=[],fetcher:typeof fetch=async(input,init)=>{
+  const url=String(input);urls.push(url);
+  if(url.includes('api.fetch.tinyfish.ai'))return new Response(JSON.stringify({results:[],errors:[]}));
+  assert.ok(!url.includes('generativelanguage.googleapis.com'));return mock.fetcher(input,init);
+ };
+ for(const args of [[MINT,'--partial','--creator-history'],[MINT,'--full','--advisory','--creator-history']]){
+  const result=await isolated(args,{env:{TINYFISH_API_KEY:'test-key'},fetcher});assert.equal(result.exitCode,2);assert.match(result.stderr,/CREATOR_HISTORY_MODE_REQUIRED/);
+ }
+ const missing=await isolated([MINT,'--partial','--advisory','--creator-history'],{env:{},fetcher});assert.equal(missing.exitCode,2);assert.match(missing.stderr,/TINYFISH_KEY_MISSING/);assert.equal(urls.length,0);
+ const result=await isolated([MINT,'--partial','--advisory','--creator-history'],{env:{TINYFISH_API_KEY:'test-key'},fetcher});
+ assert.equal(result.exitCode,0,result.stderr);assert.match(result.stderr,/CREATOR_HISTORY_MODE/);
+ assert.equal(urls.filter(url=>url.includes('api.fetch.tinyfish.ai')).length,2);
+ assert.equal(JSON.parse(result.stdout).details.advisory.metrics.find((m:any)=>m.id==='S15').quality,'MISSING');
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('CLI helper isolates omitted database and config flags from operator defaults',async()=>{
+ // Exercise the actual helper and production CLI in a separate process: a regression
+ // may touch only these sandbox sentinels, never the developer's default database.
+ if(process.env.MEMEHUNTER_CLI_ISOLATION_PROBE==='1'){
+  const mock=mockPublicProviders();
+  const result=await invoke([MINT,'--partial'],{env:{},fetcher:mock.fetcher});
+  assert.equal(result.exitCode,0,result.stderr);
+  assert.equal(JSON.parse(result.stdout).analysisKind,'LIVE');
+  process.stdout.write('CLI_ISOLATION_PROBE_EXECUTED\n');
+  return;
+ }
+ const directory=temporaryDirectory(),database='operator database sentinel',config='operator config sentinel';
+ try{
+  mkdirSync(join(directory,'.data'));
+  writeFileSync(join(directory,'.data','dd.sqlite'),database);
+  writeFileSync(join(directory,'config.json'),config);
+  const childEnv:NodeJS.ProcessEnv={...process.env,MEMEHUNTER_CLI_ISOLATION_PROBE:'1'};
+  delete childEnv.NODE_TEST_CONTEXT;
+  const child=spawnSync(process.execPath,['--test','--test-name-pattern=^CLI helper isolates omitted database and config flags from operator defaults$',fileURLToPath(import.meta.url)],{
+   cwd:directory,env:childEnv,encoding:'utf8',timeout:30_000,
+  });
+  assert.equal(child.status,0,`${child.stdout}\n${child.stderr}`);
+  assert.match(child.stdout,/CLI_ISOLATION_PROBE_EXECUTED/,'the child must actually execute the CLI probe');
+  assert.equal(readFileSync(join(directory,'.data','dd.sqlite'),'utf8'),database);
+  assert.equal(readFileSync(join(directory,'config.json'),'utf8'),config);
+  assert.deepEqual(readdirSync(join(directory,'.data')),['dd.sqlite']);
+  assert.deepEqual(readdirSync(directory).sort(),['.data','config.json']);
+ }finally{rmSync(directory,{recursive:true,force:true});}
 });
