@@ -174,7 +174,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
-        a12Candidates: '--advisory --a12-candidates FILE imports a raw-source-bound independently reviewed factual candidate catalog and quotes the same canonical WSOL PumpSwap route scope for every member. No other-venue or simulated execution claim.',
+        a12Candidates: '--advisory --a12-candidates FILE imports a raw-source-bound independently reviewed factual candidate catalog and quotes the canonical PumpSwap index0 quote-verified route scope for every member. No other-venue or simulated execution claim.',
         creatorHistory: '--partial --advisory --creator-history explicitly permits the bounded TinyFish Pump creator page, DEX JSON recovery and public creator history for Solana; needs TINYFISH_API_KEY, uses no Gemini.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
         other: 'Use --bundle for offline fixture/import analysis; reassess requires --bundle.',
@@ -344,7 +344,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         const live = await collectLiveToken(token, {
           profile,
           advisoryEnabled:hasFlag(argv,'advisory'),
-          ...(flagValue(argv,'a12-candidates')?{a12CandidateSet:fileJson(flagValue(argv,'a12-candidates')) as import('./providers/advisory-exit-capacity.js').A12CandidateSet}:{}),
+          ...(flagValue(argv,'a12-candidates')?{a12CandidateSet:fileJson(flagValue(argv,'a12-candidates')) as import('./providers/advisory-exit-capacity-custom.js').A12CandidateSet}:{}),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),

@@ -191,7 +191,7 @@ const rehash=(b:{evidence:Array<{id:string;contentHash:string}>;rawArtifacts:Rec
 
 test('live collection persists a KNOWN creator inventory O24 through Service and rejects removed, downgraded, duplicated, extra, moved, rescoped and claimed receipts',async()=>{
  const bundle=await live(),proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,o24=facts.metrics.find(m=>m.id==='O24')!,data=o24.data as any;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v33','advisory-measurements-v32']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v34','advisory-measurements-v33']);
  assert.deepEqual([facts.metrics.find(m=>m.id==='A30')!.quality,facts.metrics.find(m=>m.id==='S13')!.quality],['KNOWN','KNOWN']);
  assert.deepEqual(Object.keys(proof.creatorInventory.artifactIds),['creator-ata-head','creator-ata-page-0',`creator-tx-${ataSig}`,'creator-owner-accounts','creator-wallet-page-0']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-inventory');
@@ -227,7 +227,7 @@ test('live collection persists a KNOWN creator inventory O24 through Service and
    assert.throws(()=>writer.analyzeLive(unhashed),/ARTIFACT_HASH_OR_SIZE/);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v30');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v31');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
