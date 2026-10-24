@@ -9,7 +9,7 @@ const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Construct a proof27 test fixture from a small exhausted proof28 index, dropping only its new admission receipt. Never used for real evidence. */
 export function legacyDenseWindowBundle<B extends LiveBundle>(fresh:B):{bundle:B;proof:any}{
  const bundle=structuredClone(fresh),raw=bundle.rawArtifacts as Record<string,string>,proof=JSON.parse(raw['advisory-derivation']!);
- if(proof.method!=='advisory-provenance-v28'&&proof.method!=='advisory-provenance-v30'&&proof.method!=='advisory-provenance-v31'&&proof.method!=='advisory-provenance-v32')return{bundle,proof};
+ if(proof.method!=='advisory-provenance-v28'&&proof.method!=='advisory-provenance-v30'&&proof.method!=='advisory-provenance-v31'&&proof.method!=='advisory-provenance-v32'&&proof.method!=='advisory-provenance-v33')return{bundle,proof};
  for(const [key,request] of Object.entries(proof.window.requests) as Array<[string,Request]>){
   const id=proof.window.artifactIds[key] as string;
   if(key==='window-pool-check'){
@@ -21,6 +21,7 @@ export function legacyDenseWindowBundle<B extends LiveBundle>(fresh:B):{bundle:B
    request.params[1]={...request.params[1],limit:256};bundle.evidence.find(e=>e.id===id)!.scope={request};
   }
  }
+ if(proof.exitCapacity)throw Error('LEGACY_CAPACITY_SOURCE');delete proof.exitCapacity;
  proof.method='advisory-provenance-v27';raw['advisory-derivation']=JSON.stringify(proof);bundle.evidence.find(e=>e.id==='advisory-derivation')!.contentHash=sha(raw['advisory-derivation']);
  return{bundle,proof};
 }

@@ -95,7 +95,7 @@ async function live(priorRole?:ReturnType<typeof roleReceipts>,completeWallet=fa
 }
 test('proof30 owns native accounting receipts and Service recomputes S15 evidence without promoting incomplete scope; rejects forgeries/downgrades',async()=>{
  const b=await live(),p=JSON.parse(b.rawArtifacts['advisory-derivation']!),s15=b.details!.advisory!.metrics.find(m=>m.id==='S15')!;
- assert.equal(p.method,'advisory-provenance-v32');assert.equal(Object.keys(p.creatorAccounting.requests).length,10);assert.equal(s15.quality,'MISSING');assert.equal(s15.reasonCode,'S15_COMPLETE_CREATOR_COVERAGE_REQUIRED');assert.equal((s15.data as any).nativeQuoteAccounting.records.length,6);
+ assert.equal(p.method,'advisory-provenance-v33');assert.equal(Object.keys(p.creatorAccounting.requests).length,10);assert.equal(s15.quality,'MISSING');assert.equal(s15.reasonCode,'S15_COMPLETE_CREATOR_COVERAGE_REQUIRED');assert.equal((s15.data as any).nativeQuoteAccounting.records.length,6);
  const run=(x:typeof b,proof:any)=>reconstructAdvisory(token,cutoff,x.details!.baseline,x.evidence,x.rawArtifacts,proof,x.thesis??null,x.features);
  assert.deepEqual(run(b,p),b.details!.advisory);
  assert.throws(()=>run(b,{...p,method:'advisory-provenance-v28'}),/ADVISORY_PROOF_INVALID/);
@@ -166,7 +166,7 @@ test('missing canonical index cannot report economics-only unresolved despite a 
 
 test('proof31 integrates Helius route ledger into S15, keeps unallocated costs separate and persists/replays exact raw-derived facts',async()=>{
  const b=await live(roleReceipts(),true,0,false,true),p=JSON.parse(b.rawArtifacts['advisory-derivation']!),m=b.details!.advisory!.metrics.find(m=>m.id==='S15')!,d=m.data as any;
- assert.equal(p.method,'advisory-provenance-v32');assert.equal(Object.keys(p.creatorRoutes.requests).length,7);assert.equal(d.nativeRouteAccounting.routeCoverageComplete,true);assert.equal(d.nativeRouteAccounting.ledger.grossSellSolLamports,'7571226605');assert.equal(d.nativeRouteAccounting.unallocatedCosts.creatorFailedFees.payerCensusComplete,true);assert.equal(d.completeCreatorPerformance,false);assert.equal(m.quality,'MISSING');assert.equal(m.reasonCode,'S15V2_ACQUISITION_INDEX');assert.equal(JSON.stringify(b).includes('TEST_HELIUS_SECRET'),false);
+ assert.equal(p.method,'advisory-provenance-v33');assert.equal(Object.keys(p.creatorRoutes.requests).length,7);assert.equal(d.nativeRouteAccounting.routeCoverageComplete,true);assert.equal(d.nativeRouteAccounting.ledger.grossSellSolLamports,'7571226605');assert.equal(d.nativeRouteAccounting.unallocatedCosts.creatorFailedFees.payerCensusComplete,true);assert.equal(d.completeCreatorPerformance,false);assert.equal(m.quality,'MISSING');assert.equal(m.reasonCode,'S15V2_ACQUISITION_INDEX');assert.equal(JSON.stringify(b).includes('TEST_HELIUS_SECRET'),false);
  const run=(x:typeof b,proof:any)=>reconstructAdvisory(token,cutoff,x.details!.baseline,x.evidence,x.rawArtifacts,proof,x.thesis??null,x.features);
  assert.deepEqual(run(b,p),b.details!.advisory);
  for(const mutate of [
