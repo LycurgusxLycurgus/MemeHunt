@@ -1,25 +1,27 @@
+import { primaryLeadershipOptions, validateLeadershipPositive, type LeadershipRoutes } from './leadership.js';
+export { primaryLeadershipOptions, validateLeadershipPositive } from './leadership.js';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { PublicKey } from '@solana/web3.js';
 import type { TokenRef } from './contracts.js';
 import { tokenRefSchema } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
-import { requiredComparisonRecoveryParents, normalizeAttentionSearchUrl, reconstructOriginAcquisition, entryEvidenceScope, type AttentionRead } from '../providers/attention.js';
+import { requiredComparisonRecoveryParents, normalizeAttentionSearchUrl, reconstructOriginAcquisition, entryEvidenceScope, terminalPostScope, type AttentionRead } from '../providers/attention.js';
 import { parseSourceResponse, sourceSpans } from '../providers/source-model.js';
-import { comparisonSupplementForLead } from '../providers/origin-recovery.js';
+import { comparisonSupplementForLead, verifyOriginAlias } from '../providers/origin-recovery.js';
 
 /** Origin screening excludes later comparison recovery, but requires all original source text. */
 export function originSourceScope(read:AttentionRead,token:TokenRef){
   const acquisition=reconstructOriginAcquisition(read,token),sources=read.sources.filter(s=>acquisition.sourceIds.includes(s.id));
   const searched=[1,2].every(i=>read.queries[i-1]?.includes(token.address));
-  const complete=searched&&acquisition.complete&&sources.some(s=>token.chain==='solana'?s.text.includes(token.address):s.text.toLowerCase().includes(token.address.toLowerCase()));
+  const complete=searched&&acquisition.complete&&sources.some(s=>originEntryCitationAllowed(read,s.id,token,'FAIL'));
   return {method:'bounded-origin-sources-v1' as const,complete,sourceIds:acquisition.sourceIds,acquisition};
 }
 
-export const comparisonCoverageSchema=z.object({method:z.literal('required-comparison-evidence-v1'),sourceIds:z.array(z.string()).max(32),sourceRequirements:z.array(z.object({sourceId:z.string(),obligation:z.enum(['REQUIRED','OPTIONAL_UNUSABLE_SUPPLEMENT']),parentLeadIds:z.array(z.string()).max(32),reasons:z.array(z.string()).max(12)}).strict()).max(32),batches:z.array(z.object({batch:z.number().int().positive(),sourceIds:z.array(z.string()).max(8),proposalResponseId:z.string(),reviewResponseId:z.string(),rawComplete:z.boolean(),effectiveComplete:z.boolean(),blockingSourceIds:z.array(z.string()).max(8)}).strict()).max(16),finalReviewResponseId:z.string(),complete:z.boolean()}).strict();
+export const comparisonCoverageSchema=z.object({method:z.literal('required-comparison-evidence-v1'),sourceIds:z.array(z.string()).max(64),sourceRequirements:z.array(z.object({sourceId:z.string(),obligation:z.enum(['REQUIRED','OPTIONAL_UNUSABLE_SUPPLEMENT']),parentLeadIds:z.array(z.string()).max(32),reasons:z.array(z.string()).max(12)}).strict()).max(64),batches:z.array(z.object({batch:z.number().int().positive(),sourceIds:z.array(z.string()).max(8),proposalResponseId:z.string(),reviewResponseId:z.string(),rawComplete:z.boolean(),effectiveComplete:z.boolean(),blockingSourceIds:z.array(z.string()).max(8)}).strict()).max(16),finalReviewResponseId:z.string(),complete:z.boolean()}).strict();
 export type ComparisonCoverage=z.output<typeof comparisonCoverageSchema>;
 
-const comparisonPublicSupportV1Schema=z.object({method:z.literal('comparison-public-support-v1'),criterion:z.literal('EXACT_TOKEN_REPRESENTATION_BINDING'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).min(1).max(5),leadIds:z.array(z.string()).max(32),sourceIds:z.array(z.string()).max(32),batchIds:z.array(z.number().int().positive()).max(16),proposalResponseId:z.literal('attention-comparison-support-proposal-response'),reviewResponseId:z.literal('attention-comparison-final-review-response'),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()}).strict();
+const comparisonPublicSupportV1Schema=z.object({method:z.literal('comparison-public-support-v1'),criterion:z.literal('EXACT_TOKEN_REPRESENTATION_BINDING'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).min(1).max(5),leadIds:z.array(z.string()).max(32),sourceIds:z.array(z.string()).max(64),batchIds:z.array(z.number().int().positive()).max(16),proposalResponseId:z.literal('attention-comparison-support-proposal-response'),reviewResponseId:z.literal('attention-comparison-final-review-response'),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()}).strict();
 const comparisonTargetSummarySchema=z.object({method:z.literal('comparison-target-context-v1'),mode:z.enum(['SUPPORTED_NARRATIVE','REVIEWED_NARRATIVE_SUPPORT_GAP','UNRESOLVED']),narrativeClaimIds:z.array(z.string()).max(5),narrativeSupportReceiptId:z.literal('attention-narrative-public-support').nullable()}).strict();
 export const comparisonLeadPublicScopeSchema=z.object({leadId:z.string(),status:z.enum(['REVIEWED','UNRESOLVED']),basis:z.enum(['ORIGINAL_COMPLETE','MATCHED_ENTITY_RECOVERY','REVIEWED_MARKET_RECOVERY','NONE']),role:z.enum(['PROJECT_OR_PUBLICATION','MARKET_OR_INDEX_RECORD','UNRESOLVED']),blocker:z.enum(['NONE','MATERIAL_ASSOCIATION_CONFLICT','MISSING_NECESSARY_CONTEXT','INCOMPLETE_COLLECTION_OR_REVIEW']),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).min(1).max(5),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()}).strict();
 export type ComparisonLeadPublicScope=z.output<typeof comparisonLeadPublicScopeSchema>;
@@ -34,15 +36,15 @@ export const comparisonSemanticBlockerSchema=z.discriminatedUnion('kind',[
 ]);
 export const comparisonEntrySchema=z.object({leadRoles:z.record(z.string(),z.object({role:z.enum(['MARKET_OR_INDEX_RECORD','PROJECT_OR_PUBLICATION','UNRESOLVED']),rationale:semanticReview.shape.rationale,descriptorRefs:z.array(entryCitation).min(1).max(3),ownContextRefs:z.array(entryCitation).max(2)}).strict()),sourceSupport:z.record(z.string(),z.object({status:comparisonSourceSupportSchema.shape.status,rationale:semanticReview.shape.rationale,citations:z.array(entryCitation).max(3),blockerProof:comparisonSemanticBlockerSchema.nullable()}).strict()),leadBlockers:z.record(z.string(),comparisonSemanticBlockerSchema.nullable()),grade:z.object({verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:semanticReview.shape.rationale,citations:z.array(entryCitation).min(1).max(5)}).strict()}).strict();
 export const comparisonEntryReviewSchema=z.object({leadRoles:z.record(z.string(),semanticReview),sourceSupport:z.record(z.string(),semanticReview),leadBlockers:z.record(z.string(),semanticReview),grade:semanticReview}).strict();
-const comparisonPublicSupportV4Schema=comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v4'),targetContext:comparisonTargetSummarySchema,leadScopes:z.array(comparisonLeadPublicScopeSchema).max(32),sourceSupport:z.array(comparisonSourceSupportSchema).max(32),bodyObservations:z.array(comparisonBodyObservationSchema).max(32),entry:comparisonEntrySchema,entryReview:comparisonEntryReviewSchema}).strict();
+const comparisonPublicSupportV4Schema=comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v4'),targetContext:comparisonTargetSummarySchema,leadScopes:z.array(comparisonLeadPublicScopeSchema).max(32),sourceSupport:z.array(comparisonSourceSupportSchema).max(64),bodyObservations:z.array(comparisonBodyObservationSchema).max(64),entry:comparisonEntrySchema,entryReview:comparisonEntryReviewSchema}).strict();
 export const binaryEntryDecisionSchema=z.object({verdict:z.enum(['PASS','FAIL']),rationale:semanticReview.shape.rationale,citations:z.array(entryCitation).min(1).max(5)}).strict();
 const comparisonPublicSupportV6Schema=comparisonPublicSupportV4Schema.extend({method:z.literal('comparison-public-support-v6'),researchComplete:z.boolean(),decision:binaryEntryDecisionSchema}).strict();
-export const comparisonPublicSupportSchema=z.union([comparisonPublicSupportV6Schema,comparisonPublicSupportV1Schema,comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v2'),targetContext:comparisonTargetSummarySchema}).strict(),comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v3'),targetContext:comparisonTargetSummarySchema,leadScopes:z.array(comparisonLeadPublicScopeSchema).max(32),sourceSupport:z.array(comparisonSourceSupportSchema).max(32)}).strict(),comparisonPublicSupportV4Schema,comparisonPublicSupportV4Schema.extend({method:z.literal('comparison-public-support-v5')}).strict()]);
+export const comparisonPublicSupportSchema=z.union([comparisonPublicSupportV6Schema,comparisonPublicSupportV1Schema,comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v2'),targetContext:comparisonTargetSummarySchema}).strict(),comparisonPublicSupportV1Schema.extend({method:z.literal('comparison-public-support-v3'),targetContext:comparisonTargetSummarySchema,leadScopes:z.array(comparisonLeadPublicScopeSchema).max(32),sourceSupport:z.array(comparisonSourceSupportSchema).max(64)}).strict(),comparisonPublicSupportV4Schema,comparisonPublicSupportV4Schema.extend({method:z.literal('comparison-public-support-v5')}).strict()]);
 export type ComparisonPublicSupport=z.output<typeof comparisonPublicSupportSchema>;
 
 export const narrativeCriterionSchema=z.enum(['NARRATIVE_DESCRIPTION','EXPLAINABLE_THESIS']);
 const narrativeJudgment=z.object({verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).min(1).max(5),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()}).strict();
-export const narrativePublicSupportSchema=z.object({method:z.literal('narrative-public-support-v1'),scope:z.object({method:z.literal('bounded-origin-sources-v1'),sourceIds:z.array(z.string()).max(32)}).strict(),sourceSupport:z.array(z.object({sourceId:z.string(),status:z.enum(['SUBSTANTIVE_SUPPORT','PUBLIC_SUPPORT_GAP','CONTEXT_ONLY','UNRESOLVED']),criteria:z.array(narrativeCriterionSchema).max(2),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).max(3),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000),inspectionComplete:z.boolean()}).strict()}).strict()).max(32),judgments:z.object({NARRATIVE_DESCRIPTION:narrativeJudgment,EXPLAINABLE_THESIS:narrativeJudgment}).strict(),proposalResponseId:z.literal('attention-narrative-support-proposal-response'),reviewResponseId:z.literal('attention-narrative-support-review-response')}).strict();
+export const narrativePublicSupportSchema=z.object({method:z.literal('narrative-public-support-v1'),scope:z.object({method:z.literal('bounded-origin-sources-v1'),sourceIds:z.array(z.string()).max(64)}).strict(),sourceSupport:z.array(z.object({sourceId:z.string(),status:z.enum(['SUBSTANTIVE_SUPPORT','PUBLIC_SUPPORT_GAP','CONTEXT_ONLY','UNRESOLVED']),criteria:z.array(narrativeCriterionSchema).max(2),rationale:z.string().min(8).max(1000),citations:z.array(z.object({sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).max(3),review:z.object({accepted:z.boolean(),rationale:z.string().min(8).max(1000),inspectionComplete:z.boolean()}).strict()}).strict()).max(64),judgments:z.object({NARRATIVE_DESCRIPTION:narrativeJudgment,EXPLAINABLE_THESIS:narrativeJudgment}).strict(),proposalResponseId:z.literal('attention-narrative-support-proposal-response'),reviewResponseId:z.literal('attention-narrative-support-review-response')}).strict();
 export type NarrativePublicSupport=z.output<typeof narrativePublicSupportSchema>;
 type PublicLeadDecision={accounted:boolean;accounting:{status:string;basis:string;role:string;descriptorRefs?:Array<{sourceId:string;quote:string}>};representation:{status:string;unresolvedKind?:string;citations?:Array<{sourceId:string;quote:string}>};review:Record<string,{accepted:boolean}>};
 /** Collection facts are independent of the model's factual representation verdict. */
@@ -161,11 +163,32 @@ export function narrativeSourceBound(read:AttentionRead,sourceId:string,token:To
   if(!source)return false;
   const names=(text:string)=>token.chain==='solana'?text.includes(token.address):text.toLowerCase().includes(token.address.toLowerCase());
   if(names(source.text))return true;
+  if(read.metadataLinkMethod==='onchain-metadata-v1'&&read.metadataLinks&&read.metadataUri&&read.discoveryUrls?.includes(read.metadataUri)){
+    const parent=read.sources.find(s=>s.kind==='PAGE'&&(s.url===read.metadataUri||read.originRecovery?.aliases.some(a=>a.originUrl===read.metadataUri&&a.sourceId===s.id&&verifyOriginAlias(a,read.sources,read.rawArtifacts))));
+    if(!parent)return false;
+    try{
+      const metadata=JSON.parse(parent.text);
+      if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))return false;
+      if(source.id===parent.id)return true;
+      const canonical=(value:string)=>normalizeAttentionSearchUrl(value);
+      // Only literal links in this token's acquired metadata, not recursive links
+      // or a shared name. This establishes a claimed narrative association only.
+      return Object.values(metadata).some(value=>typeof value==='string'&&canonical(value)!==null&&canonical(value)===canonical(source.url));
+    }catch{return false;}
+  }
   if(!read.metadataLinks||!read.metadataUri||!source.discoveredFrom)return false;
   const parent=read.sources.find(s=>s.url===source.discoveredFrom&&s.url===read.metadataUri&&s.kind==='PAGE'&&read.discoveryUrls?.includes(s.url)&&/\.json(?:[?]|$)/i.test(s.url)&&names(s.text));
   if(!parent)return false;
   const canonical=(value:string)=>{try{const u=new URL(value);return /^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_]+\/status\/\d+/.test(u.pathname)?`https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`:u.toString();}catch{return null;}};
   return [...parent.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].some(m=>canonical(m[0])===canonical(source.url));
+}
+
+/** Metadata may ground an inadequate-origin entry grade, never a positive origin claim. */
+export function originEntryCitationAllowed(read:AttentionRead,sourceId:string,token:TokenRef,verdict:'PASS'|'FAIL'):boolean{
+  const source=read.sources.find(s=>s.id===sourceId);
+  if(!source)return false;
+  const literal=token.chain==='solana'?source.text.includes(token.address):source.text.toLowerCase().includes(token.address.toLowerCase());
+  return literal||verdict==='FAIL'&&read.metadataLinkMethod==='onchain-metadata-v1'&&narrativeSourceBound(read,sourceId,token);
 }
 
 const citation=z.object({sourceId:z.string().min(1),quote:z.string().min(8).max(1000)}).strict();
@@ -281,18 +304,18 @@ export const attentionExplanationSchema=z.object({
 }).strict();
 export const attentionProposalSchema=z.object({
   claims:z.array(z.object({id:z.string().min(1),feature:z.enum(['A01','A02','A03','A04','A05']),value:z.boolean(),summary:z.string().min(8).max(500),citations:z.array(citation).min(1).max(5),explanation:attentionExplanationSchema.optional(),originBasis:z.literal('PUBLIC_EVIDENCE_INADEQUATE').optional()}).strict()).max(5),
-  posts:z.array(z.object({id:z.string().min(1),sourceId:z.string(),quote:z.string().min(8).max(1000),role:z.enum(['CALL','NEWS','JOKE','WARNING','RETROSPECTIVE','PRICE_ONLY','OTHER','UNCLEAR'])}).strict()).max(32),
+  posts:z.array(z.object({id:z.string().min(1),sourceId:z.string(),quote:z.string().min(8).max(1000),role:z.enum(['CALL','NEWS','JOKE','WARNING','RETROSPECTIVE','PRICE_ONLY','OTHER','UNCLEAR'])}).strict()).max(64),
   competitors:z.array(z.object({id:z.string().min(1),token:tokenRefSchema,sourceId:z.string(),quote:z.string().min(8).max(1000)}).strict()).max(10),
 }).strict();
-const legacyEntryDecisionsSchema=z.object({method:z.literal('binary-public-support-v1'),originTraceability:binaryEntryDecisionSchema,leadership:binaryEntryDecisionSchema,inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(32)}).strict();
-export const entryDecisionsSchema=z.discriminatedUnion('method',[legacyEntryDecisionsSchema,legacyEntryDecisionsSchema.extend({method:z.literal('binary-public-support-v2'),representations:binaryEntryDecisionSchema}).strict()]);
+const legacyEntryDecisionsSchema=z.object({method:z.literal('binary-public-support-v1'),originTraceability:binaryEntryDecisionSchema,leadership:binaryEntryDecisionSchema,inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(64)}).strict();
+export const entryDecisionsSchema=z.discriminatedUnion('method',[legacyEntryDecisionsSchema,legacyEntryDecisionsSchema.extend({method:z.literal('binary-public-support-v2'),representations:binaryEntryDecisionSchema}).strict(),legacyEntryDecisionsSchema.extend({method:z.literal('binary-public-support-v3'),representations:binaryEntryDecisionSchema,explainableThesis:binaryEntryDecisionSchema}).strict(),legacyEntryDecisionsSchema.extend({method:z.literal('binary-public-support-v4'),leadership:binaryEntryDecisionSchema.extend({basis:z.enum(['PRIMARY_PUBLIC_SUPPORT','MEASURED_ATTENTION','EVIDENCE_INADEQUACY'])}).strict(),representations:binaryEntryDecisionSchema,explainableThesis:binaryEntryDecisionSchema}).strict()]);
 export const attentionReviewSchema=z.object({
  entryDecisions:entryDecisionsSchema.optional(),
-  decisions:z.array(z.object({id:z.string().min(1),accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()).max(47),
+  decisions:z.array(z.object({id:z.string().min(1),accepted:z.boolean(),rationale:z.string().min(8).max(1000)}).strict()).max(79),
   candidateSet:z.object({complete:z.boolean(),rationale:z.string().min(8).max(1000)}).strict().optional(),
   originRelationship:z.object({status:z.enum(['SUPPORTED','CONTRADICTED','UNKNOWN']),citations:z.array(citation).max(5),rationale:z.string().min(8).max(1000)}).strict().optional(),
-  originScopeReview:z.object({complete:z.boolean(),sourceIds:z.array(z.string()).max(32),rationale:z.string().min(8).max(1000)}).strict().optional(),
-  leadershipScreening:z.union([z.object({method:z.literal('reviewed-public-support-v1'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),sourceIds:z.array(z.string()).max(32),review:reviewAssessment}).strict(),z.object({method:z.literal('reviewed-public-support-v2'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),sourceIds:z.array(z.string()).max(32),review:reviewAssessment.extend({inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(32)}).strict(),originTraceability:z.object({verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),review:reviewAssessment}).strict()}).strict()]).optional(),
+  originScopeReview:z.object({complete:z.boolean(),sourceIds:z.array(z.string()).max(64),rationale:z.string().min(8).max(1000)}).strict().optional(),
+  leadershipScreening:z.union([z.object({method:z.literal('reviewed-public-support-v1'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),sourceIds:z.array(z.string()).max(64),review:reviewAssessment}).strict(),z.object({method:z.literal('reviewed-public-support-v2'),verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),sourceIds:z.array(z.string()).max(64),review:reviewAssessment.extend({inspectionComplete:z.boolean(),sourceIds:z.array(z.string()).max(64)}).strict(),originTraceability:z.object({verdict:z.enum(['INADEQUATE','UNRESOLVED']),rationale:z.string().min(8).max(1000),citations:z.array(citation).min(1).max(5),review:reviewAssessment}).strict()}).strict()]).optional(),
 }).strict();
 /** Completed public screening is separate from the original factual origin claim. */
 export function qualifiedOriginScreen(read:AttentionRead,review:z.output<typeof attentionReviewSchema>,token:TokenRef,cutoff:string){
@@ -307,7 +330,7 @@ export function qualifiedOriginScreen(read:AttentionRead,review:z.output<typeof 
   return screen;
 }
 export function qualifiedBinaryEntryDecisions(read:AttentionRead,review:z.output<typeof attentionReviewSchema>,token:TokenRef,cutoff:string){
- if(read.entryEvidenceMethod){const d=review.entryDecisions,scope=entryEvidenceScope(read,token,cutoff);if(d?.method!=='binary-public-support-v2'||!d.inspectionComplete||!scope.complete||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds))return null;const literal=(c:{sourceId:string;quote:string})=>read.sources.some(s=>s.id===c.sourceId&&s.text.includes(c.quote));if(![d.originTraceability,d.leadership,d.representations].every(g=>g.citations.every(literal)))return null;if(!d.originTraceability.citations.every(c=>scope.originSourceIds.includes(c.sourceId)&&read.sources.some(s=>s.id===c.sourceId&&(token.chain==='solana'?s.text.includes(token.address):s.text.toLowerCase().includes(token.address.toLowerCase())))))return null;return d;}
+ if(read.entryEvidenceMethod){const d=review.entryDecisions,scope=entryEvidenceScope(read,token,cutoff);if(d?.method!==(read.leadershipPositiveMethod==='source-bound-positive-v1'?'binary-public-support-v4':read.entryExecutionMethod==='entry-first-v2'?'binary-public-support-v3':'binary-public-support-v2')||!d.inspectionComplete||!scope.complete||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds))return null;const literal=(c:{sourceId:string;quote:string})=>read.sources.some(s=>s.id===c.sourceId&&s.text.includes(c.quote));if(![d.originTraceability,d.leadership,...('representations' in d?[d.representations]:[]),...('explainableThesis' in d?[d.explainableThesis]:[])].every(g=>g.citations.every(literal)))return null;if(!d.originTraceability.citations.every(c=>scope.originSourceIds.includes(c.sourceId)&&originEntryCitationAllowed(read,c.sourceId,token,d.originTraceability.verdict)))return null;if((d.method==='binary-public-support-v3'||d.method==='binary-public-support-v4')&&!d.explainableThesis.citations.every(c=>narrativeSourceBound(read,c.sourceId,token)))return null;return d;}
 
  const d=review.entryDecisions,scope=originSourceScope(read,token);
  if(!d?.inspectionComplete||!scope.complete||!scope.sourceIds.length||JSON.stringify(scope)!==JSON.stringify(read.originScope)||JSON.stringify(d.sourceIds)!==JSON.stringify(scope.sourceIds)||!comparisonResearchComplete(read,cutoff))return null;
@@ -318,7 +341,7 @@ export function qualifiedBinaryEntryDecisions(read:AttentionRead,review:z.output
  return d;
 }
 const featureIds=['A01','A02','A03','A04','A05','A09','A10','A11','A14','A15','A16','A17'];
-export function deriveAttention(read:AttentionRead,proposal:unknown,review:unknown,token:TokenRef,cutoff:string,evidenceIds:string[],growth=false):BaselineAssessment[]{
+export function deriveAttention(read:AttentionRead,proposal:unknown,review:unknown,token:TokenRef,cutoff:string,evidenceIds:string[],growth=false,entryGroups=false):BaselineAssessment[]{
   const output=new Map<string,BaselineAssessment>();
   const routeData=(id:string,data:unknown)=>id==='A14'&&read.comparisonComplete!==undefined?{
     originRelationship:{status:'UNKNOWN',rationale:'Primary-origin relationship has not been independently qualified.',citations:[]},
@@ -375,13 +398,15 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
   const adequacy=growth&&!entryBlocker&&!candidateComplete?qualifiedComparisonEvidence(read,cutoff,token):null;
   if(adequacy)set('A09',false,{method:'public-representation-screen-v1',evidenceAdequacy:adequacy,scope:'Reviewed inadequate public representation evidence; not a proven competitor or fraud finding'},true);
  const factualComparison=output.get('A09')!;
- const comparisonDecision=growth&&!entryBlocker&&factualComparison.quality!=='KNOWN'?(binary?.method==='binary-public-support-v2'?binary.representations:qualifiedBinaryComparisonDecision(read,cutoff)):null;
+ const comparisonDecision=growth&&!entryBlocker&&factualComparison.quality!=='KNOWN'?(binary&&'representations' in binary?binary.representations:qualifiedBinaryComparisonDecision(read,cutoff)):null;
  if(comparisonDecision)set('A09',comparisonDecision.verdict==='PASS',{method:binary?.method??'binary-public-support-v1',entryDecisionMethod:binary?.method??'binary-public-support-v1',entryCriterion:'CAN-01',decision:comparisonDecision,factualAssessment:{quality:factualComparison.quality,value:factualComparison.projection?.value,data:factualComparison.data},meaning:'Public entry evidence sufficiency; factual representations remain separately qualified.'},true);
   const posts=read.sources.filter(s=>s.kind==='POST'&&(!read.postSampleSourceIds||read.postSampleSourceIds.includes(s.id)));
   const rankingIds=read.comparisonRankingSourceIds??read.comparisonSourceIds;
   const rankingPosts=read.sources.filter(s=>s.kind==='POST'&&rankingIds?.includes(s.id));
   const labels=new Map(p.data.posts.map(post=>[post.sourceId,post]));
-  const allLabeled=labels.size===p.data.posts.length&&posts.every(s=>{const post=labels.get(s.id);if(!post||!s.authorId||!s.publishedAt||!Number.isFinite(Date.parse(s.publishedAt)))return false;const current=Date.parse(s.publishedAt)>=Date.parse(read.start)&&Date.parse(s.publishedAt)<Date.parse(read.end);return !current||post.role!=='UNCLEAR'&&accepted(post.id)&&!!cite(post);})&&p.data.posts.every(post=>sources.get(post.sourceId)?.kind==='POST');
+  const reviewedQualification=read.collectionMethod==='project-context-v2';
+  const roleReviewed=(id:string)=>r.data.decisions.some(decision=>decision.id===id);
+  const allLabeled=labels.size===p.data.posts.length&&posts.every(s=>{const post=labels.get(s.id);if(!post||!s.authorId||!s.publishedAt||!Number.isFinite(Date.parse(s.publishedAt)))return false;const current=Date.parse(s.publishedAt)>=Date.parse(read.start)&&Date.parse(s.publishedAt)<Date.parse(read.end);return reviewedQualification?roleReviewed(post.id)&&!!cite(post):!current||post.role!=='UNCLEAR'&&accepted(post.id)&&!!cite(post);})&&p.data.posts.every(post=>sources.get(post.sourceId)?.kind==='POST');
   const windowValid=Date.parse(read.start)<Date.parse(read.end)&&Date.parse(read.end)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(read.end)<=900000;
   const complete=posts.length>0&&(read.postSampleComplete??read.complete)&&allLabeled&&windowValid;
   const sampleProblems={
@@ -395,7 +420,7 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
   const qualified=originals.filter(s=>{const label=labels.get(s.id);return label&&accepted(label.id)&&['CALL','NEWS','JOKE'].includes(label.role)&&names(label.quote,token);});
   const authors=new Set(qualified.map(s=>s.authorId));
   set('A15',true,{raw:posts.length,originals:originals.length,queries:read.queries,start:read.start,end:read.end,sampleProblems,scope:'bounded web-search post sample'},complete,sampleCode);
-  set('A16',String(qualified.length),{qualified:qualified.length,excluded:originals.filter(s=>!qualified.includes(s)).map(s=>({id:s.id,role:labels.get(s.id)?.role})),sampleProblems,method:'reviewed-original-source-posts-v1'},complete,sampleCode,'count');
+  set('A16',String(qualified.length),{qualified:qualified.length,excluded:originals.filter(s=>!qualified.includes(s)).map(s=>({id:s.id,role:labels.get(s.id)?.role,...(reviewedQualification?{accepted:accepted(labels.get(s.id)?.id??''),reason:accepted(labels.get(s.id)?.id??'')?'NON_QUALIFYING_ROLE':'ROLE_NOT_QUALIFIED'}:{})})),sampleProblems,method:reviewedQualification?'accepted-original-source-posts-v2':'reviewed-original-source-posts-v1'},complete,sampleCode,'count');
   set('A17',String(authors.size),{authors:[...authors],sampleProblems,meaning:'source account IDs; not unique humans'},complete,sampleCode,'count');
   if(growth){
     const start=Date.parse(read.start),end=Date.parse(read.end),mid=start+(end-start)/2;
@@ -429,7 +454,9 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
     const datedPrimary=originCitations.some(ref=>{const s=cite(ref);return s?.kind==='POST'&&s.publishedAt&&Date.parse(s.publishedAt)<=Date.parse(read.end)&&s.authorId&&(primarySources.some(primary=>primary.id===s.id)||primaryAccounts.includes(s.authorId));});
     // A03 carries independently accepted primary provenance; origin review separately judges representation/contestation.
     const primary=factualOrigin.projection?.value===true;
-    const originStatus=originBound&&datedPrimary&&primary?origin!.status:'UNKNOWN';
+    const primaryOptions=read.leadershipPositiveMethod?primaryLeadershipOptions(read,token,cutoff):null;
+    const primaryEligible=!primaryOptions||originCitations.some(c=>primaryOptions.some(o=>o.sourceId===c.sourceId&&o.quote===c.quote&&(o.kind!=='POST'||origin?.status==='CONTRADICTED'||p.data.posts.some(post=>post.sourceId===c.sourceId&&post.quote===c.quote&&accepted(post.id)&&['CALL','NEWS','JOKE'].includes(post.role)))));
+    const originStatus=originBound&&datedPrimary&&primary&&primaryEligible?origin!.status:'UNKNOWN';
     const measuredStatus=rankingKnown?leader&&ties===1?'SUPPORTED':'CONTRADICTED':'UNKNOWN';
     const screening=r.data.leadershipScreening;
     const screened=!entryBlocker&&originStatus!=='SUPPORTED'&&measuredStatus!=='SUPPORTED'&&screening?.verdict==='INADEQUATE'&&screening.review.accepted&&read.originScope?.complete===true&&(read.comparisonComplete===true||!!qualifiedComparisonEvidence(read,cutoff))&&screening.sourceIds.length===read.originScope.sourceIds.length&&new Set(screening.sourceIds).size===screening.sourceIds.length&&screening.sourceIds.every(id=>read.originScope!.sourceIds.includes(id))&&screening.citations.every(ref=>!!cite(ref))&&(screening.method==='reviewed-public-support-v2'?!!publicOrigin:factualOrigin.quality==='KNOWN');
@@ -437,6 +464,18 @@ export function deriveAttention(read:AttentionRead,proposal:unknown,review:unkno
     const originRationale=origin?.status&&origin.status!=='UNKNOWN'&&originStatus==='UNKNOWN'?`Source review proposed ${origin.status.toLowerCase()}, but primary-account, dated-post or exact-contract citation validation is incomplete. ${origin.rationale}`:origin?.rationale??'Primary-origin relationship has not been independently qualified.';
     set('A14',value,{method:'representation-routes-v2',originRelationship:{status:originStatus,citations:originCitations,rationale:originRationale},measuredAttention:{status:measuredStatus,...ranking},...(screened?{leadershipScreening:screening}:{}),basis:originStatus==='SUPPORTED'?'ORIGIN':measuredStatus==='SUPPORTED'?'MEASURED_ATTENTION':screened?'EVIDENCE_INADEQUACY':null},value!==null,'ATT_REPRESENTATION_ROUTES_UNRESOLVED');
   }
- if(binary&&output.get('A14')?.quality!=='KNOWN'){const prior=output.get('A14')!,d=binary.leadership;set('A14',d.verdict==='PASS',{...(prior.data as object),entryDecisionMethod:binary.method,entryCriterion:'CAN-02',decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Public entry evidence sufficiency; factual origin and measured leadership are separate.'},true);}
+ if((binary?.method==='binary-public-support-v3'||binary?.method==='binary-public-support-v4')&&output.get('A05')?.quality!=='KNOWN'){const prior=output.get('A05')!,d=binary.explainableThesis;set('A05',d.verdict==='PASS',{entryDecisionMethod:binary.method,entryCriterion:'NAR-03',summary:`Entry explainable-thesis evidence standard ${d.verdict}: ${d.rationale}`,citations:d.citations,decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Explainable-thesis entry public evidence standard after independent full-source review.'},true);}
+ if(binary&&output.get('A14')?.quality!=='KNOWN'){const prior=output.get('A14')!,d=binary.leadership;const routes:LeadershipRoutes={...(prior.data as LeadershipRoutes),reviewedPosts:p.data.posts.filter(post=>accepted(post.id)&&['CALL','NEWS','JOKE'].includes(post.role)&&!!cite(post)).map(post=>({sourceId:post.sourceId,quote:post.quote}))};if(binary.method!=='binary-public-support-v4'||validateLeadershipPositive(read,token,cutoff,binary.leadership,routes))set('A14',d.verdict==='PASS',{...(prior.data as object),entryDecisionMethod:binary.method,entryCriterion:'CAN-02',decision:d,factualAssessment:{quality:prior.quality,value:prior.projection?.value,data:prior.data},meaning:'Public entry evidence sufficiency; factual origin and measured leadership are separate.'},true);}
+  if(read.postSampleScope?.complete&&binary?.inspectionComplete&&entryEvidenceScope(read,token,cutoff).complete&&JSON.stringify(read.postSampleScope)===JSON.stringify(terminalPostScope(read))){
+    for(const [id,criterion]of [['A15','ATT-01'],['A18','ATT-02']] as const){const a=output.get(id);if(a&&a.quality!=='KNOWN')a.data={method:'entry-evidence-gate-v1',entryCriterion:criterion,verdict:'FAIL',reason:'Complete bounded research and independent inspection left a declared deleted-post gap; the public sample/growth evidence standard is unmet. Actual counts and growth remain unknown.',postSampleScope:read.postSampleScope,factualAssessment:{quality:a.quality,value:a.projection?.value,data:a.data}};}
+  }
+  // A successfully searched and independently inspected empty sample is poor
+  // entry support, not an unfinished review or a claim of global inactivity.
+  const emptySearchComplete=entryGroups&&posts.length===0&&read.postSampleComplete===true&&windowValid&&read.queries.length>=2&&read.queries.some(q=>q.includes(token.address))&&read.queries.every((_,index)=>{
+    try{const packet=JSON.parse(read.rawArtifacts['attention-search-'+(index+1)]);return Array.isArray(packet.results)&&!packet.error&&(!packet.errors||Array.isArray(packet.errors)&&packet.errors.length===0)&&packet.results.every((item:{url?:unknown})=>{if(typeof item?.url!=='string')return false;const url=new URL(item.url);return url.protocol==='https:'&&!(/^(?:www\.)?(?:x|twitter)\.com$/.test(url.hostname)&&/\/status\/\d+/.test(url.pathname));});}catch{return false;}
+  });
+  if(emptySearchComplete&&binary?.inspectionComplete&&entryEvidenceScope(read,token,cutoff).complete){
+    for(const [id,criterion]of [['A15','ATT-01'],['A18','ATT-02']] as const){const a=output.get(id);if(a&&a.quality!=='KNOWN')a.data={method:'entry-evidence-gate-v1',entryCriterion:criterion,verdict:'FAIL',reason:'Successful exact-token bounded searches and independent source inspection did not establish a current post sample. This fails the entry evidence standard; actual global counts and growth remain unknown.',postSampleScope:{method:'reviewed-empty-post-scope-v1',complete:true,sourceIds:[],queries:read.queries},factualAssessment:{quality:a.quality,value:a.projection?.value,data:a.data}};}
+  }
   return [...output.values()];
 }

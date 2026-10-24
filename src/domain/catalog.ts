@@ -141,6 +141,16 @@ export const entryDefinitions: EntryCheckDefinition[] = [
   { checkId: 'ADV-05', role: 'ADVISORY', pillar: 'SHARED', required: false, featureIds: ['C07', 'C08', 'C09', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16'] },
 ];
 
+/** Versioned policy view; the static definitions above remain the legacy manifest. */
+export function entryDefinitionsFor(mandatoryGroups = false): EntryCheckDefinition[] {
+  if (!mandatoryGroups) return entryDefinitions;
+  return entryDefinitions.map(definition => {
+    if (definition.checkId === 'EXE-03') return { ...definition, role: 'HARD_GATE', required: true };
+    if (/^ADV-0[1-5]$/.test(definition.checkId)) return { ...definition, role: 'OPPORTUNITY', required: true };
+    return definition;
+  });
+}
+
 export const managementDefinitions: ManagementCheckDefinition[] = [
   { checkId: 'MG-01', managementRole: 'REQUIRED_EVIDENCE', requiredFor: 'THESIS' },
   { checkId: 'MG-02', managementRole: 'SAFETY', requiredFor: 'THESIS' },

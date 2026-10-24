@@ -11,8 +11,8 @@ const field=z.object({text:z.string().min(1).max(200),citation}).strict();
 const association=z.object({key:z.string().min(1).max(300),citation}).strict();
 export const socialSourceSchema=z.object({id:z.string().min(1),url:z.string().url(),text:z.string().max(120000),publishedAt:timestamp.nullable(),authorId:z.string().nullable(),availableAt:timestamp,kind:z.enum(['POST','PAGE']),discoveredFrom:z.string().optional()}).strict();
 export const socialInputSchema=z.object({
-  schemaVersion:z.literal(1),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(32),start:timestamp,end:timestamp,
-  targetPostIds:z.array(z.string()).max(32),identitySourceIds:z.array(z.string()).max(32),sampleComplete:z.boolean(),identityComplete:z.boolean(),
+  schemaVersion:z.literal(1),identityUnavailableSources:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(8).optional(),screeningConstraintMethod:z.literal('frozen-positive-guards-v1').optional(),associationCitationMethod:z.literal('literal-associations-v1').optional(),inspectionRecoveryMethod:z.literal('historical-post-inspection-v1').optional(),postSampleScope:z.object({method:z.literal('terminal-post-gap-v1'),complete:z.boolean(),sourceIds:z.array(z.string()).max(64),gaps:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(128),blockers:z.array(z.string()).max(200)}).strict().optional(),reviewCriterionMethod:z.enum(['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4']).optional(),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(64),start:timestamp,end:timestamp,
+  targetPostIds:z.array(z.string()).max(64),identitySourceIds:z.array(z.string()).max(64),sampleComplete:z.boolean(),identityComplete:z.boolean(),
   previousComparable:z.boolean(),codes:z.array(z.string()).max(200),queries:z.array(z.string()).max(20),qualifiedAt:timestamp.optional(),
 }).strict();
 export const socialProposalSchema=z.object({
@@ -20,14 +20,14 @@ export const socialProposalSchema=z.object({
   posts:z.array(z.object({sourceId:z.string(),body:citation.extend({quote:z.string().min(8).max(120000)}),bodyComplete:z.boolean().optional(),role:z.enum(['ORIGINAL','REPOST','COMMENTARY','EXCLUDED','UNCLEAR']),binding:z.enum(['EXACT_CONTRACT','PROVEN_ACCOUNT','UNRELATED','UNCLEAR']),bindingProof:z.array(citation).max(5),
     parentSourceId:z.string().nullable(),origin:association.nullable(),community:association.nullable(),campaign:association.nullable(),
     metrics:z.object({likes:field.nullable(),replies:field.nullable(),reposts:field.nullable()}).strict(),
-  }).strict()).max(32),
+  }).strict()).max(64),
   identities:z.array(z.object({id:z.string(),accountId:z.string(),status:z.enum(['CLAIMED','PUBLIC_BINDING_SUPPORTED','DISAVOWED']),citations:z.array(citation).min(1).max(5)}).strict()).max(32),
-  accounts:z.array(z.object({accountId:z.string(),createdAt:field.nullable(),historySourceIds:z.array(z.string()).max(32)}).strict()).max(32),
+  accounts:z.array(z.object({accountId:z.string(),createdAt:field.nullable(),historySourceIds:z.array(z.string()).max(64)}).strict()).max(64),
 }).strict();
 export const socialReviewSchema=z.object({
   decisions:z.array(z.object({id:z.string(),accepted:z.boolean(),rationale:z.string().min(1).max(500)}).strict()).max(200),
-  sources:z.array(z.object({sourceId:z.string(),complete:z.boolean(),rationale:z.string().min(1).max(500)}).strict()).max(32),
-  pairs:z.array(z.object({id:z.string(),relation:z.enum(['COPIED_ENDORSEMENT','DISTINCT_COMMENTARY','UNRESOLVED']),rationale:z.string().min(1).max(500)}).strict()).max(496),
+  sources:z.array(z.object({sourceId:z.string(),complete:z.boolean(),rationale:z.string().min(1).max(500)}).strict()).max(64),
+  pairs:z.array(z.object({id:z.string(),relation:z.enum(['COPIED_ENDORSEMENT','DISTINCT_COMMENTARY','UNRESOLVED']),rationale:z.string().min(1).max(500)}).strict()).max(2016),
 }).strict();
 export type SocialInput=z.infer<typeof socialInputSchema>;
 export type SocialProposal=z.infer<typeof socialProposalSchema>;
@@ -177,7 +177,8 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   if(output.get('S06')?.quality!=='KNOWN')missingIndicators.push('ENGAGEMENT');
   if(output.get('S04')?.quality!=='KNOWN')missingIndicators.push('COMPARABLE_HISTORY');
   for(const [name,judgment] of [['identity',p.identityAssessment],['integrity',p.integrityAssessment],['participation',p.participationAssessment],['communityBreadth',p.communityBreadthAssessment]] as const)if(judgment){
-    const scopeQualified=name==='identity'?identityComplete:read.sampleComplete&&(!!read.entryDecisionMethod||facts.sampleComplete&&facts.postCorpusObserved)&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id));
+    const terminalNegative=!!read.reviewCriterionMethod&&judgment.verdict==='CONTRADICTED'&&read.postSampleScope?.complete===true;
+    const scopeQualified=name==='identity'?identityComplete:(read.sampleComplete||terminalNegative)&&(!!read.entryDecisionMethod||facts.sampleComplete&&facts.postCorpusObserved)&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id));
     const sourceQualified=scopeQualified&&accepted(`assessment:${name}`)&&judgment.citations.every(c=>reviewed(c.sourceId));
     const invalidMetric=posts.some(post=>Object.entries(post.metrics).some(([metricName,value])=>value!==null&&metric(value,metricName)===null));
     const supportQualified=name==='communityBreadth'?facts.sampleComplete&&facts.lineageComplete&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=3:name==='participation'?facts.sampleComplete&&facts.lineageComplete&&facts.accountUpperBound!==null&&facts.accountUpperBound>=3&&facts.independentGroupCount!==null&&facts.independentGroupCount>=2&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=2:name==='identity'?output.get('S01')?.projection?.value===true&&p.identities.some(claim=>claim.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(claim)&&claim.citations.some(c=>{const source=byId.get(c.sourceId)!;return source.kind==='PAGE'&&socialAccount(source.url)===null&&socialNamesAddress(c.quote,token)&&namesAccount(c.quote,claim.accountId);})):facts.sampleComplete&&facts.lineageComplete&&posts.length>0&&output.get('S02')?.projection?.value===true&&output.get('S04')?.projection?.value!==false&&!invalidMetric;

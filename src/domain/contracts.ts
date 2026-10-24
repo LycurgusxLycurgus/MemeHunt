@@ -201,8 +201,21 @@ export const socialPolicyFactsSchema = z.object({
   identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),participationReview:socialQualifiedJudgmentSchema.optional(),communityBreadthReview:socialQualifiedJudgmentSchema.optional(),
 }).strict();
 export type SocialPolicyFacts = z.infer<typeof socialPolicyFactsSchema>;
+export const entryGroupFactsSchema = z.object({
+  method: z.literal('mandatory-entry-groups-v1'), token: tokenRefSchema, cutoff: z.iso.datetime({ offset: true }),
+  groups: z.array(z.object({
+    checkId: z.enum(['ADV-01', 'ADV-02', 'ADV-03', 'ADV-04', 'ADV-05']),
+    status: z.enum(['PASS', 'FAIL', 'UNKNOWN']), rationale: z.string().min(1).max(1500), code: z.string(),
+    featureIds: z.array(z.string()), evidenceIds: z.array(z.string()), availableAt: z.iso.datetime({ offset: true }),
+    metrics: z.record(z.string(), z.unknown()), limitations: z.array(z.string()),
+  }).strict()).length(5),
+}).strict().superRefine((facts, ctx) => {
+  const ids = facts.groups.map(group => group.checkId);
+  if (new Set(ids).size !== 5) ctx.addIssue({ code: 'custom', message: 'entry group facts must contain each ADV group exactly once' });
+});
+export type EntryGroupFacts = z.infer<typeof entryGroupFactsSchema>;
 export const sharedPolicyFactsSchema=z.object({
-  method:z.literal('shared-evidence-v1'),qualityMode:z.literal('ENTRY_GATES_V1').optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
+  method:z.literal('shared-evidence-v1'),qualityMode:z.enum(['ENTRY_GATES_V1','ENTRY_GROUPS_V1']).optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
   witnesses:z.array(z.object({checkId:z.string(),status:z.enum(['PASS','FAIL','UNKNOWN']),featureIds:z.array(z.string()),evidenceIds:z.array(z.string()),route:z.string()}).strict()).max(40),
   freshness:z.array(z.object({featureId:z.string(),ttlSeconds:z.number().int().positive(),eventAt:z.string().nullable(),fresh:z.boolean(),evidenceIds:z.array(z.string())}).strict()).max(61),
   unresolved:z.array(z.string()),semanticQualified:z.boolean(),auditQualified:z.boolean(),
@@ -210,13 +223,13 @@ export const sharedPolicyFactsSchema=z.object({
   values:z.object({C03:z.boolean().nullable(),C04:z.boolean().nullable(),C05:z.boolean().nullable(),C06:z.boolean().nullable()}).strict(),
 }).strict();
 export type SharedPolicyFacts=z.infer<typeof sharedPolicyFactsSchema>;
-export type AssessmentDetails = { version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts;advisory?:AdvisoryFacts };
+export type AssessmentDetails = { version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts;groups?:EntryGroupFacts;advisory?:AdvisoryFacts };
 const baselineAssessmentSchema=z.object({
   id:z.string(),version:z.literal('baseline-v1'),evaluator:z.literal('IMPLEMENTED'),collector:z.enum(['IMPLEMENTED','UNIMPLEMENTED','NOT_REQUIRED']),quality:qualityStateSchema,unit:z.string(),data:z.unknown(),
   observationIds:z.array(z.string()),evidenceIds:z.array(z.string()),limitations:z.array(z.string()),
   causes:z.array(z.object({category:z.enum(['USER_INPUT_MISSING','EVIDENCE_UNAVAILABLE','COLLECTION_UNIMPLEMENTED','CLAIM_UNVALIDATED']),code:z.string(),featureId:z.string(),sourceId:z.string().optional(),field:z.string().optional(),evidenceIds:z.array(z.string()),action:z.string()}).strict()),projection:featureResultSchema.optional(),
 }).strict();
-export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional(),advisory:advisoryFactsSchema.optional()}).strict();
+export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional(),advisory:advisoryFactsSchema.optional(),groups:entryGroupFactsSchema.optional()}).strict();
 const atomicPositive = z.string().regex(/^[1-9]\d*$/), atomicAmount = z.string().regex(/^(0|[1-9]\d*)$/), instant = z.iso.datetime({ offset: true });
 const exitFeeSchema = z.object({
   asset: z.string().min(1).max(64), decimals: z.number().int().min(0).max(36), amountAtomic: atomicAmount, includedInOutput: z.boolean(),

@@ -1,4 +1,5 @@
 import { fetchReadResponse, readLimitedText } from './http.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ControlFacts, HolderFacts, ProgramFacts } from '../domain/baseline.js';
 
 export const SOLANA_MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
@@ -10,6 +11,7 @@ type JsonObject = Record<string, unknown>;
 const object = (v: unknown): v is JsonObject => typeof v === 'object' && v !== null && !Array.isArray(v);
 const nonnegativeIntegerString = (v: unknown): v is string => typeof v === 'string' && /^(0|[1-9]\d{0,19})$/.test(v) && BigInt(v) <= 18446744073709551615n;
 export const safeRpcCode = (error: unknown): string => {
+  if (error instanceof Error && /^LIVE_(?:PHASE_DEADLINE|HARD_DEADLINE|OPERATION_LIMIT|CALLER_CANCELLED|STAGE_FINISHED)$/.test(error.message)) return error.message;
   if (error instanceof Error && error.message === 'PROVIDER_RESPONSE_LIMIT') return 'RPC_RESPONSE_LIMIT';
   if (error instanceof Error && error.message === 'RPC_SHAPE') return 'RPC_SHAPE';
   if (error instanceof Error && /^RPC_REMOTE_-?\d{1,6}$/.test(error.message)) return error.message;
@@ -123,7 +125,7 @@ export function resolveProgramData(header:ProgramFacts,result:unknown,evidenceId
   return {...header,upgradeAuthority:authority,immutable:authority===null,authorityResolved:true,deploymentSlot:Number(slot),evidenceIds};
 }
 export function decodeHolderPopulation(result:unknown,address:string,programId:string,supplyAtomic:string,minSlot:number):HolderFacts {
-  if(!object(result)||!object(result.context)||!Number.isSafeInteger(result.context.slot)||Number(result.context.slot)<minSlot||!Array.isArray(result.value)||result.value.length>50000)throw new Error('RPC_SHAPE');
+  if(!object(result)||!object(result.context)||!Number.isSafeInteger(result.context.slot)||Number(result.context.slot)<minSlot||!Array.isArray(result.value))throw new Error('RPC_SHAPE');
   const mintBytes=decodeSolanaAddress(address),seen=new Set<string>();
   const accounts=result.value.map(item=>{
     if(!object(item)||typeof item.pubkey!=='string'||seen.has(item.pubkey))throw new Error('RPC_SHAPE');decodeSolanaAddress(item.pubkey);seen.add(item.pubkey);
@@ -138,12 +140,30 @@ export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PU
   const rpc=(endpoint:string,method:string,params:unknown[],request:typeof fetch,maxBytes=350_000)=>solanaRpc(endpoint,method,params,request,maxBytes,signal);
   const result:SolanaDetails={rawArtifacts:{},errors:{},...(now?{retrievedAt:{}}:{})};
   if(mint.kind!=='MINT_LEGACY'&&mint.kind!=='MINT_TOKEN_2022_PARTIAL')return result;
-  let holderSupply=mint.supplyAtomic;
+  let holderSupply=mint.supplyAtomic,holderSlot=mint.slot;
   try {const read=await rpc(url,'getAccountInfo',[address,{encoding:'base64',commitment:'finalized',minContextSlot:mint.slot}],fetcher);result.rawArtifacts['rpc-mint-raw']=read.raw;if(now)result.retrievedAt!['rpc-mint-raw']=now();const raw=rawAccount(read.value);if(raw.slot<mint.slot||raw.owner!==mint.programId||raw.bytes.length<82||raw.bytes[44]!==mint.decimals)throw new Error('RPC_SHAPE');result.controls=decodeRawMintControls(read.value,['rpc-genesis','rpc-mint-raw']);holderSupply=raw.bytes.readBigUInt64LE(36).toString();}
   catch(error){result.errors.controls=safeCode(error);}
   if(result.controls?.complete&&result.controls.currentFeeBps==='0'&&result.controls.feeImmutable)try {
-    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:mint.slot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,holderPopulationLimit);
-    result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,mint.slot);
+    holderSlot=rawAccount(JSON.parse(result.rawArtifacts['rpc-mint-raw']).result).slot;
+    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:holderSlot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,holderPopulationLimit);
+    result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,holderSlot);
+  }catch(error){result.errors.holderPopulation=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED'?error.message:safeCode(error);}
+  // A separately indexed population can lag the mint bank. Recapture once;
+  // neither a stale sum nor an assumed supply may qualify complete coverage.
+  if(result.errors.holderPopulation==='HOLDER_SUPPLY_UNRECONCILED')try{
+    for(const id of ['rpc-mint-raw','rpc-holder-population']){result.rawArtifacts[id+'-reconciliation-attempt-1']=result.rawArtifacts[id];if(now)result.retrievedAt![id+'-reconciliation-attempt-1']=result.retrievedAt![id];}
+    const first=JSON.parse(result.rawArtifacts['rpc-holder-population']),floor=Math.max(mint.slot,Number(first.result.context.slot));
+    await delay(1000,undefined,{signal});
+    const refreshed=await rpc(url,'getAccountInfo',[address,{encoding:'base64',commitment:'finalized',minContextSlot:floor}],fetcher);
+    result.rawArtifacts['rpc-mint-reconciliation-response']=refreshed.raw;if(now)result.retrievedAt!['rpc-mint-reconciliation-response']=now();
+    const raw=rawAccount(refreshed.value);if(raw.slot<floor||raw.owner!==mint.programId||raw.bytes.length<82||raw.bytes[44]!==mint.decimals)throw Error('RPC_SHAPE');
+    const controls=decodeRawMintControls(refreshed.value,['rpc-genesis','rpc-mint-raw']);
+    if(!controls.complete||controls.currentFeeBps!=='0'||!controls.feeImmutable)throw Error('HOLDER_SUPPLY_UNRECONCILED');
+    result.rawArtifacts['rpc-mint-raw']=refreshed.raw;if(now)result.retrievedAt!['rpc-mint-raw']=result.retrievedAt!['rpc-mint-reconciliation-response'];result.controls=controls;
+    holderSupply=raw.bytes.readBigUInt64LE(36).toString();
+    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:raw.slot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,holderPopulationLimit);
+    result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();
+    result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,raw.slot);delete result.errors.holderPopulation;
   }catch(error){result.errors.holderPopulation=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED'?error.message:safeCode(error);}
   if(!result.holders&&result.errors.holderPopulation)result.errors.holders=result.errors.holderPopulation;
   if(!result.holders)
@@ -209,13 +229,15 @@ export async function inspectSolanaRpc(url = PUBLIC_SOLANA_RPC, fetcher: typeof 
   return { status: 'OBSERVED', genesisRaw: genesis.raw, genesisHash: genesis.value,...receipt };
 }
 
-export async function inspectSolanaMint(address: string, url = PUBLIC_SOLANA_RPC, fetcher: typeof fetch = fetch, signal?:AbortSignal,now?:()=>string): Promise<SolanaRead> {
+export async function inspectSolanaMint(address: string, url = PUBLIC_SOLANA_RPC, fetcher: typeof fetch = fetch, signal?:AbortSignal,now?:()=>string,minContextSlot?:number): Promise<SolanaRead> {
+  if(minContextSlot!==undefined&&(!Number.isSafeInteger(minContextSlot)||minContextSlot<0))throw new Error('RPC_SLOT_FLOOR_INVALID');
   const genesis = await inspectSolanaRpc(url, fetcher, signal,now);
   if (genesis.status !== 'OBSERVED') return genesis;
   try {
-    const account = await rpc(url, 'getAccountInfo', [address, { encoding: 'jsonParsed', commitment: 'finalized' }], fetcher, undefined, signal);
+    const account = await rpc(url, 'getAccountInfo', [address, { encoding: 'jsonParsed', commitment: 'finalized',...(minContextSlot!==undefined?{minContextSlot}:{}) }], fetcher, undefined, signal);
     const receipt=now?{retrievedAt:{...genesis.retrievedAt,'rpc-account':now()}}:{};
     const mint = decodeMintAccount(account.value);
+    if(minContextSlot!==undefined&&(mint.slot===null||mint.slot<minContextSlot))throw new Error('RPC_SHAPE');
     return { status: mint.kind === 'UNKNOWN' ? 'INVALID' : 'OBSERVED',
       ...(mint.kind === 'UNKNOWN' ? { code: mint.reason } : {}),
       genesisRaw: genesis.genesisRaw, accountRaw: account.raw, genesisHash: genesis.genesisHash, mint,...receipt };

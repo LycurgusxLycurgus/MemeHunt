@@ -115,6 +115,8 @@ const readBundle = (path: string | undefined): Bundle => {
 };
 const unconfiguredLiveProfile: Profile = { id: 'unconfigured-live', risk: {}, stage: { ageBands: [] } };
 const rpcRecovery = (code: string): string => {
+  const local:Record<string,string>={LIVE_PHASE_DEADLINE:'The final acquisition phase reached its deadline.',LIVE_HARD_DEADLINE:'The analysis reached its whole-run deadline.',LIVE_OPERATION_LIMIT:'The analysis exhausted its reserved request capacity.',LIVE_CALLER_CANCELLED:'The caller cancelled this analysis.',LIVE_DEPENDENCY_SKIPPED:'A required acquisition dependency did not complete.'};
+  if(local[code])return `${code}: ${local[code]} This is an analysis execution limit; it does not establish an RPC endpoint outage or an adverse token fact. Inspect the saved stage receipt and rerun after resolving the named cause.\n`;
   const reason = code === 'RPC_NETWORK_ACCESS_DENIED' ? 'Network access was denied; check sandbox/firewall permissions.'
     : code === 'RPC_DNS_ERROR' ? 'The RPC hostname could not be resolved; check DNS and endpoint configuration.'
     : code === 'RPC_TIMEOUT' ? 'The bounded RPC request timed out; connectivity or the public endpoint may be temporarily unavailable.'

@@ -51,7 +51,7 @@ let runSequence=0;
 type Variant = { missingSyndication?: string; reviewStatus?: number; releaseAfterReads?: number; categories?: Record<string, string> };
 /** One live run in which every RPC request is held until the caller pipeline reaches its declared point (fallback after 15 s). */
 async function run(variant: Variant = {}) {
-  let tick = 0, held = 0, callerReads = 0, firstCallerTick: number | null = null, heldAtReview: number | null = null, releasedBy: string | null = null;
+  let tick = 0, held = 0, callerReads = 0, preflightReads = 0, firstCallerTick: number | null = null, heldAtReview: number | null = null, releasedBy: string | null = null;
   const callerPackets: string[] = [];
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -94,7 +94,7 @@ async function run(variant: Variant = {}) {
       return json(p[provider]);
     }
     // Main's optional metadata discovery precedes caller seeding; only historical RPC is held.
-    if (init?.method === 'POST' && JSON.parse(String(init.body)).method !== 'getMultipleAccounts') { held++; await gate; held--; }
+    if (init?.method === 'POST') {const method=JSON.parse(String(init.body)).method;const preflight=method==='getGenesisHash'&&preflightReads===0||method==='getAccountInfo'&&preflightReads===1;if(preflight)preflightReads++;else if(method!=='getMultipleAccounts'){held++;await gate;held--;}}
     return advisoryFixture(url, init);
   };
   try {

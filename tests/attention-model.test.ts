@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { z } from 'zod';
 import { completeFixtureEntryFeatures, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
-import { comparisonPublicScopeFacts, deriveAttention, originSourceScope, qualifiedComparisonEvidence } from '../src/domain/attention.js';
+import { comparisonPublicScopeFacts, deriveAttention, narrativeSourceBound, originEntryCitationAllowed, originSourceScope, qualifiedBinaryEntryDecisions, qualifiedComparisonEvidence } from '../src/domain/attention.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import type { AttentionRead } from '../src/providers/attention.js';
+import { collectAttentionSources, entryEvidenceScope, reconstructOriginAcquisition, type AttentionRead } from '../src/providers/attention.js';
 import { geminiSettings } from '../src/providers/gemini.js';
-import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, qualifyAttention } from '../src/providers/attention-model.js';
-import { geckoPoolBinding } from '../src/providers/origin-recovery.js';
+import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonRequiredRecoveryPlan, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, leadershipOptions, qualifyAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
+import { geckoPoolBinding, originRecoveryQuery } from '../src/providers/origin-recovery.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 
 const TOKEN = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
@@ -50,6 +51,74 @@ function linkedReferenceRead(): AttentionRead {
   read.metadataUri = metadataUrl;
   read.comparisonComplete = true;
   read.comparisonSourceIds = [comparisonApiId];
+  return read;
+}
+
+function base32(bytes: Buffer): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+  let bits = 0, value = 0, result = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      result += alphabet[(value >> bits) & 31];
+    }
+    value &= (1 << bits) - 1;
+  }
+  if (bits) result += alphabet[(value << (5 - bits)) & 31];
+  return `b${result}`;
+}
+
+function rawCid(text: string): string {
+  return base32(Buffer.concat([Buffer.from([0x01, 0x55, 0x12, 0x20]), createHash('sha256').update(text).digest()]));
+}
+
+function metadataAssociationRead(options: {
+  metadataUri?: string; metadataText?: string; childUrl?: string; childText?: string; useVerifiedAlias?: boolean;
+} = {}): AttentionRead {
+  const childUrl = options.childUrl ?? 'https://riverlantern.example/community';
+  const metadataText = options.metadataText ?? JSON.stringify({ name: 'River Lantern', website: childUrl });
+  const metadataUri = options.metadataUri ?? 'https://metadata.example/token/opaque';
+  const cidAlias = options.useVerifiedAlias === true;
+  const originUrl = cidAlias ? `https://ipfs.io/ipfs/${rawCid(metadataText)}` : metadataUri;
+  const metadataSourceUrl = cidAlias
+    ? `https://gateway.pinata.cloud/ipfs/${new URL(originUrl).pathname.split('/')[2]}`
+    : metadataUri;
+  const metadata = { id: 'token-metadata-json', url: metadataSourceUrl, text: metadataText,
+    publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' as const };
+  const child = { id: 'dex-seeded-website', url: childUrl,
+    text: options.childText ?? 'River Lantern tells a neighborhood story through shared local art.',
+    publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' as const };
+  const searchUrls = ['https://public.example/source', originUrl, childUrl];
+  const read: AttentionRead = {
+    sources: [
+      { id: 'page-1', url: searchUrls[0]!, text: 'A complete public page without a literal token address.',
+        publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+      metadata,
+      child,
+    ],
+    rawArtifacts: {
+      'attention-search-1': JSON.stringify({ results: searchUrls.map(url => ({ url })), errors: [] }),
+      'attention-search-2': JSON.stringify({ results: searchUrls.map(url => ({ url })), errors: [] }),
+      'attention-fetch-1': JSON.stringify({ results: [
+        { url: searchUrls[0]!, final_url: searchUrls[0]!, text: 'A complete public page without a literal token address.' },
+        ...(cidAlias ? [] : [{ url: metadataUri, final_url: metadataUri, text: metadataText }]),
+        { url: childUrl, final_url: childUrl, text: child.text },
+      ], errors: [] }),
+      ...(cidAlias ? { 'attention-origin-fetch-1': JSON.stringify({ results: [
+        { url: metadataSourceUrl, final_url: metadataSourceUrl, text: metadataText },
+      ], errors: [] }) } : {}),
+    },
+    queries: [`"${TOKEN.address}" narrative origin catalyst`, `"${TOKEN.address}" exact posts`],
+    complete: true, postSampleComplete: true, codes: [], start: '2026-09-30T12:00:00.000Z', end: CUTOFF,
+    discoveryUrls: [originUrl, childUrl], metadataLinks: true, metadataUri: originUrl,
+    metadataLinkMethod: 'onchain-metadata-v1',
+  };
+  if (cidAlias) read.originRecovery = { aliases: [{
+    method: 'raw-cid-sha256-v1', originUrl, sourceId: metadata.id, responseId: 'attention-origin-fetch-1', resultIndex: 0,
+  }], comparisonSupplementIds: [] };
+  read.originScope = originSourceScope(read, TOKEN);
   return read;
 }
 
@@ -350,6 +419,140 @@ test('a one-hop mint-metadata reference can support A01 after independent review
   assert.equal(invalidOrigin.requests.length, 1, 'an ineligible metadata-linked A03 selector is rejected before independent review');
   assert.equal(rejected.code, 'ATT_MODEL_INVALID');
   assert.equal(rejected.proposal, null);
+});
+
+test('fresh on-chain metadata binds exact-URI and verified CID-alias sources for narrative review without becoming origin proof', async t => {
+  for (const [name, read] of [
+    ['exact opaque URI', metadataAssociationRead()],
+    ['verified raw-CID alias', metadataAssociationRead({ useVerifiedAlias: true })],
+  ] as const) {
+    await t.test(name, async () => {
+      const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+      const metadata = read.sources.find(source => source.id === 'token-metadata-json')!;
+      assert.equal(child.discoveredFrom, undefined, 'the already DEX-seeded website needs no invented discovery parent');
+      assert.equal(metadata.text.includes(TOKEN.address), false, 'the metadata document contains no mint string');
+      assert.equal(narrativeSourceBound(read, child.id, TOKEN), true,
+        'one literal website URL in the exact on-chain metadata binds this fetched page for narrative assessment');
+      assert.equal(narrativeSourceBound(read, metadata.id, TOKEN), true,
+        'the acquired metadata page itself is within the bounded narrative association');
+      assert.equal(read.originScope?.complete, true, 'complete exact-token searches plus acquired metadata and linked page close the original scope');
+      assert.ok(read.originScope?.sourceIds.includes(child.id));
+      assert.equal(originEntryCitationAllowed(read, child.id, TOKEN, 'FAIL'), true,
+        'a completed reviewed inadequate-origin entry grade can cite an associated original source');
+      assert.equal(originEntryCitationAllowed(read, child.id, TOKEN, 'PASS'), false,
+        'metadata association alone cannot support positive origin');
+
+      const mock = mockModel(packet => packet.proposal ? reviewWire(packet) : proposalWire(packet, {
+        claims: [{ id: 'claim-metadata-reference', feature: 'A01', value: true,
+          summary: 'The exact metadata-linked website describes the River Lantern community narrative.',
+          citations: [{ sourceId: child.id, spanId: spanId(packet, child.id, 'River Lantern tells') }] }],
+      }));
+      const qualified = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+      assert.equal(qualified.code, undefined);
+      assert.equal(mock.requests.length, 2, 'the associated source uses the established proposal and independent-review pair');
+      assert.ok((mock.requests[0]!.packet.eligibleClaimSourceIds as string[]).includes(child.id));
+      assert.ok((mock.requests[1]!.packet.sources as PacketSource[]).some(source => source.id === child.id),
+        'the independent reviewer receives the exact associated source in the unchanged full review catalog');
+      assert.equal(deriveAttention(qualified.scope!, qualified.proposal, qualified.review, TOKEN, CUTOFF, ['source', 'proposal', 'review'])
+        .find(row => row.id === 'A01')?.quality, 'KNOWN');
+    });
+  }
+
+  await t.test('unmarked legacy scope does not gain association from an already seeded page', () => {
+    const legacy = metadataAssociationRead();
+    delete legacy.metadataLinkMethod;
+    assert.equal(narrativeSourceBound(legacy, 'dex-seeded-website', TOKEN), false,
+      'the new relationship rule is opt-in and cannot alter marker-absent replay');
+    assert.equal(originEntryCitationAllowed(legacy, 'dex-seeded-website', TOKEN, 'FAIL'), false);
+  });
+
+  await t.test('wrong URI, invalid alias, non-JSON metadata, unlinked, transitive, and name-only candidates stay unbound', () => {
+    const wrongUri = metadataAssociationRead();
+    wrongUri.metadataUri = 'https://metadata.example/another-opaque-uri';
+    assert.equal(narrativeSourceBound(wrongUri, 'dex-seeded-website', TOKEN), false);
+
+    const invalidAlias = metadataAssociationRead({ useVerifiedAlias: true });
+    const aliasFetch = JSON.parse(invalidAlias.rawArtifacts['attention-origin-fetch-1']!) as { results: Array<{ text: string }> };
+    aliasFetch.results[0]!.text += ' changed after CID verification';
+    invalidAlias.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(aliasFetch);
+    assert.equal(narrativeSourceBound(invalidAlias, 'dex-seeded-website', TOKEN), false);
+
+    const nonJson = metadataAssociationRead({ metadataText: 'not a JSON object' });
+    assert.equal(narrativeSourceBound(nonJson, 'dex-seeded-website', TOKEN), false);
+
+    const unlinked = metadataAssociationRead({ metadataText: JSON.stringify({ name: 'River Lantern', symbol: 'RIVER' }) });
+    assert.equal(narrativeSourceBound(unlinked, 'dex-seeded-website', TOKEN), false);
+
+    const transitive = metadataAssociationRead();
+    transitive.sources.push({ id: 'transitive-grandchild', url: 'https://riverlantern.example/grandchild',
+      text: 'This third page repeats the River Lantern name but is two links away.',
+      publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' });
+    assert.equal(narrativeSourceBound(transitive, 'transitive-grandchild', TOKEN), false);
+
+    const tickerOnly = metadataAssociationRead({ metadataText: JSON.stringify({ name: 'River Lantern', symbol: 'RIVER' }),
+      childUrl: 'https://unrelated.example/river-lantern' });
+    assert.equal(narrativeSourceBound(tickerOnly, 'dex-seeded-website', TOKEN), false);
+  });
+});
+
+test('binary public-origin review permits metadata-associated FAIL and rejects metadata-only PASS', () => {
+  const read = metadataAssociationRead();
+  read.entryEvidenceMethod = 'public-support-v2';
+  read.entryExecutionMethod = 'entry-first-v1';
+  read.comparisonComplete = true;
+  read.comparisonSourceIds = [];
+  read.comparisonAcquisition = { originalComplete: true, searchSucceeded: true, descriptorComplete: true, leadCount: 0, leads: [] };
+  read.rawArtifacts['attention-search-3'] = JSON.stringify({ results: [], errors: [] });
+  assert.equal(entryEvidenceScope(read, TOKEN, CUTOFF).complete, true, 'the original source and search packet is complete before grading');
+
+  const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+  const page = read.sources.find(source => source.id === 'page-1')!;
+  const citation = (source: typeof child) => ({ sourceId: source.id, spanId: sourceSpans(source.id, source.text)[0]!.id });
+  const wire = (verdict: 'PASS' | 'FAIL', source: typeof child) => ({
+    originTraceability: { verdict, rationale: 'This is an independently reviewed bounded public-origin grade.', citation: citation(source) },
+    leadership: { verdict: 'FAIL' as const, rationale: 'The complete sample does not establish primary leadership or measured attention.', citation: citation(page) },
+    representations: { verdict: 'FAIL' as const, rationale: 'The complete comparison sample does not bind an adequate representation set.', citation: citation(page) },
+    inspectionComplete: true,
+  });
+
+  const acceptedFailure = resolvePublicEntryDecision(wire('FAIL', child), read, TOKEN, CUTOFF);
+  assert.equal(acceptedFailure.originTraceability.verdict, 'FAIL');
+  assert.equal(acceptedFailure.originTraceability.citations[0]?.sourceId, child.id,
+    'a metadata-associated source is valid for a completed independently reviewed inadequate-origin grade');
+
+  assert.throws(() => resolvePublicEntryDecision(wire('PASS', child), read, TOKEN, CUTOFF), /ATT_MODEL_ENTRY_INSPECTION_INVALID|ZodError/,
+    'metadata-only association cannot enter the positive-origin citation selector');
+});
+
+test('associated narrative claims remain unqualified after provider failure or independent-review rejection', async t => {
+  await t.test('a model-provider 503 leaves the claim unqualified', async () => {
+    const read = metadataAssociationRead();
+    let calls = 0;
+    const result = await qualifyAttention(read, TOKEN, KEY, async () => {
+      calls++;
+      return new Response(`provider overload ${calls}`, { status: 503 });
+    }, async () => {});
+    assert.equal(result.code, 'ATT_MODEL_HTTP_503');
+    assert.equal(result.proposal, null);
+    assert.equal(result.review, null);
+    assert.notEqual(deriveAttention(read, result.proposal, result.review, TOKEN, CUTOFF, ['source'])
+      .find(row => row.id === 'A01')?.quality, 'KNOWN');
+  });
+
+  await t.test('a rejected independent review leaves the proposed linked claim unqualified', async () => {
+    const read = metadataAssociationRead();
+    const child = read.sources.find(source => source.id === 'dex-seeded-website')!;
+    const mock = mockModel(packet => packet.proposal ? reviewWire(packet, false) : proposalWire(packet, {
+      claims: [{ id: 'claim-rejected-metadata', feature: 'A01', value: true,
+        summary: 'The linked website describes the neighborhood narrative.',
+        citations: [{ sourceId: child.id, spanId: spanId(packet, child.id, 'River Lantern tells') }] }],
+    }));
+    const result = await qualifyAttention(read, TOKEN, KEY, mock.fetcher);
+    assert.equal(result.code, undefined);
+    assert.equal(result.review?.decisions[0]?.accepted, false);
+    assert.notEqual(deriveAttention(result.scope!, result.proposal, result.review, TOKEN, CUTOFF, ['source', 'proposal', 'review'])
+      .find(row => row.id === 'A01')?.quality, 'KNOWN');
+  });
 });
 
 type TransportReceipt = {
@@ -1973,6 +2176,37 @@ test('fresh recovery plans every required parent in first-query round-robin orde
   assert.equal(result.scope?.comparisonComplete, false);
   assert.equal(result.rawArtifacts['attention-recovery-fetch-1'], undefined,
     'no fetched page is invented when all successful searches return zero results');
+});
+
+test('required recovery planning keeps query uniqueness within each parent and preserves parent-owned metadata', () => {
+  const leads = [
+    comparisonLead('recovery-parent-a', 0, 'https://index-a.example/project', 'Indexed River Lantern',
+      'A distinctive public mechanism for River Lantern on Base.', 'FAILED'),
+    comparisonLead('recovery-parent-b', 1, 'https://index-b.example/project', 'Indexed Cedar Lantern',
+      'A distinctive public mechanism for Cedar Lantern on Base.', 'FAILED'),
+  ];
+  const read = ledgerComparisonRead(leads);
+  const plan = comparisonRequiredRecoveryPlan(read, TOKEN, null);
+  const rows = plan.selectedLeadIds.map((leadId, index) => {
+    const metadataEvidenceId = leads[index]!.metadataEvidenceId;
+    return {
+      leadId,
+      queries: ['Shared distinctive project mechanism Base'],
+      rationale: `Search indexed parent ${leadId} using its own metadata.`,
+      metadataRefs: [{ sourceId: metadataEvidenceId, spanId: metadataSpanId(plan.packet, metadataEvidenceId) }],
+    };
+  });
+
+  const decoded = plan.decode({ leads: rows });
+  assert.deepEqual(decoded.queries, ['Shared distinctive project mechanism Base', 'Shared distinctive project mechanism Base']);
+  assert.deepEqual(decoded.queryParents, ['recovery-parent-a', 'recovery-parent-b']);
+  assert.deepEqual(decoded.planned['recovery-parent-a']?.metadataRefs.map(ref => ref.sourceId), ['recovery-parent-a-metadata']);
+  assert.deepEqual(decoded.planned['recovery-parent-b']?.metadataRefs.map(ref => ref.sourceId), ['recovery-parent-b-metadata']);
+
+  assert.throws(() => plan.decode({ leads: [
+    { ...rows[0]!, queries: ['Repeated same-parent query Base', 'Repeated same-parent query Base'] },
+    rows[1]!,
+  ] }), /ATT_MODEL_COMPARISON_QUERY_INVALID/);
 });
 
 test('inadequacy assessment is span-resolved against identical indexed and fetched catalogs in both lead passes', async () => {
@@ -5253,6 +5487,774 @@ test('binary public-support v2 reviews one full catalog with criterion-specific 
     'origin citations stay within original scope even when comparison pages are fully retained');
   assert.throws(() => run({ unfinishedReview: true }), /ATT_MODEL_ENTRY_INSPECTION_INVALID/,
     'a missing final inspection cannot qualify any of the three criteria');
+});
+
+test('project-context-v2 entry review requires observed attention or a primary project origin', () => {
+  const instruction = (read: AttentionRead) => {
+    const step = binaryEntryDecisionProgram(read, null, null, TOKEN, CUTOFF, {}).next();
+    assert.equal(step.done, false, 'the completed bounded source packet dispatches a review');
+    return (JSON.parse(step.value.prompt) as { instruction: string }).instruction;
+  };
+  const fresh = publicEntryRead();
+  fresh.collectionMethod = 'project-context-v2';
+  const freshInstruction = instruction(fresh);
+  assert.match(freshInstruction, /market capitalization, circulating market cap, FDV, valuation, price\/volume comparisons and platform promotion are market sizing or publicity, not measured relative attention/);
+  assert.match(freshInstruction, /actual explicit-token mention counts or shares, and competing representations/);
+  assert.match(freshInstruction, /independent primary project\/token endorsement or originating relationship/);
+  const legacyInstruction = instruction(publicEntryRead());
+  assert.doesNotMatch(legacyInstruction, /Leadership evidence check:/,
+    'the absent collection marker keeps the established prompt unchanged');
+});
+
+test('source-bound v4 uses the actual primary option pair and keeps inadequacy separate from factual routes', () => {
+  const baseProposal = { claims: [], posts: [], competitors: [] };
+  const baseReview = {
+    decisions: [],
+    candidateSet: { complete: false, rationale: 'The retained search does not establish complete competing representation coverage.' },
+    originRelationship: { status: 'UNKNOWN' as const, citations: [], rationale: 'No independently reviewed primary relationship is asserted here.' },
+  };
+  const readFor = (seeded: boolean) => {
+    const read = publicEntryRead();
+    read.collectionMethod = 'project-context-v2';
+    read.leadershipPositiveMethod = 'source-bound-positive-v1';
+    read.entryExecutionMethod = 'entry-first-v2';
+    read.discoveryUrls = seeded ? ['https://public.example/river-lantern-origin'] : [];
+    const comparison = read.sources.find(source => source.id === 'comparison-source')!;
+    comparison.text = `A third-party market commentator claims the River Lantern founder endorsed ${TOKEN.address}.`;
+    const fetch = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<{ url: string; text: string; final_url?: string }>; errors: unknown[] };
+    fetch.results.find(result => result.url === comparison.url)!.text = comparison.text;
+    read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetch);
+    return read;
+  };
+  const play = (read: AttentionRead, finalGrade: { verdict: 'PASS' | 'FAIL'; basis: 'PRIMARY_PUBLIC_SUPPORT' | 'MEASURED_ATTENTION' | 'EVIDENCE_INADEQUACY'; sourceId: string }) => {
+    const artifacts: Record<string, string> = {};
+    const program = binaryEntryDecisionProgram(read, baseProposal, baseReview, TOKEN, CUTOFF, artifacts);
+    let step = program.next();
+    let calls = 0;
+    const packets: Array<Record<string, unknown>> = [];
+    while (!step.done) {
+      const packet = JSON.parse(step.value.prompt) as Record<string, unknown> & {
+        method: string; sources: PacketSource[]; leadershipPositiveOptions: { primary: Array<{ sourceId: string; spanId: string; quote?: string }>; measured: Array<{ sourceId: string; spanId: string }> };
+      };
+      packets.push(packet);
+      assert.equal(packet.method, 'binary-public-support-v4');
+      const sourceSpan = (sourceId: string, includes?: string) => {
+        const source = packet.sources.find(item => item.id === sourceId);
+        assert.ok(source, `the cited source ${sourceId} is in the retained catalog`);
+        const span = source.spans.find(item => !includes || item.text.includes(includes)) ?? source.spans[0];
+        assert.ok(span, `the cited source ${sourceId} has a literal span`);
+        return { sourceId, spanId: span.id };
+      };
+      const final = Object.hasOwn(packet, 'draft');
+      const leadership = final ? finalGrade : { verdict: 'FAIL' as const, basis: 'EVIDENCE_INADEQUACY' as const, sourceId: 'origin-source' };
+      const wire = {
+        originTraceability: { verdict: 'PASS', rationale: 'The selected original source is reviewed for its exact-token relationship.', citation: sourceSpan('origin-source', TOKEN.address) },
+        leadership: { verdict: leadership.verdict, basis: leadership.basis, rationale: 'The independent entry review assesses the bounded primary and measured routes.', citation: sourceSpan(leadership.sourceId, TOKEN.address) },
+        representations: { verdict: 'FAIL', rationale: 'The retained comparison evidence does not establish the complete rival set.', citation: sourceSpan('comparison-source') },
+        explainableThesis: { verdict: 'PASS', rationale: 'The retained project text explains the narrative and its relation to this exact token.', citation: sourceSpan('origin-source', TOKEN.address) },
+        inspectionComplete: true,
+      };
+      if (leadership.verdict === 'PASS' && leadership.basis === 'PRIMARY_PUBLIC_SUPPORT') {
+        assert.ok(packet.leadershipPositiveOptions.primary.some(option => option.sourceId === leadership.sourceId),
+          'the primary citation must be one of the code-owned original-scope options');
+      }
+      if (!read.discoveryUrls?.length) assert.deepEqual(packet.leadershipPositiveOptions.primary, [],
+        'search-only third-party founder allegations do not create an original project root');
+      artifacts[`${step.value.id}-response`] = JSON.stringify({
+        candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(wire) }] } }],
+      });
+      calls++;
+      step = program.next(wire);
+    }
+    return { decisions: step.value, artifacts, calls, packets };
+  };
+
+  const positiveRead = readFor(true);
+  const positive = play(positiveRead, { verdict: 'PASS', basis: 'PRIMARY_PUBLIC_SUPPORT', sourceId: 'origin-source' });
+  assert.equal(positive.calls, 2, 'the existing proposal and independent review are the only model calls');
+  assert.equal(positive.decisions?.method, 'binary-public-support-v4');
+  assert.equal(positive.decisions?.leadership.verdict, 'PASS');
+  const primaryOptions = positive.packets.map(packet => (packet.leadershipPositiveOptions as { primary: unknown[] }).primary);
+  assert.deepEqual(primaryOptions[1], primaryOptions[0],
+    'both independent calls receive the same code-owned primary source choices');
+  assert.deepEqual(decodeBinaryEntryDecisions(positiveRead, baseProposal, baseReview, TOKEN, CUTOFF, positive.artifacts), positive.decisions,
+    'the retained two-call proof reconstructs the same accepted primary route');
+
+  const noPositive = play(readFor(false), { verdict: 'FAIL', basis: 'EVIDENCE_INADEQUACY', sourceId: 'origin-source' });
+  assert.equal(noPositive.decisions?.leadership.verdict, 'FAIL');
+  assert.equal((noPositive.decisions?.leadership as { basis?: string }).basis, 'EVIDENCE_INADEQUACY');
+  assert.deepEqual((noPositive.packets[1]!.leadershipPositiveOptions as { primary: unknown[] }).primary, []);
+  assert.deepEqual((noPositive.packets[1]!.leadershipPositiveOptions as { measured: unknown[] }).measured, []);
+
+  assert.throws(() => play(positiveRead, { verdict: 'PASS', basis: 'PRIMARY_PUBLIC_SUPPORT', sourceId: 'comparison-source' }),
+    'a third-party founder-endorsement allegation cannot be selected as primary support');
+});
+
+test('source-bound primary posts require a rooted account, exact literal metadata link, and accepted review label', () => {
+  const make = (accepted: boolean, role: 'NEWS' | 'UNCLEAR') => {
+    const read = publicEntryRead();
+    read.collectionMethod = 'project-context-v2';
+    read.leadershipPositiveMethod = 'source-bound-positive-v1';
+    read.entryExecutionMethod = 'entry-first-v2';
+    const metadataUrl = 'https://metadata.example/river-lantern.json';
+    const profileUrl = 'https://x.com/river_lantern_project';
+    const postUrl = 'https://x.com/river_lantern_project/status/7001';
+    const metadataText = JSON.stringify({ address: TOKEN.address, website: profileUrl });
+    const profileText = `The River Lantern project account publishes this project profile for token ${TOKEN.address}.`;
+    const postText = `The River Lantern project account announces ${TOKEN.address} as its project token in a dated update.`;
+    read.metadataLinks = true;
+    read.metadataUri = metadataUrl;
+    read.discoveryUrls = [metadataUrl];
+    read.sources.push(
+      { id: 'root-metadata', url: metadataUrl, text: metadataText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+      { id: 'project-profile-posts', url: profileUrl, text: profileText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+      { id: 'project-announcement', url: postUrl, text: postText, publishedAt: '2026-10-01T11:00:00.000Z', authorId: 'x.com:river_lantern_project', availableAt: CUTOFF, kind: 'POST' },
+    );
+    const addSearchRows = (id: 'attention-search-1' | 'attention-search-2') => {
+      const search = JSON.parse(read.rawArtifacts[id]!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+      search.results.push({ url: metadataUrl }, { url: profileUrl }, { url: postUrl });
+      read.rawArtifacts[id] = JSON.stringify(search);
+    };
+    addSearchRows('attention-search-1');
+    addSearchRows('attention-search-2');
+    const fetched = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+    fetched.results.push(
+      { url: metadataUrl, final_url: metadataUrl, text: metadataText, links: [profileUrl] },
+      { url: profileUrl, final_url: profileUrl, text: profileText, links: [] },
+      { url: postUrl, final_url: postUrl, text: postText, links: [] },
+    );
+    read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetched);
+    const proposal = { claims: [], posts: [{ id: 'announcement', sourceId: 'project-announcement', quote: postText, role }], competitors: [] };
+    const review = {
+      decisions: [{ id: 'announcement', accepted, rationale: accepted ? 'The original project announcement is accepted.' : 'The post disposition is rejected.' }],
+      candidateSet: { complete: false, rationale: 'The retained sources do not complete rival representation coverage.' },
+      originRelationship: { status: 'UNKNOWN' as const, citations: [], rationale: 'The accepted project post is not a factual-origin decision.' },
+    };
+    return { read, proposal, review, postText };
+  };
+  const packetFor = (fixture: ReturnType<typeof make>) => {
+    const first = binaryEntryDecisionProgram(fixture.read, fixture.proposal, fixture.review, TOKEN, CUTOFF, {}).next();
+    assert.equal(first.done, false, 'a complete metadata and own-account acquisition dispatches the existing pair');
+    const packet = JSON.parse(first.value.prompt) as { leadershipPositiveOptions: { primary: Array<{ sourceId: string; quote: string }> } };
+    return packet;
+  };
+  const accepted = make(true, 'NEWS');
+  const acceptedPacket = packetFor(accepted);
+  assert.ok(acceptedPacket.leadershipPositiveOptions.primary.some(option => option.sourceId === 'project-announcement' && option.quote === accepted.postText),
+    'the original linked account post becomes a positive option only after its NEWS label is accepted');
+  assert.ok(acceptedPacket.leadershipPositiveOptions.primary.some(option => option.sourceId === 'project-profile-posts'),
+    'the metadata text contains the literal profile URL and the fetched profile is a rooted project source');
+
+  for (const rejected of [make(false, 'NEWS'), make(true, 'UNCLEAR')]) {
+    const rejectedOptions = packetFor(rejected).leadershipPositiveOptions.primary;
+    assert.equal(rejectedOptions.some(option => option.sourceId === 'project-announcement'), false,
+      'rejected and UNCLEAR posts cannot enter the positive option list');
+  }
+
+  const unlinked = accepted.read;
+  const metadata = unlinked.sources.find(source => source.id === 'root-metadata')!;
+  metadata.text = JSON.stringify({ address: TOKEN.address, website: 'https://x.com/other_project' });
+  const rawFetch = JSON.parse(unlinked.rawArtifacts['attention-fetch-1']!) as { results: Array<{ url: string; text: string }>; errors: unknown[] };
+  rawFetch.results.find(row => row.url === metadata.url)!.text = metadata.text;
+  unlinked.rawArtifacts['attention-fetch-1'] = JSON.stringify(rawFetch);
+  const unrelated = leadershipOptions(unlinked, TOKEN, CUTOFF, {
+    originRelationship: { status: 'UNKNOWN' },
+    measuredAttention: { status: 'UNKNOWN', sourceIds: [] },
+    reviewedPosts: [{ sourceId: 'project-announcement', quote: accepted.postText }],
+  });
+  assert.equal(unrelated.primary.some(option => option.sourceId === 'project-announcement'), false,
+    'a fetched post no longer qualifies when its parent metadata does not literally link its account');
+});
+
+test('structural v4 qualification cannot let an unrooted canonical-origin route bypass A14 positive validation', () => {
+  const read = publicEntryRead();
+  read.collectionMethod = 'project-context-v2';
+  read.leadershipPositiveMethod = 'source-bound-positive-v1';
+  read.entryExecutionMethod = 'entry-first-v2';
+  const metadataUrl = 'https://metadata.example/river-lantern.json';
+  const profileUrl = 'https://x.com/river_lantern_project';
+  const postUrl = 'https://x.com/river_lantern_project/status/7002';
+  const metadataText = JSON.stringify({ address: TOKEN.address, website: 'River Lantern project profile' });
+  const profileText = `The River Lantern project profile names ${TOKEN.address} as its original contract.`;
+  const postText = `The River Lantern project account announces ${TOKEN.address} as its original contract in a dated update.`;
+  read.metadataLinks = true;
+  read.metadataUri = metadataUrl;
+  read.discoveryUrls = [metadataUrl, 'https://public.example/river-lantern-origin'];
+  read.sources.push(
+    { id: 'root-metadata', url: metadataUrl, text: metadataText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+    { id: 'project-profile', url: profileUrl, text: profileText, publishedAt: null, authorId: null, availableAt: CUTOFF, kind: 'PAGE' },
+    { id: 'project-post', url: postUrl, text: postText, publishedAt: '2026-10-01T11:00:00.000Z', authorId: 'x.com:river_lantern_project', availableAt: CUTOFF, kind: 'POST' },
+  );
+  for (const id of ['attention-search-1', 'attention-search-2']) {
+    const search = JSON.parse(read.rawArtifacts[id]!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+    search.results.push({ url: metadataUrl }, { url: profileUrl }, { url: postUrl });
+    read.rawArtifacts[id] = JSON.stringify(search);
+  }
+  const fetched = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+  fetched.results.push(
+    { url: metadataUrl, final_url: metadataUrl, text: metadataText, links: [] },
+    { url: profileUrl, final_url: profileUrl, text: profileText, links: [] },
+    { url: postUrl, final_url: postUrl, text: postText, links: [] },
+  );
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetched);
+  const originClaim = { id: 'origin-claim', feature: 'A03' as const, value: true,
+    summary: 'The project profile identifies this exact token as its original contract.',
+    citations: [{ sourceId: 'project-profile', quote: profileText }] };
+  const proposal = {
+    claims: [originClaim],
+    posts: [{ id: 'origin-post-label', sourceId: 'project-post', quote: postText, role: 'NEWS' as const }],
+    competitors: [],
+  };
+  const scope = entryEvidenceScope(read, TOKEN, CUTOFF);
+  assert.equal(scope.complete, true, JSON.stringify({ scope, acquisition: reconstructOriginAcquisition(read, TOKEN) }));
+  const citation = (sourceId: string, quote: string) => ({ sourceId, quote });
+  const entryDecisions = {
+    method: 'binary-public-support-v4' as const,
+    originTraceability: { verdict: 'PASS' as const, rationale: 'The original project profile is reviewed for this contract relationship.', citations: [citation('project-profile', profileText)] },
+    leadership: { verdict: 'PASS' as const, basis: 'PRIMARY_PUBLIC_SUPPORT' as const,
+      rationale: 'The independent review proposes primary support from the dated project post.', citations: [citation('project-post', postText)] },
+    representations: { verdict: 'FAIL' as const, rationale: 'The retained search does not establish a complete representation set.', citations: [citation('comparison-source', read.sources.find(source => source.id === 'comparison-source')!.text)] },
+    explainableThesis: { verdict: 'PASS' as const, rationale: 'The project profile explains the token relationship in ordinary language.', citations: [citation('project-profile', profileText)] },
+    inspectionComplete: true, sourceIds: scope.sourceIds,
+  };
+  const review = {
+    entryDecisions,
+    decisions: [
+      { id: 'origin-claim', accepted: true, rationale: 'The original contract claim is accepted from the project profile.' },
+      { id: 'origin-post-label', accepted: true, rationale: 'The dated primary post receives an accepted NEWS disposition.' },
+    ],
+    candidateSet: { complete: false, rationale: 'The bounded search does not establish complete rival representation coverage.' },
+    originRelationship: { status: 'SUPPORTED' as const, citations: [citation('project-post', postText)],
+      rationale: 'The dated post is independently reviewed as a primary project relationship.' },
+  };
+
+  assert.equal(qualifiedBinaryEntryDecisions(read, review, TOKEN, CUTOFF)?.method, 'binary-public-support-v4',
+    'the structural gate checks schema, literals, and scope but does not by itself certify a positive route');
+  const rows = deriveAttention(read, proposal, review, TOKEN, CUTOFF, ['source', 'review'], true);
+  const a03 = rows.find(row => row.id === 'A03')!;
+  const a14 = rows.find(row => row.id === 'A14')!;
+  assert.equal(a03.quality, 'KNOWN');
+  assert.equal(a03.projection?.value, true, 'the factual A03 assessment remains unchanged');
+  assert.equal((a14.data as { originRelationship?: { status?: string } }).originRelationship?.status, 'UNKNOWN',
+    'a reviewer claim cannot turn the nonliteral metadata relation into a code-owned primary source root');
+  assert.equal((a14.data as { entryDecisionMethod?: string }).entryDecisionMethod, undefined,
+    'the structurally valid but source-ineligible leadership positive does not set CAN-02');
+});
+
+test('current empty attention searches fail only the new entry gate after complete independent inspection', () => {
+  const fixture = () => {
+    const read = publicEntryRead();
+    read.leadershipPositiveMethod = 'source-bound-positive-v1';
+    read.queries = [`"${TOKEN.address}" base narrative origin catalyst`, `"${TOKEN.address}" (site:x.com OR site:twitter.com)`, 'River Lantern representations'];
+    read.postSampleComplete = true;
+    const scope = entryEvidenceScope(read, TOKEN, CUTOFF);
+    assert.equal(scope.complete, true, JSON.stringify(scope));
+    const citation = (sourceId: string) => ({ sourceId, quote: read.sources.find(source => source.id === sourceId)!.text });
+    const review = {
+      entryDecisions: {
+        method: 'binary-public-support-v4' as const,
+        originTraceability: { verdict: 'FAIL' as const, rationale: 'The complete reviewed sources do not establish a current primary origin route.', citations: [citation('origin-source')] },
+        leadership: { verdict: 'FAIL' as const, basis: 'EVIDENCE_INADEQUACY' as const, rationale: 'The complete reviewed sources do not establish current independent public attention.', citations: [citation('origin-source')] },
+        representations: { verdict: 'FAIL' as const, rationale: 'The retained comparison scope does not establish complete public representation.', citations: [citation('comparison-source')] },
+        explainableThesis: { verdict: 'FAIL' as const, rationale: 'The retained source does not explain a current public token narrative.', citations: [citation('origin-source')] },
+        inspectionComplete: true,
+        sourceIds: scope.sourceIds,
+      },
+      decisions: [],
+      candidateSet: { complete: false, rationale: 'The bounded sample does not establish a complete representation set.' },
+      originRelationship: { status: 'UNKNOWN' as const, citations: [], rationale: 'No dated primary project post establishes the origin relationship.' },
+    };
+    const proposal = { claims: [], posts: [], competitors: [] };
+    assert.equal(qualifiedBinaryEntryDecisions(read, review, TOKEN, CUTOFF)?.method, 'binary-public-support-v4');
+    return { read, review, proposal };
+  };
+  const rowsFor = (value: ReturnType<typeof fixture>, entryGroups: boolean) => deriveAttention(
+    value.read, value.proposal, value.review, TOKEN, CUTOFF, ['source', 'review'], true, entryGroups,
+  );
+  const gate = (rows: ReturnType<typeof rowsFor>, id: 'A15' | 'A18') => rows.find(row => row.id === id)!;
+
+  const complete = fixture();
+  const currentRows = rowsFor(complete, true);
+  for (const id of ['A15', 'A18'] as const) {
+    const row = gate(currentRows, id);
+    assert.equal(row.quality, 'MISSING', `${id} remains a factual count/growth measurement, not an inferred zero`);
+    assert.equal(row.projection?.value, null, `${id} has no computed factual count or growth value`);
+    const data = row.data as { method?: string; entryCriterion?: string; verdict?: string; postSampleScope?: { method?: string; complete?: boolean; sourceIds?: string[] }; factualAssessment?: { quality?: string; value?: boolean | null } };
+    assert.equal(data.method, 'entry-evidence-gate-v1');
+    assert.equal(data.verdict, 'FAIL');
+    assert.equal(data.postSampleScope?.method, 'reviewed-empty-post-scope-v1');
+    assert.equal(data.postSampleScope?.complete, true);
+    assert.deepEqual(data.postSampleScope?.sourceIds, []);
+    assert.equal(data.factualAssessment?.quality, 'MISSING', 'entry failure does not invent factual counts or growth');
+    assert.equal(data.factualAssessment?.value, null);
+  }
+
+  const legacyRows = rowsFor(complete, false);
+  for (const id of ['A15', 'A18'] as const) {
+    assert.equal(gate(legacyRows, id).quality, 'MISSING', 'legacy calls keep their prior result');
+    assert.notEqual((gate(legacyRows, id).data as { method?: string }).method, 'entry-evidence-gate-v1');
+  }
+
+  const unresolved = (mutate: (value: ReturnType<typeof fixture>) => void, name: string) => {
+    const value = fixture();
+    mutate(value);
+    const rows = rowsFor(value, true);
+    for (const id of ['A15', 'A18'] as const) {
+      assert.equal(gate(rows, id).quality, 'MISSING', `${name}: ${id}`);
+      assert.equal(gate(rows, id).projection?.value, null, `${name}: ${id}`);
+      assert.notEqual((gate(rows, id).data as { method?: string }).method, 'entry-evidence-gate-v1', `${name}: ${id}`);
+    }
+  };
+  unresolved(value => {
+    value.read.postSampleComplete = false;
+    value.read.rawArtifacts['attention-search-2'] = JSON.stringify({ error: 'search transport timeout' });
+  }, 'transport failure');
+  unresolved(value => {
+    value.read.rawArtifacts['attention-search-2'] = JSON.stringify({ results: [{ url: 'https://x.com/account/status/123' }], errors: [] });
+  }, 'an omitted discovered post');
+  unresolved(value => {
+    (value.review.entryDecisions as { inspectionComplete: boolean }).inspectionComplete = false;
+  }, 'incomplete independent inspection');
+});
+
+test('fresh entry-first v2 independently grades the explainable thesis and rejects unbound anchors', () => {
+  const run = (options: { finalVerdict?: 'PASS' | 'FAIL'; wrongDraft?: boolean; wrongAnchor?: boolean; omitFinal?: boolean } = {}) => {
+    const read = publicEntryRead();
+    read.entryExecutionMethod = 'entry-first-v2';
+    const artifacts: Record<string, string> = {};
+    const program = binaryEntryDecisionProgram(read, null, null, TOKEN, CUTOFF, artifacts);
+    let step = program.next();
+    while (!step.done) {
+      const packet = JSON.parse(step.value.prompt) as {
+        method: string; explainableCitationSourceIds: string[]; sources: PacketSource[]; draft?: unknown;
+      };
+      assert.equal(packet.method, 'binary-public-support-v3');
+      assert.deepEqual(packet.explainableCitationSourceIds, ['origin-source']);
+      const reviewing = packet.draft !== undefined;
+      const citationSource = options.wrongAnchor && reviewing ? 'comparison-source' : 'origin-source';
+      const citation = { sourceId: citationSource, spanId: packet.sources.find(source => source.id === citationSource)!.spans[0]!.id };
+      const finalThesis = options.finalVerdict ?? 'PASS';
+      const response: Record<string, unknown> = {
+        originTraceability: { verdict: reviewing ? 'FAIL' : 'PASS', rationale: 'The retained source identifies the exact token catalyst.', citation: { sourceId: 'origin-source', spanId: spanId(packet, 'origin-source') } },
+        leadership: { verdict: 'FAIL', rationale: 'No measured leadership appears in the complete retained sample.', citation: { sourceId: 'comparison-source', spanId: packet.sources.find(source => source.id === 'comparison-source')!.spans[0]!.id } },
+        representations: { verdict: 'FAIL', rationale: 'The available comparison evidence does not establish complete rival coverage.', citation: { sourceId: 'comparison-source', spanId: packet.sources.find(source => source.id === 'comparison-source')!.spans[0]!.id } },
+        explainableThesis: {
+          verdict: reviewing ? (options.wrongDraft ? 'PASS' : finalThesis) : options.wrongDraft ? 'FAIL' : 'PASS',
+          rationale: 'The project narrative and its relation to this exact token are explained in ordinary language.', citation,
+        },
+        inspectionComplete: true,
+      };
+      if (options.omitFinal && reviewing) delete response.explainableThesis;
+      artifacts[`${step.value.id}-response`] = JSON.stringify({
+        candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(response) }] } }],
+      });
+      step = program.next(response);
+    }
+    return { decisions: step.value, artifacts, read };
+  };
+
+  const accepted = run({ finalVerdict: 'PASS', wrongDraft: true });
+  assert.equal(accepted.decisions?.method, 'binary-public-support-v3');
+  assert.ok(accepted.decisions && 'explainableThesis' in accepted.decisions);
+  assert.equal(accepted.decisions.explainableThesis.verdict, 'PASS', 'the independent final grade controls the criterion');
+  const reconstructed = decodeBinaryEntryDecisions(accepted.read, null, null, TOKEN, CUTOFF, accepted.artifacts);
+  assert.ok(reconstructed && 'explainableThesis' in reconstructed);
+  assert.equal(reconstructed.explainableThesis.verdict, 'PASS');
+
+  const rejected = run({ finalVerdict: 'FAIL' });
+  assert.ok(rejected.decisions && 'explainableThesis' in rejected.decisions);
+  assert.equal(rejected.decisions.explainableThesis.verdict, 'FAIL');
+  assert.throws(() => run({ omitFinal: true }), /explainableThesis/,
+    'fresh v2 entry execution requires the independent fourth criterion');
+  assert.throws(() => run({ wrongAnchor: true }), /ATT_MODEL_ENTRY_CITATION_INVALID/,
+    'a comparison-only source cannot anchor the target token thesis');
+});
+
+test('a known factual A05 claim keeps priority over a negative v3 entry grade', () => {
+  const read = publicEntryRead();
+  read.entryExecutionMethod = 'entry-first-v2';
+  const origin = read.sources.find(source => source.id === 'origin-source')!;
+  origin.text = `At the River Lantern launchpad, participants pay a fee for each trade using this exact token ${TOKEN.address}, and each fee is permanently removed from circulation.`;
+  const fetch = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+  const original = fetch.results.find(result => result.url === origin.url)!;
+  original.text = origin.text;
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetch);
+  const scope = entryEvidenceScope(read, TOKEN, CUTOFF);
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  const cite = (quote: string) => ({ sourceId: origin.id, quote });
+  const grade = (verdict: 'PASS' | 'FAIL') => ({ verdict, rationale: `The complete source supports the independently reviewed ${verdict.toLowerCase()} entry grade.`, citations: [cite(origin.text.slice(0, 120))] });
+  const entryDecisions = {
+    method: 'binary-public-support-v3' as const,
+    originTraceability: grade('FAIL'), leadership: grade('FAIL'), representations: grade('FAIL'), explainableThesis: grade('FAIL'),
+    inspectionComplete: true, sourceIds: scope.sourceIds,
+  };
+  const proposal = {
+    claims: [{
+      id: 'claim-a05', feature: 'A05' as const, value: true,
+      summary: 'The launchpad uses this token for fees and removes each fee from circulation.',
+      citations: [cite(origin.text.slice(0, 120))],
+      explanation: {
+        referent: 'The River Lantern trading launchpad',
+        interest: 'Each trade pays a fee that leaves circulation.',
+        tokenRelation: `This exact token ${TOKEN.address} pays those fees.`, prerequisites: [],
+      },
+    }], posts: [], competitors: [],
+  };
+  const review = {
+    entryDecisions, decisions: [{ id: 'claim-a05', accepted: true, rationale: 'The cited complete source directly supports the factual explanation.' }],
+    candidateSet: { complete: false, rationale: 'The bounded source set does not establish complete rival representation coverage.' },
+    originRelationship: { status: 'UNKNOWN' as const, citations: [], rationale: 'The source does not independently establish a primary origin relationship.' },
+  };
+  const a05 = deriveAttention(read, proposal, review, TOKEN, CUTOFF, ['source', 'review'], true).find(row => row.id === 'A05')!;
+  assert.equal(a05.quality, 'KNOWN');
+  assert.equal(a05.projection?.value, true);
+  assert.equal((a05.data as { method?: string }).method, 'automated-source-review-v1',
+    'the public entry grade does not overwrite a separately known factual assessment');
+});
+
+test('fresh public-support acquisition performs exact recovery and entry review without factual comparison qualification', async () => {
+  const read = publicEntryRead();
+  const origin = read.sources.find(source => source.id === 'origin-source')!;
+  const comparison = read.sources.find(source => source.id === 'comparison-source')!;
+  const lead = read.comparisonAcquisition!.leads[0]!;
+  read.sources = [origin];
+  read.comparisonSourceIds = [];
+  read.comparisonComplete = false;
+  delete read.comparisonQualification;
+  read.comparisonAcquisition = {
+    originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1,
+    leads: [{ ...lead, sourceIds: [], acquisitionStatus: 'FAILED', acquisitionCodes: ['ATT_LEAD_FAILED'], recoveryQueryIds: [], recoverySourceIds: [] }],
+  };
+  read.rawArtifacts['attention-fetch-1'] = JSON.stringify({
+    results: [{ url: origin.url, final_url: origin.url, text: origin.text }],
+    errors: [{ url: comparison.url, status: 403, error: 'forbidden' }],
+  });
+
+  const recoveryUrl = 'https://independent.example/river-lantern-project';
+  const recoveryText = `The River Lantern project describes its neighborhood art theme and token ${TOKEN.address}.`;
+  const modelPackets: Record<string, unknown>[] = [];
+  const tinyfishSearches: string[] = [];
+  const tinyfishFetches: string[][] = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'api.search.tinyfish.ai') {
+      const query = url.searchParams.get('query') ?? '';
+      tinyfishSearches.push(query);
+      return new Response(JSON.stringify({ results: [{ url: recoveryUrl, title: 'River Lantern project', snippet: 'Neighborhood art token project.' }], errors: [] }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (url.hostname === 'api.fetch.tinyfish.ai') {
+      const body = JSON.parse(String(init?.body)) as { urls: string[] };
+      tinyfishFetches.push(body.urls);
+      return new Response(JSON.stringify({ results: body.urls.map(requested => ({ url: requested, final_url: requested, text: recoveryText })), errors: [] }), { headers: { 'content-type': 'application/json' } });
+    }
+    assert.equal(url.hostname, 'generativelanguage.googleapis.com');
+    const body = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
+    const packet = JSON.parse(body.contents[0]!.parts[0]!.text) as Record<string, unknown>;
+    modelPackets.push(packet);
+
+    if (packet.method === 'binary-public-support-v3') {
+      const sources = packet.sources as PacketSource[];
+      const originPacket = sources.find(source => source.id === 'origin-source')!;
+      const recoveredPacket = sources.find(source => source.id !== 'origin-source')!;
+      const citation = (source: PacketSource) => ({ sourceId: source.id, spanId: source.spans.find(span => span.text.includes(TOKEN.address))!.id });
+      return envelope({
+        originTraceability: { verdict: 'FAIL', rationale: 'The complete retained sample does not show an origin event linked to the exact token.', citation: citation(originPacket) },
+        leadership: { verdict: 'FAIL', rationale: 'No comparative attention measurements establish leadership in this retained sample.', citation: citation(recoveredPacket) },
+        representations: { verdict: 'FAIL', rationale: 'The retained sample does not complete relevant representation binding.', citation: citation(recoveredPacket) },
+        explainableThesis: { verdict: 'FAIL', rationale: 'The retained public evidence does not explain the narrative interest and this token connection.', citation: citation(originPacket) },
+        inspectionComplete: true,
+      });
+    }
+
+    if (Array.isArray(packet.selectedLeadIds) && Array.isArray(packet.leads) && Array.isArray(packet.metadata)) {
+      const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+      const metadata = packet.metadata as Array<{ id: string; spans: Span[] }>;
+      return envelope({ leads: selected.map(item => {
+        const descriptor = metadata.find(source => source.id === item.metadataEvidenceId)!;
+        return {
+          leadId: item.id,
+          queries: ['River Lantern neighborhood art token independent project source'],
+          rationale: 'Identify the indexed project through independent descriptive sources.',
+          metadataRefs: [{ sourceId: descriptor.id, spanId: descriptor.spans[0]!.id }],
+        };
+      }) });
+    }
+
+    if ('proposal' in packet) return envelope(reviewWire(packet));
+    const source = (packet.sources as PacketSource[]).find(item => item.id === 'origin-source')!;
+    return envelope({
+      claims: [{ id: 'narrative-claim', feature: 'A01', value: true, summary: 'The River Lantern project ties its neighborhood art narrative to this exact token.', citations: [{ sourceId: source.id, spanId: source.spans.find(span => span.text.includes(TOKEN.address))!.id }] }],
+      posts: {}, competitors: [],
+    });
+  };
+
+  const result = await qualifyAttention(read, TOKEN, KEY, fetcher, async () => {}, {
+    tinyfishKey: 'tinyfish-test-key', now: () => CUTOFF, representationScreen: true,
+  });
+
+  const qualified = result.scope!;
+  assert.equal(result.code, undefined);
+  assert.equal(qualified.entryExecutionMethod, 'entry-first-v2');
+  assert.equal(qualified.comparisonComplete, false);
+  assert.equal(qualified.comparisonQualification, undefined);
+  assert.equal(qualified.comparisonRecovery?.method, 'comparison-acquisition-v1');
+  assert.deepEqual(qualified.comparisonRecovery?.selectedLeadIds, ['comparison-lead-1']);
+  assert.equal(qualified.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(qualified.comparisonRecovery));
+  assert.ok(qualified.sources.some(source => source.url === recoveryUrl && source.text === recoveryText), 'the failed original page receives real Search and Fetch recovery');
+  assert.deepEqual(tinyfishSearches, ['River Lantern neighborhood art token independent project source']);
+  assert.deepEqual(tinyfishFetches, [[recoveryUrl]]);
+  const entryScope = entryEvidenceScope(qualified, TOKEN, CUTOFF);
+  assert.equal(entryScope.complete, true, JSON.stringify(entryScope));
+  assert.equal(result.review?.entryDecisions?.method, 'binary-public-support-v3', 'the existing two-pass entry review also grades explainability over complete retained sources');
+  assert.equal(result.review?.entryDecisions?.explainableThesis.verdict, 'FAIL');
+  assert.equal(modelPackets.filter(packet => packet.method === 'binary-public-support-v3').length, 2);
+  assert.equal(modelPackets.filter(packet => Array.isArray(packet.operands) || packet.requiredLeadDecisionGroups !== undefined).length, 0,
+    'the fresh route does not issue factual comparison accounting/task prompts');
+  assert.equal(Object.keys(qualified.rawArtifacts).some(id => /comparison-lead-(?:proposal|review)|comparison-final-review/.test(id)), false);
+});
+
+test('real original timeout plus successful own alternate acquisition dispatches the same independent entry pair', async () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const targetUrl = 'https://public.example/river-lantern-market';
+  const alternateUrl = 'https://independent.example/river-lantern-project';
+  const query = 'Identify the indexed River Lantern market record and independent project sources';
+  const originText = `The River Lantern arts project explains its community theme and identifies ${TOKEN.address} as its launch token.`;
+  const alternateText = `An independent River Lantern project source describes the community arts theme and binds token ${TOKEN.address} to that project.`;
+
+  const collectOriginal = async () => {
+    let searchCall = 0;
+    let fetchCall = 0;
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'api.search.tinyfish.ai') {
+        const call = searchCall++;
+        const results = call < 2 ? [{ url: originUrl }]
+          : call === 2 ? [{ url: targetUrl, title: 'River Lantern market record', snippet: 'An indexed public market record.' }]
+            : [];
+        return new Response(JSON.stringify({ results, errors: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      assert.equal(url.hostname, 'api.fetch.tinyfish.ai');
+      fetchCall++;
+      const requested = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+      return new Response(JSON.stringify({
+        results: requested.includes(originUrl) ? [{ url: originUrl, final_url: originUrl, text: originText }] : [],
+        errors: requested.includes(targetUrl) ? [{ url: targetUrl, error: 'timeout' }] : [],
+      }), { headers: { 'content-type': 'application/json' } });
+    };
+    const read = await collectAttentionSources(TOKEN, KEY, fetcher, () => CUTOFF, 'River Lantern', [], undefined, 'public-support-v2');
+    assert.equal(fetchCall, 2, 'both the original request and its actual bounded retry return successful JSON envelopes');
+    const outcomes = JSON.parse(read.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+    assert.deepEqual(outcomes.outcomes.filter(row => row.artifactId.startsWith('attention-fetch-')),
+      [{ artifactId: 'attention-fetch-1', status: 200 }, { artifactId: 'attention-fetch-1-retry-1', status: 200 }]);
+    assert.equal(entryEvidenceScope(read, TOKEN, CUTOFF).complete, false,
+      'the original per-URL timeout is not reviewable before alternate acquisition finishes');
+    return read;
+  };
+
+  const run = async (finalVerdict: 'PASS' | 'FAIL') => {
+    const initial = await collectOriginal();
+    const observedPackets: Record<string, unknown>[] = [];
+    const model = mockModel(packet => {
+      if (packet.method === 'binary-public-support-v4') {
+        const final = Object.hasOwn(packet, 'draft');
+        const verdict = final ? finalVerdict : 'PASS';
+        const sourceIds = (packet.sources as PacketSource[]).map(source => source.id);
+        const originId = sourceIds.find(id => id.startsWith('attention-page-'))!;
+        const alternateId = sourceIds.find(id => id.startsWith('attention-recovery-page-'))!;
+        const grade = (sourceId: string, includes: string) => ({ verdict,
+          rationale: `The complete independent review reaches its own ${verdict} judgment from the supplied public source.`,
+          citation: { sourceId, spanId: spanId(packet, sourceId, includes) },
+        });
+        const options = packet.leadershipPositiveOptions as {
+          primary: Array<{ sourceId: string; spanId: string }>;
+          measured: Array<{ sourceId: string; spanId: string }>;
+        };
+        const primary = options.primary[0];
+        const measured = options.measured[0];
+        const leadership = final && verdict === 'PASS' && (primary || measured)
+          ? {
+            verdict: 'PASS',
+            basis: primary ? 'PRIMARY_PUBLIC_SUPPORT' : 'MEASURED_ATTENTION',
+            rationale: 'The independent review selects an available code-owned positive route.',
+            citation: primary ?? measured,
+          }
+          : {
+            verdict: 'FAIL', basis: 'EVIDENCE_INADEQUACY',
+            rationale: 'The retained alternate acquisition does not itself establish a code-owned positive leadership route.',
+            citation: { sourceId: originId, spanId: spanId(packet, originId, TOKEN.address) },
+          };
+        return {
+          originTraceability: grade(originId, TOKEN.address),
+          leadership,
+          representations: grade(alternateId, TOKEN.address),
+          explainableThesis: grade(originId, 'River Lantern'),
+          inspectionComplete: true,
+        };
+      }
+      if (Array.isArray(packet.selectedLeadIds) && Array.isArray(packet.leads) && Array.isArray(packet.metadata)) {
+        const selected = packet.leads as Array<{ id: string; metadataEvidenceId: string }>;
+        const metadata = packet.metadata as Array<{ id: string; spans: Span[] }>;
+        return { leads: selected.map(item => {
+          const descriptor = metadata.find(source => source.id === item.metadataEvidenceId)!;
+          return { leadId: item.id, queries: [query], rationale: 'Identify the indexed subject through an independent project source.',
+            metadataRefs: [{ sourceId: descriptor.id, spanId: descriptor.spans[0]!.id }] };
+        }) };
+      }
+      if (packet.proposal) return reviewWire(packet);
+      const sources = packet.sources as PacketSource[];
+      const cited = sources.find(source => source.spans.some(span => span.text.includes(TOKEN.address)));
+      assert.ok(cited, 'the original collector packet retains its exact-token source');
+      const citedSpan = cited.spans.find(span => span.text.includes(TOKEN.address))!;
+      return {
+        claims: [{ id: 'claim-timeout-scope', feature: 'A01', value: true,
+          summary: 'The retained source describes the River Lantern community project.',
+          citations: [{ sourceId: cited.id, spanId: citedSpan.id }] }],
+        posts: Object.fromEntries(((packet.requiredPostSourceIds as string[] | undefined) ?? []).map(id => [id, {
+          spanId: spanId(packet, id), role: 'OTHER',
+        }])),
+        competitors: [],
+      };
+    });
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'api.search.tinyfish.ai') return new Response(JSON.stringify({ results: [{ url: alternateUrl,
+        title: 'River Lantern project source', snippet: 'Independent arts project and token record.' }], errors: [] }), { headers: { 'content-type': 'application/json' } });
+      if (url.hostname === 'api.fetch.tinyfish.ai') {
+        const requested = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+        return new Response(JSON.stringify({ results: requested.map(requestedUrl => ({ url: requestedUrl, final_url: requestedUrl, text: alternateText })), errors: [] }), { headers: { 'content-type': 'application/json' } });
+      }
+      const body = JSON.parse(String(init?.body)) as { contents: Array<{ parts: Array<{ text: string }> }> };
+      observedPackets.push(JSON.parse(body.contents[0]!.parts[0]!.text) as Record<string, unknown>);
+      return model.fetcher(input, init);
+    };
+    const result = await qualifyAttention(initial, TOKEN, KEY, fetcher, async () => {}, {
+      tinyfishKey: 'tinyfish-test-key', now: () => CUTOFF, representationScreen: true,
+    });
+    assert.equal(result.code, undefined);
+    assert.equal(result.scope?.entryExecutionMethod, 'entry-first-v2');
+    assert.equal(result.scope?.comparisonRecovery?.fallbackSelectionMethod, 'observed-hosts-v1');
+    assert.equal(result.scope?.comparisonRecovery?.accessGapMethod, 'own-acquired-alternates-v1');
+    assert.equal(JSON.parse(result.scope?.rawArtifacts['attention-recovery-fallback-scope'] ?? 'null').method,
+      'same-parent-alternates-v2', 'fresh acquisition-only qualification emits the versioned fallback receipt even with no fallback rounds');
+    assert.equal(result.scope?.rawArtifacts['attention-entry-first-acquisition'], JSON.stringify(result.scope?.comparisonRecovery),
+      'the acquisition marker is the exact serialized qualified receipt');
+    assert.equal(result.scope?.comparisonComplete, false);
+    assert.equal(result.scope?.comparisonQualification, undefined, 'the recovery does not create factual comparison accounting');
+    assert.equal(result.scope?.comparisonCoverage, undefined, 'entry support does not invent comparison counts or completeness');
+    const scope = entryEvidenceScope(result.scope!, TOKEN, CUTOFF);
+    assert.equal(scope.complete, true, JSON.stringify(scope));
+    assert.deepEqual(scope.gaps.map(gap => [gap.code, gap.cause, gap.originalAttemptIds]),
+      [['TARGET_ACCESS_GAP', 'ATT_FETCH_TIMEOUT', ['attention-fetch-1', 'attention-fetch-1-retry-1']]]);
+    assert.equal(result.review?.entryDecisions?.method, 'binary-public-support-v4');
+    assert.deepEqual([
+      result.review?.entryDecisions?.originTraceability.verdict,
+      result.review?.entryDecisions?.leadership.verdict,
+      result.review?.entryDecisions?.representations.verdict,
+      result.review?.entryDecisions?.explainableThesis.verdict,
+    ], [finalVerdict, finalVerdict === 'PASS'
+      && ((observedPackets.at(-1)?.leadershipPositiveOptions as { primary?: unknown[]; measured?: unknown[] } | undefined)?.primary?.length
+        || (observedPackets.at(-1)?.leadershipPositiveOptions as { measured?: unknown[] } | undefined)?.measured?.length)
+      ? 'PASS' : 'FAIL', finalVerdict, finalVerdict],
+    'a final positive leadership grade requires an available source-bound option');
+    const entryPackets = observedPackets.filter(packet => packet.method === 'binary-public-support-v4');
+    assert.equal(entryPackets.length, 2, 'the existing proposal and independent review pair is dispatched exactly once');
+    for (const packet of entryPackets) {
+      assert.equal(packet.accessGapMethod, 'own-acquired-alternates-v1');
+      assert.match(String(packet.instruction), /contents and indexed-subject relationship remain unresolved/);
+      const packetScope = packet.scope as {
+        fallbackSelectionMethod?: string; comparisonComplete?: boolean;
+        gaps: Array<{ code: string; cause: string }>; sourceIds: string[];
+      };
+      assert.equal(packetScope.fallbackSelectionMethod, 'observed-hosts-v1');
+      assert.notEqual(packetScope.comparisonComplete, true,
+        'the public-entry packet does not claim factual comparison completion');
+      assert.ok(packetScope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP' && gap.cause === 'ATT_FETCH_TIMEOUT'));
+      assert.ok(packetScope.sourceIds.some(id => id.startsWith('attention-recovery-page-')));
+      assert.equal((packet.recoveryQueries as Array<{ query: string }>)[0]?.query, query);
+    }
+  };
+
+  await run('FAIL');
+  await run('PASS');
+});
+
+test('original-role Fetch success gates the production independent entry pair', () => {
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const roleUrl = 'https://market.example/river-lantern-index';
+  const alternateUrl = 'https://public.example/river-lantern-comparison';
+  const originText = `The River Lantern project identifies ${TOKEN.address} as a token catalyst.`;
+  const alternateText = 'The retained comparison source describes the River Lantern project and its public representation.';
+  const readForRoleOutcome = (fetchStatus: number | null): AttentionRead => {
+    const read = publicEntryRead();
+    read.entryExecutionMethod = 'entry-first-v2';
+    read.discoveryUrls = [originUrl, roleUrl, alternateUrl];
+    read.comparisonRecovery = { method: 'comparison-acquisition-v1', accessGapMethod: 'own-acquired-alternates-v1',
+      selectedLeadIds: ['comparison-lead-1'], recoveryQueries: [], recoveryCapped: false, sourceLineage: [] };
+    const search = JSON.parse(read.rawArtifacts['attention-search-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+    search.results.push({ url: roleUrl, title: 'River Lantern market index', snippet: 'An indexed original market record.' });
+    read.rawArtifacts['attention-search-1'] = JSON.stringify(search);
+    const fetch = JSON.parse(read.rawArtifacts['attention-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: Array<Record<string, unknown>> };
+    fetch.results[0] = { url: originUrl, final_url: originUrl, text: originText };
+    fetch.errors.push({ url: roleUrl, error: 'timeout' });
+    read.rawArtifacts['attention-fetch-1'] = JSON.stringify(fetch);
+    read.rawArtifacts['attention-fetch-1-retry-1'] = JSON.stringify({ results: [], errors: [{ url: roleUrl, error: 'timeout' }] });
+    read.rawArtifacts['attention-http-outcomes'] = JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+      { artifactId: 'attention-fetch-1', status: 200 }, { artifactId: 'attention-fetch-1-retry-1', status: 200 },
+    ] });
+    read.rawArtifacts['attention-origin-role-1-search-query'] = originRecoveryQuery(read, TOKEN, roleUrl);
+    read.rawArtifacts['attention-origin-role-1-search'] = JSON.stringify({ results: [{ url: alternateUrl }], errors: [] });
+    read.rawArtifacts['attention-origin-role-1-fetch'] = JSON.stringify({ results: [
+      { url: alternateUrl, final_url: alternateUrl, text: alternateText },
+    ], errors: [] });
+    read.rawArtifacts['attention-origin-http-outcomes'] = JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+      { artifactId: 'attention-origin-role-1-search', status: 200 },
+      ...(fetchStatus === null ? [] : [{ artifactId: 'attention-origin-role-1-fetch', status: fetchStatus }]),
+    ] });
+    read.queries[0] = `"${TOKEN.address}" origin`;
+    read.sources[0] = { ...read.sources[0]!, text: originText };
+    return read;
+  };
+  const makeWire = (read: AttentionRead, verdict: 'PASS' | 'FAIL') => {
+    const originId = 'origin-source';
+    const alternateId = 'comparison-source';
+    const grade = (sourceId: string, includes: string) => {
+      const source = read.sources.find(row => row.id === sourceId)!;
+      const span = sourceSpans(source.id, source.text).find(row => row.text.includes(includes))!;
+      assert.ok(span, `missing ${includes} span in ${sourceId}`);
+      return { verdict, rationale: `The complete retained source review grounds this ${verdict.toLowerCase()} judgment.`,
+        citation: { sourceId, spanId: span.id } };
+    };
+    return { originTraceability: grade(originId, TOKEN.address), leadership: grade(alternateId, 'River Lantern'),
+      representations: grade(alternateId, 'River Lantern'), explainableThesis: grade(originId, TOKEN.address), inspectionComplete: true };
+  };
+
+  const eligibleRead = readForRoleOutcome(200);
+  const eligibleScope = entryEvidenceScope(eligibleRead, TOKEN, CUTOFF);
+  assert.equal(eligibleScope.complete, true, JSON.stringify(eligibleScope));
+  assert.equal(eligibleScope.gaps[0]?.originalRoleId, 'attention-origin-role-1');
+  const program = binaryEntryDecisionProgram(eligibleRead, {}, {}, TOKEN, CUTOFF, {});
+  const draftCall = program.next();
+  if (draftCall.done) throw new Error('the completed own-role acquisition must dispatch the entry proposal');
+  assert.equal(draftCall.value.id, 'attention-leadership-proposal');
+  const reviewCall = program.next(makeWire(eligibleRead, 'PASS'));
+  if (reviewCall.done) throw new Error('the entry proposal must be followed by the independent review');
+  assert.equal(reviewCall.value.id, 'attention-leadership-review');
+  assert.equal(reviewCall.value.prompt.includes('attention-origin-role-1'), true,
+    'the independent pair receives the role-qualified source gap ledger');
+  const finalized = program.next(makeWire(eligibleRead, 'FAIL'));
+  if (!finalized.done) throw new Error('the independent final response must complete the entry pair');
+  assert.equal(finalized.value?.originTraceability.verdict, 'FAIL', 'the independent final may make a grounded negative grade');
+
+  for (const [name, status] of [['HTTP 503', 503], ['HTTP 429', 429], ['missing outcome', null]] as const) {
+    const blockedRead = readForRoleOutcome(status);
+    const scope = entryEvidenceScope(blockedRead, TOKEN, CUTOFF);
+    assert.equal(scope.complete, false, `${name}: ${JSON.stringify(scope)}`);
+    assert.equal(scope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false);
+    const blockedProgram = binaryEntryDecisionProgram(blockedRead, {}, {}, TOKEN, CUTOFF, {});
+    const first = blockedProgram.next();
+    assert.equal(first.done, true, `${name} prevents both public-entry model requests`);
+    assert.equal(first.value, null);
+  }
 });
 
 test('each Gemini pass keeps its own ninety-second timeout', async () => {

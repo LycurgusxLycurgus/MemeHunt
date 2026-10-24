@@ -1,0 +1,353 @@
+{
+  "token": {
+    "chain": "solana",
+    "address": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk"
+  },
+  "cutoff": "2026-10-20T22:10:43.943Z",
+  "profile": {
+    "id": "memecoin-research-starter-v1",
+    "sizeUsd": "25",
+    "horizonSeconds": 21600,
+    "risk": {
+      "maxTransferFeeBps": "100",
+      "maxEntryImpactBps": "200",
+      "maxExitImpactBps": "300",
+      "maxRoundTripLossBps": "1000",
+      "maxDirectControlShare": "0.10",
+      "maxRemovableLiquidityShare": "0.10"
+    },
+    "stage": {
+      "ageBands": [
+        {
+          "name": "ALL_AGES",
+          "minSeconds": 0,
+          "maxSeconds": null
+        }
+      ]
+    }
+  },
+  "features": [],
+  "observations": [],
+  "evidence": [
+    {
+      "id": "rpc-genesis",
+      "sourceId": "solana-rpc",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:39.619Z",
+      "availableAt": "2026-10-20T22:10:39.619Z",
+      "contentHash": "4c7d22c9fc5f5b5da1bb5c38dcb7cfa3014e7ea0e1334a6220663cebcc2acdf8",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "method": "getGenesisHash",
+        "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+      }
+    },
+    {
+      "id": "rpc-account",
+      "sourceId": "solana-rpc",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:39.814Z",
+      "availableAt": "2026-10-20T22:10:39.814Z",
+      "contentHash": "6adc10a33694008522053630150c7caca9a7e89fb91c4dbc2f7df8a8795a9807",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "method": "getAccountInfo",
+        "commitment": "finalized",
+        "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "slot": 459390984
+      }
+    },
+    {
+      "id": "native-route-scout",
+      "sourceId": "venue-discovery-rpc",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:41.694Z",
+      "availableAt": "2026-10-20T22:10:41.694Z",
+      "contentHash": "ecd146cd9d94bd05b47406d6ac7b3a499c1939377df8f571495cb31c72912832",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "method": "getMultipleAccounts",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "candidatePools": [
+          "E1TttCLjSo1UzB7yERynmqYLhHtg9yyA8qfFhNr1mrQp",
+          "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+        ]
+      }
+    },
+    {
+      "id": "damm-route-selection",
+      "sourceId": "meteora-damm-derived",
+      "sourceType": "CALCULATION",
+      "retrievedAt": "2026-10-20T22:10:43.941Z",
+      "availableAt": "2026-10-20T22:10:43.941Z",
+      "contentHash": "453a1602da8f9e13b2a714fbda138a8d0de2afc881847e7743bd48b6f00a5d9f",
+      "adapterVersion": "live-v1",
+      "accessMode": "LOCAL_DERIVED",
+      "scope": {
+        "method": "verified-native-route-v1"
+      }
+    },
+    {
+      "id": "damm-pool",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:41.895Z",
+      "availableAt": "2026-10-20T22:10:41.895Z",
+      "contentHash": "a9224f6fe69a7785db214a5620a86efbf1839c718be14a2cb381dee100e1d190",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-pool",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "pump-sol-usd",
+      "sourceId": "dexscreener",
+      "sourceType": "MARKET_API",
+      "retrievedAt": "2026-10-20T22:10:41.980Z",
+      "availableAt": "2026-10-20T22:10:41.980Z",
+      "contentHash": "a6b1eed7c4bbf87c71ae84aa11ab5c3e46c3afbab8756047a819329039e5ce96",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "chain": "solana",
+        "mint": "So11111111111111111111111111111111111111112"
+      }
+    },
+    {
+      "id": "damm-state",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:42.177Z",
+      "availableAt": "2026-10-20T22:10:42.177Z",
+      "contentHash": "2f98ad5fd8e292ded68041594e4c291a17ffc359fb62518d3ae45aea657dbb8d",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-state",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-program",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:42.390Z",
+      "availableAt": "2026-10-20T22:10:42.390Z",
+      "contentHash": "6d77a17f2449e0afc0fb6bff0b0d0e9ba7af38fe1beecc1d1cd8ea7fc7474a5f",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-program",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-program-data",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:42.602Z",
+      "availableAt": "2026-10-20T22:10:42.602Z",
+      "contentHash": "e1bd85b97dbcd213fdf22722663d89e3d3a36ea12347f4564f90a40ce83972cb",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-program-data",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-payers",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:42.856Z",
+      "availableAt": "2026-10-20T22:10:42.856Z",
+      "contentHash": "cf5799d6bd7e8c22bf71b84c51e26e56039ee79271f327e12f68d59205a487df",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-payers",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-user-accounts",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.189Z",
+      "availableAt": "2026-10-20T22:10:43.189Z",
+      "contentHash": "f04d42dd1746f80708991992c142715e496de914417ef7d8a155ddc2455a75da",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-user-accounts",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-blockhash",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.365Z",
+      "availableAt": "2026-10-20T22:10:43.365Z",
+      "contentHash": "f898290524716fb62943071746c277d1407098d5db494705794dba39d0511b86",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-blockhash",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-entry-fee-attempt-1",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.549Z",
+      "availableAt": "2026-10-20T22:10:43.549Z",
+      "contentHash": "9e3b857fbf44098f5651eed318c1421b1e263004a1e81e2b8344c272c211de2b",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-entry-fee-attempt-1",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-entry-fee",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.549Z",
+      "availableAt": "2026-10-20T22:10:43.549Z",
+      "contentHash": "9e3b857fbf44098f5651eed318c1421b1e263004a1e81e2b8344c272c211de2b",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-entry-fee",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-exit-fee-attempt-1",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.734Z",
+      "availableAt": "2026-10-20T22:10:43.734Z",
+      "contentHash": "220922bbb5d226561dc61cb7fe76d0c42861c643982ccaa345ed39f6685206f2",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-exit-fee-attempt-1",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-exit-fee",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.734Z",
+      "availableAt": "2026-10-20T22:10:43.734Z",
+      "contentHash": "220922bbb5d226561dc61cb7fe76d0c42861c643982ccaa345ed39f6685206f2",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-exit-fee",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-simulation",
+      "sourceId": "meteora-damm-direct",
+      "sourceType": "JSON_RPC",
+      "retrievedAt": "2026-10-20T22:10:43.903Z",
+      "availableAt": "2026-10-20T22:10:43.903Z",
+      "contentHash": "74917bc29d9c63220533aea53d44b08a63ce9185a8c2f8b974750f4b482886cf",
+      "adapterVersion": "live-v1",
+      "accessMode": "PUBLIC_API",
+      "scope": {
+        "operation": "damm-simulation",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-calculation",
+      "sourceId": "meteora-damm-derived",
+      "sourceType": "CALCULATION",
+      "retrievedAt": "2026-10-20T22:10:43.940Z",
+      "availableAt": "2026-10-20T22:10:43.940Z",
+      "contentHash": "39e7bcca4ebe42835fc1bc3e62f340bb2beee29d094e1ac3432e7818614298f0",
+      "adapterVersion": "live-v1",
+      "accessMode": "LOCAL_DERIVED",
+      "scope": {
+        "operation": "damm-calculation",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "damm-requests",
+      "sourceId": "meteora-damm-derived",
+      "sourceType": "CALCULATION",
+      "retrievedAt": "2026-10-20T22:10:43.940Z",
+      "availableAt": "2026-10-20T22:10:43.940Z",
+      "contentHash": "6fbdefe44730c6152366ad02a17f596c0dcf0b35a5e95c72f44586eea88b91be",
+      "adapterVersion": "live-v1",
+      "accessMode": "LOCAL_DERIVED",
+      "scope": {
+        "operation": "damm-requests",
+        "mint": "8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk",
+        "pool": "2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6"
+      }
+    },
+    {
+      "id": "shared-derivation",
+      "sourceId": "shared-collector",
+      "sourceType": "CALCULATION",
+      "retrievedAt": "2026-10-20T22:10:43.943Z",
+      "availableAt": "2026-10-20T22:10:43.943Z",
+      "contentHash": "2ee616d35c99d1e914fb120ca3696ffcbdb2e4264994fd5e95cd5624938eb3d0",
+      "adapterVersion": "live-v1",
+      "accessMode": "LOCAL_DERIVED",
+      "scope": {
+        "method": "shared-evidence-v1",
+        "qualityMode": "ENTRY_GATES_V1"
+      }
+    }
+  ],
+  "rawArtifacts": {
+    "damm-route-selection": "{\"method\":\"verified-native-route-v1\",\"selected\":\"METEORA_DAMM_V2\",\"pool\":\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"candidatePools\":[\"E1TttCLjSo1UzB7yERynmqYLhHtg9yyA8qfFhNr1mrQp\",\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\"],\"scoutId\":\"native-route-scout\",\"reason\":\"Selected supported native-SOL program among bounded exact-mint candidates; not a best-depth claim.\"}",
+    "native-route-scout": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390992,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[{\"lamports\":5242560,\"data\":[\"IQsxYrVlsQ0wdSwBsASIE0wdAADwSQIARPL//7wNAADoAwACAQAAABhzAQD4JAEAJ/3//wAAAACF5NdqAAAAAAAAAAAAAAAA+2QAAyX9//9kAAAAMHUAAG6s7phSUrXBfR7aGMrEm0mlmM6PRH7vj0iI93FFdx6lBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAFmOYoobYQ+4UWR70RoF7pr8dGHPyTzGHfbqPXVeVvyprrKxo/Kvyq6e2kcl2FYH6y00EAQcCeKHI1FfqVMGcZeAAAAAAAAAAByaJUJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP1JsVFue4Lvdh+0rL3r3eUo8iKToUAjJYUB0YluL7EUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPgBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOzwxeKJfL8Eq688id5k9ZLPK5KGD7gU8Xc7Xt2N7vQHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABP4Xl9cKMrh8yO1roUTJtuWHBeQTXAfkGc6Vo88zGorgAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":904},{\"lamports\":6299200,\"data\":[\"8ZptBBGxbbwAZc0dAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAUAAAAAAABAAAAAAAAAGCk3AAAAAAAAQAKAHgAiBPPzNdqAAAAAMsQx7q4jQYAAAAAAAAAAABQSupeTrcxBwAAAAAAAAAAQKwnAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADpQwp7Jo7wBAAAAAAAAAAAbqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqUGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAd4eUkq8+8T88DLlbEbcD6MK2bfdXgDRdkJCK3Mos4sx5wgabEUYAP18VxqSsZHUOd6VwvIgPYMgE9R6ZNfKNHUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMwly1zYw/4gD99kSAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANk3bQIAAAAAAAAAAAAAAAAAAAAAAAAAAFA7AQABAAAAAAAAAAAAAACbV2lOqRpchLHE/v8AAAAAhpRXLWrSSQcAAAAAAAAAAOp+12oAAAAAAQAAAAEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMi0BsL9/JQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACtz+0KAAAAAAAAAAAAAAAAAAAAAAAAAADZN20CAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAADLyDuSGQ1PNNg8yt1TACJOvHdR3TNrMQ/ganKvYc/lIEewK2JQAAAN430wcAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"base64\"],\"owner\":\"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":1112}]},\"id\":1}",
+    "rpc-account": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390984,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":{\"lamports\":1066800,\"data\":{\"program\":\"spl-token\",\"parsed\":{\"info\":{\"decimals\":6,\"freezeAuthority\":null,\"isInitialized\":true,\"mintAuthority\":null,\"supply\":\"999904776805315\"},\"type\":\"mint\"},\"space\":82},\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":82}},\"id\":1}",
+    "damm-pool": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390993,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[{\"lamports\":6299200,\"data\":[\"8ZptBBGxbbwAZc0dAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAUAAAAAAABAAAAAAAAAGCk3AAAAAAAAQAKAHgAiBPPzNdqAAAAAMsQx7q4jQYAAAAAAAAAAABQSupeTrcxBwAAAAAAAAAAQKwnAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADpQwp7Jo7wBAAAAAAAAAAAbqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqUGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAd4eUkq8+8T88DLlbEbcD6MK2bfdXgDRdkJCK3Mos4sx5wgabEUYAP18VxqSsZHUOd6VwvIgPYMgE9R6ZNfKNHUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMwly1zYw/4gD99kSAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANk3bQIAAAAAAAAAAAAAAAAAAAAAAAAAAFA7AQABAAAAAAAAAAAAAACbV2lOqRpchLHE/v8AAAAAhpRXLWrSSQcAAAAAAAAAAOp+12oAAAAAAQAAAAEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMi0BsL9/JQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACtz+0KAAAAAAAAAAAAAAAAAAAAAAAAAADZN20CAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAADLyDuSGQ1PNNg8yt1TACJOvHdR3TNrMQ/ganKvYc/lIEewK2JQAAAN430wcAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"base64\"],\"owner\":\"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":1112}]},\"id\":1}",
+    "pump-sol-usd": "[{\"chainId\":\"solana\",\"dexId\":\"orca\",\"pairAddress\":\"sanitized-public-native-sol-usdc\",\"baseToken\":{\"address\":\"So11111111111111111111111111111111111111112\"},\"quoteToken\":{\"address\":\"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\"},\"priceUsd\":\"106.94\"}]",
+    "damm-state": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390994,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[{\"lamports\":6299200,\"data\":[\"8ZptBBGxbbwAZc0dAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAUAAAAAAABAAAAAAAAAGCk3AAAAAAAAQAKAHgAiBPPzNdqAAAAAMsQx7q4jQYAAAAAAAAAAABQSupeTrcxBwAAAAAAAAAAQKwnAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADpQwp7Jo7wBAAAAAAAAAAAbqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqUGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAd4eUkq8+8T88DLlbEbcD6MK2bfdXgDRdkJCK3Mos4sx5wgabEUYAP18VxqSsZHUOd6VwvIgPYMgE9R6ZNfKNHUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMwly1zYw/4gD99kSAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANk3bQIAAAAAAAAAAAAAAAAAAAAAAAAAAFA7AQABAAAAAAAAAAAAAACbV2lOqRpchLHE/v8AAAAAhpRXLWrSSQcAAAAAAAAAAOp+12oAAAAAAQAAAAEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMi0BsL9/JQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACtz+0KAAAAAAAAAAAAAAAAAAAAAAAAAADZN20CAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAADLyDuSGQ1PNNg8yt1TACJOvHdR3TNrMQ/ganKvYc/lIEewK2JQAAAN430wcAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\"base64\"],\"owner\":\"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":1112},{\"lamports\":1066800,\"data\":[\"AAAAAAeDqBUmIQ+UoOjoTSCHADs6QmDSnOedrP4hpOp3H6Yow9sHeWiNAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":82},{\"lamports\":1853533642221,\"data\":[\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":82},{\"lamports\":1488440,\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqXyzNU1rKXxc2rIIt0Hc+TZL72KWbKUA1AClakBHHOp5QR7ArYlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165},{\"lamports\":206644434,\"data\":[\"BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHyzNU1rKXxc2rIIt0Hc+TZL72KWbKUA1AClakBHHOp5ZpuOgwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165}]},\"id\":1}",
+    "damm-program": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390995,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":{\"lamports\":11823514,\"data\":[\"AgAAAIzRPY+wyFuhSu/8pu7IeZ90WBbMZjY4MGAVjuDHRwQk\",\"base64\"],\"owner\":\"BPFLoaderUpgradeab1e11111111111111111111111\",\"executable\":true,\"rentEpoch\":18446744073709551615,\"space\":36}},\"id\":1}",
+    "damm-program-data": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390996,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":{\"lamports\":11046587000,\"data\":[\"AwAAAM58PhsAAAAAAf7zIERSwsjzdXXYp+ML0Up9cSrp+/GpLweE+SsvY2H6\",\"base64\"],\"owner\":\"BPFLoaderUpgradeab1e11111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":2174397}},\"id\":1}",
+    "damm-payers": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390997,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[{\"lamports\":1274753501840,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},{\"lamports\":345766329,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},{\"lamports\":7052189,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},{\"lamports\":140795915,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},{\"lamports\":13681893954,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},{\"lamports\":44707849,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0},null,{\"lamports\":141902176334,\"data\":[\"\",\"base64\"],\"owner\":\"11111111111111111111111111111111\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":0}]},\"id\":1}",
+    "damm-user-accounts": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459390999,\"apiVersion\":\"4.3.0-alpha.2\"},\"value\":[null,{\"lamports\":1488440,\"data\":[\"BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHrANn1spK0IUrH0De01vBkULlkYA3zcwUrtehPL46aZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165},{\"lamports\":1488440,\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqVlk6Cw0EMC2ObddvcXAL44UfNcErHWkzOOxiQshUkYvFfcTE6APAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165},null,{\"lamports\":1488440,\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqXLktqgeAVOo6mHp08mOxSVOiUCkCAlTKm4b1vTgBvBrV35HBbMHwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165},null,{\"lamports\":1488440,\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqWflYTKH531bFXbr16Uq7xpMoICfR+rh8YiFMupEszBSgN3hxSdDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"executable\":false,\"rentEpoch\":18446744073709551615,\"space\":165},null]},\"id\":1}",
+    "damm-blockhash": "{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"slot\":459391000},\"value\":{\"blockhash\":\"CRvskXrzsdJLHjBdqFPiH2fjwHkH7YKE1eifKKCNU9j9\",\"lastValidBlockHeight\":437426098}}}",
+    "damm-entry-fee-attempt-1": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"apiVersion\":\"4.3.2\",\"slot\":459391000},\"value\":5000},\"id\":1}\n",
+    "damm-entry-fee": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"apiVersion\":\"4.3.2\",\"slot\":459391000},\"value\":5000},\"id\":1}\n",
+    "damm-exit-fee-attempt-1": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"apiVersion\":\"4.3.2\",\"slot\":459391001},\"value\":5000},\"id\":1}\n",
+    "damm-exit-fee": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"apiVersion\":\"4.3.2\",\"slot\":459391001},\"value\":5000},\"id\":1}\n",
+    "damm-simulation": "{\"jsonrpc\":\"2.0\",\"result\":{\"context\":{\"apiVersion\":\"4.3.2\",\"slot\":459391002},\"value\":{\"accounts\":[{\"data\":[\"\",\"base64\"],\"executable\":false,\"lamports\":170429366,\"owner\":\"11111111111111111111111111111111\",\"rentEpoch\":18446744073709551615,\"space\":0},{\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqVlk6Cw0EMC2ObddvcXAL44UfNcErHWkzOOxiQshUkYvFfcTE6APAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"executable\":false,\"lamports\":1488440,\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"rentEpoch\":18446744073709551615,\"space\":165},{\"data\":[\"\",\"base64\"],\"executable\":false,\"lamports\":0,\"owner\":\"11111111111111111111111111111111\",\"rentEpoch\":18446744073709551615,\"space\":0},{\"data\":[\"bqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqXyzNU1rKXxc2rIIt0Hc+TZL72KWbKUA1AClakBHHOp5QR7ArYlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"executable\":false,\"lamports\":1488440,\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"rentEpoch\":18446744073709551615,\"space\":165},{\"data\":[\"BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHyzNU1rKXxc2rIIt0Hc+TZL72KWbKUA1AClakBHHOp5RXJrRYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"base64\"],\"executable\":false,\"lamports\":381976397,\"owner\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"rentEpoch\":18446744073709551615,\"space\":165}],\"err\":null,\"fee\":5000,\"innerInstructions\":null,\"loadedAccountsDataSize\":2390920,\"loadedAddresses\":{\"readonly\":[],\"writable\":[]},\"logs\":[\"Program ComputeBudget111111111111111111111111111111 invoke [1]\",\"Program ComputeBudget111111111111111111111111111111 success\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]\",\"Program log: CreateIdempotent\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 5838 of 1399850 compute units\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]\",\"Program log: CreateIdempotent\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 1388661 compute units\",\"Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program 11111111111111111111111111111111 invoke [2]\",\"Program 11111111111111111111111111111111 success\",\"Program log: Initialize the associated token account\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 37 of 1383572 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 229 of 1381111 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 13413 of 1394012 compute units\",\"Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success\",\"Program 11111111111111111111111111111111 invoke [1]\",\"Program 11111111111111111111111111111111 success\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 201 of 1380449 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG invoke [1]\",\"Program log: Instruction: Swap\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 112 of 1368059 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 105 of 1366730 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG invoke [2]\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG consumed 81 of 1363764 compute units\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG consumed 16587 of 1380248 compute units\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG invoke [1]\",\"Program log: Instruction: Swap\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 105 of 1352057 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 112 of 1350735 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG invoke [2]\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG consumed 81 of 1347762 compute units\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG success\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG consumed 16002 of 1363661 compute units\",\"Program cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG success\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 118 of 1347659 compute units\",\"Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success\"],\"postBalances\":[170429366,1488440,0,6299200,1488440,381976397,1,3388612899,1066800,1,230130698,1853533642221,11823514,178116133431,0],\"postTokenBalances\":[{\"accountIndex\":1,\"mint\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\",\"owner\":\"7qWjvtmvpEpbEB2W58AnYezpvvcXzva1GAdkkfxc9NNw\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"66521767140439\",\"decimals\":6,\"uiAmount\":66521767.140439,\"uiAmountString\":\"66521767.140439\"}},{\"accountIndex\":4,\"mint\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\",\"owner\":\"HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"161967405828\",\"decimals\":6,\"uiAmount\":161967.405828,\"uiAmountString\":\"161967.405828\"}},{\"accountIndex\":5,\"mint\":\"So11111111111111111111111111111111111111112\",\"owner\":\"HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"380487957\",\"decimals\":9,\"uiAmount\":0.380487957,\"uiAmountString\":\"0.380487957\"}}],\"preBalances\":[345766329,1488440,0,6299200,1488440,206644434,1,3388612899,1066800,1,230130698,1853533642221,11823514,178116133431,0],\"preTokenBalances\":[{\"accountIndex\":1,\"mint\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\",\"owner\":\"7qWjvtmvpEpbEB2W58AnYezpvvcXzva1GAdkkfxc9NNw\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"66521767140439\",\"decimals\":6,\"uiAmount\":66521767.140439,\"uiAmountString\":\"66521767.140439\"}},{\"accountIndex\":4,\"mint\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\",\"owner\":\"HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"161967405828\",\"decimals\":6,\"uiAmount\":161967.405828,\"uiAmountString\":\"161967.405828\"}},{\"accountIndex\":5,\"mint\":\"So11111111111111111111111111111111111111112\",\"owner\":\"HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC\",\"programId\":\"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA\",\"uiTokenAmount\":{\"amount\":\"205155994\",\"decimals\":9,\"uiAmount\":0.205155994,\"uiAmountString\":\"0.205155994\"}}],\"replacementBlockhash\":{\"blockhash\":\"6EC3py4RHxXzZ2MSL8HddEZBNkMuXrvjXpjYFFWMTt94\",\"lastValidBlockHeight\":437426100},\"returnData\":null,\"unitsConsumed\":52459}},\"id\":1}\n",
+    "damm-calculation": "{\"method\":\"damm-native-b-v1\",\"pool\":\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"minSlot\":459390992,\"slot\":459390994,\"nativeUsd\":\"106.94\",\"quoteAtomic\":\"233775949\",\"acquiredAtomic\":\"76286317636\",\"exitAtomic\":\"21017696\",\"simulationProof\":{\"method\":\"damm-pre-post-v1\",\"wireBase64\":\"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAJD2WToLDQQwLY5t129xcAvjhR81wSsdaTM47GJCyFSRi8TX0JoMrVPqUjpOPRiObURglH1qNzuA6P8mj4NmSr9oXl4ahnc9pNs8n6Ucwm1+zZ59hP2s/U3y7j/3N4gNCUkRTY1hhQAvh5D2Q4+KRd5AmuGTHwzhIZ+JzXdrwowF593h5SSrz7xPzwMuVsRtwPowrZt91eANF2QkIrcyizizHnCBpsRRgA/XxXGpKxkdQ53pXC8iA9gyAT1Hpk18o0dQMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAAjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FlurO6YUlK1wX0e2hjKxJtJpZjOj0R+749IiPdxRXcepQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAQktITVlehWcK4fUtmpw246XUjif92qvIGztBjo4+Vrt8szVNayl8XNqyCLdB3Pk2S+9ilmylANQApWpARxzqeUqduezRGQKHPxZTIvK0KCRARysfdFWv4OoM/siCOt3ranTaYrdon7kAu+MD+UTOFLnAuv4EQCy1+676MXvmvaUCAYABQLAXBUABwYAAQAICQoBAQcGAAIACwkKAQEJAgACDAIAAABNI+8NAAAAAAoBAgERDA4NAwIBBAUICwAKCgwODBj4xp6R4XWHyE0j7w0AAAAARNQEwxEAAAAMDg0DAQIEBQgLAAoKDA4MGPjGnpHhdYfIRNQEwxEAAAAAAAAAAAAAAAoDAgAAAQkA\",\"user\":\"7qWjvtmvpEpbEB2W58AnYezpvvcXzva1GAdkkfxc9NNw\",\"feeIds\":[\"damm-entry-fee\",\"damm-exit-fee\"],\"blockId\":\"damm-blockhash\",\"setupLamports\":\"0\"}}",
+    "damm-requests": "{\"method\":\"damm-read-requests-v1\",\"requests\":{\"damm-pool\":{\"method\":\"getMultipleAccounts\",\"params\":[[\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\"],{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390992}]},\"damm-state\":{\"method\":\"getMultipleAccounts\",\"params\":[[\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\",\"So11111111111111111111111111111111111111112\",\"Fx4KsUdC8Hc2J8j9AhCe7wvuGua9bFPFnDRhJCYcbFqz\",\"GYrLzbT9KQoTxZX21vLbSU812zVkWLdeofszKU3LcVDe\"],{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390993}]},\"damm-program\":{\"method\":\"getAccountInfo\",\"params\":[\"cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG\",{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390994,\"dataSlice\":{\"offset\":0,\"length\":36}}]},\"damm-program-data\":{\"method\":\"getAccountInfo\",\"params\":[\"AUh8bm2XsMfex3KjYGcM3G4uBqUNSDw6HEhWaWMYnyPH\",{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390994,\"dataSlice\":{\"offset\":0,\"length\":45}}]},\"damm-payers\":{\"method\":\"getMultipleAccounts\",\"params\":[[\"GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL\",\"7qWjvtmvpEpbEB2W58AnYezpvvcXzva1GAdkkfxc9NNw\",\"GKvBmWhaE41mEusXmucrbdKGJMW5ydyemHcB7GzmapZw\",\"GAfKwVUnvqaNsk6JMozx1wgdr6Yn15zjovEx1ZfY1Q9q\",\"EhfeBatY1rC3cdL8ZuvLy2TXMvXrEVzxgk2hCCKKbwKJ\",\"4a1AraQWubZccyFGNg3wcFUzgi444BycZFi5hB1QP4im\",\"CKQKvzAJV2b19SHPQsjpCRa7hm4R2syrnnYpZiPovQjB\",\"Bjx4Re3qCsK9bRAa6tuEHuKWnBvckvZE6JbQmcwaS6Em\"],{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390994}]},\"damm-user-accounts\":{\"method\":\"getMultipleAccounts\",\"params\":[[\"2uhBy3C5JLYh4FqXW2q68sAdStS818UEXMsTCPgEQ9c4\",\"Ft1f6CVFUw4GK2nJfVMaEKA3BRBFQBP7FS6XqUtrxjKB\",\"6DUyeMyNPCmuaTKJzUM4MpGwDafTxgVUgpDsmfSK9f3z\",\"GUMwGkCMoKECys1VtyoAqAAGk7Cit8yQ1aXkxvcgqRag\",\"7b9Aia4k72yb2HRia2EPkus4fQJn62bbMaVTnbcH4hbN\",\"CL1kzrczss9GZSMPkt1n2amipB7s8L4Z1zpnnJzd3NjB\",\"DyjZVbFC27nHrPFTgg5WYi6xQsVyUSwGKQsXDq5ANZZj\",\"2wxEX3tokB3kzy4kwtNunNhYcVt4k1Msf6ZBXZtkkjGP\"],{\"encoding\":\"base64\",\"commitment\":\"finalized\",\"minContextSlot\":459390997}]},\"damm-blockhash\":{\"method\":\"getLatestBlockhash\",\"params\":[{\"commitment\":\"finalized\",\"minContextSlot\":459390999}]},\"damm-entry-fee\":{\"method\":\"getFeeForMessage\",\"params\":[\"gAEACA5lk6Cw0EMC2ObddvcXAL44UfNcErHWkzOOxiQshUkYvE19CaDK1T6lI6Tj0Yjm1EYJR9ajc7gOj/Jo+DZkq/aF5eGoZ3PaTbPJ+lHMJtfs2efYT9rP1N8u4/9zeIDQlJEU2NYYUAL4eQ9kOPikXeQJrhkx8M4SGfic13a8KMBefd4eUkq8+8T88DLlbEbcD6MK2bfdXgDRdkJCK3Mos4sx5wgabEUYAP18VxqSsZHUOd6VwvIgPYMgE9R6ZNfKNHWMlyWPTiSJ8bs9ECkUjg2DC1oTmdr/EIQEjnvY2+n4WW6s7phSUrXBfR7aGMrEm0mlmM6PRH7vj0iI93FFdx6lAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQabiFf+q4GE+2h/Y0YYwDXaxDncGus7VZig8AAAAAABCS0hNWV6FZwrh9S2anDbjpdSOJ/3aq8gbO0GOjj5Wu3yzNU1rKXxc2rIIt0Hc+TZL72KWbKUA1AClakBHHOp5Sp257NEZAoc/FlMi8rQoJEBHKx90Va/g6gz+yII63etqdNpit2ifuQC74wP5RM4UucC6/gRALLX7rvoxe+a9pQFBgYAAQAHCAkBAQYGAAIACggJAQEIAgACDAIAAABNI+8NAAAAAAkBAgERCw4MAwIBBAUHCgAJCQsNCxj4xp6R4XWHyE0j7w0AAAAARNQEwxEAAAAA\",{\"commitment\":\"finalized\",\"minContextSlot\":459391000}]},\"damm-exit-fee\":{\"method\":\"getFeeForMessage\",\"params\":[\"gAEABgxlk6Cw0EMC2ObddvcXAL44UfNcErHWkzOOxiQshUkYvBTY1hhQAvh5D2Q4+KRd5AmuGTHwzhIZ+JzXdrwowF59TX0JoMrVPqUjpOPRiObURglH1qNzuA6P8mj4NmSr9oXl4ahnc9pNs8n6Ucwm1+zZ59hP2s/U3y7j/3N4gNCUkd4eUkq8+8T88DLlbEbcD6MK2bfdXgDRdkJCK3Mos4sx5wgabEUYAP18VxqSsZHUOd6VwvIgPYMgE9R6ZNfKNHUJLSE1ZXoVnCuH1LZqcNuOl1I4n/dqryBs7QY6OPla7fLM1TWspfFzasgi3Qdz5NkvvYpZspQDUAKVqQEcc6nlbqzumFJStcF9HtoYysSbSaWYzo9Efu+PSIj3cUV3HqUGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpKnbns0RkChz8WUyLytCgkQEcrH3RVr+DqDP7Igjrd62p02mK3aJ+5ALvjA/lEzhS5wLr+BEAstfuu+jF75r2lAIGDgcBAgMEBQgJAAoKBgsGGPjGnpHhdYfIRNQEwxEAAAAAAAAAAAAAAAoDAwAAAQkA\",{\"commitment\":\"finalized\",\"minContextSlot\":459391000}]},\"damm-simulation\":{\"method\":\"simulateTransaction\",\"params\":[\"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAJD2WToLDQQwLY5t129xcAvjhR81wSsdaTM47GJCyFSRi8TX0JoMrVPqUjpOPRiObURglH1qNzuA6P8mj4NmSr9oXl4ahnc9pNs8n6Ucwm1+zZ59hP2s/U3y7j/3N4gNCUkRTY1hhQAvh5D2Q4+KRd5AmuGTHwzhIZ+JzXdrwowF593h5SSrz7xPzwMuVsRtwPowrZt91eANF2QkIrcyizizHnCBpsRRgA/XxXGpKxkdQ53pXC8iA9gyAT1Hpk18o0dQMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAAjJclj04kifG7PRApFI4NgwtaE5na/xCEBI572Nvp+FlurO6YUlK1wX0e2hjKxJtJpZjOj0R+749IiPdxRXcepQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAQktITVlehWcK4fUtmpw246XUjif92qvIGztBjo4+Vrt8szVNayl8XNqyCLdB3Pk2S+9ilmylANQApWpARxzqeUqduezRGQKHPxZTIvK0KCRARysfdFWv4OoM/siCOt3ranTaYrdon7kAu+MD+UTOFLnAuv4EQCy1+676MXvmvaUCAYABQLAXBUABwYAAQAICQoBAQcGAAIACwkKAQEJAgACDAIAAABNI+8NAAAAAAoBAgERDA4NAwIBBAUICwAKCgwODBj4xp6R4XWHyE0j7w0AAAAARNQEwxEAAAAMDg0DAQIEBQgLAAoKDA4MGPjGnpHhdYfIRNQEwxEAAAAAAAAAAAAAAAoDAgAAAQkA\",{\"encoding\":\"base64\",\"sigVerify\":false,\"replaceRecentBlockhash\":true,\"commitment\":\"finalized\",\"minContextSlot\":459390994,\"accounts\":{\"encoding\":\"base64\",\"addresses\":[\"7qWjvtmvpEpbEB2W58AnYezpvvcXzva1GAdkkfxc9NNw\",\"6DUyeMyNPCmuaTKJzUM4MpGwDafTxgVUgpDsmfSK9f3z\",\"GUMwGkCMoKECys1VtyoAqAAGk7Cit8yQ1aXkxvcgqRag\",\"Fx4KsUdC8Hc2J8j9AhCe7wvuGua9bFPFnDRhJCYcbFqz\",\"GYrLzbT9KQoTxZX21vLbSU812zVkWLdeofszKU3LcVDe\"]}}]}}}",
+    "shared-derivation": "{\"venueInspection\":{\"token\":{\"chain\":\"solana\",\"address\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\"},\"poolAddress\":\"2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"certificateId\":\"meteora-damm-v2-native-b:2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"version\":\"meteora-damm-v2-sdk-1.5.1-native-b-v1\",\"availableAt\":\"2026-10-20T22:10:43.940Z\",\"bindingVerified\":true,\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"errors\":{},\"limitations\":[\"One selected native-SOL DAMM v2 route; does not certify other pools or globally best execution.\",\"All non-permanently-locked liquidity conservatively treated as withdrawable; temporary locks receive no exemption.\",\"Venue upgrade authority observed; binding is not an audit or future safety guarantee.\"],\"removableLiquidityFraction\":\"1\",\"executionDisabled\":false},\"venue\":{\"certificateId\":\"meteora-damm-v2-native-b:2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"bindingVerified\":true,\"version\":\"meteora-damm-v2-sdk-1.5.1-native-b-v1\",\"token\":{\"chain\":\"solana\",\"address\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\"},\"availableAt\":\"2026-10-20T22:10:42.177Z\",\"expiresAt\":\"2026-10-20T22:11:11.980Z\",\"removableLiquidityFraction\":\"1\",\"lockExpiresAt\":null,\"entryQuoteUsd\":\"25\",\"acquiredAtomic\":\"76286317636\",\"decimals\":6,\"exitQuantityAtomic\":\"76286317636\",\"exitQuoteUsd\":\"2.24763241024\",\"referencePriceUsd\":\"0.000086680359982636825087\",\"entryExternalCostUsd\":\"0.0005347\",\"exitExternalCostUsd\":\"0.0005347\",\"embeddedFeesUsd\":\"14.74763245674\",\"costsReconciled\":true,\"method\":\"INDEPENDENT_QUOTES\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"simulation\":{\"setupVerified\":true,\"buySucceeded\":true,\"sellSucceeded\":true}},\"baseline\":[{\"id\":\"O08\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"scoped-record\",\"data\":{\"certificateId\":\"meteora-damm-v2-native-b:2QNvezKHgMZKfzJLa3fFqUbMcBoX2WFFG8J9JAtidbq6\",\"version\":\"meteora-damm-v2-sdk-1.5.1-native-b-v1\",\"token\":{\"chain\":\"solana\",\"address\":\"8T2nkC9HQkgd2yjxc7Yn1LAietmXyZKbv1vR4FXDbonk\"}},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O08\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O09\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"fraction\",\"data\":{\"fraction\":\"1\",\"lockExpiresAt\":null},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O09\",\"value\":\"1\",\"unit\":\"fraction\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O10\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"scoped-record\",\"data\":{\"inputUsd\":\"25\",\"acquiredAtomic\":\"76286317636\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O10\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O11\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"scoped-record\",\"data\":{\"quantityAtomic\":\"76286317636\",\"outputUsd\":\"2.24763241024\",\"method\":\"INDEPENDENT_QUOTES\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O11\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O12\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"scoped-record\",\"data\":{\"setupVerified\":true,\"buySucceeded\":true,\"sellSucceeded\":true},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O12\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O13\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"bps\",\"data\":{\"quantityTokens\":\"76286.317636\",\"entryImpactBps\":\"7354.9898102246974866\",\"exitImpactBps\":\"6600.9470679113872711\",\"roundTripLossBps\":\"9101.1801398631686066\",\"totalEntryCostUsd\":\"25.0005347\",\"netExitUsd\":\"2.24709771024\",\"embeddedFeesUsd\":\"14.74763245674\",\"method\":\"INDEPENDENT_QUOTES\",\"costsReconciled\":true,\"removableLiquidityFraction\":\"1\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O13\",\"value\":\"7354.9898102246974866\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O14\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"bps\",\"data\":{\"quantityTokens\":\"76286.317636\",\"entryImpactBps\":\"7354.9898102246974866\",\"exitImpactBps\":\"6600.9470679113872711\",\"roundTripLossBps\":\"9101.1801398631686066\",\"totalEntryCostUsd\":\"25.0005347\",\"netExitUsd\":\"2.24709771024\",\"embeddedFeesUsd\":\"14.74763245674\",\"method\":\"INDEPENDENT_QUOTES\",\"costsReconciled\":true,\"removableLiquidityFraction\":\"1\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O14\",\"value\":\"6600.9470679113872711\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O15\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"bps\",\"data\":{\"quantityTokens\":\"76286.317636\",\"entryImpactBps\":\"7354.9898102246974866\",\"exitImpactBps\":\"6600.9470679113872711\",\"roundTripLossBps\":\"9101.1801398631686066\",\"totalEntryCostUsd\":\"25.0005347\",\"netExitUsd\":\"2.24709771024\",\"embeddedFeesUsd\":\"14.74763245674\",\"method\":\"INDEPENDENT_QUOTES\",\"costsReconciled\":true,\"removableLiquidityFraction\":\"1\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O15\",\"value\":\"9101.1801398631686066\",\"unit\":\"bps\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}},{\"id\":\"O16\",\"version\":\"baseline-v1\",\"evaluator\":\"IMPLEMENTED\",\"collector\":\"IMPLEMENTED\",\"quality\":\"KNOWN\",\"unit\":\"bool\",\"data\":{\"quantityTokens\":\"76286.317636\",\"entryImpactBps\":\"7354.9898102246974866\",\"exitImpactBps\":\"6600.9470679113872711\",\"roundTripLossBps\":\"9101.1801398631686066\",\"totalEntryCostUsd\":\"25.0005347\",\"netExitUsd\":\"2.24709771024\",\"embeddedFeesUsd\":\"14.74763245674\",\"method\":\"INDEPENDENT_QUOTES\",\"costsReconciled\":true,\"removableLiquidityFraction\":\"1\"},\"observationIds\":[],\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"limitations\":[],\"causes\":[],\"projection\":{\"id\":\"O16\",\"value\":true,\"unit\":\"bool\",\"quality\":\"KNOWN\",\"availableAt\":\"2026-10-20T22:10:43.943Z\",\"evidenceIds\":[\"rpc-genesis\",\"damm-pool\",\"pump-sol-usd\",\"damm-state\",\"damm-program\",\"damm-program-data\",\"damm-payers\",\"damm-user-accounts\",\"damm-blockhash\",\"damm-entry-fee-attempt-1\",\"damm-entry-fee\",\"damm-exit-fee-attempt-1\",\"damm-exit-fee\",\"damm-simulation\",\"damm-calculation\",\"damm-requests\"],\"applicability\":\"APPLICABLE\"}}]}"
+  }
+}

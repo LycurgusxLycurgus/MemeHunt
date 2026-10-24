@@ -8,7 +8,7 @@ import { dexArtifacts, fetchDexPairs, type DexRead, type DexRecoveryOptions } fr
 import { geminiSettings } from '../providers/gemini.js';
 import { geminiPacerForKey } from '../providers/gemini-pacing.js';
 import { decodeSolanaAddress, inspectSolanaDetails, TOKEN_2022_PROGRAM,inspectSolanaMint, type SolanaRead, type SolanaDetails } from '../providers/solana.js';
-import { deriveBaseline, validateResearch } from '../domain/baseline.js';
+import { deriveBaseline, validateResearch, type VenueOutcome } from '../domain/baseline.js';
 import type { ResearchPacket } from '../domain/research.js';
 import { materializeThesis } from './config.js';
 import { inspectPumpSwap } from '../providers/pumpswap.js';
@@ -18,7 +18,7 @@ import { deriveAttention, originSourceScope } from '../domain/attention.js';
 import { collectSocialSources } from '../providers/social.js';
 import { qualifySocial } from '../providers/social-model.js';
 import { deriveSocial, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
-import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,comparisonEntryGrade,type SharedAudit,type SharedSource } from '../domain/shared.js';
+import { deriveShared,expireSharedWitnesses,sharedClaims,sharedWitnesses,comparisonEntryGrade,attentionEntryGates,type SharedAudit,type SharedSource } from '../domain/shared.js';
 import { qualifyShared } from '../providers/shared-model.js';
 import { collectAdvisoryWalletHistory } from '../providers/advisory-wallet-history.js';
 import { archiveAdvisoryWindowReceipts, collectAdvisoryWindow, WINDOW_ARCHIVE_ADAPTER, WINDOW_DENSE_REQUEST_CAP } from '../providers/advisory-window.js';
@@ -40,10 +40,14 @@ import { collectCreatorInventoryRun,CREATOR_INVENTORY_REQUEST_CAP } from '../pro
 import { collectCreatorFailedFeesRun,CREATOR_FAILED_FEE_REQUEST_CAP,type CreatorFailedFeeReceipts } from '../providers/advisory-creator-performance-collector.js';
 import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID } from '../providers/advisory-creator-failed-fees.js';
 import { discoverTokenMetadata } from '../providers/token-discovery.js';
+import { inspectDammV2 } from '../providers/meteora-damm-v2.js';
+import { solanaRpc, safeRpcCode } from '../providers/solana.js';
 import { inspectPumpCurve } from '../providers/pumpcurve.js';
+import { createLiveRun, type LiveRuntime } from './live-phases.js';
+import { entryGroupsForBundle } from '../providers/entry-groups.js';
 
 
-export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string };
+export type LiveOptions = { profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
 export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
@@ -72,11 +76,17 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   if(options.advisoryEnabled&&token.chain!=='solana')throw new Error('ADVISORY_CHAIN_UNSUPPORTED');
   const now = options.now ?? (() => new Date().toISOString());
   if(options.research)validateResearch(options.research,token,now());
+  const sharedEnabled=options.semanticEnabled&&!options.research;
+  const runStartedAt=Date.now();
+  const runBudgetMs=sharedEnabled?840_000:120_000;
+  const baseDeadline=AbortSignal.any([AbortSignal.timeout(runBudgetMs),...(options.signal?[options.signal]:[])]);
+  const admission=admittedFetchers(options.fetcher??fetch,baseDeadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_FAILED_FEE_REQUEST_CAP:0,options.advisoryEnabled?WINDOW_DENSE_REQUEST_CAP:0),{fetcher:advisoryFetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher,windowFetcher}=admission;
+  const run=createLiveRun(sharedEnabled,advisoryFetcher,now,options.runtime,options.signal);
+  const collectionDeadline=AbortSignal.any([baseDeadline,...(sharedEnabled?[run.hardSignal]:[])]);
+  let currentStage=run.begin(sharedEnabled?'PREFLIGHT':'FINALIZE');
+  let fetcher=!sharedEnabled&&options.advisoryEnabled?advisoryFetcher:currentStage.fetcher,deadline=!sharedEnabled&&options.advisoryEnabled?collectionDeadline:currentStage.signal;
+  let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
   const modelRouting={fallbackActive:false,...(options.semanticEnabled&&options.geminiKey?{pacing:geminiPacerForKey(options.geminiKey)}:{})};
-  const runStartedAt=Date.now();let attentionElapsedMs:number|null=null,socialElapsedMs:number|null=null;
-  const runBudgetMs=options.semanticEnabled?600_000:120_000;
-  const deadline=AbortSignal.timeout(runBudgetMs);
-  const admission=admittedFetchers(options.fetcher??fetch,deadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&options.tinyfishKey?CREATOR_FAILED_FEE_REQUEST_CAP:0,options.advisoryEnabled?WINDOW_DENSE_REQUEST_CAP:0),{fetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher,windowFetcher}=admission;
   const evidence: EvidenceRecord[] = [];
   const rawArtifacts: Record<string,string> = {};
   const observations: Observation[] = [];
@@ -92,21 +102,22 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     observations.push({ id: `obs-${observations.length+1}`, subject: token, field, value, unit, evidenceIds: ids, observedAt: at, availableAt: at, quality: 'KNOWN' });
   const feature = (id: string, value: boolean, ids: string[], at=now()) =>
     features.push({ id, value, unit: 'bool', quality: 'KNOWN', availableAt: at, evidenceIds: ids, applicability: 'APPLICABLE' });
-  const sharedEnabled=options.semanticEnabled&&!options.research;
-  const dexRecovery:DexRecoveryOptions|undefined=sharedEnabled&&options.tinyfishKey?{tinyfishKey:options.tinyfishKey,signal:deadline}:undefined;
+  let dexRecovery:DexRecoveryOptions|undefined=sharedEnabled&&options.tinyfishKey?{tinyfishKey:options.tinyfishKey,signal:deadline}:undefined;
   const ingestDex=(read:DexRead,id:string)=>{const artifacts=dexArtifacts(read,id,token.chain,token.address,now());for(const [key,a] of Object.entries(artifacts))addEvidence(key,a.raw,a.sourceId,a.sourceType,a.accessMode,a.scope,a.retrievedAt);return artifacts[id]?[id]:[];};
   let rpc!:SolanaRead;
   let dex:DexRead=sharedEnabled?await fetchDexPairs(token.chain,token.address,fetcher,now,dexRecovery):{status:'UNAVAILABLE'};
   let detailRead:SolanaDetails|undefined;
   const rpcIds:string[]=[];
   let stateCaptureStartedAt:string|null=null,stateCaptureEndedAt:string|null=null;
+  const ownStop=()=>{const code=deadline.aborted&&deadline.reason instanceof Error?deadline.reason.message:undefined;const origins:Record<string,VenueOutcome['origin']>={LIVE_PHASE_DEADLINE:'PHASE_DEADLINE',LIVE_HARD_DEADLINE:'HARD_DEADLINE',LIVE_CALLER_CANCELLED:'CALLER',LIVE_OPERATION_LIMIT:'OPERATION_LIMIT'};return code&&origins[code]?{code,origin:origins[code]}:undefined;};
   const captureCanonical=async()=>{
     stateCaptureStartedAt=sharedEnabled?now():null;
   [rpc, dex] = await Promise.all([
-    token.chain==='solana'?inspectSolanaMint(token.address, options.rpcUrl, fetcher, deadline,sharedEnabled?now:undefined):Promise.resolve({status:'UNAVAILABLE' as const,code:'EVM_READER_UNIMPLEMENTED',mint:undefined,genesisRaw:undefined,accountRaw:undefined,genesisHash:undefined}),
+    token.chain==='solana'?inspectSolanaMint(token.address, options.rpcUrl, fetcher, deadline,sharedEnabled?now:undefined,preflightSlot):Promise.resolve({status:'UNAVAILABLE' as const,code:'EVM_READER_UNIMPLEMENTED',mint:undefined,genesisRaw:undefined,accountRaw:undefined,genesisHash:undefined}),
     fetchDexPairs(token.chain, token.address, fetcher,sharedEnabled?now:undefined,dexRecovery),
   ]);
   detailRead=rpc.status==='OBSERVED'&&rpc.mint?await inspectSolanaDetails(rpc.mint,token.address,options.rpcUrl,fetcher,deadline,sharedEnabled?now:undefined,options.advisoryEnabled?20_000_000:64_000_000):undefined;
+  const interrupted=ownStop();if(interrupted){if(rpc.status==='UNAVAILABLE')rpc.code=interrupted.code;if(dex.status==='UNAVAILABLE')dex.code=interrupted.code;for(const key of Object.keys(detailRead?.errors??{}))detailRead!.errors[key]=interrupted.code;}
   rpcIds.length=0;
   if (rpc.genesisRaw) rpcIds.push(addEvidence('rpc-genesis', rpc.genesisRaw, 'solana-rpc', 'JSON_RPC', 'PUBLIC_API', { method: 'getGenesisHash', genesisHash: rpc.genesisHash ?? null },rpc.retrievedAt?.['rpc-genesis']));
   if (rpc.accountRaw) rpcIds.push(addEvidence('rpc-account', rpc.accountRaw, 'solana-rpc', 'JSON_RPC', 'PUBLIC_API', { method: 'getAccountInfo', commitment: 'finalized', genesisHash: rpc.genesisHash ?? null, slot: rpc.mint?.slot ?? null },rpc.retrievedAt?.['rpc-account']));
@@ -164,38 +175,47 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
     stateCaptureEndedAt=sharedEnabled?now():null;
   };
-  if(sharedEnabled)ingestDex(dex,'dex-discovery');
+  let preflightSlot:number|undefined;
+  if(sharedEnabled){
+    ingestDex(dex,'dex-discovery');
+    if(token.chain==='solana'){
+      const probe=await inspectSolanaMint(token.address,options.rpcUrl,fetcher,deadline,now);
+      preflightSlot=probe.status==='OBSERVED'?probe.mint?.slot??undefined:undefined;
+      if(probe.genesisRaw)addEvidence('preflight-rpc-genesis',probe.genesisRaw,'solana-rpc-preflight','JSON_RPC','PUBLIC_API',{method:'getGenesisHash',role:'discovery only'},probe.retrievedAt?.['rpc-genesis']);
+      if(probe.accountRaw)addEvidence('preflight-rpc-account',probe.accountRaw,'solana-rpc-preflight','JSON_RPC','PUBLIC_API',{method:'getAccountInfo',role:'discovery only',slot:preflightSlot??null},probe.retrievedAt?.['rpc-account']);
+    }
+  }
   else await captureCanonical();
   const advisoryPool=dex.market?.pairs.find(pair=>pair.baseAddress===token.address||pair.quoteAddress===token.address)?.pairAddress??null;
   const advisoryAddresses=[token.address,...(advisoryPool?[advisoryPool]:[])];
   // Preregister one completed UTC hour; this is separate from the holding horizon.
   const advisoryWindowEnd=new Date(Math.floor(Date.parse(now())/3_600_000)*3_600_000).toISOString();
   // Creator-role reads run first on the shared pool, so its few candidate receipts are not rate-limited by the bulk historical reads; a mint already read under another token program is skipped.
-  const creatorPending=options.advisoryEnabled&&options.tinyfishKey&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?collectCreatorRole(token,options.tinyfishKey,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline).catch(error=>({error})):null;
+  const creatorPending=options.advisoryEnabled&&options.tinyfishKey&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?collectCreatorRole(token,options.tinyfishKey,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline).catch(error=>({error})):null;
   // Historical reads overlap semantic review but start only once creator-role collection has settled, whatever its outcome; canonical execution state is still captured late.
   const advisoryPending=options.advisoryEnabled?Promise.resolve(creatorPending).then(()=>Promise.all([
-    collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline,true),
-    collectAdvisoryMarket(token,advisoryPool,fetcher,now,deadline),
-    collectAdvisorySocial(token,fetcher,now,deadline),
-    collectAdvisoryTrades(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
-    collectAdvisoryContextHistory(token,fetcher,now,deadline),
+    collectAdvisoryChain(token,advisoryAddresses,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline,true),
+    collectAdvisoryMarket(token,advisoryPool,advisoryFetcher,now,collectionDeadline),
+    collectAdvisorySocial(token,advisoryFetcher,now,collectionDeadline),
+    collectAdvisoryTrades(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline),
+    collectAdvisoryContextHistory(token,advisoryFetcher,now,collectionDeadline),
   ])).then(async value=>{
     const [chain,,,trades]=value;
     const decoded=decodeAdvisoryTrades(token,advisoryPool,chain.data,chain.rawArtifacts,chain.retrievedAt,chain.requests,trades.rawArtifacts,trades.retrievedAt,trades.requests);
     const [wallets,{window,accounts,automation,demand}]=await Promise.all([
-      collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),
+      collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline),
       // Proof v23: the dense selected hour opts into terminal-truncation recovery on its own 72-request allowance; every in-run consumer below receives the same guarded decoded tape.
-      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,windowFetcher,now,advisoryWindowEnd,deadline,chain,true,true,true,true)
-        .then(async window=>{const [accounts,automation,demand]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,deadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline),collectAdvisoryDemandWindows(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,demandFetcher,now,deadline)]);return {window,accounts,automation,demand};}),
+      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,windowFetcher,now,advisoryWindowEnd,collectionDeadline,chain,true,true,true,true)
+        .then(async window=>{const [accounts,automation,demand]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,collectionDeadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline),collectAdvisoryDemandWindows(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,demandFetcher,now,collectionDeadline)]);return {window,accounts,automation,demand};}),
     ]);
     return {value,wallets,window,accounts,automation,demand};
   },error=>({error})):null;
-  // Launchpad reads (one keyed Lighthouse, three public Llama) run independently on the shared pool and deadline; without a key nothing is requested, and a failed collector retains nothing.
-  const launchpadPending=options.advisoryEnabled&&options.solanaTrackerKey?collectLaunchpadContext(options.solanaTrackerKey,fetcher,now,deadline).catch(()=>null):null;
+  // Launchpad reads (one keyed Lighthouse, three public Llama) run independently on the shared pool and collectionDeadline; without a key nothing is requested, and a failed collector retains nothing.
+  const launchpadPending=options.advisoryEnabled&&options.solanaTrackerKey?collectLaunchpadContext(options.solanaTrackerKey,advisoryFetcher,now,collectionDeadline).catch(()=>null):null;
   // Creator inventory starts once S13 and the complete A30 tape have both finished, reads only on its own allowance and, in the 600 s mode, stops at the caller reserve so late capture keeps its time.
-  const inventoryPending=advisoryPending&&creatorPending?Promise.all([advisoryPending,creatorPending]).then(([advisory,creator])=>'error' in advisory||'error' in creator?null:collectCreatorInventoryRun(token,creator,advisory.window,advisory.demand,options.rpcUrl??PUBLIC_SOLANA_RPC,inventoryFetcher,now,options.semanticEnabled?AbortSignal.any([deadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):deadline,true)).catch(error=>({error})):null;
+  const inventoryPending=advisoryPending&&creatorPending?Promise.all([advisoryPending,creatorPending]).then(([advisory,creator])=>'error' in advisory||'error' in creator?null:collectCreatorInventoryRun(token,creator,advisory.window,advisory.demand,options.rpcUrl??PUBLIC_SOLANA_RPC,inventoryFetcher,now,options.semanticEnabled?AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):collectionDeadline,true)).catch(error=>({error})):null;
   // Failed-fee receipts start once the inventory task has finished with receipts that will be ingested; they read only on their own allowance, stop at the same reserve, and the collector admits a read only after the recomputed S13/A30/O24/O25 gate holds.
-  const failedFeesPending=inventoryPending?Promise.all([advisoryPending!,creatorPending!,inventoryPending]).then(([advisory,creator,inventory])=>'error' in advisory||'error' in creator||!inventory||'error' in inventory||!Object.keys(inventory.rawArtifacts).length?null:collectCreatorFailedFeesRun(token,creator,advisory.window,advisory.demand,inventory,options.rpcUrl??PUBLIC_SOLANA_RPC,failedFeeFetcher,now,options.semanticEnabled?AbortSignal.any([deadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):deadline,true)).catch(error=>({error})):null;
+  const failedFeesPending=inventoryPending?Promise.all([advisoryPending!,creatorPending!,inventoryPending]).then(([advisory,creator,inventory])=>'error' in advisory||'error' in creator||!inventory||'error' in inventory||!Object.keys(inventory.rawArtifacts).length?null:collectCreatorFailedFeesRun(token,creator,advisory.window,advisory.demand,inventory,options.rpcUrl??PUBLIC_SOLANA_RPC,failedFeeFetcher,now,options.semanticEnabled?AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):collectionDeadline,true)).catch(error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
   let semantic:LiveBundle['semantic']={status:options.semanticEnabled?'KEY_MISSING':'NOT_REQUESTED',claims:[]};
   let attention:ReturnType<typeof deriveAttention>|undefined;
@@ -207,7 +227,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   type CallerRun={history:Awaited<ReturnType<typeof collectCallerHistory>>;classified:Awaited<ReturnType<typeof qualifyAdvisorySemantic>>|null;classifiedAt:string|null;status:string};
   let callerPending:Promise<CallerRun|{error:unknown}>|null=null,callerStatus='NOT_ATTEMPTED';
   if(options.semanticEnabled&&options.tinyfishKey&&options.geminiKey){
-    const attentionStartedAt=Date.now();
+    let attentionStartedAt=run.runtime.nowMs();
     let name:string|undefined,metadataUri:string|undefined;const discoveryUrls:string[]=[];
     try{
       const pairs=JSON.parse(dex.recovery&&!dex.recovery.selected?'[]':dex.raw??'[]') as Array<{chainId:string;baseToken?:{address:string;name?:string};quoteToken?:{address:string;name?:string};info?:{websites?:Array<{url?:string}>;socials?:Array<{url?:string}>}}>;
@@ -219,25 +239,45 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       }
     }catch{/* Discovery metadata is optional and untrusted, never identity evidence. */}
     if(sharedEnabled&&token.chain==='solana'){
-      const discovery=await discoverTokenMetadata(token.address,options.rpcUrl,fetcher,now,deadline);
+      const discovery=await discoverTokenMetadata(token.address,options.rpcUrl,currentStage.fetcher,now,currentStage.signal);
       for(const [id,raw] of Object.entries(discovery.rawArtifacts))addEvidence(id,raw,'token-metadata-discovery','JSON_RPC','PUBLIC_API',{mint:token.address,role:'discovery only'},discovery.retrievedAt[id]);
       if(discovery.uri){metadataUri=discovery.uri;if(!discoveryUrls.includes(discovery.uri))discoveryUrls.unshift(discovery.uri);}
     }
+    if(sharedEnabled)currentStage.finish();
+    const attentionStage=sharedEnabled?run.begin('ATTENTION'):currentStage;
+    const fetcher=attentionStage.fetcher,deadline=attentionStage.signal;
+    const dexRecovery=sharedEnabled&&options.tinyfishKey?{tinyfishKey:options.tinyfishKey,signal:deadline}:undefined;
+    attentionStartedAt=run.runtime.nowMs();
     let read=await collectAttentionSources(token,options.tinyfishKey,fetcher,now,name,discoveryUrls,undefined,sharedEnabled?'public-support-v2':undefined);
-    if(metadataUri){read.metadataLinks=true;read.metadataUri=metadataUri;}
+    if(metadataUri){read.metadataLinks=true;read.metadataUri=metadataUri;if(sharedEnabled)read.metadataLinkMethod='onchain-metadata-v1';}
     if(sharedEnabled){read.originScope=originSourceScope(read,token);read=await recoverOriginPages(read,token,options.tinyfishKey,fetcher,now);read.originScope=originSourceScope(read,token);read=await qualifyOriginExclusions(read,token,options.tinyfishKey,options.geminiKey,fetcher,now,deadline,modelRouting);read.originScope=originSourceScope(read,token);}
     web={state:read.sources.length?read.complete?'OBSERVED':'TRUNCATED':read.complete?'NO_RESULTS':'UNAVAILABLE',count:read.sources.length,...(read.codes.length?{code:read.codes[0]}:{})};
     const ids:string[]=[];
-    for(const [id,raw] of Object.entries(read.rawArtifacts))ids.push(id.startsWith('attention-origin-role-')&&id.endsWith('-search-query')?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'origin-recovery-query-v1'}):id.startsWith('attention-origin-role-')&&!id.endsWith('-search')&&!id.endsWith('-fetch')?addEvidence(id,raw,'gemini',id.endsWith('-prompt')?'MODEL_INPUT':'MODEL_RESPONSE','FREE_ACCOUNT',{method:'origin-role-review-v1'}):addEvidence(id,raw,(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')?'SAMPLE_SCOPE':id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{queries:read.queries,discoveryUrls:read.discoveryUrls,scope:'bounded web search and DEX-linked source sample'}));
+    for(const [id,raw] of Object.entries(read.rawArtifacts))ids.push(id.endsWith('-http-outcomes')?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'fetch-http-outcomes-v1'}):id.startsWith('attention-origin-role-')&&id.endsWith('-search-query')?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'origin-recovery-query-v1'}):id.startsWith('attention-origin-role-')&&!id.endsWith('-search')&&!id.endsWith('-fetch')?addEvidence(id,raw,'gemini',id.endsWith('-prompt')?'MODEL_INPUT':'MODEL_RESPONSE','FREE_ACCOUNT',{method:'origin-role-review-v1'}):addEvidence(id,raw,(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')?'SAMPLE_SCOPE':id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',(id==='attention-origin-recovery-scope'||id==='attention-origin-exclusion-scope')||id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{queries:read.queries,discoveryUrls:read.discoveryUrls,scope:'bounded web search and DEX-linked source sample'}));
     for(const s of read.sources)ids.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,...(s.discoveredFrom?{discoveredFrom:s.discoveredFrom}:{})},s.availableAt));
-    ids.push(addEvidence('attention-acquisition-scope',JSON.stringify({entryEvidenceMethod:read.entryEvidenceMethod,comparisonAcquisition:read.comparisonAcquisition,comparisonComplete:read.comparisonComplete,comparisonSourceIds:read.comparisonSourceIds,codes:read.codes}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'original-comparison-acquisition-v1'}));
-    const qualification=await qualifyAttention(read,token,options.geminiKey,fetcher,undefined,{tinyfishKey:options.tinyfishKey,now,signal:deadline,representationScreen:sharedEnabled,modelRouting});
+    ids.push(addEvidence('attention-acquisition-scope',JSON.stringify({...(read.metadataLinkMethod?{metadataLinkMethod:read.metadataLinkMethod}:{}),...(read.leadershipPositiveMethod?{leadershipPositiveMethod:read.leadershipPositiveMethod}:{}),...(read.collectionMethod?{collectionMethod:read.collectionMethod}:{}),entryEvidenceMethod:read.entryEvidenceMethod,comparisonAcquisition:read.comparisonAcquisition,comparisonComplete:read.comparisonComplete,comparisonSourceIds:read.comparisonSourceIds,codes:read.codes}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'original-comparison-acquisition-v1'}));
+    // Freeze original target posts and identity sources before comparison-only recovery.
+    const socialSeed=structuredClone(read);
+    const socialSeedAt=now();
+    if(!options.research)addEvidence('social-attention-seed',JSON.stringify({method:'attention-social-seed-v1',read:{...socialSeed,rawArtifacts:{},sources:socialSeed.sources.map(({text,...source})=>source)}}),'social-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'attention-social-seed-v1'},socialSeedAt);
+    const socialWork=!options.research?(async()=>{
+      const stage=run.begin('SOCIAL'),started=run.runtime.nowMs();
+      try{
+        const socialRead=await collectSocialSources(token,socialSeed,options.tinyfishKey!,stage.fetcher,now,stage.signal);
+        const {rawArtifacts:acquisitionArtifacts,...socialInput}=socialRead;
+        const qualification=await qualifySocial(socialInput,token,options.geminiKey!,stage.fetcher,options.runtime?.wait,stage.signal,{screeningRepair:sharedEnabled,modelRouting});
+        const qualifiedAt=now();stage.finish(qualification.code?{code:qualification.code,origin:'PROVIDER'}:undefined);
+        return {socialRead,acquisitionArtifacts,qualification,qualifiedAt,elapsedMs:Math.max(0,run.runtime.nowMs()-started)};
+      }catch{stage.finish({code:'SOC_COLLECTION_FAILED',origin:'PROVIDER'});return null;}
+    })():null;
+    const qualification=await qualifyAttention(read,token,options.geminiKey,fetcher,options.runtime?.wait,{tinyfishKey:options.tinyfishKey,now,signal:deadline,representationScreen:sharedEnabled,modelRouting});
     const scope=qualification.scope;
-    ids.push(addEvidence('attention-scope',JSON.stringify({entryEvidenceMethod:scope.entryEvidenceMethod,queries:scope.queries,complete:scope.complete,comparisonComplete:scope.comparisonComplete,comparisonSourceIds:scope.comparisonSourceIds,comparisonRankingSourceIds:scope.comparisonRankingSourceIds,postSampleSourceIds:scope.postSampleSourceIds,comparisonAcquisition:scope.comparisonAcquisition,comparisonQualification:scope.comparisonQualification,comparisonCoverage:scope.comparisonCoverage,comparisonPublicSupport:scope.comparisonPublicSupport,postSampleComplete:scope.postSampleComplete,codes:scope.codes,start:scope.start,end:scope.end,discoveryUrls:scope.discoveryUrls}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'comparison-scope-v2'}));
+    ids.push(addEvidence('attention-scope',JSON.stringify({...(scope.metadataLinkMethod?{metadataLinkMethod:scope.metadataLinkMethod}:{}),...(scope.leadershipPositiveMethod?{leadershipPositiveMethod:scope.leadershipPositiveMethod}:{}),entryEvidenceMethod:scope.entryEvidenceMethod,queries:scope.queries,complete:scope.complete,comparisonComplete:scope.comparisonComplete,comparisonSourceIds:scope.comparisonSourceIds,comparisonRankingSourceIds:scope.comparisonRankingSourceIds,postSampleSourceIds:scope.postSampleSourceIds,comparisonAcquisition:scope.comparisonAcquisition,comparisonQualification:scope.comparisonQualification,comparisonCoverage:scope.comparisonCoverage,comparisonPublicSupport:scope.comparisonPublicSupport,postSampleComplete:scope.postSampleComplete,codes:scope.codes,start:scope.start,end:scope.end,discoveryUrls:scope.discoveryUrls}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'comparison-scope-v2'}));
     for(const s of scope.sources.filter(s=>!read.sources.some(original=>original.id===s.id)))ids.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,recovery:true},s.availableAt));
-    for(const [id,raw] of Object.entries(qualification.rawArtifacts))ids.push(id.includes('-transport-attempt-')||id==='attention-narrative-public-support'||(id==='attention-comparison-manifest'||id==='attention-comparison-coverage'||id==='attention-comparison-public-support')||id==='comparison-lead-qualification'||id==='comparison-lead-wire-repair'||id.endsWith('-scope')
+    for(const [id,raw] of Object.entries(qualification.rawArtifacts))ids.push(id.includes('-transport-attempt-')||id==='attention-entry-first-acquisition'||id==='attention-narrative-public-support'||(id==='attention-comparison-manifest'||id==='attention-comparison-coverage'||id==='attention-comparison-public-support')||id==='comparison-lead-qualification'||id==='comparison-lead-wire-repair'||id.endsWith('-scope')
       ?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'complete-comparison-batches-v1'})
-      :id.startsWith('attention-recovery-')?addEvidence(id,raw,id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{method:'free-comparison-recovery-v1'},(scope.comparisonQualification as {recoveryQueries?:Array<{queryId:string;availableAt:string}>}|undefined)?.recoveryQueries?.find(q=>q.queryId===id)?.availableAt)
+      :id.endsWith('-http-outcomes')?addEvidence(id,raw,'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'fetch-http-outcomes-v1'})
+      :id.startsWith('attention-recovery-')?addEvidence(id,raw,id.endsWith('-metadata')?'attention-collector':id.includes('search')?'tinyfish-search':'tinyfish-fetch',id.endsWith('-metadata')?'INDEXED_LEAD':'ATTENTION_SAMPLE',id.endsWith('-metadata')?'LOCAL_DERIVED':'FREE_ACCOUNT',{method:'free-comparison-recovery-v1'},((scope.comparisonRecovery??scope.comparisonQualification) as {recoveryQueries?:Array<{queryId:string;availableAt:string}>}|undefined)?.recoveryQueries?.find(q=>q.queryId===id)?.availableAt)
       :addEvidence(id,raw,'gemini',id.endsWith('prompt')?'MODEL_INPUT':'MODEL_RESPONSE','FREE_ACCOUNT',{method:'automated-source-review-v1',model:geminiSettings.model}));
     // The historical caller corpus is frozen here, after attention acquisition and recovery but before any caller read; bodies are read as current revisions.
     if(options.advisoryEnabled){
@@ -245,14 +285,14 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       if(seed.selection===null)callerStatus=seed.code;
       else{
         addEvidence(CALLER_SELECTION_ID,seed.raw,'advisory-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:CALLER_SEED_METHOD},frozenAt);
-        const selection=seed.selection,callerKey=options.geminiKey,callerSignal=AbortSignal.any([deadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]);callerStatus='RUNNING';
+        const selection=seed.selection,callerKey=options.geminiKey,callerSignal=AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]);callerStatus='RUNNING';
         // Only the public reads and the model pair run here, overlapping social, shared and historical RPC work; no evidence is added until the late block.
         callerPending=(async():Promise<CallerRun>=>{
           const history=await collectCallerHistory(selection,callerFetcher,now,callerSignal);
           if(!history.data.complete)return {history,classified:null,classifiedAt:null,status:'BODIES_INCOMPLETE'};
           if(!history.data.socialInput.sources.length)return {history,classified:null,classifiedAt:null,status:'NO_SOURCES'};
           if(callerSignal.aborted)return {history,classified:null,classifiedAt:null,status:'CLASSIFICATION_RESERVE_REACHED'};
-          const classified=await qualifyAdvisorySemantic(history.data.socialInput,null,null,token,callerKey,fetcher,undefined,callerSignal);
+          const classified=await qualifyAdvisorySemantic(history.data.socialInput,null,null,token,callerKey,advisoryFetcher,undefined,callerSignal);
           return {history,classified,classifiedAt:now(),status:classified.code??'CLASSIFIED'};
         })().catch(error=>({error}));
       }
@@ -262,30 +302,33 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     qualifiedRead.growthSample={method:'fixed-query-sample-v1',sourceIds:fixedPosts.map(s=>s.id),queries:qualifiedRead.queries,complete:!!(qualifiedRead.postSampleComplete??qualifiedRead.complete)&&fixedPosts.every(s=>!!s.publishedAt&&Date.parse(s.publishedAt)<Date.parse(qualifiedRead.start)||rawArtifacts[s.id]===s.text)};
     const attentionTime=now();
     semanticReceiptIds.push(addEvidence('attention-qualified-receipt',JSON.stringify({read:{...qualifiedRead,rawArtifacts:{}},proposal:qualification.proposal,review:qualification.review,token,cutoff:attentionTime,evidenceIds:ids}),'attention-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'final-attention-review-v1'}));
-    attention=deriveAttention(qualifiedRead,qualification.proposal,qualification.review,token,attentionTime,ids,!options.research);
+    attention=deriveAttention(qualifiedRead,qualification.proposal,qualification.review,token,attentionTime,ids,!options.research,!!sharedEnabled);
     sharedSources=scope.sources.map(s=>({...s,text:rawArtifacts[s.id]??s.text}));
     const claims=qualification.proposal?.claims.flatMap(c=>{
-      const a=attention!.find(a=>a.id===c.feature);if(a?.quality!=='KNOWN'||!qualification.review?.decisions.some(d=>d.id===c.id&&d.accepted)||['narrative-public-support-v1','origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2'].includes((a.data as {method?:string}).method??''))return [];
+      const a=attention!.find(a=>a.id===c.feature);if(a?.quality!=='KNOWN'||!qualification.review?.decisions.some(d=>d.id===c.id&&d.accepted)||['narrative-public-support-v1','origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes((a.data as {method?:string}).method??''))return [];
       return [{kind:c.feature==='A01'?'NARRATIVE' as const:c.feature==='A02'?'GAME_TYPE' as const:c.feature==='A03'?'ORIGIN' as const:'TOKEN_RELATION' as const,value:c.summary,evidenceId:c.citations[0].sourceId,quote:c.citations[0].quote,assertion:c.originBasis==='PUBLIC_EVIDENCE_INADEQUATE'?'MODEL_INFERENCE' as const:'SOURCE_STATES' as const}];
     })??[];
-    const originGrade=attention.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2'].includes((a.data as {method?:string}).method??''));
+    const originGrade=attention.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&['origin-traceability-screen-v2','binary-public-support-v1','binary-public-support-v2','binary-public-support-v3','binary-public-support-v4'].includes((a.data as {method?:string}).method??''));
     if(originGrade){const d=originGrade.data as {summary:string;citations:Array<{sourceId:string;quote:string}>};claims.push({kind:'ORIGIN',value:d.summary,evidenceId:d.citations[0].sourceId,quote:d.citations[0].quote,assertion:'MODEL_INFERENCE'});}
     semantic={status:claims.length?'VALIDATED':qualification.code?/INVALID|FINISH|CONTENT|PACKET_LIMIT/.test(qualification.code)?'INVALID':'PROVIDER_UNAVAILABLE':!read.sources.length?'NO_PUBLIC_CORPUS':'CANDIDATE',claims,model:geminiSettings.model,schemaVersion:1,...(qualification.code?{validationErrors:[qualification.code]}:{})};
-    attentionElapsedMs=Math.max(0,Date.now()-attentionStartedAt);
+    attentionElapsedMs=Math.max(0,run.runtime.nowMs()-attentionStartedAt);
+    const attentionFailure=qualification.code??scope.codes.find(code=>/^ATT_MODEL_ENTRY_FAILED:[A-Z0-9_:-]+$/.test(code));
+    if(sharedEnabled)attentionStage.finish(attentionFailure?{code:attentionFailure,origin:'PROVIDER'}:undefined);
     if(!options.research){
-      const socialStartedAt=Date.now();
-      const socialRead=await collectSocialSources(token,scope,options.tinyfishKey,fetcher,now,deadline);
-      const {rawArtifacts:acquisitionArtifacts,...socialInput}=socialRead;
-      const socialQualification=await qualifySocial(socialInput,token,options.geminiKey,fetcher,undefined,deadline,{screeningRepair:!!dexRecovery,modelRouting});
-      const socialIds=socialRead.sources.filter(s=>scope.sources.some(original=>original.id===s.id)).map(s=>s.id);
-      for(const s of socialRead.sources.filter(s=>!scope.sources.some(original=>original.id===s.id)))socialIds.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,socialSupplement:true},s.availableAt));
-      for(const [id,raw] of Object.entries({...acquisitionArtifacts,...socialQualification.rawArtifacts}))socialIds.push(addEvidence(id,raw,id.startsWith('social-search-')?'tinyfish-search':id.startsWith('social-fetch-')?'tinyfish-fetch':id.includes('prompt')||id.includes('response')?'gemini':'social-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.startsWith('social-search-')||id.startsWith('social-fetch-')||id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'social-source-review-v1'}));
-      socialIds.push('attention-scope');
-      socialPacket={read:{...socialQualification.read,qualifiedAt:now(),codes:socialQualification.code?[socialQualification.code,...socialQualification.read.codes]:socialQualification.read.codes},proposal:socialQualification.proposal,review:socialQualification.review,evidenceIds:[...new Set(socialIds)]};
-      if(socialIds.includes('social-qualified-receipt'))semanticReceiptIds.push('social-qualified-receipt');
-      for(const s of socialRead.sources)if(!sharedSources.some(source=>source.id===s.id))sharedSources.push(s);
-      socialElapsedMs=Math.max(0,Date.now()-socialStartedAt);
+      const result=await socialWork;
+      if(result){
+        const {socialRead,acquisitionArtifacts,qualification:socialQualification,qualifiedAt}=result;
+        const socialIds=socialRead.sources.filter(s=>socialSeed.sources.some(original=>original.id===s.id)).map(s=>s.id);
+        for(const s of socialRead.sources.filter(s=>!socialSeed.sources.some(original=>original.id===s.id)))socialIds.push(addEvidence(s.id,s.text,'tinyfish-fetch','WEB_PAGE','FREE_ACCOUNT',{url:s.url,publishedAt:s.publishedAt,authorId:s.authorId,kind:s.kind,socialSupplement:true},s.availableAt));
+        for(const [id,raw] of Object.entries({...acquisitionArtifacts,...socialQualification.rawArtifacts}))socialIds.push(addEvidence(id,raw,id.startsWith('social-search-')?'tinyfish-search':id.startsWith('social-fetch-')?'tinyfish-fetch':id.includes('prompt')||id.includes('response')?'gemini':'social-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.startsWith('social-search-')||id.startsWith('social-fetch-')||id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'social-source-review-v1'},qualifiedAt));
+        socialIds.push('social-attention-seed');
+        socialPacket={read:{...socialQualification.read,qualifiedAt,codes:socialQualification.code?[socialQualification.code,...socialQualification.read.codes]:socialQualification.read.codes},proposal:socialQualification.proposal,review:socialQualification.review,evidenceIds:[...new Set(socialIds)]};
+        if(socialIds.includes('social-qualified-receipt'))semanticReceiptIds.push('social-qualified-receipt');
+        for(const s of socialRead.sources)if(!sharedSources.some(source=>source.id===s.id))sharedSources.push(s);
+        socialElapsedMs=result.elapsedMs;
+      }else addEvidence('social-stage-failure',JSON.stringify({code:'SOC_COLLECTION_FAILED'}),'social-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:'SOC_COLLECTION_FAILED'});
     }
+
     const interimSocial=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,now(),socialPacket.evidenceIds):undefined;
     const auditClaims=sharedClaims(attention,interimSocial?.facts);
     for(const id of [...new Set(auditClaims.flatMap(c=>c.citations.map(c=>c.sourceId)))])if(!sharedSources.some(s=>s.id===id)){
@@ -293,14 +336,15 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       if(e){const descriptor=JSON.parse(rawArtifacts[id]);sharedSources.push({id,url:descriptor.normalizedUrl??descriptor.url,text:descriptor.title+'\n'+descriptor.snippet,kind:'INDEXED_METADATA',authorId:null,publishedAt:null,availableAt:e.availableAt});}
     }
     const semanticFeatures=[...new Map([...features,...attention.flatMap(a=>a.projection?[a.projection]:[]),...(interimSocial?.assessments??[]).flatMap(a=>a.projection?[a.projection]:[])].map(f=>[f.id,f])).values()];
-    const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts,comparisonEntryGrade(attention)).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
+    const semanticScope=sharedWitnesses(semanticFeatures,options.profile,now(),interimSocial?.facts,comparisonEntryGrade(attention),attentionEntryGates(attention,!!sharedEnabled)).filter(w=>/^(NAR|CAN|ATT|SOC)-/.test(w.checkId));
     if(semanticScope.every(w=>w.status!=='UNKNOWN')&&auditClaims.length>0&&semanticReceiptIds.length===2){
-      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,fetcher,undefined,deadline,true,
-        {cutoff:now(),...(interimSocial?{socialWindow:{start:interimSocial.facts.start,end:interimSocial.facts.end},socialFacts:interimSocial.facts}:{})},modelRouting);
+      const sharedStage=run.begin('SHARED');
+      const audit=await qualifyShared(auditClaims,sharedSources,token,options.geminiKey,sharedStage.fetcher,options.runtime?.wait,sharedStage.signal,true,{cutoff:now(),...(interimSocial?{socialWindow:{start:interimSocial.facts.start,end:interimSocial.facts.end},socialFacts:interimSocial.facts}:{})},modelRouting);
+      sharedStage.finish(audit.code?{code:audit.code,origin:'PROVIDER'}:undefined);
       sharedAudit=audit.audit;
       addEvidence('shared-audit-status',JSON.stringify({method:'shared-conflict-review-v1',received:!!audit.audit,code:audit.code??null}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:audit.code??'SHARED_AUDIT_RECEIVED'});
       for(const [id,raw] of Object.entries(audit.rawArtifacts))addEvidence(id,raw,id.includes('prompt')||id.includes('response')?'gemini':'shared-collector',id.includes('prompt')?'MODEL_INPUT':id.includes('response')?'MODEL_RESPONSE':'SAMPLE_SCOPE',id.includes('prompt')||id.includes('response')?'FREE_ACCOUNT':'LOCAL_DERIVED',{method:'shared-conflict-review-v1'});
-    }
+    }else if(sharedEnabled)run.skip('SHARED',socialPacket?'ATTENTION':'SOCIAL');
   }
   if(options.research)addEvidence('curated-research',JSON.stringify(options.research),'curated-research','REVIEWED_CORPUS','USER_IMPORT',{qualification:'human-adjudication-v1',scope:'user supplied bounded evidence; not live platform coverage'});
   const ingest=(namespace:'chain'|'market'|'paid'|'trades'|'context'|'semantic'|'wallets'|'window'|'accounts'|'automation'|'topology'|'demand'|'callers'|'callerSemantic'|'creatorRole'|'launchpad'|'creatorInventory'|'creatorFailedFees',read:{rawArtifacts:Record<string,string>;retrievedAt:string|Record<string,string>;requests:Record<string,unknown>})=>{
@@ -321,7 +365,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const [chain,market,paid,trades,context]=result.value;
     let classification:AdvisoryProof['semantic']=null;
     if(socialPacket&&options.geminiKey){
-      const classified=await qualifyAdvisorySemantic(socialPacket.read,socialPacket.proposal,socialPacket.review,token,options.geminiKey,fetcher,undefined,deadline,'v4');
+      const classified=await qualifyAdvisorySemantic(socialPacket.read,socialPacket.proposal,socialPacket.review,token,options.geminiKey,advisoryFetcher,undefined,collectionDeadline,'v4');
       const requests=Object.fromEntries(Object.keys(classified.rawArtifacts).map(key=>[key,{operation:key,modelRequests:advisorySemanticRequests()}]));
       if(Object.keys(classified.rawArtifacts).length)classification=ingest('semantic',{rawArtifacts:classified.rawArtifacts,retrievedAt:now(),requests});
     }
@@ -355,27 +399,51 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // Proof v22 additionally binds the canonical rpc-holder-population receipt stored as one holder-population-archive-v1 archive.
     advisoryProof={method:'advisory-provenance-v24',launchpad,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
-  if(sharedEnabled)await captureCanonical();
+  if(sharedEnabled){
+    currentStage.finish();currentStage=run.begin('FINALIZE');fetcher=currentStage.fetcher;deadline=currentStage.signal;
+    dexRecovery=options.tinyfishKey?{tinyfishKey:options.tinyfishKey,signal:deadline}:undefined;
+    await captureCanonical();
+  }
   if(advisoryProof&&!detailRead?.rawArtifacts['rpc-holder-population']){const topology=await collectAuthorityTopology(token,detailRead?.rawArtifacts['rpc-mint-raw'],options.rpcUrl??PUBLIC_SOLANA_RPC,fetcher,now,deadline);advisoryProof.topology=ingest('topology',topology);}
-  let venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery):undefined;
+  let venueRead=token.chain==='solana'&&rpc.status==='OBSERVED'&&rpc.mint&&(rpc.mint.kind==='MINT_LEGACY'||rpc.mint.kind==='MINT_TOKEN_2022_PARTIAL')?await inspectPumpSwap(token,options.profile,detailRead?.controls,detailRead?.holders,rpc.mint.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery,undefined,sharedEnabled):undefined;
   if(sharedEnabled&&typeof rpc.mint?.slot==='number'&&venueRead&&!venueRead.inspection.bindingVerified&&venueRead.rawArtifacts['pump-pool-config']&&JSON.parse(venueRead.rawArtifacts['pump-pool-config']).result?.value?.[0]===null){
     const curve=await inspectPumpCurve(token,options.profile,detailRead?.holders,rpc.mint!.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery);
     const selection=JSON.stringify({method:'pump-venue-selection-v1',primaryStateId:'pump-pool-config',selected:curve.inspection.bindingVerified?'BONDING_CURVE':'UNVERIFIED',reason:'Canonical PumpSwap pool account absent'});
     venueRead={...curve,rawArtifacts:{...venueRead.rawArtifacts,...curve.rawArtifacts,'venue-route-selection':selection},retrievedAt:{...venueRead.retrievedAt,...curve.retrievedAt,'venue-route-selection':now()}};
   }
-  for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id],curve=id.startsWith('curve-'),derived=id==='venue-route-selection'||id==='curve-quote-calculation'||id==='curve-simulation-proof'||id==='curve-fee-requests'||/^curve-(?:entry|exit)-fee-recovery$/.test(id);addEvidence(id,raw,a?.sourceId??(derived?'pump-curve-derived':curve?'pump-curve-direct':id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(derived?'CALCULATION':id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':id==='pump-quote-calculation'?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(derived||id.endsWith('-min-context-recovery')||id==='pump-quote-calculation'?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
-  if(sharedEnabled)addEvidence('live-state-capture',JSON.stringify({method:'late-state-capture-v1',token,discoveryId:evidence.some(e=>e.id==='dex-discovery')?'dex-discovery':null,startedAt:stateCaptureStartedAt,endedAt:stateCaptureEndedAt,canonical:evidence.filter(e=>e.sourceId==='solana-rpc'||e.id==='dex-pairs').map(e=>({id:e.id,retrievedAt:e.retrievedAt})),rpcState:rpc.status,dexState:dex.status}),'shared-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'late-state-capture-v1'});
+  if(sharedEnabled&&rpc.status==='OBSERVED'&&typeof rpc.mint?.slot==='number'&&!venueRead?.inspection.bindingVerified){
+    const candidates=(dex.market?.pairs??[]).filter(p=>p.baseAddress===token.address&&p.quoteAddress==='So11111111111111111111111111111111111111112').sort((a,b)=>new Decimal(b.liquidityUsd??0).cmp(a.liquidityUsd??0)).slice(0,2);
+    if(candidates.length)try{
+      const scout=await solanaRpc(options.rpcUrl??'https://api.mainnet.solana.com','getMultipleAccounts',[candidates.map(p=>p.pairAddress),{encoding:'base64',commitment:'finalized',minContextSlot:rpc.mint.slot}],fetcher,undefined,deadline);
+      addEvidence('native-route-scout',scout.raw,'venue-discovery-rpc','JSON_RPC','PUBLIC_API',{method:'getMultipleAccounts',mint:token.address,candidatePools:candidates.map(p=>p.pairAddress)});
+      const result=scout.value as {context:{slot:number};value:Array<{owner:string;executable:boolean;data:[string,string]}|null>};
+      if(!Number.isSafeInteger(result?.context?.slot)||result.context.slot<rpc.mint.slot||!Array.isArray(result.value)||result.value.length!==candidates.length)throw Error('RPC_SHAPE');
+      const selected=result.value.findIndex(a=>a?.owner==='cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG'&&!a.executable&&a.data?.[1]==='base64'&&Buffer.from(a.data[0],'base64').length===1112);
+      if(selected>=0){
+        const previous=venueRead;if(previous){delete previous.rawArtifacts['venue-route-selection'];delete previous.retrievedAt['venue-route-selection'];}
+        const damm=await inspectDammV2(token,candidates[selected].pairAddress,options.profile,detailRead?.holders,result.context.slot,options.rpcUrl,fetcher,now,deadline,dexRecovery);
+        venueRead={...damm,rawArtifacts:{...previous?.rawArtifacts,...damm.rawArtifacts},retrievedAt:{...previous?.retrievedAt,...damm.retrievedAt},marketEvidence:{...previous?.marketEvidence,...damm.marketEvidence}};
+        addEvidence('damm-route-selection',JSON.stringify({method:'verified-native-route-v1',selected:'METEORA_DAMM_V2',pool:candidates[selected].pairAddress,candidatePools:candidates.map(p=>p.pairAddress),scoutId:'native-route-scout',reason:'Selected supported native-SOL program among bounded exact-mint candidates; not a best-depth claim.'}),'meteora-damm-derived','CALCULATION','LOCAL_DERIVED',{method:'verified-native-route-v1'});
+      }
+    }catch(error){addEvidence('native-route-scout-error',JSON.stringify({code:safeRpcCode(error)}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:safeRpcCode(error)});}
+  }
+  if(venueRead&&ownStop())for(const key of Object.keys(venueRead.inspection.errors))venueRead.inspection.errors[key]=ownStop()!.code;
+  const venueOutcome:VenueOutcome=venueRead?{state:'COMPLETED',origin:'PROVIDER',code:'VENUE_INSPECTED',evidenceIds:venueRead.inspection.evidenceIds}:token.chain!=='solana'?{state:'UNSUPPORTED',origin:'UNSUPPORTED',code:'EVM_READER_UNIMPLEMENTED',evidenceIds:[]}:{state:deadline.aborted?'CANCELLED':'NOT_STARTED',origin:ownStop()?.origin??'DEPENDENCY',code:ownStop()?.code??rpc.code??'LIVE_DEPENDENCY_SKIPPED',blockedBy:'FINALIZE',evidenceIds:rpcIds};
+  for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id],curve=id.startsWith('curve-'),derived=id==='venue-route-selection'||id==='curve-quote-calculation'||id==='curve-simulation-proof'||id==='curve-fee-requests'||/^curve-(?:entry|exit)-fee-recovery$/.test(id);addEvidence(id,raw,a?.sourceId??(id.startsWith('damm-')?(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)?'meteora-damm-derived':'meteora-damm-direct'):derived?'pump-curve-derived':curve?'pump-curve-direct':id.endsWith('-min-context-recovery')||['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)?'CALCULATION':derived?'CALCULATION':id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)||derived||id.endsWith('-min-context-recovery')||['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
+  if(sharedEnabled)addEvidence('live-state-capture',JSON.stringify({method:'late-state-capture-v1',entryGroupMethod:'mandatory-entry-groups-v1',token,discoveryId:evidence.some(e=>e.id==='dex-discovery')?'dex-discovery':null,startedAt:stateCaptureStartedAt,endedAt:stateCaptureEndedAt,canonical:evidence.filter(e=>e.sourceId==='solana-rpc'||e.id==='dex-pairs').map(e=>({id:e.id,retrievedAt:e.retrievedAt})),rpcState:rpc.status,dexState:dex.status}),'shared-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'late-state-capture-v1'});
+  currentStage.finish(rpc.status==='UNAVAILABLE'?{code:rpc.code??'RPC_UNAVAILABLE',origin:'PROVIDER'}:undefined);
+  if(sharedEnabled)addEvidence('live-run-scope',JSON.stringify(run.receipt(token)),'shared-collector','SAMPLE_SCOPE','LOCAL_DERIVED',{method:'phase-isolated-live-v1'});
   addEvidence('analysis-context',JSON.stringify({profile:options.profile,origins:options.origins??{}}),'local-config','CONFIG','LOCAL_DERIVED',{kind:'user-selected research context'});
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
   const social=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,cutoff,socialPacket.evidenceIds):undefined;
   if(socialPacket)addEvidence('social-derivation',JSON.stringify({...socialPacket,token,cutoff}),'social-collector','CALCULATION','LOCAL_DERIVED',{method:'social-source-review-v1'},cutoff);
-  if(socialPacket)addEvidence('social-run-diagnostics',JSON.stringify({admittedRequests:admission.counts.shared,requestLimit:admission.limit.shared,admittedAccountHistoryRequests:admission.counts.accounts,accountHistoryRequestLimit:admission.limit.accounts,admittedCallerRequests:admission.counts.callers,callerRequestLimit:admission.limit.callers,callerStatus,deadlineMs:runBudgetMs,elapsedMs:Math.max(0,Date.now()-runStartedAt),attentionElapsedMs,socialElapsedMs,deadlineReached:deadline.aborted}),'social-collector','DIAGNOSTIC','LOCAL_DERIVED',{method:'bounded-social-run-v1'},cutoff);
+  if(socialPacket)addEvidence('social-run-diagnostics',JSON.stringify({admittedRequests:run.operations(),requestLimit:admission.limit.shared,admittedAccountHistoryRequests:admission.counts.accounts,accountHistoryRequestLimit:admission.limit.accounts,admittedCallerRequests:admission.counts.callers,callerRequestLimit:admission.limit.callers,callerStatus,deadlineMs:runBudgetMs,elapsedMs:run.elapsed(),attentionElapsedMs,socialElapsedMs,deadlineReached:deadline.aborted}),'social-collector','DIAGNOSTIC','LOCAL_DERIVED',{method:'bounded-social-run-v1'},cutoff);
   const collection:LiveBundle['collection']={
       rpc: { state: rpc.status, ...(rpc.code ? { code: rpc.code } : {}) },
       dex: { state: dex.status, ...(dex.code ? { code: dex.code } : {}), count: dex.market?.retainedPairCount ?? 0 },
       web,
     };
-  const baseline=deriveBaseline({sharedMode:sharedEnabled,token,cutoff,profile:options.profile,features,evidence,observations,market:dex.market,collection,semantic,research:options.research,attention,social:social?.assessments,controls:venueRead?.controls??detailRead?.controls,holders:detailRead?.holders,program:detailRead?.program,venue:venueRead?.venue,venueInspection:venueRead?.inspection,directErrors:detailRead?.errors,thesis,origins:options.origins});
+  const baseline=deriveBaseline({sharedMode:sharedEnabled,token,cutoff,profile:options.profile,features,evidence,observations,market:dex.market,collection,semantic,research:options.research,attention,social:social?.assessments,controls:venueRead?.controls??detailRead?.controls,holders:detailRead?.holders,program:detailRead?.program,venue:venueRead?.venue,venueInspection:venueRead?.inspection,venueOutcome,directErrors:detailRead?.errors,thesis,origins:options.origins});
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
   // The failed-fee stage is ingested last and kept only when the projected bundle stays under the unchanged 24 MB cap: every retained byte, these archives, and the remaining thesis, derivation and shared artifacts that serialize their metadata. Otherwise every receipt is dropped and S15 stays not collected, never a known zero.
   if(advisoryProof&&failedFeeRead){
@@ -388,9 +456,11 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
   if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v24'},cutoff);
+  const groups=sharedEnabled?entryGroupsForBundle({token,cutoff,profile:options.profile,evidence,rawArtifacts,collection,market:dex.market,details:{baseline,...(social?{social:social.facts}:{})}}):undefined;
+  if(groups)addEvidence('entry-groups-derivation',JSON.stringify(groups),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:groups.method},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
-    const input={qualityMode:'ENTRY_GATES_V1' as const,...(rawArtifacts['venue-route-selection']?{venueInspection:venueRead!.inspection,venue:venueRead!.venue}:{}),token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
+    const input={qualityMode:'ENTRY_GROUPS_V1' as const,groups,...(rawArtifacts['venue-route-selection']||rawArtifacts['damm-route-selection']?{venueInspection:venueRead!.inspection,venue:venueRead!.venue}:{}),token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
     const effective=expireSharedWitnesses(input);
     for(const a of effective.baseline)baseline[baseline.findIndex(b=>b.id===a.id)]=a;
     features.splice(0,features.length,...effective.features);
@@ -404,6 +474,6 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   return {
     token, cutoff, analysisKind: 'LIVE', evidence, rawArtifacts, observations, features, profile: options.profile,thesis,
     collection,semantic, market: dex.market ?? null,
-    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{}),...(advisory?{advisory}:{})},
+    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{}),...(advisory?{advisory}:{}),...(groups?{groups}:{})},
   };
 }
