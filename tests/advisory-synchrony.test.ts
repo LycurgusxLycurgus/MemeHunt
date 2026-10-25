@@ -82,6 +82,7 @@ const routed = (r: Row, payer: string, user: PublicKey) => { const l = leg(user,
 const idle = (r: Row) => compile(r, [OTHER], [{ programId: system, accounts: [OTHER, pool], data: '' }], [], [`Program ${system} invoke [1]`, `Program ${system} success`]);
 const poolState = (baseMint: PublicKey) => sdk.coder.accounts.encode('pool', { ...defaults('pool', creator), creator, baseMint, quoteMint: NATIVE_MINT, poolBaseTokenAccount: baseVault, poolQuoteTokenAccount: quoteVault });
 const poolData = (await poolState(new PublicKey(token.address))).toString('base64');
+const wsolMintData = (() => { const b = Buffer.alloc(82); b[44] = 9; b[45] = 1; return b.toString('base64'); })();
 
 function windowFixture(reused = new Map<string, unknown>(), over: Partial<AdvisoryWindowHistory> = {}) {
   const data = { method: 'pumpswap-selected-pool-window-v3', token, pool, window: { start: iso(E - 3600), end }, genesisVerified: true, anchorSlot, anchorTime: iso(E + 30), poolVerified: true, stateSlot: anchorSlot,
@@ -193,6 +194,7 @@ function liveFetcher(rows: Row[], transactions: Map<string, unknown>, mutate: (r
       const result = method === 'getGenesisHash' ? SOLANA_MAINNET_GENESIS : method === 'getSlot' ? liveAnchor : method === 'getBlockTime' ? liveEnd + 60
         : method === 'getSignaturesForAddress' ? (request.params[0] === pool && options.limit === 1000 ? structuredClone(rows) : [])
         : method === 'getAccountInfo' && request.params[0] === pool ? { context: { slot: liveAnchor + 1 }, value: { owner: program, executable: false, lamports: 1, data: [poolData, 'base64'] } }
+        : method === 'getMultipleAccounts' && Array.isArray(request.params[0]) && request.params[0][0] === pool ? { context: { slot: liveAnchor + 1 }, value: [{ owner: program, executable: false, lamports: 1, data: [poolData, 'base64'] }, { owner: TOKEN_PROGRAM_ID.toBase58(), executable: false, lamports: 1, data: [wsolMintData, 'base64'] }] }
         : method === 'getTransaction' && transactions.has(request.params[0]) ? (options.encoding==='jsonParsed'?projectCompiledTransaction(structuredClone(transactions.get(request.params[0]))):structuredClone(transactions.get(request.params[0])))
         : { context: { slot: 1 }, value: null };
       return new Response(JSON.stringify(mutate(request, { jsonrpc: '2.0', id: 1, result })));
@@ -216,7 +218,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v34', 'advisory-measurements-v33', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v36', 'advisory-measurements-v35', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -248,7 +250,7 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v31'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v33'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -268,7 +270,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   const transactions = new Map<string, unknown>([...liveTransactions(old), [inScope[0]!.signature, swaps(inScope[0]!, [b58(U4)], [U4])], [inScope[1]!.signature, routed(inScope[1]!, K, P)], [inScope[2]!.signature, swaps(inScope[2]!, [b58(U1)], [U1])], [inScope[3]!.signature, swaps(inScope[3]!, [b58(U1)], [U1])]]);
   const live = (mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, transactions, mutate), now: () => liveAt });
   const bundle = await live(), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!, s = facts.supplements!.shortDemand;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v34', 'advisory-measurements-v33', 50, 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v36', 'advisory-measurements-v35', 50, 'KNOWN']);
   assert.deepEqual([s.status, s.reportEnd, s.baseline.start, s.baseline.end, s.measured.start], ['COMPLETE', '2026-10-10T12:00:00.000Z', '2026-10-10T10:00:00.000Z', '2026-10-10T11:00:00.000Z', '2026-10-10T11:00:00.000Z']);
   assert.deepEqual(s.windows.map(w => w.condition), [false, false, false, false, false, true]);
   assert.deepEqual(s.windows.map(w => w.firstObservedBuyerCount), [0, 0, 0, 0, 0, 1]);
@@ -278,7 +280,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   // The persisted report equals the production provider over the same retained window and demand receipts.
   const receipts = (namespace: 'window' | 'demand') => { const d = proof[namespace] as { requests: Record<string, { method: string; params: unknown[] }>; artifactIds: Record<string, string> }, keys = Object.entries(d.artifactIds);
     return { rawArtifacts: Object.fromEntries(keys.map(([k, id]) => [k, bundle.rawArtifacts[id]!])), retrievedAt: Object.fromEntries(keys.map(([k, id]) => [k, bundle.evidence.find(e => e.id === id)!.retrievedAt])), requests: d.requests, ids: keys.map(([, id]) => id) }; };
-  const archived = receipts('window'), w = { ...archived, rawArtifacts: unpackAdvisoryWindowReceipts(archived,true).rawArtifacts }, d = receipts('demand'), windowData = decodeAdvisoryWindow(token, proof.pool, proof.window.end, w.rawArtifacts, w.retrievedAt, w.requests, liveAt, true, true, true, true, true);
+  const archived = receipts('window'), w = { ...archived, rawArtifacts: unpackAdvisoryWindowReceipts(archived,true).rawArtifacts }, d = receipts('demand'), windowData = decodeAdvisoryWindow(token, proof.pool, proof.window.end, w.rawArtifacts, w.retrievedAt, w.requests, liveAt, true, true, true, true, true, true);
   assert.equal(s.coverage.logRecovery!.unresolvedForeignSwaps,0);
   assert.equal(decodeAdvisoryShortDemand(token,windowData,w,d.rawArtifacts,d.retrievedAt,d.requests,liveAt,[...w.ids,...d.ids]).coverage.logRecovery!.unresolvedForeignSwaps,undefined);
   assert.deepEqual(s, decodeAdvisoryShortDemand(token, windowData, w, d.rawArtifacts, d.retrievedAt, d.requests, liveAt, [...w.ids, ...d.ids],true));

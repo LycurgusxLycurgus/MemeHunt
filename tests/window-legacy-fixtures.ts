@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { LiveBundle } from '../src/domain/contracts.js';
 import { unpackAdvisoryWindowReceipts, WINDOW_DENSE_PAGE_LIMIT } from '../src/providers/advisory-window.js';
 import { HOLDER_ARCHIVE_ADAPTER, unpackHolderPopulation } from '../src/providers/advisory-topology.js';
+import { archiveDemandReceipt } from '../src/providers/advisory-demand-windows.js';
 
 type Request = { method: string; params: any[] };
 const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
@@ -9,7 +10,7 @@ const sha = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Construct a proof27 test fixture from a small exhausted proof28 index, dropping only its new admission receipt. Never used for real evidence. */
 export function legacyDenseWindowBundle<B extends LiveBundle>(fresh:B):{bundle:B;proof:any}{
  const bundle=structuredClone(fresh),raw=bundle.rawArtifacts as Record<string,string>,proof=JSON.parse(raw['advisory-derivation']!);
- if(proof.method!=='advisory-provenance-v28'&&proof.method!=='advisory-provenance-v30'&&proof.method!=='advisory-provenance-v31'&&proof.method!=='advisory-provenance-v32'&&proof.method!=='advisory-provenance-v33'&&proof.method!=='advisory-provenance-v34')return{bundle,proof};
+ if(proof.method!=='advisory-provenance-v28'&&proof.method!=='advisory-provenance-v30'&&proof.method!=='advisory-provenance-v31'&&proof.method!=='advisory-provenance-v32'&&proof.method!=='advisory-provenance-v33'&&proof.method!=='advisory-provenance-v34'&&proof.method!=='advisory-provenance-v35'&&proof.method!=='advisory-provenance-v36')return{bundle,proof};
  for(const [key,request] of Object.entries(proof.window.requests) as Array<[string,Request]>){
   const id=proof.window.artifactIds[key] as string;
   if(key==='window-pool-check'){
@@ -20,6 +21,16 @@ export function legacyDenseWindowBundle<B extends LiveBundle>(fresh:B):{bundle:B
    if(!Array.isArray(rows)||rows.length>=256)throw new Error('LEGACY_DENSE_WINDOW_PAGE');
    request.params[1]={...request.params[1],limit:256};bundle.evidence.find(e=>e.id===id)!.scope={request};
   }
+ }
+ // A proof35 or proof36 modern final bank is getMultipleAccounts([pool,quoteMint]); a dense proof27 window reads getAccountInfo(pool), so drop the quote bank and restore the single-account value[0] body under the same archive, clock, hash and request shape (synthetic fixture conversion only).
+ const poolRequest=proof.window.requests['window-pool'] as Request|undefined;
+ if(poolRequest?.method==='getMultipleAccounts'){
+  const id=proof.window.artifactIds['window-pool'] as string,e=bundle.evidence.find(ev=>ev.id===id)!;
+  const poolAddress=(poolRequest.params[0] as string[])[0]!;
+  const plain=JSON.parse(unpackAdvisoryWindowReceipts({rawArtifacts:{'window-pool':raw[id]!},retrievedAt:{'window-pool':e.retrievedAt},requests:{'window-pool':poolRequest}},true).rawArtifacts['window-pool']!);
+  plain.result={...plain.result,value:plain.result.value[0]};raw[id]=archiveDemandReceipt(JSON.stringify(plain));
+  const request={method:'getAccountInfo',params:[poolAddress,poolRequest.params[1]]};
+  proof.window.requests['window-pool']=request;e.scope={request};e.contentHash=sha(raw[id]);
  }
  if(proof.exitCapacity)throw Error('LEGACY_CAPACITY_SOURCE');delete proof.exitCapacity;
  proof.method='advisory-provenance-v27';raw['advisory-derivation']=JSON.stringify(proof);bundle.evidence.find(e=>e.id==='advisory-derivation')!.contentHash=sha(raw['advisory-derivation']);
@@ -42,6 +53,12 @@ export function legacyWindowBundle<B extends LiveBundle>(fresh: B): { bundle: B;
     const rows = JSON.parse(plain[key]!).result;
     if (request.params[1]?.limit !== WINDOW_DENSE_PAGE_LIMIT || !Array.isArray(rows) || rows.length > 32) throw new Error('LEGACY_WINDOW_PAGE');
     request.params[1] = { ...request.params[1], limit: 32 };
+  }
+  // A proof35 or proof36 modern final bank is getMultipleAccounts([pool,quoteMint]); the plain legacy window consumes only the getAccountInfo(pool) envelope, so drop the quote bank and restore the single-account value[0] body (synthetic fixture conversion only; clocks, hashes and request shape stay exact).
+  if (requests['window-pool']?.method === 'getMultipleAccounts') {
+    const poolAddress = (requests['window-pool'].params[0] as string[])[0]!;
+    requests['window-pool'] = { method: 'getAccountInfo', params: [poolAddress, requests['window-pool'].params[1]] };
+    const body = JSON.parse(plain['window-pool']!); body.result = { ...body.result, value: body.result.value[0] }; plain['window-pool'] = JSON.stringify(body);
   }
   for (const key of keys) { const id = ids[key]!, e = record(id); raw[id] = plain[key]!; e.adapterVersion = 'live-v1'; e.scope = { request: requests[key] }; e.contentHash = sha(raw[id]!); }
   for (const e of bundle.evidence.filter(e => e.adapterVersion === HOLDER_ARCHIVE_ADAPTER)) { raw[e.id] = unpackHolderPopulation(raw[e.id]!); e.adapterVersion = 'live-v1'; e.contentHash = sha(raw[e.id]!); }

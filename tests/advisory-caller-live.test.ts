@@ -126,7 +126,7 @@ test('caller bodies and the independent classification pair run in the backgroun
   assert.equal(receipts.length, 6);
   assert.ok(receipts.every(e => Date.parse(e.retrievedAt) > Date.parse(selection.availableAt)));
   const proof = proofOf(r);
-  assert.equal(proof.method, 'advisory-provenance-v34');
+  assert.equal(proof.method, 'advisory-provenance-v36');
   assert.deepEqual(Object.keys(proof.creatorRole.artifactIds), ['page'], 'a page without a profile link stops creator discovery after one receipt');
   assert.equal((metric(r, 'S13').data as any).creatorRole.reasonCode, 'CREATOR_ROLE_PAGE_SHAPE');
   assert.equal(JSON.parse(r.bundle.rawArtifacts['advisory-callerSemantic-advisory-semantic-selection']!).method, 'advisory-source-selection-v3');

@@ -161,6 +161,7 @@ test('replay never derives O24 without a KNOWN recomputed S13 role',async()=>{
 
 const hour=Date.parse('2026-10-10T12:00:00.000Z')/1000,day=Date.parse('2026-10-10T00:00:00.000Z')/1000;
 const poolCreator=new PublicKey(Buffer.alloc(32,7)),pool=poolPda(0,poolCreator,new PublicKey(mint),NATIVE_MINT).toBase58();
+const wsolMintData=(()=>{const b=Buffer.alloc(82);b[44]=9;b[45]=1;return b.toString('base64');})();
 const label=(w:string)=>`${w.slice(0,4)}\u2026${w.slice(-4)}`,coin=creatorRoleCoinUrl(mint);
 const creatorPage={results:[{url:coin,final_url:coin,text:`Creator\n\n${label(wallet)}\n\nMC`,links:[`https://pump.fun/profile/${wallet}`],published_date:new Date(T*1000).toISOString()}],errors:[]};
 /** Public live fixture with a verifiable pool and anchor (complete hour and A30 tape), the S13 creator page and the inventory world. */
@@ -175,7 +176,7 @@ async function liveFetcher(o:WorldOptions={}):Promise<typeof fetch>{
   if(init?.method==='POST'){
    const request=JSON.parse(String(init.body));
    if(request.method==='getTransaction'||request.method==='getTokenAccountsByOwner'||request.params?.[0]===account||request.method==='getSignaturesForAddress'&&request.params[0]===wallet)return world.fetcher(input,init);
-   value={jsonrpc:'2.0',id:1,result:request.method==='getGenesisHash'?SOLANA_MAINNET_GENESIS:request.method==='getSlot'?ANCHOR:request.method==='getBlockTime'?hour+60:request.method==='getSignaturesForAddress'?[]:request.method==='getAccountInfo'&&request.params[0]===pool?{context:{slot:ANCHOR+1},value:{owner:PUMP_AMM_PROGRAM_ID.toBase58(),executable:false,lamports:1,data:[poolData,'base64']}}:{context:{slot:1},value:null}};
+   value={jsonrpc:'2.0',id:1,result:request.method==='getGenesisHash'?SOLANA_MAINNET_GENESIS:request.method==='getSlot'?ANCHOR:request.method==='getBlockTime'?hour+60:request.method==='getSignaturesForAddress'?[]:request.method==='getAccountInfo'&&request.params[0]===pool?{context:{slot:ANCHOR+1},value:{owner:PUMP_AMM_PROGRAM_ID.toBase58(),executable:false,lamports:1,data:[poolData,'base64']}}:request.method==='getMultipleAccounts'&&request.params[0]?.[0]===pool?{context:{slot:ANCHOR+1},value:[{owner:PUMP_AMM_PROGRAM_ID.toBase58(),executable:false,lamports:1,data:[poolData,'base64']},{owner:T22,executable:false,lamports:1,data:[wsolMintData,'base64']}]}:{context:{slot:1},value:null}};
   }else if(url.includes('/token-pairs/'))value=[{chainId:'solana',dexId:'pumpswap',pairAddress:pool,baseToken:{address:mint},quoteToken:{address:quote},priceUsd:'1',liquidity:{usd:10000},volume:{h24:100},txns:{h24:{buys:4,sells:3}}}];
   else if(url.includes('include=base_token'))value={data:{id:`solana_${pool}`,type:'pool',attributes:{address:pool},relationships:{base_token:{data:{id:`solana_${mint}`,type:'token'}},quote_token:{data:{id:`solana_${quote}`,type:'token'}}}},included:[mint,quote].map(address=>({id:`solana_${address}`,type:'token',attributes:{address}}))};
   else if(url.includes('ohlcv'))value={data:{attributes:{ohlcv_list:Array.from({length:75},(_,i)=>[hour-i*3600,10+i%6,11+i%6,9+i%6,10+i%6,20])}}};
@@ -191,7 +192,7 @@ const rehash=(b:{evidence:Array<{id:string;contentHash:string}>;rawArtifacts:Rec
 
 test('live collection persists a KNOWN creator inventory O24 through Service and rejects removed, downgraded, duplicated, extra, moved, rescoped and claimed receipts',async()=>{
  const bundle=await live(),proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,o24=facts.metrics.find(m=>m.id==='O24')!,data=o24.data as any;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v34','advisory-measurements-v33']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v36','advisory-measurements-v35']);
  assert.deepEqual([facts.metrics.find(m=>m.id==='A30')!.quality,facts.metrics.find(m=>m.id==='S13')!.quality],['KNOWN','KNOWN']);
  assert.deepEqual(Object.keys(proof.creatorInventory.artifactIds),['creator-ata-head','creator-ata-page-0',`creator-tx-${ataSig}`,'creator-owner-accounts','creator-wallet-page-0']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-inventory');
@@ -227,7 +228,7 @@ test('live collection persists a KNOWN creator inventory O24 through Service and
    assert.throws(()=>writer.analyzeLive(unhashed),/ARTIFACT_HASH_OR_SIZE/);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v31');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v33');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 

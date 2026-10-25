@@ -44,7 +44,7 @@ export function creatorInventoryTape(window:AdvisoryWindowHistory,windowReceipts
  if(!window.complete||!window.poolVerified||window.pool===null||!demand.eligible||!demand.complete||demand.pool!==window.pool||demand.anchorSlot!==window.anchorSlot)return null;
  // decodeAdvisoryWindow already bound this exact pool state to the pool PDA; its base vault is the a[7] every tape trade was decoded against.
  try{
-  const value=JSON.parse(windowReceipts.rawArtifacts['window-pool']!).result.value,data=Buffer.from(value.data[0],'base64');
+  const parsed=JSON.parse(windowReceipts.rawArtifacts['window-pool']!).result.value,value=Array.isArray(parsed)?parsed[0]:parsed,data=Buffer.from(value.data[0],'base64');
   return{history:demand,vault:PUMP_AMM_SDK.decodePool({data,owner:PUMP_AMM_PROGRAM_ID,lamports:0,executable:false,rentEpoch:0}).poolBaseTokenAccount.toBase58()};
  }catch{return null;}
 }

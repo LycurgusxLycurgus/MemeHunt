@@ -14,6 +14,7 @@ import {reconstructAdvisory} from '../src/app/advisory.js';
 import {starterProfile} from '../src/app/config.js';
 import {Service} from '../src/app/service.js';
 import {SOLANA_MAINNET_GENESIS} from '../src/providers/solana.js';
+import {PUMP_WINDOW_ABI_SOURCE,PUMP_WINDOW_ABI_HASH,PUMP_WINDOW_V35_ABI_SOURCE,PUMP_WINDOW_V35_ABI_HASH} from '../src/providers/pumpswap-window-abi.js';
 
 const at='2026-10-24T12:00:00.000Z',target={chain:'solana' as const,address:new PublicKey(Buffer.alloc(32,71)).toBase58()},peer={chain:'solana' as const,address:new PublicKey(Buffer.alloc(32,72)).toBase58()};
 function packet(tokens=[target,peer]):A12CandidateSet{
@@ -91,7 +92,7 @@ test('live34 input, raw reconstruction, Service save/reopen and historical32 ret
  const f=await fixture(),p=packet();
  const combined:typeof fetch=(url,init)=>{if(init?.method==='POST'){const req=JSON.parse(String(init.body));if(req.method==='getMultipleAccounts'&&[3,4,11].includes(req.params[0].length))return f.fetcher(url,init);}return baselineFetch(url,init);};
  const bundle=await collectLiveToken(target,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,a12CandidateSet:p,fetcher:combined,now:()=>at});
- const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(proof.method,'advisory-provenance-v34');assert.ok(proof.exitCapacity);assert.equal(bundle.details!.advisory!.method,'advisory-measurements-v33');assert.equal(bundle.details!.advisory!.metrics.find(m=>m.id==='A12')!.quality,'KNOWN');
+ const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(proof.method,'advisory-provenance-v36');assert.ok(proof.exitCapacity);assert.equal(bundle.details!.advisory!.method,'advisory-measurements-v35');assert.equal(bundle.details!.advisory!.metrics.find(m=>m.id==='A12')!.quality,'KNOWN');
  assert.deepEqual(reconstructAdvisory(target,at,bundle.details!.baseline,bundle.evidence,bundle.rawArtifacts,proof,bundle.thesis??null,bundle.features),bundle.details!.advisory);
  // A proof33 replays the original WSOL acquisition layout and exact legacy result, not v2 semantics.
  const legacy=structuredClone(bundle),legacyProof=structuredClone(proof),legacyReceipts=await collectExitCapacity(p,target,'300',0,'https://example.com/rpc',f.fetcher,()=>at);
@@ -109,5 +110,23 @@ test('live34 input, raw reconstruction, Service save/reopen and historical32 ret
   }
  }finally{service.close();rmSync(dir,{recursive:true,force:true});}
  const fresh=await collectLiveToken(target,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:baselineFetch,now:()=>at}),old=JSON.parse(fresh.rawArtifacts['advisory-derivation']!);old.method='advisory-provenance-v32';delete old.exitCapacity;
- const prior=reconstructAdvisory(target,at,fresh.details!.baseline,fresh.evidence,fresh.rawArtifacts,old,fresh.thesis??null,fresh.features);assert.equal(prior.method,'advisory-measurements-v31');assert.deepEqual(prior.metrics,fresh.details!.advisory!.metrics);
+ const prior=reconstructAdvisory(target,at,fresh.details!.baseline,fresh.evidence,fresh.rawArtifacts,old,fresh.thesis??null,fresh.features);assert.equal(prior.method,'advisory-measurements-v31');
+ // The same fresh raw relabelled as an explicit saved proof35 (new mode off) keeps the frozen proof35 window contract, so this v35 versus <=34 comparison never drifts with fresh output.
+ const freshProof=JSON.parse(fresh.rawArtifacts['advisory-derivation']!);assert.equal(freshProof.method,'advisory-provenance-v36');assert.equal(fresh.details!.advisory!.method,'advisory-measurements-v35');
+ const saved35=reconstructAdvisory(target,at,fresh.details!.baseline,fresh.evidence,fresh.rawArtifacts,{...freshProof,method:'advisory-provenance-v35'},fresh.thesis??null,fresh.features);assert.equal(saved35.method,'advisory-measurements-v34');
+ // Required frozen version dispatch: v35 pins PUMP_WINDOW_V35_ABI, every proof<=34 pins the exact legacy PUMP_WINDOW_ABI. Assert both O28 abis exactly, then compare all metrics with only that one proven-different field normalized.
+ const o28Of=(metrics:typeof prior.metrics)=>metrics.find(m=>m.id==='O28')!,priorO28=o28Of(prior.metrics),v35O28=o28Of(saved35.metrics);
+ assert.deepEqual((priorO28.data as any).abi,{source:PUMP_WINDOW_ABI_SOURCE,sha256:PUMP_WINDOW_ABI_HASH});
+ assert.deepEqual((v35O28.data as any).abi,{source:PUMP_WINDOW_V35_ABI_SOURCE,sha256:PUMP_WINDOW_V35_ABI_HASH});
+ // Required frozen version dispatch: a proof35 modern window appends exactly one execution-proof CPI recovery limitation immediately after the terminal-truncation recovery limitation; every proof<=34 keeps the exact legacy limitations array. Literal is the verbatim advisory-window.ts MODERN_RECOVERY_LIMITATION contract string.
+ const MODERN_RECOVERY_LIMITATION='Proof35 execution-proof recovery: a terminally truncated receipt is also retained when a Pump invocation recorded in the complete instruction trace - whether its frame opened before "Log truncated" or lies wholly after the marker - is proven executed, because a finalized meta.err-null transaction whose trace ancestry (resolved from stackHeights, not the open log stack) is entirely ordinary non-builtin SBF programs cannot have a failed callee (Agave v4.3.2 program-runtime/src/cpi.rs propagates a failed CPI via the ? operator and returns Ok(SUCCESS) only on success). Only a direct selected-pool swap bound once to its own buy/sell event-CPI child, or a canonical selected-disjoint close_user_volume_accumulator with its own close event-CPI child, is admitted; the unclosed-invocation count stays reported, and multi-hop buys and unknown roles remain unsupported.';
+ const priorLimitations=(priorO28.data as any).limitations as string[],v35Limitations=(v35O28.data as any).limitations as string[];
+ const modernIndex=v35Limitations.indexOf(MODERN_RECOVERY_LIMITATION);
+ assert.ok(modernIndex>0&&v35Limitations[modernIndex-1]!.startsWith('Terminal log truncation:'),'the proof35 execution-proof recovery limitation sits immediately after the terminal-truncation recovery limitation');
+ assert.deepEqual([...v35Limitations.slice(0,modernIndex),...v35Limitations.slice(modernIndex+1)],priorLimitations);
+ const normalizedMetrics=saved35.metrics.map(m=>m.id==='O28'?{...m,data:{...(m.data as any),abi:(priorO28.data as any).abi,limitations:(m.data as any).limitations.filter((l:string)=>l!==MODERN_RECOVERY_LIMITATION)}}:m);
+ assert.deepEqual(prior.metrics,normalizedMetrics);
+ // Fresh proof36 output of this tradeless window keeps the saved proof35 O28 verdict; its exact abi, limitations and window method await the frozen proof36 source contract.
+ const fresh36O28=o28Of(fresh.details!.advisory!.metrics);
+ assert.deepEqual([fresh36O28.quality,fresh36O28.reasonCode,fresh36O28.evidenceIds],[v35O28.quality,v35O28.reasonCode,v35O28.evidenceIds]);
 });

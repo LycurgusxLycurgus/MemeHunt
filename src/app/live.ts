@@ -216,7 +216,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     const [wallets,{window,accounts,automation,demand}]=await Promise.all([
       collectAdvisoryWalletHistory(decoded,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline),
       // Proof v28: the expanded selected hour opts into guarded truncation recovery and pool-quote admission on its own1045-request allowance; every in-run consumer below receives the same guarded decoded tape.
-      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,windowFetcher,now,advisoryWindowEnd,collectionDeadline,chain,true,true,true,true,true)
+      collectAdvisoryWindow(token,advisoryPool,options.rpcUrl??PUBLIC_SOLANA_RPC,windowFetcher,now,advisoryWindowEnd,collectionDeadline,chain,true,true,true,true,true,true,true)
         .then(async window=>{const [accounts,automation,demand]=await Promise.all([collectAdvisoryWindowAccounts(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,accountFetcher,now,collectionDeadline),collectAdvisoryAutomation(token,window.data,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline),collectAdvisoryDemandWindows(token,window,options.rpcUrl??PUBLIC_SOLANA_RPC,demandFetcher,now,collectionDeadline)]);return {window,accounts,automation,demand};}),
     ]);
     return {value,wallets,window,accounts,automation,demand};
@@ -417,7 +417,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // Window receipts are stored as exact window-archive-v1 archives under the 1.25 MB namespace ceiling (fail closed above it); the plain collected window already fed accounts, automation, demand, inventory and failed fees.
     // Proof v22 additionally binds the canonical rpc-holder-population receipt stored as one holder-population-archive-v1 archive.
     if(episode&&creatorRoutes&&creatorCoverage&&Object.keys(episode.rawArtifacts).length)creatorEpisode=ingest('creatorEpisode',episode);
-    advisoryProof={method:'advisory-provenance-v34',exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    advisoryProof={method:'advisory-provenance-v36',exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled){
     currentStage.finish();currentStage=run.begin('FINALIZE');fetcher=currentStage.fetcher;deadline=currentStage.signal;
@@ -482,7 +482,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v34'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v36'},cutoff);
   const groups=sharedEnabled?entryGroupsForBundle({token,cutoff,profile:options.profile,evidence,rawArtifacts,collection,market:dex.market,details:{baseline,...(social?{social:social.facts}:{})}}):undefined;
   if(groups)addEvidence('entry-groups-derivation',JSON.stringify(groups),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:groups.method},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
