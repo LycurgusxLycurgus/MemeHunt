@@ -49,6 +49,14 @@ const fileJson = (path: string | undefined) => {
   if (bytes.byteLength > 2_000_000) throw new Error('FILE_TOO_LARGE');
   return JSON.parse(bytes.toString('utf8')) as unknown;
 };
+/** The A24 capture is retained byte-exact, so it has its own text reader and ceiling; every other file keeps the 2 MB JSON reader. */
+const A24_CAPTURE_BYTES = 8_388_608;
+const captureText = (path: string | undefined) => {
+  if (!path) throw new Error('FILE_REQUIRED');
+  const bytes = readFileSync(path);
+  if (bytes.byteLength > A24_CAPTURE_BYTES) throw new Error('FILE_TOO_LARGE');
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new Error('A24_CAPTURE_INVALID'); }
+};
 const knownErrorCodes = new Set([
   'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
   'INVALID_TOKEN_REF', 'INVALID_SOLANA_ADDRESS', 'INVALID_EVM_ADDRESS', 'INVALID_PROFILE',
@@ -70,7 +78,7 @@ const knownErrorCodes = new Set([
   'TRANSFER_COST_REQUIRES_BUY', 'OVERSELL_TRANSFER', 'TRANSFER_DIRECTION_REQUIRED',
   'ANALYSIS_MODES_CONFLICT', 'MODE_FLAG_ONLY_FOR_LIVE',
   'INVALID_CONFIG','CONFIG_EXISTS','CONFIG_NOT_FOUND','CONFIG_CANCELLED','CHECK_NOT_FOUND','CHAIN_SELECTION_REQUIRED','INVALID_ASSESSMENT_DETAILS','UNQUALIFIED_STAGE_INPUT','UNSUPPORTED_SNAPSHOT_VERSION','RESEARCH_TOKEN_MISMATCH','RESEARCH_DUPLICATE','RESEARCH_CITATION','RESEARCH_TIME_OR_BINDING','RESEARCH_LINEAGE','RESEARCH_WINDOW',
-  'RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH',
+  'RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH','A24_ADVISORY_REQUIRED','A24_CAPTURE_INVALID',
 ]);
 const safeCode = (error: unknown) => {
   const raw = error instanceof Error ? error.message : '';
@@ -147,7 +155,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
   const interactive=runtime.isInteractive??(!!process.stdin.isTTY&&!!process.stderr.isTTY);
   let service: Service | undefined;
   try {
-    for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
+    for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text','a24-capture'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
     const requestedChecklist=flagValue(argv,'checklist');
     if(requestedChecklist&&!requestedChecklist.startsWith('--')&&!['entry','management'].includes(requestedChecklist))throw new CliError('INVALID_CHECKLIST','Choose entry or management.');
     if(cmd==='creator-position'||cmd==='creator-position-replay'){
@@ -174,6 +182,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
+        a24Capture: '--advisory --a24-capture FILE imports one byte-exact raw A24 capture packet (at most 8 MiB, strict UTF-8) for Solana as a USER_IMPORT receipt; the six-component saturation vector is re-derived from those bytes. No score, entry gate or price claim, and no network read for the capture.',
         a12Candidates: '--advisory --a12-candidates FILE imports a raw-source-bound independently reviewed factual candidate catalog and quotes the canonical PumpSwap index0 quote-verified route scope for every member. No other-venue or simulated execution claim.',
         creatorHistory: '--partial --advisory --creator-history explicitly permits the bounded TinyFish Pump creator page, DEX JSON recovery and public creator history for Solana; needs TINYFISH_API_KEY, uses no Gemini.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
@@ -248,6 +257,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
+      if(hasFlag(argv,'a24-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with a live --advisory analysis of a Solana address.');
       if(hasFlag(argv,'creator-history')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Creator history is a live analyze mode; use --partial --advisory.');
       if (fullRequested && partialRequested) throw new Error('ANALYSIS_MODES_CONFLICT');
       if ((fullRequested || partialRequested) && (cmd === 'reassess' || hasBundle)) throw new Error('MODE_FLAG_ONLY_FOR_LIVE');
@@ -292,6 +302,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const token = parseToken({ chain, address:chain==='solana'?argv[1]:argv[1].toLowerCase() });
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
+        if(hasFlag(argv,'a24-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with --advisory for a Solana address.');
+        const a24Capture=hasFlag(argv,'a24-capture')?captureText(flagValue(argv,'a24-capture')):undefined;
         if(flagValue(argv,'a12-candidates')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A12_ADVISORY_REQUIRED','Use --a12-candidates FILE with --advisory for a Solana address.');
         const creatorHistory=hasFlag(argv,'creator-history');
         if(creatorHistory&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Use --creator-history with --partial --advisory for a Solana address.');
@@ -344,6 +356,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         const live = await collectLiveToken(token, {
           profile,
           advisoryEnabled:hasFlag(argv,'advisory'),
+          ...(a24Capture!==undefined?{a24Capture}:{}),
           ...(flagValue(argv,'a12-candidates')?{a12CandidateSet:fileJson(flagValue(argv,'a12-candidates')) as import('./providers/advisory-exit-capacity-custom.js').A12CandidateSet}:{}),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},

@@ -1,5 +1,6 @@
 import {a12CandidateSetSchema,collectExitCapacity,type A12CandidateSet} from '../providers/advisory-exit-capacity-custom.js';
 import {collectCreatorEpisode} from '../providers/advisory-creator-episode.js';
+import {A24_CAPTURE_METHOD,decodeA24Capture} from '../providers/advisory-saturation.js';
 import {collectCreatorRoutes} from '../providers/advisory-creator-routes.js';
 import {collectCreatorCoverage} from '../providers/advisory-creator-coverage.js';
 import {decodeCreatorQuoteAccounting} from '../providers/advisory-creator-quote.js';
@@ -53,7 +54,7 @@ import { createLiveRun, type LiveRuntime } from './live-phases.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
 
 
-export type LiveOptions = { a12CandidateSet?:A12CandidateSet; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
+export type LiveOptions = { a12CandidateSet?:A12CandidateSet; a24Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
 export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
@@ -78,6 +79,8 @@ export async function collectLiveSolana(token: TokenRef, options: LiveOptions): 
 }
 export async function collectLiveToken(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
   if(options.a12CandidateSet){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A12_ADVISORY_REQUIRED');a12CandidateSetSchema.parse(options.a12CandidateSet);}
+  // The A24 capture stays the original file text so its exact bytes are retained; this only validates schema and size, and the metric is re-derived at the final cutoff.
+  if(options.a24Capture!==undefined){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A24_ADVISORY_REQUIRED');try{decodeA24Capture(options.a24Capture);}catch{throw Error('A24_CAPTURE_INVALID');}}
   if(token.chain==='solana'){if(!addressPattern.test(token.address))throw new Error('INVALID_SOLANA_ADDRESS');decodeSolanaAddress(token.address);}
   else if(!/^0x[a-fA-F0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
   if(options.advisoryEnabled&&token.chain!=='solana')throw new Error('ADVISORY_CHAIN_UNSUPPORTED');
@@ -417,7 +420,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // Window receipts are stored as exact window-archive-v1 archives under the 1.25 MB namespace ceiling (fail closed above it); the plain collected window already fed accounts, automation, demand, inventory and failed fees.
     // Proof v22 additionally binds the canonical rpc-holder-population receipt stored as one holder-population-archive-v1 archive.
     if(episode&&creatorRoutes&&creatorCoverage&&Object.keys(episode.rawArtifacts).length)creatorEpisode=ingest('creatorEpisode',episode);
-    advisoryProof={method:'advisory-provenance-v36',exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    advisoryProof={method:'advisory-provenance-v37',saturation:null,exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled){
     currentStage.finish();currentStage=run.begin('FINALIZE');fetcher=currentStage.fetcher;deadline=currentStage.signal;
@@ -461,6 +464,10 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     addEvidence('a12-reviewed-candidate-set',JSON.stringify(packet),'a12-reviewed-candidate-set','REVIEWED_CORPUS','USER_IMPORT',{method:packet.method},now());
     advisoryProof.exitCapacity={...ingest('exitCapacity',capacity),candidateSetId:'a12-reviewed-candidate-set',impactBps:options.profile.risk.maxExitImpactBps??null};
   }
+  if(options.a24Capture!==undefined){
+    if(!advisoryProof)throw Error('A24_ADVISORY_REQUIRED');
+    advisoryProof.saturation={captureId:addEvidence('advisory-saturation-capture',options.a24Capture,'advisory-saturation','HISTORICAL_RECEIPT','USER_IMPORT',{method:A24_CAPTURE_METHOD},now(),A24_CAPTURE_METHOD) as 'advisory-saturation-capture'};
+  }
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
   const social=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,cutoff,socialPacket.evidenceIds):undefined;
   if(socialPacket)addEvidence('social-derivation',JSON.stringify({...socialPacket,token,cutoff}),'social-collector','CALCULATION','LOCAL_DERIVED',{method:'social-source-review-v1'},cutoff);
@@ -482,7 +489,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v36'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v37'},cutoff);
   const groups=sharedEnabled?entryGroupsForBundle({token,cutoff,profile:options.profile,evidence,rawArtifacts,collection,market:dex.market,details:{baseline,...(social?{social:social.facts}:{})}}):undefined;
   if(groups)addEvidence('entry-groups-derivation',JSON.stringify(groups),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:groups.method},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
