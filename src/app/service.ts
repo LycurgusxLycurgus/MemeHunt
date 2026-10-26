@@ -1,5 +1,9 @@
+import { EXECUTOR_SEMANTIC_METHOD } from '../providers/executor-semantic.js';
+import { RECORDED_INCENTIVE_METHOD } from '../providers/advisory-recorded-incentives.js';
+import { RECORDED_CALLER_METHOD } from '../providers/advisory-recorded-callers.js';
 import { validatePumpRecoveryBundle } from '../providers/pumpswap.js';
 import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
+import {CREATOR_COVERAGE_REQUEST_CAP,EPISODE_COVERAGE_REQUEST_CAP} from '../providers/advisory-creator-coverage.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
@@ -7,9 +11,9 @@ import { VersionedMessage } from '@solana/web3.js';
 import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSchema, profileSchema, thesisSchema, type FeatureResult, type AssessmentDetails, type Bundle, type LiveBundle, type EntrySnapshot, type ManagementSnapshot, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
+import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSchema, profileSchema, thesisSchema, type FeatureResult, type AssessmentDetails, type Bundle, type LiveBundle, type EntrySnapshot, type ManagementSnapshot, type PlanBasisDeclaration, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
 import { baselineIds, deriveBaseline, deriveHolderBounds, validateResearch } from '../domain/baseline.js';
-import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
+import { evaluateEntry, evaluateManagement, evaluatePredicate, type ExecutionInputs, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
 import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema, canonicalSocialUrl, type SocialInput } from '../domain/social.js';
 import { deriveAttention,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema } from '../domain/attention.js';
@@ -20,11 +24,35 @@ import { validateSocialRepair,validateSocialWire } from '../providers/social-mod
 import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
 import { validateDammBundle } from '../providers/meteora-damm-v2.js';
 import { validateCurveBundle } from '../providers/pumpcurve.js';
+import { validateVenueProvenanceBundle } from '../providers/venue-provenance.js';
 import { decodeHolderPopulation } from '../providers/solana.js';
 import { decodeTokenMetadataUri } from '../providers/token-discovery.js';
 import { decodeSharedAuditProof } from '../providers/shared-model.js';
 import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,attentionEntryGates,type SharedInputs } from '../domain/shared.js';
+import { decodeSharedAudit,validSharedReassessment,sharedTemporalScopeSchema } from '../providers/shared-model.js';
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
+import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
+import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy-policy.js';
+import { A29_CAPTURE_ADAPTER,A29_SOURCE_ID,A29_V2_CAPTURE_ADAPTER,A29_V2_SOURCE_BYTES,a29VerifiedV2Id,reconstructAdvisory } from './advisory.js';
+import { HOLDER_ARCHIVE_ADAPTER, unpackHolderPopulation } from '../providers/advisory-topology.js';
+import { validateExecutableLiquidity } from '../providers/executable-liquidity.js';
+
+/** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
+const ADVISORY_SCREENS=[...Array.from({length:37},(_,i)=>`research-screen-advisory-v${i+1}`),'research-screen-advisory-v38','research-screen-advisory-v39','research-screen-advisory-v40','research-screen-advisory-v41','research-screen-advisory-v42','research-screen-advisory-v43'];
+
+/** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
+function validateAdvisoryDexBaseline(b:LiveBundle){
+  const record=b.evidence.find(e=>e.id==='dex-pairs');let market:LiveBundle['market']=null;
+  if(record){
+    if(!(record.sourceId==='dexscreener'&&record.accessMode==='PUBLIC_API'||record.sourceId==='tinyfish-fetch'&&record.accessMode==='FREE_ACCOUNT'&&record.scope.method==='tinyfish-live-dex-json-v1'))throw new Error('ADVISORY_PROOF_INVALID');
+    try{market=parseDexPairs(JSON.parse(b.rawArtifacts[record.id]!),b.token.chain,b.token.address);}catch{if(b.market!==null)throw new Error('ADVISORY_PROOF_INVALID');}
+  }
+  if(decisionHash(market)!==decisionHash(b.market))throw new Error('ADVISORY_PROOF_INVALID');
+  const expected=deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:b.features,evidence:b.evidence,observations:b.observations,market:market??undefined,sharedMode:!!b.details?.shared}).find(a=>a.id==='O28');
+  const claimed=b.details?.baseline.find(a=>a.id==='O28');
+  if(!expected||!claimed)throw new Error('ADVISORY_PROOF_INVALID');
+  for(const field of ['data','quality','unit','evidenceIds'] as const)if(decisionHash(expected?.[field])!==decisionHash(claimed?.[field]))throw new Error('ADVISORY_PROOF_INVALID');
+}
 
 /** Fresh execution receipts separate discovery, semantic work and final state acquisition. */
 function validateLiveExecution(b:LiveBundle){
@@ -131,10 +159,10 @@ function validateHolderReconciliation(b:LiveBundle){
  if(!ids.some(id=>b.rawArtifacts[id]))return;
  try{
   for(const id of [...ids,'rpc-mint-raw','rpc-holder-population'])if(!b.evidence.some(e=>e.id===id&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'))throw Error('proof');
-  const initialMint=JSON.parse(b.rawArtifacts[ids[0]]).result,initialPopulation=JSON.parse(b.rawArtifacts[ids[1]]).result,currentMint=JSON.parse(b.rawArtifacts['rpc-mint-raw']).result,currentPopulation=JSON.parse(b.rawArtifacts['rpc-holder-population']).result;
+  const initialMint=JSON.parse(b.rawArtifacts[ids[0]]).result,initialPopulation=JSON.parse(b.rawArtifacts[ids[1]]).result,currentMint=JSON.parse(b.rawArtifacts['rpc-mint-raw']).result,currentPopulationRaw=b.evidence.find(e=>e.id==='rpc-holder-population')?.adapterVersion===HOLDER_ARCHIVE_ADAPTER?unpackHolderPopulation(b.rawArtifacts['rpc-holder-population']):b.rawArtifacts['rpc-holder-population'],currentPopulation=JSON.parse(currentPopulationRaw).result;
   const supply=(mint:any)=>{if(mint.value.data[1]!=='base64')throw Error('shape');const bytes=Buffer.from(mint.value.data[0],'base64');if(bytes.length<82)throw Error('shape');return bytes.readBigUInt64LE(36).toString();};
   let mismatch=false;try{decodeHolderPopulation(initialPopulation,b.token.address,initialMint.value.owner,supply(initialMint),initialMint.context.slot);}catch(error){mismatch=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED';}if(!mismatch)throw Error('trigger');
-  const mintChanged=b.rawArtifacts['rpc-mint-raw']!==b.rawArtifacts[ids[0]],populationChanged=b.rawArtifacts['rpc-holder-population']!==b.rawArtifacts[ids[1]];
+  const mintChanged=b.rawArtifacts['rpc-mint-raw']!==b.rawArtifacts[ids[0]],populationChanged=currentPopulationRaw!==b.rawArtifacts[ids[1]];
   if(mintChanged&&(currentMint.context.slot<initialPopulation.context.slot||currentMint.value.owner!==initialMint.value.owner)||populationChanged&&Number.isSafeInteger(currentPopulation?.context?.slot)&&(!mintChanged||currentPopulation.context.slot<currentMint.context.slot))throw Error('floor');
   if(b.details?.baseline.some(a=>['O17','O18'].includes(a.id)&&a.quality==='KNOWN')){
    if(!mintChanged||!populationChanged)throw Error('capture');
@@ -268,24 +296,32 @@ export class Service {
   close() { this.db.close(); }
   private validateBundle(input: Bundle | LiveBundle, trustedLive = false): Bundle | LiveBundle {
     const parsed = trustedLive ? liveBundleSchema.parse(input) : bundleSchema.parse(input);
-    const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE') };
-    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
-    if (b.evidence.length > 1000 || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
+    const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE'), ...(parsed.exitProofs ? { exitProofs: parsed.exitProofs.map(p => ({...p,token:normalizeToken(p.token,parsed.analysisKind==='FIXTURE')})) } : {}) };
+    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length || b.exitProofs?.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
+    const nativeCoverage=(()=>{try{const proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46'].includes(proof?.method)&&!!proof.creatorCoverage;}catch{return false;}})();
+    const nativeReceipts=nativeCoverage?b.evidence.filter(e=>e.sourceId==='advisory-creatorCoverage'||e.id.startsWith('advisory-creatorCoverage-')).length:0;
+    if (b.evidence.length-nativeReceipts > 1000 || nativeReceipts>(['advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46'].includes(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method)?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP) || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
     const ids = new Set(b.evidence.map(e => e.id));
     if (ids.size !== b.evidence.length || new Set(b.features.map(f => f.id)).size !== b.features.length) throw new Error('DUPLICATE_BUNDLE_ID');
     for (const e of b.evidence) if (Date.parse(e.availableAt) > Date.parse(b.cutoff) || Date.parse(e.retrievedAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EVIDENCE');
     if (b.rawArtifacts && Object.keys(b.rawArtifacts).some(id => !ids.has(id))) throw new Error('UNREFERENCED_ARTIFACT');
     if ((b.analysisKind === 'USER_IMPORT' || b.analysisKind === 'LIVE') && b.evidence.some(e => b.rawArtifacts?.[e.id] === undefined)) throw new Error('RAW_ARTIFACT_REQUIRED');
+    // Only the one fully validated, owned A29 v2 record gets the separate 128 MB bound outside the default sum; descriptor presence or labels alone change nothing.
+    const a29Exempt=trustedLive&&b.analysisKind==='LIVE'?a29VerifiedV2Id(b.token,b.cutoff,b.evidence,b.rawArtifacts??{}):null;
     let artifactBytes = 0,populationBytes=0;
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
-      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
-      if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
-      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
+      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw);
+      if(e.id===a29Exempt&&e.adapterVersion===A29_V2_CAPTURE_ADAPTER){if(bytes>A29_V2_SOURCE_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw new Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      artifactBytes += bytes;
+      if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
+      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? nativeCoverage?64_000_000:24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'solana-rpc-preflight':'PUBLIC_API', 'venue-discovery-rpc':'PUBLIC_API', 'solana-rpc-diagnostics':'LOCAL_DERIVED', 'meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED','pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
-        if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','advisory-creatorAccounting':'PUBLIC_API','advisory-creatorCoverage':'PUBLIC_API','advisory-creatorRoutes':'FREE_ACCOUNT','advisory-creatorEpisode':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED','advisory-exitCapacity':'PUBLIC_API','a12-reviewed-candidate-set':'USER_IMPORT','advisory-saturation':'USER_IMPORT','advisory-a29':'USER_IMPORT','advisory-recorded-callers':'USER_IMPORT','advisory-recorded-incentives':'USER_IMPORT','advisory-executor':'USER_IMPORT','advisory-executor-input':'FREE_ACCOUNT','advisory-executor-body-input':'USER_IMPORT','execliq-solana-rpc':'PUBLIC_API','execliq-dexscreener':'PUBLIC_API','execliq-collector':'LOCAL_DERIVED' };
+        // Launchpad access is per receipt: only the keyed Lighthouse read is a free account; the Llama summaries are public.
+        const access = e.sourceId==='advisory-creatorEpisode' ? (e.id==='advisory-creatorEpisode-helius'?'FREE_ACCOUNT':'PUBLIC_API') : e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
+        if (access !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
     for (const f of b.features) {
@@ -296,14 +332,29 @@ export class Service {
       if (tokenKey(o.subject) !== tokenKey(b.token) || o.evidenceIds.some(id => !ids.has(id))) throw new Error('INVALID_OBSERVATION_REF');
       if (Date.parse(o.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_OBSERVATION');
     }
+    const proofs = b.exitProofs ?? [];
+    if (new Set(proofs.map(p => p.id)).size !== proofs.length) throw new Error('DUPLICATE_BUNDLE_ID');
+    for (const p of proofs) {
+      if ([...p.evidenceIds, ...(p.outcome === 'FILLABLE' ? p.fees.flatMap(f => f.conversionEvidenceIds) : [])].some(id => !ids.has(id))) throw new Error('UNKNOWN_EVIDENCE_REF');
+      if (Date.parse(p.asOf) > Date.parse(b.cutoff) || Date.parse(p.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EXIT_PROOF');
+    }
+    if (b.analysisKind !== 'LIVE') {
+      // Outside LIVE only the validator view is normalized, so an owned execliq orphan in a fixture or import envelope is rejected; the bundle itself is unchanged.
+      const r=validateExecutableLiquidity({token:b.token,cutoff:b.cutoff,evidence:b.evidence,rawArtifacts:b.rawArtifacts??{},features:b.features,observations:b.observations,semantic:{status:'NOT_REQUESTED',claims:[]},...(b.exitProofs?{exitProofs:b.exitProofs}:{})});
+      if(!r.ok)throw new Error(`EXEC_LIQ_PROOF_INVALID:${r.code}`);
+      if(r.claim!=='ABSENT')throw new Error('EXEC_LIQ_PROOF_INVALID');
+    }
     if (b.analysisKind === 'LIVE') {
       validateLiveExecution(b);
       validatePumpRecoveryBundle(b);
       validateCurveBundle(b);
       validateDammBundle(b);
+      validateVenueProvenanceBundle(b);
       validateDexRecovery(b);
       validateFeeRecovery(b);
       validateHolderReconciliation(b);
+      // The result stays in scope for the details bound: only a field this validator reconstructed as PRESENT may sit outside the ordinary details cap.
+      const execLiq=validateExecutableLiquidity(b);if(!execLiq.ok)throw new Error(`EXEC_LIQ_PROOF_INVALID:${execLiq.code}`);
       let captureGroupMethod:unknown;
       if(b.rawArtifacts['live-state-capture'])try{captureGroupMethod=JSON.parse(b.rawArtifacts['live-state-capture']).entryGroupMethod;}catch{throw Error('ENTRY_GROUP_PROOF_INVALID');}
       const groupMarked=!!b.details?.groups||b.details?.shared?.qualityMode==='ENTRY_GROUPS_V1'||b.rawArtifacts['entry-groups-derivation']!==undefined||captureGroupMethod!==undefined;
@@ -312,9 +363,38 @@ export class Service {
         if(!b.details?.groups||b.details.shared?.qualityMode!=='ENTRY_GROUPS_V1'||captureGroupMethod!=='mandatory-entry-groups-v1'||!proof||proof.scope.method!=='mandatory-entry-groups-v1'||proof.availableAt!==b.cutoff||proof.retrievedAt!==b.cutoff||decisionHash(JSON.parse(b.rawArtifacts[proof.id]))!==decisionHash(b.details.groups))throw Error('ENTRY_GROUP_PROOF_INVALID');
       }
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
+      // An imported A29 capture is cited only by the advisory A29 metric; no feature, observation, claim, exit proof, assessment, entry group or shared/social fact consumes it.
+      const a29Ids=new Set(b.evidence.filter(e=>e.sourceId===A29_SOURCE_ID||e.adapterVersion===A29_CAPTURE_ADAPTER||e.adapterVersion===A29_V2_CAPTURE_ADAPTER||e.id.startsWith('advisory-a29-')).map(e=>e.id)),citesA29=(refs:string[])=>refs.some(id=>a29Ids.has(id));
+      if(a29Ids.size&&(b.features.some(f=>citesA29(f.evidenceIds))||b.observations.some(o=>citesA29(o.evidenceIds))||b.semantic.claims.some(c=>a29Ids.has(c.evidenceId))||(b.exitProofs??[]).some(p=>citesA29(p.evidenceIds))||!!b.details?.baseline.some(a=>citesA29(a.evidenceIds))||!!b.details?.groups?.groups.some(g=>citesA29(g.evidenceIds))||!!b.details?.shared?.witnesses.some(w=>citesA29(w.evidenceIds))||!!b.details?.shared?.freshness.some(f=>citesA29(f.evidenceIds))||citesA29(b.details?.social?.evidenceIds??[])))throw new Error('ADVISORY_PROOF_INVALID');
+      // Recorded caller imports may supply only four historical advisory metrics. Their nested source ids never become live entry sources.
+      const recordedIds=new Set(b.evidence.filter(e=>e.sourceId==='advisory-recorded-callers'||e.adapterVersion===RECORDED_CALLER_METHOD||e.id.startsWith('advisory-recorded-callers-')).map(e=>e.id));
+      const citesRecorded=(value:unknown):boolean=>typeof value==='string'?recordedIds.has(value):Array.isArray(value)?value.some(citesRecorded):!!value&&typeof value==='object'?Object.values(value).some(citesRecorded):false;
+      if(recordedIds.size&&(citesRecorded(b.features)||citesRecorded(b.observations)||citesRecorded(b.semantic)||citesRecorded(b.exitProofs)||citesRecorded(b.details?.baseline)||citesRecorded(b.details?.groups)||citesRecorded(b.details?.shared)||citesRecorded(b.details?.social)||b.details?.advisory?.metrics.some(m=>!['S07','S09','A21','A23'].includes(m.id)&&citesRecorded(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const incentiveIds=new Set(b.evidence.filter(e=>e.sourceId==='advisory-recorded-incentives'||e.adapterVersion===RECORDED_INCENTIVE_METHOD||e.id.startsWith('advisory-recorded-incentives-')).map(e=>e.id));
+      const citesIncentives=(value:unknown):boolean=>typeof value==='string'?incentiveIds.has(value):Array.isArray(value)?value.some(citesIncentives):!!value&&typeof value==='object'?Object.values(value).some(citesIncentives):false;
+      if(incentiveIds.size&&(citesIncentives(b.features)||citesIncentives(b.observations)||citesIncentives(b.semantic)||citesIncentives(b.exitProofs)||citesIncentives(b.details?.baseline)||citesIncentives(b.details?.groups)||citesIncentives(b.details?.shared)||citesIncentives(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='S08'&&citesIncentives(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const executorIds=new Set(b.evidence.filter(e=>['advisory-executor','advisory-executor-input','advisory-executor-body-input'].includes(e.sourceId)||e.adapterVersion===EXECUTOR_SEMANTIC_METHOD||e.id.startsWith('advisory-executor-')).map(e=>e.id));
+      const citesExecutor=(value:unknown):boolean=>typeof value==='string'?executorIds.has(value):Array.isArray(value)?value.some(citesExecutor):!!value&&typeof value==='object'?Object.values(value).some(citesExecutor):false;
+      if(executorIds.size&&(citesExecutor(b.features)||citesExecutor(b.observations)||citesExecutor(b.semantic)||citesExecutor(b.exitProofs)||citesExecutor(b.details?.baseline)||citesExecutor(b.details?.groups)||citesExecutor(b.details?.shared)||citesExecutor(b.details?.social)||b.details?.advisory?.metrics.some(m=>!['A06','A07','A08','A19','A20','A21','A22','A23','S07','S08','S09','S11','S12'].includes(m.id)&&citesExecutor(m))))throw Error('ADVISORY_PROOF_INVALID');
+      // The proof-v22 holder archive keeps its canonical solana-rpc source, so its adapter alone also demands the advisory proof that binds it.
+      const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
+      if(hasAdvisoryEvidence&&!b.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+      if(hasAdvisoryEvidence)validateAdvisoryDexBaseline(b);
       if(b.details){
         const details=b.details;
-        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify(details).length>2_000_000)throw new Error('INVALID_ASSESSMENT_DETAILS');
+        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify((({executableLiquidity:_owned,...ordinary})=>ordinary)(details)).length>(nativeCoverage?8_000_000:2_000_000)||(details.executableLiquidity!==undefined&&(execLiq.claim!=='PRESENT'||JSON.stringify(details.executableLiquidity).length>24_000_000)))throw new Error('INVALID_ASSESSMENT_DETAILS');
+        if(details.advisory){
+          const record=b.evidence.find(e=>e.id==='advisory-derivation'&&e.sourceId==='advisory-collector'&&e.accessMode==='LOCAL_DERIVED');
+          if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
+          try{
+            const proof=JSON.parse(b.rawArtifacts[record.id]);
+            // Fresh persistence accepts main v39/v40 and the explicitly versioned cycle2 opt-ins; saved snapshots replay recorded facts.
+            if(!['advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46'].includes(proof.method)||proof.exitCapacity&&proof.exitCapacity.impactBps!==(b.profile.risk.maxExitImpactBps??null))throw new Error('ADVISORY_PROOF_INVALID');
+            if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
+            const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
+            if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
+          }catch{throw new Error('ADVISORY_PROOF_INVALID');}
+        }else if(b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')))throw new Error('ADVISORY_PROOF_INVALID');
         if(details.social){
           const record=b.evidence.find(e=>e.id==='social-derivation'&&e.sourceId==='social-collector'&&e.accessMode==='LOCAL_DERIVED');
           if(!record)throw new Error('SOCIAL_PROOF_REQUIRED');
@@ -659,10 +739,38 @@ export class Service {
             const e=b.evidence.find(e=>e.id==='shared-qualified-receipt'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');if(!e)throw new Error('SHARED_PROOF_REQUIRED');
             const receipt=JSON.parse(b.rawArtifacts[e.id]);
             if(tokenKey(receipt.token)!==tokenKey(b.token)||decisionHash(receipt.claims)!==decisionHash(packet.claims)||decisionHash(receipt.sources)!==decisionHash(packet.sources)||decisionHash(receipt.audit)!==decisionHash(packet.audit)||!['shared-proposal-response','shared-review-response'].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
+            const sharedPrompts=b.evidence.filter(e=>e.id.startsWith('shared-')&&e.sourceType==='MODEL_INPUT').map(e=>JSON.parse(b.rawArtifacts[e.id]));
+            const promptScopes=sharedPrompts.map(prompt=>prompt.temporalScope);
+            if(sharedPrompts.some(prompt=>prompt.citationWire==='INDEX')&&receipt.wireMethod!=='shared-audit-wire-v3'||receipt.wireMethod==='shared-audit-wire-v3'&&(sharedPrompts.length===0||sharedPrompts.some(prompt=>prompt.citationWire!=='INDEX')))throw new Error('SHARED_PROOF_INVALID');
+            if(receipt.wireMethod===undefined){
+              let rawProposal:unknown;
+              try{rawProposal=parseSourceResponse(b.rawArtifacts['shared-proposal-response'],'SHARED_MODEL');}catch{/* Preserve historical unmarked receipt validation. */}
+              const hasIndex=(value:unknown):boolean=>!!value&&typeof value==='object'&&(Object.hasOwn(value,'spanIndex')||Object.values(value).some(hasIndex));
+              if(hasIndex(rawProposal))throw new Error('SHARED_PROOF_INVALID');
+            }
+            if(receipt.temporalScope===undefined){
+              if(promptScopes.some(scope=>scope!==undefined))throw new Error('SHARED_PROOF_INVALID');
+            }else{
+              const parsed=sharedTemporalScopeSchema.safeParse(receipt.temporalScope);
+              if(!parsed.success)throw new Error('SHARED_PROOF_INVALID');
+              const scope=parsed.data;
+              if(scope.socialFacts&&decisionHash(scope.socialFacts)!==decisionHash(packet.social??null))throw new Error('SHARED_PROOF_INVALID');
+              // Semantic review precedes the final mechanical capture; its own
+              // cutoff must cover its sources and retain the exact social window.
+              if(Date.parse(scope.cutoff)>Date.parse(b.cutoff)||packet.sources.some(source=>Date.parse(source.availableAt)>Date.parse(scope.cutoff))||decisionHash(scope.socialWindow??null)!==decisionHash(packet.social?{start:packet.social.start,end:packet.social.end}:null)||promptScopes.length===0||promptScopes.some(value=>value===undefined||decisionHash(value)!==decisionHash(scope)))throw new Error('SHARED_PROOF_INVALID');
+            }
             if(receipt.wireMethod===undefined&&b.evidence.some(e=>e.id.startsWith('shared-repair-')))throw new Error('SHARED_PROOF_INVALID');
             const repair=receipt.wireMethod!==undefined&&receipt.proposalResponseId==='shared-repair-proposal-response';
             if(receipt.wireMethod!==undefined){
-              if(receipt.wireMethod!=='shared-audit-wire-v2'||receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response'))throw new Error('SHARED_PROOF_INVALID');
+              if(!['shared-audit-wire-v2','shared-audit-wire-v3'].includes(receipt.wireMethod))throw new Error('SHARED_PROOF_INVALID');
+              const citationWire=receipt.wireMethod==='shared-audit-wire-v3'?'INDEX':'PAIR';
+              const repair=receipt.proposalResponseId==='shared-repair-proposal-response';
+              if(receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response')||![receipt.proposalResponseId,receipt.reviewResponseId].every(id=>b.evidence.some(e=>e.id===id&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT')))throw new Error('SHARED_PROOF_INVALID');
+              try{
+                const initial=decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts['shared-proposal-response'],b.rawArtifacts['shared-review-response'],citationWire);
+                const selected=repair?decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts[receipt.proposalResponseId],b.rawArtifacts[receipt.reviewResponseId],citationWire):initial;
+                if(decisionHash(selected)!==decisionHash(receipt.audit)||repair&&!validSharedReassessment(initial,selected))throw new Error('SHARED_PROOF_INVALID');
+              }catch{throw new Error('SHARED_PROOF_INVALID');}
             }
             const stages=['proposal','review',...(repair?['repair-proposal','repair-review']:[])];
             if(stages.some(stage=>['prompt','response'].some(suffix=>!b.evidence.some(e=>e.id==='shared-'+stage+'-'+suffix&&e.sourceId==='gemini'&&e.accessMode==='FREE_ACCOUNT'))))throw new Error('SHARED_PROOF_REQUIRED');
@@ -703,13 +811,14 @@ export class Service {
     return {version:1,profile:b.profile,thesis,origins:{profile:'FROZEN_INPUT'},stageInputs:stageInputs(b),baseline:deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:policyFeatures(b),evidence:b.evidence,observations:b.observations,thesis:thesis??undefined,research:b.analysisKind==='USER_IMPORT'?importedResearch(b):undefined})};
   }
   private analyzeCore(b: Bundle | LiveBundle): EntrySnapshot {
+    if (b.exitProofs?.length) throw new Error('EXIT_PROOFS_REQUIRE_REASSESSMENT');
     this.persistArtifacts(b); const liveDetails=b.analysisKind==='LIVE'?b.details:undefined,social=liveDetails?.social,groups=liveDetails?.groups;
     const entryMode=['ENTRY_GATES_V1','ENTRY_GROUPS_V1'].includes(liveDetails?.shared?.qualityMode??'');
     const entryComparison=entryMode?comparisonEntryGrade(liveDetails!.baseline):undefined,entryGates=entryMode?attentionEntryGates(liveDetails!.baseline,!!liveDetails!.groups):undefined;
-    const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison,entryGates,groups);
+    const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,liveDetails?.advisory,entryComparison,entryGates,groups);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?(b.details.advisory.method==='advisory-measurements-v45'?'research-screen-advisory-v43':b.details.advisory.method==='advisory-measurements-v44'?'research-screen-advisory-v42':b.details.advisory.method==='advisory-measurements-v43'?'research-screen-advisory-v41':b.details.advisory.method==='advisory-measurements-v42'?'research-screen-advisory-v40':b.details.advisory.method==='advisory-measurements-v41'?'research-screen-advisory-v39':b.details.advisory.method==='advisory-measurements-v40'?'research-screen-advisory-v38':b.details.advisory.method==='advisory-measurements-v39'?'research-screen-advisory-v37':'research-screen-advisory-v36'):b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -743,9 +852,11 @@ export class Service {
     const position = savedPosition && Date.parse(savedPosition.entryAt) <= Date.parse(b.cutoff) && Date.parse(savedPosition.recordedAt) <= Date.parse(b.cutoff) ? savedPosition : null;
     const events = position && pRow ? this.db.prepare('SELECT payload FROM position_events WHERE position_id=?').all(String(pRow.id)).map(x => readJson<PositionEvent>(x.payload)).filter(e => Date.parse(e.recordedAt) <= Date.parse(b.cutoff)) : [];
     const social=b.analysisKind==='LIVE'?b.details?.social:undefined;
-    const result = evaluateManagement(episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b),social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social);
+    const execution:ExecutionInputs={token:b.token,evidence:b.evidence,exitProofs:b.exitProofs??[]};
+    const policyVersion=b.analysisKind==='LIVE'?'thesis-management-v8':MANAGEMENT_POLICY_VERSION;
+    const result = evaluateManagementAs(policyVersion,episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b),execution,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social);
     const details=this.assessmentDetails(b,episode.thesis);
-    const semantic = { schemaVersion: 2, policyVersion: social?.identityReview||social?.integrityReview?'thesis-management-v4':social?'thesis-management-v3':'thesis-management-v2', ...(social?{featureVersion:2}:{}), episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result,details,
+    const semantic = { schemaVersion: 2, policyVersion, token:b.token, exitProofs:execution.exitProofs, attentionPolicy:social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2', ...(social?{featureVersion:2}:{}), episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'MANAGEMENT');
@@ -778,7 +889,12 @@ export class Service {
     if (!selected) throw new Error('NO_THESIS_AT_CUTOFF');
     return selected;
   }
-  successor(caseId: string, thesisInput: Thesis, at: string): ThesisEpisode {
+  /**
+   * Saves a successor thesis. The caller must declare how its sell plan relates to earlier sales: CONTINUE keeps the predecessor's base and
+   * counts sales by leg ID; FRESH_START rebases shares to the inventory held at `at` and counts only later sales. Saved episodes are never rewritten.
+   */
+  successor(caseId: string, thesisInput: Thesis, at: string, basis: PlanBasisDeclaration['mode']): ThesisEpisode {
+    if (basis !== 'CONTINUE' && basis !== 'FRESH_START') throw new Error('SUCCESSOR_PLAN_BASIS_REQUIRED');
     const thesis = thesisSchema.parse(thesisInput);
     if (!Number.isFinite(Date.parse(at))) throw new Error('INVALID_SUCCESSOR_TIME');
     for (const p of [...thesis.support,...thesis.invalidation,...[thesis.catalyst,thesis.onchainTraction,thesis.externalTraction,thesis.warning].filter(x => x !== null),...thesis.legs.map(l => l.trigger)]) evaluatePredicate(p,[],at);
@@ -792,7 +908,8 @@ export class Service {
       const old = readJson<ThesisEpisode>(head.payload);
       this.episodeAt(caseId, headId, old.createdAt);
       if (Date.parse(at) <= Date.parse(old.createdAt)) throw new Error('SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR');
-      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id };
+      const planBasis: PlanBasisDeclaration = { mode: basis, anchorAt: basis === 'FRESH_START' ? at : old.planBasis?.anchorAt ?? null };
+      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id, planBasis };
       this.db.prepare('INSERT INTO episodes VALUES(?,?,?)').run(episode.id,caseId,JSON.stringify(episode));
       this.db.prepare('UPDATE cases SET episode_id=? WHERE id=?').run(episode.id,caseId);
       return episode;
@@ -811,7 +928,14 @@ export class Service {
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features, evidence:semantic.evidence??[] } as Bundle | LiveBundle;
     const effective=semantic.schemaVersion===1?legacyPolicyFeatures(replayBundle):semantic.policyFeatures;
     if(!Array.isArray(effective))throw new Error('UNSUPPORTED_SNAPSHOT_VERSION');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion),['research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryComparison:undefined,['research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryGates:undefined,semantic.policyVersion==='research-screen-shared-v4'?semantic.details?.groups:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    const execution:ExecutionInputs={token:semantic.token??null,evidence:semantic.evidence??[],exitProofs:semantic.exitProofs??[]};
+    const policyVersion=semantic.policyVersion??(semantic.schemaVersion===1?(row.kind==='ENTRY'?'research-screen-v0':'thesis-management-v0'):undefined);
+    const modern=['thesis-management-v5','thesis-management-v6','thesis-management-v7','thesis-management-v8'].includes(policyVersion);
+    const historical=['thesis-management-v0','thesis-management-v1','thesis-management-v2','thesis-management-v3','thesis-management-v4'].includes(policyVersion);
+    const entryVersions=['research-screen-v0','research-screen-v1','research-screen-v2','research-screen-v3','research-screen-v4','research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4',...ADVISORY_SCREENS];
+    if(row.kind==='ENTRY'?!entryVersions.includes(policyVersion):!modern&&!historical)throw new Error(row.kind==='ENTRY'?'UNSUPPORTED_SNAPSHOT_VERSION':'UNSUPPORTED_POLICY_VERSION');
+    if(ADVISORY_SCREENS.includes(policyVersion)&&!semantic.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4',...ADVISORY_SCREENS].includes(policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):policyVersion==='research-screen-v4'?'QUALIFIED_V4':policyVersion==='research-screen-v3'?'QUALIFIED_V3':policyVersion==='research-screen-v2'?'QUALIFIED_V2':policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)||ADVISORY_SCREENS.includes(policyVersion)&&!!semantic.details?.shared,ADVISORY_SCREENS.includes(policyVersion)?semantic.details?.advisory:undefined,(['research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)||ADVISORY_SCREENS.includes(policyVersion))?semantic.entryComparison:undefined,['research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)?semantic.entryGates:undefined,policyVersion==='research-screen-shared-v4'?semantic.details?.groups:undefined) : modern ? evaluateManagementAs(policyVersion,semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,execution,semantic.attentionPolicy,semantic.details?.social) : evaluateLegacyManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,policyVersion==='thesis-management-v4'?'QUALIFIED_V4':policyVersion==='thesis-management-v3'?'QUALIFIED_V3':policyVersion==='thesis-management-v2'?'QUALIFIED_V2':policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

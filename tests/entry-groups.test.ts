@@ -177,3 +177,19 @@ test('only exact adapter-supplied vault addresses leave the current owner-share 
   assert.deepEqual(excluded.metrics.excludedVaults, ['target-token-vault']);
   assert.equal(typeof excluded.metrics.herfindahlSupplyFraction, 'string');
 });
+
+test('merged current entry groups stay authoritative beside historical advisory metrics; both historical and main positional calls remain valid', async()=>{
+ const {evaluateEntry}=await import('../src/domain/policy.js');
+ const {deriveAdvisory}=await import('../src/domain/advisory.js');
+ const fixture=sharedFixture(),input=currentInput(),groups=deriveEntryGroups(input);
+ const research=deriveAdvisory({token:fixture.token,cutoff:fixture.cutoff,baseline:fixture.baseline,evidence:fixture.evidence,chain:null,market:null,socialMetrics:[],chainIds:[],marketIds:[],paidIds:[]});
+ const legacy=evaluateEntry(fixture.features,fixture.profile,fixture.cutoff,'QUALIFIED_V4',fixture.social,false,research);
+ assert.equal(legacy.checks.find(c=>c.checkId==='ADV-01')!.status,'UNKNOWN');
+ const combined=evaluateEntry(fixture.features,fixture.profile,fixture.cutoff,'QUALIFIED_V4',fixture.social,false,research,undefined,undefined,groups);
+ const main=evaluateEntry(fixture.features,fixture.profile,fixture.cutoff,'QUALIFIED_V4',fixture.social,false,undefined,undefined,groups);
+ for(const group of groups.groups){const actual=combined.checks.find(c=>c.checkId===group.checkId)!;assert.equal(actual.required,true);assert.equal(actual.status,group.status);assert.deepEqual(actual.evidenceRefs,group.evidenceIds);assert.deepEqual(actual,main.checks.find(c=>c.checkId===group.checkId));}
+ const gates={growth:false as const};
+ const mainGates=evaluateEntry(fixture.features,fixture.profile,fixture.cutoff,'QUALIFIED_V4',fixture.social,false,undefined,gates);
+ const advisorySlots=evaluateEntry(fixture.features,fixture.profile,fixture.cutoff,'QUALIFIED_V4',fixture.social,false,undefined,undefined,gates);
+ assert.deepEqual(mainGates,advisorySlots,'undefined comparison cannot shift entry-gate evidence into a group payload');
+});

@@ -2400,16 +2400,43 @@ test('failed PumpSwap USD recovery retains request failure and LP facts without 
 test('holder-supplied payer candidates are bounded to observed owners and never imply user identity', async () => {
   const holders: HolderFacts = {
     supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['holders'],
-    accounts: Array.from({ length: 6 }, (_, index) => ({ address: `token-account-${index}`, owner: new PublicKey(Buffer.alloc(32, index + 1)).toBase58(), amount: '1' })),
+    accounts: Array.from({ length: 55 }, (_, index) => ({ address: `token-account-${index}`, owner: new PublicKey(Buffer.alloc(32, index + 1)).toBase58(), amount: '1' })),
   };
   const f = await fixture();
   const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT);
   assert.equal(read.inspection.bindingVerified, true);
-  const payerQuery = f.methods.find(call => call.method === 'getMultipleAccounts' && (call.params[0] as string[]).length === 7);
-  assert.ok(payerQuery, 'all six observed owners and the verified pool coin creator are checked within the 20-plus-one bound');
-  assert.deepEqual((payerQuery.params[0] as string[]).slice(0, 6), holders.accounts.map(account => account.owner));
-  assert.equal((payerQuery.params[0] as string[])[6], new PublicKey(Buffer.alloc(32, 7)).toBase58());
+  const payerQuery = f.methods.find(call => call.method === 'getMultipleAccounts' && (call.params[0] as string[]).length === 50);
+  assert.ok(payerQuery, 'legacy selection retains fifty observed owners in one bounded batch');
+  assert.deepEqual(payerQuery.params[0], holders.accounts.slice(0,50).map(account=>account.owner));
   assert.equal(read.inspection.errors.simulation, 'PUMP_SIMULATION_PAYER_UNAVAILABLE');
   assert.equal(read.venue?.simulation, undefined);
   assert.equal(read.venue?.costsReconciled, false);
+});
+
+test('a funded observed holder beyond the first five recovers unsigned simulation without admitting existing WSOL', async () => {
+  const later = new PublicKey(Buffer.alloc(32, 89));
+  const holders: HolderFacts = {
+    supplyAtomic: PAYLOAD_MINT_SUPPLY.toString(), slot: SLOT, complete: false, evidenceIds: ['rpc-holder-population'],
+    accounts: [
+      { address: 'funded-existing-wsol', owner: PAYER.toBase58(), amount: '100' },
+      ...Array.from({ length: 5 }, (_, index) => ({ address: `underfunded-${index}`, owner: new PublicKey(Buffer.alloc(32,index+80)).toBase58(), amount: String(90-index) })),
+      { address: 'later-holder', owner: later.toBase58(), amount: '1' },
+      { address: 'duplicate-owner', owner: later.toBase58(), amount: '1' },
+    ],
+  };
+  const f = await fixture({ simulate: true, existingWsolOwners: [PAYER], additionalFundedPayers: [later], simulationPayer: later });
+  const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, holders, SLOT, 'https://rpc.example', f.fetcher, () => AT);
+  assert.equal(read.venue?.costsReconciled, true);
+  assert.deepEqual(read.venue?.simulation, { setupVerified: true, buySucceeded: true, sellSucceeded: true });
+  assert.equal(read.rawArtifacts['pump-simulation-fallback-payers'], undefined);
+  const calculation = JSON.parse(read.rawArtifacts['pump-quote-calculation']!);
+  assert.equal(calculation.simulationProof.payerSelection.source, 'HOLDER_OBSERVATION');
+  assert.deepEqual(calculation.simulationProof.payerSelection.sourceEvidenceIds, ['rpc-holder-population']);
+  assert.equal(calculation.simulationProof.payerSelection.selectedIndex, 6);
+  assert.equal(calculation.simulationProof.payerSelection.candidateOwners.length, 8, 'owners are deduplicated before adding the verified pool creator');
+  assert.equal(calculation.simulationProof.payerSelection.candidateOwners[6], later.toBase58());
+  assert.equal(calculation.simulationProof.staticAccountKeys[0], later.toBase58());
+  assert.ok(read.rawArtifacts[calculation.simulationProof.payerSelection.payerAccountsEvidenceId]);
+  assert.ok(read.rawArtifacts[calculation.simulationProof.payerSelection.ataAccountsEvidenceId]);
+  assert.equal(f.methods.some(call => /sendtransaction/i.test(call.method)), false);
 });

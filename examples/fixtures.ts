@@ -1,4 +1,4 @@
-import type { Bundle, FeatureResult, Observation, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from '../src/domain/contracts.js';
+import type { Bundle, EvidenceRecord, ExitProof, ExitQuoteRequest, FeatureResult, Observation, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode } from '../src/domain/contracts.js';
 import { entryDefinitions } from '../src/domain/catalog.js';
 
 export const fixtureProvenance = Object.freeze({
@@ -22,6 +22,9 @@ export const illustrativeUncalibratedProfile: Profile = {
   },
   stage: { ageBands: [{ name: 'fixture-only', minSeconds: 0, maxSeconds: null }] },
 };
+
+/** The illustrative profile plus the exit proof level v7 management needs before it can confirm an exact sale. */
+export const illustrativeQuotedExitProfile: Profile = { ...illustrativeUncalibratedProfile, exitProofLevel: 'QUOTED' };
 
 export const FIXTURE_CUTOFF = '2026-01-01T00:00:00.000Z';
 const fixtureEvidenceId = 'fixture-evidence-001';
@@ -155,4 +158,42 @@ export function fixtureEpisode(
       legs,
     },
   };
+}
+
+/** The synthetic exit-quote adapter: the only supported one in this branch, valid only for fixture data. */
+export const FIXTURE_EXIT_QUOTE_ADAPTER = 'fixture-exit-quote-v1';
+export const fixtureExitQuoteEvidence: EvidenceRecord = {
+  id: 'fixture-exit-quote-evidence-001',
+  sourceId: 'fixture-exit-quote-source',
+  sourceType: 'FIXTURE',
+  retrievedAt: FIXTURE_CUTOFF,
+  availableAt: FIXTURE_CUTOFF,
+  contentHash: '1'.repeat(64),
+  adapterVersion: FIXTURE_EXIT_QUOTE_ADAPTER,
+  accessMode: 'LOCAL_DERIVED',
+  scope: { provenance: 'FIXTURE', fixtureVersion: 1, calibratedForLiveUse: false },
+};
+
+function exitProofFor(request: ExitQuoteRequest) {
+  if (!request.token) throw new Error('FIXTURE_EXIT_PROOF_NEEDS_TOKEN');
+  const { purpose, token, caseId, episodeId, positionId, legId, quantityAtomic, decimals, executionBasis } = request;
+  return {
+    id: `fixture-exit-proof-${legId ?? 'remaining'}`, purpose, token, caseId, episodeId, positionId, legId, quantityAtomic, decimals, executionBasis,
+    level: 'QUOTED' as const, route: { adapter: FIXTURE_EXIT_QUOTE_ADAPTER, venue: 'fixture-venue' },
+    asOf: FIXTURE_CUTOFF, availableAt: FIXTURE_CUTOFF, expiresAt: '2026-01-02T00:00:00.000Z', evidenceIds: [fixtureExitQuoteEvidence.id],
+  };
+}
+
+/** A synthetic fillable proof answering exactly `request`: 1000 output units expected, at least 990, 10 bps impact, valid for a day. Not a market quote. */
+export function fixtureExitProof(request: ExitQuoteRequest, overrides: Partial<Extract<ExitProof, { outcome: 'FILLABLE' }>> = {}): ExitProof {
+  return {
+    ...exitProofFor(request), outcome: 'FILLABLE',
+    output: { asset: 'FIXTURE_QUOTE', decimals: 0, expectedAtomic: '1000', minimumAtomic: '990', priceImpactBps: '10', slippageToleranceBps: 100 }, fees: [],
+    ...overrides,
+  };
+}
+
+/** A synthetic proof that a supported route cannot fill `request`, for this quantity or for the token. */
+export function fixtureBlockedExitProof(request: ExitQuoteRequest, blockedScope: 'QUANTITY' | 'TOKEN' = 'QUANTITY', overrides: Partial<Extract<ExitProof, { outcome: 'BLOCKED' }>> = {}): ExitProof {
+  return { ...exitProofFor(request), id: `fixture-exit-proof-${request.legId ?? 'remaining'}-blocked`, outcome: 'BLOCKED', blockedScope, blockedReason: 'fixture route cannot fill this amount', ...overrides };
 }
