@@ -85,6 +85,11 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
       lines.push(`  ${group.checkId}: ${group.known}/${group.total} measured; ${group.unresolved.length} unresolved.`);
       for(const id of group.unresolved){const metric=a.metrics.find(m=>m.id===id)!;lines.push(`    ${id}: ${cleanText(metric.reasonCode)}.`);}
     }
+    const absorptionCapture=snapshot.evidence.find(e=>e.id==='advisory-a29-capture'&&e.accessMode==='USER_IMPORT');
+    if(absorptionCapture){
+      const absorption=a.metrics.find(m=>m.id==='A29');
+      lines.push(`A29 distribution absorption: ${absorption?.quality??'MISSING'} / ${cleanText(absorption?.reasonCode??'ADVISORY_EVIDENCE_REQUIRED')}. Imported historical capture (USER_IMPORT); last source retrieval ${absorptionCapture.retrievedAt}; selected pool only.`, '  Depth uses modelled sell quotes at the captured states, with network and setup costs excluded.');
+    }
     // Supplementary scoped report: outside the measured metrics and coverage counts, never a canonical A30 result.
     const s=a.supplements?.shortDemand;
     if(s){

@@ -48,13 +48,15 @@ const fetcher:typeof fetch=async(input,init)=>{
 const collect=(semanticEnabled=false)=>collectLiveToken(token,{profile:starterProfile(),semanticEnabled,advisoryEnabled:true,fetcher,now:()=>at});
 const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evidence.find(e=>e.id===id)!.contentHash=createHash('sha256').update(bundle.rawArtifacts[id]!).digest('hex');};
 
+import { a29LiveFetcher,buildA29Capture } from './a29-fixtures.js';
+
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
   const bundle=await collect();assert.ok(bundle.details?.advisory);
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);
-  assert.equal(proof.method,'advisory-provenance-v37');assert.equal(proof.saturation,null);assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
+  assert.equal(proof.method,'advisory-provenance-v39');assert.equal(proof.saturation,null);assert.equal(proof.a29,null);assert.equal(proof.creatorFailedFees,null);assert.equal(proof.creatorInventory,null);assert.equal(proof.launchpad,null);assert.equal(proof.creatorRole,null);assert.deepEqual(proof.demand,{requests:{},artifactIds:{}});assert.equal(proof.callers,null);assert.equal(proof.callerSemantic,null);assert.ok(proof.wallets);assert.ok(proof.window);assert.deepEqual(proof.accounts,{requests:{},artifactIds:{}});assert.deepEqual(proof.automation,{requests:{},artifactIds:{}});assert.deepEqual(proof.topology,{requests:{},artifactIds:{}});assert.equal(proof.window.end,'2026-10-10T12:00:00.000Z');
   assert.ok(bundle.evidence.some(e=>e.sourceId==='advisory-wallets'&&e.id==='advisory-wallets-wallet-genesis'));
   const facts=bundle.details.advisory;
-  assert.equal(facts.method,'advisory-measurements-v36');
+  assert.equal(facts.method,'advisory-measurements-v38');
   // An ineligible selected hour still yields an explicit supplementary report; it never enters the 50 metrics or the group counts.
   const short=facts.supplements!.shortDemand;
   assert.deepEqual([short.status,short.reasonCode,short.complete,short.satisfiedWindows,short.share,short.denominator,short.windows.length,short.coverage.transactionsCollected],['NOT_ELIGIBLE','SELECTED_POOL_WINDOW_INCOMPLETE',false,null,null,6,6,false]);
@@ -98,7 +100,7 @@ test('opt-in advisory history persists 50 truthful metric states and freezes dis
       for(const expected of ['Supplementary one-hour demand (not A30; not counted): NOT_ELIGIBLE / SELECTED_POOL_WINDOW_INCOMPLETE.','baseline 2026-10-10T10:00:00.000Z to 2026-10-10T11:00:00.000Z; measured 2026-10-10T11:00:00.000Z to 2026-10-10T12:00:00.000Z','no zero is inferred'])assert.ok(text.includes(expected),expected);
     }finally{writer.close();}
     const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v34');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id)!.semantic as string).policyVersion,'research-screen-advisory-v36');}finally{db.close();}
   }finally{rmSync(directory,{recursive:true,force:true});}
 });
 
@@ -133,7 +135,7 @@ test('complete selected hour stores exact demand archives through live collectio
     assert.equal(original,bodies.get(JSON.stringify(proof.demand.requests[key])));assert.equal(container.sourceHash,createHash('sha256').update(original).digest('hex'));
   }
   // Proof v21 stores every selected-window receipt as an exact window-archive-v1 archive with a sole request scope and the stored archive hash; the original body and its source hash are recoverable byte for byte.
-  assert.equal(proof.method,'advisory-provenance-v37');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_EXPANDED_PAGE_LIMIT);
+  assert.equal(proof.method,'advisory-provenance-v39');assert.equal(proof.window.requests['window-page-0'].params[1].limit,WINDOW_EXPANDED_PAGE_LIMIT);
   const windowIds=proof.window.artifactIds as Record<string,string>;
   assert.deepEqual(bundle.evidence.filter(e=>e.sourceId==='advisory-window').map(e=>e.id).sort(),Object.values(windowIds).sort());
   for(const [key,id] of Object.entries(windowIds)){
@@ -183,7 +185,7 @@ test('fresh proof v29 dispatch is required while legacy v25, v24 and v23 reconst
   const {complete}=await completeHourFetcher();
   const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:complete,now:()=>at});
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!;
-  assert.deepEqual([proof.method,facts.method],['advisory-provenance-v37','advisory-measurements-v36']);
+  assert.deepEqual([proof.method,facts.method],['advisory-provenance-v39','advisory-measurements-v38']);
   const legacy=legacyDenseWindowBundle(bundle),rebuild=(method:string)=>reconstructAdvisory(token,at,legacy.bundle.details!.baseline,legacy.bundle.evidence,legacy.bundle.rawArtifacts,{...legacy.proof,method},legacy.bundle.thesis??null,legacy.bundle.features),oldFacts=rebuild('advisory-provenance-v27');
   const prior25=rebuild('advisory-provenance-v25');
   assert.deepEqual(prior25,{...oldFacts,method:'advisory-measurements-v24'});
@@ -419,13 +421,17 @@ test('advisory rehashed metric, raw request, clock and marker tampering cannot c
 });
 
 test('measurement coverage cannot override required failures and old boolean policy is unchanged',async()=>{
-  const bundle=await collect(),facts=structuredClone(bundle.details!.advisory!);
-  for(const metric of facts.metrics){metric.quality='KNOWN';metric.data={observed:'0'};}
+  // Facts v37 admits a KNOWN A29 only with its strict vector, so A29 here is the provider-derived metric of the portable constructed capture actually imported into this run; every other metric is forced KNOWN.
+  const c=await buildA29Capture(),clock=c.after;
+  const bundle=await collectLiveToken(c.token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,a29Capture:c.raw,fetcher:a29LiveFetcher(c.token.address,clock),now:()=>clock}),facts=structuredClone(bundle.details!.advisory!);
+  assert.equal(facts.metrics.find(m=>m.id==='A29')!.quality,'KNOWN');
+  for(const metric of facts.metrics)if(metric.id!=='A29'){metric.quality='KNOWN';metric.data={observed:'0'};}
   for(const group of facts.groups){group.known=group.total;group.unresolved=[];}
-  const measured=evaluateEntry(bundle.features,bundle.profile,at,'QUALIFIED_V2',undefined,false,advisoryFactsSchema.parse(facts));
+  const forged=structuredClone(facts);forged.metrics.find(m=>m.id==='A29')!.data={observed:'0'};assert.equal(advisoryFactsSchema.safeParse(forged).success,false);
+  const measured=evaluateEntry(bundle.features,bundle.profile,clock,'QUALIFIED_V2',undefined,false,advisoryFactsSchema.parse(facts));
   assert.ok(measured.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.status==='PASS'&&c.reasonCode==='ADVISORY_CONTEXT_MEASURED'));
   assert.equal(measured.classification,'REJECTED');
-  const historical=evaluateEntry(bundle.features,bundle.profile,at,'QUALIFIED_V2');
+  const historical=evaluateEntry(bundle.features,bundle.profile,clock,'QUALIFIED_V2');
   assert.deepEqual(measured.checks.filter(c=>c.required),historical.checks.filter(c=>c.required));
   assert.ok(historical.checks.filter(c=>c.checkId.startsWith('ADV-')).every(c=>c.reasonCode!=='ADVISORY_CONTEXT_MEASURED'));
 });
@@ -544,7 +550,7 @@ test('full Token-2022 topology waits for late canonical mint capture and persist
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!);assert.equal(Object.keys(proof.topology.artifactIds).length,0);assert.ok(m.evidenceIds.includes('rpc-holder-population'));
   // Proof v22 stores the canonical holder body as one exact holder-population-archive-v1 archive: same id, source, scope and clock; the stored hash is the container's and the original body is recoverable byte for byte.
   const sha=(raw:string)=>createHash('sha256').update(raw).digest('hex'),holder=bundle.evidence.find(e=>e.id==='rpc-holder-population')!,stored=bundle.rawArtifacts['rpc-holder-population']!,container=JSON.parse(stored);
-  assert.equal(proof.method,'advisory-provenance-v37');assert.equal(unpackHolderPopulation(stored),populationBody);
+  assert.equal(proof.method,'advisory-provenance-v39');assert.equal(unpackHolderPopulation(stored),populationBody);
   assert.deepEqual([holder.sourceId,holder.sourceType,holder.accessMode,holder.adapterVersion,holder.scope,holder.retrievedAt,holder.availableAt,holder.contentHash],['solana-rpc','JSON_RPC','PUBLIC_API',HOLDER_ARCHIVE_ADAPTER,{operation:'rpc-holder-population',commitment:'finalized',mint:token.address,fullAccountData:true},at,at,sha(stored)]);
   assert.deepEqual([container.method,container.encoding,container.sourceBytes,container.sourceHash],['advisory-demand-rpc-archive-v1','DEFLATE_RAW_BASE64',Buffer.byteLength(populationBody),sha(populationBody)]);
   assert.deepEqual(bundle.evidence.filter(e=>e.adapterVersion===HOLDER_ARCHIVE_ADAPTER).map(e=>e.id),['rpc-holder-population']);

@@ -1,6 +1,6 @@
 import {a12CandidateSetSchema,collectExitCapacity,type A12CandidateSet} from '../providers/advisory-exit-capacity-custom.js';
 import {collectCreatorEpisode} from '../providers/advisory-creator-episode.js';
-import {A24_CAPTURE_METHOD,decodeA24Capture} from '../providers/advisory-saturation.js';
+import {decodeA24Capture,type A24Capture} from '../providers/advisory-saturation.js';
 import {collectCreatorRoutes} from '../providers/advisory-creator-routes.js';
 import {collectCreatorCoverage} from '../providers/advisory-creator-coverage.js';
 import {decodeCreatorQuoteAccounting} from '../providers/advisory-creator-quote.js';
@@ -40,7 +40,7 @@ import { collectAdvisoryChain } from '../providers/advisory-chain.js';
 import { collectAdvisoryMarket } from '../providers/advisory-market.js';
 import { collectAdvisorySocial } from '../providers/advisory-social.js';
 import { PUBLIC_SOLANA_RPC } from '../providers/solana.js';
-import { reconstructAdvisory,type AdvisoryProof } from './advisory.js';
+import { reconstructAdvisory,a29ImportCapture,A29_V2_SOURCE_BYTES,a29BoundCapture,a29CaptureRequest,archiveA29Capture,A29_CAPTURE_ADAPTER,A29_CAPTURE_ID,A29_CAPTURE_SOURCE_BYTES,A29_SOURCE_ID,type AdvisoryProof } from './advisory.js';
 import { collectCreatorRole,decodeCreatorRole } from '../providers/advisory-creator-role-collector.js';
 import { collectLaunchpadContext } from '../providers/advisory-launchpad.js';
 import { collectCreatorInventoryRun,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
@@ -50,11 +50,13 @@ import { discoverTokenMetadata } from '../providers/token-discovery.js';
 import { inspectDammV2 } from '../providers/meteora-damm-v2.js';
 import { solanaRpc, safeRpcCode } from '../providers/solana.js';
 import { inspectPumpCurve } from '../providers/pumpcurve.js';
+import { collectVenueProvenance, type VenueProvenanceRequest } from '../providers/venue-provenance.js';
+import { fetchReadResponse, readLimitedText } from '../providers/http.js';
 import { createLiveRun, type LiveRuntime } from './live-phases.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
 
 
-export type LiveOptions = { a12CandidateSet?:A12CandidateSet; a24Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
+export type LiveOptions = { a12CandidateSet?:A12CandidateSet; a24Capture?:string; a29Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
 export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
@@ -79,8 +81,15 @@ export async function collectLiveSolana(token: TokenRef, options: LiveOptions): 
 }
 export async function collectLiveToken(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
   if(options.a12CandidateSet){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A12_ADVISORY_REQUIRED');a12CandidateSetSchema.parse(options.a12CandidateSet);}
-  // The A24 capture stays the original file text so its exact bytes are retained; this only validates schema and size, and the metric is re-derived at the final cutoff.
-  if(options.a24Capture!==undefined){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A24_ADVISORY_REQUIRED');try{decodeA24Capture(options.a24Capture);}catch{throw Error('A24_CAPTURE_INVALID');}}
+  // The A24 capture stays the original file text so its exact bytes are retained; this validates size, schema and any holder archives, keeps the decoded transport method for its evidence binding, and the metric is re-derived at the final cutoff.
+  let a24Method:A24Capture['method']|undefined;
+  if(options.a24Capture!==undefined){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A24_ADVISORY_REQUIRED');try{a24Method=decodeA24Capture(options.a24Capture).method;}catch{throw Error('A24_CAPTURE_INVALID');}}
+  // A29 is an imported prior capture, never collected here: it needs the advisory proof, binds the analyzed mint, and a malformed or foreign file fails before any read.
+  const a29Raw=options.a29Capture,a29=a29Raw===undefined?undefined:(()=>{
+    if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A29_ADVISORY_REQUIRED');
+    if(Buffer.byteLength(a29Raw)>A29_V2_SOURCE_BYTES)throw Error('A29_CAPTURE_TOO_LARGE');
+    try{return a29ImportCapture(a29Raw,token);}catch{throw Error('A29_CAPTURE_INVALID');}
+  })();
   if(token.chain==='solana'){if(!addressPattern.test(token.address))throw new Error('INVALID_SOLANA_ADDRESS');decodeSolanaAddress(token.address);}
   else if(!/^0x[a-fA-F0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
   if(options.advisoryEnabled&&token.chain!=='solana')throw new Error('ADVISORY_CHAIN_UNSUPPORTED');
@@ -420,7 +429,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // Window receipts are stored as exact window-archive-v1 archives under the 1.25 MB namespace ceiling (fail closed above it); the plain collected window already fed accounts, automation, demand, inventory and failed fees.
     // Proof v22 additionally binds the canonical rpc-holder-population receipt stored as one holder-population-archive-v1 archive.
     if(episode&&creatorRoutes&&creatorCoverage&&Object.keys(episode.rawArtifacts).length)creatorEpisode=ingest('creatorEpisode',episode);
-    advisoryProof={method:'advisory-provenance-v37',saturation:null,exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    advisoryProof={method:'advisory-provenance-v39',saturation:null,a29:null,exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled){
     currentStage.finish();currentStage=run.begin('FINALIZE');fetcher=currentStage.fetcher;deadline=currentStage.signal;
@@ -450,6 +459,21 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       }
     }catch(error){addEvidence('native-route-scout-error',JSON.stringify({code:safeRpcCode(error)}),'shared-collector','DIAGNOSTIC','LOCAL_DERIVED',{code:safeRpcCode(error)});}
   }
+  // Binding-only O08 fallback for a migrated Pump curve whose canonical pool uses the curve quote: only when no route bound and the exact native primary pool is absent.
+  const nativePoolRaw=venueRead?.rawArtifacts['pump-pool-config'];
+  let nativePoolAbsent=false;
+  if(nativePoolRaw)try{const primary=JSON.parse(nativePoolRaw);nativePoolAbsent=!primary?.error&&Array.isArray(primary?.result?.value)&&primary.result.value.length>0&&primary.result.value[0]===null;}catch{/* Malformed primary receipts never open the fallback. */}
+  if(token.chain==='solana'&&rpc.status==='OBSERVED'&&typeof rpc.mint?.slot==='number'&&venueRead&&nativePoolRaw&&nativePoolAbsent&&!venueRead.inspection.bindingVerified&&!rawArtifacts['damm-route-selection']){
+    const rpcUrl=options.rpcUrl??PUBLIC_SOLANA_RPC,floorSlot=rpc.mint.slot;
+    // Each planned request is sent verbatim (its id binds the receipt) and JSON-RPC error bodies are retained; the stage fetcher enforces the request budget.
+    const transport=async(request:VenueProvenanceRequest)=>readLimitedText(await fetchReadResponse(rpcUrl,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(request),signal:deadline},fetcher,8_000),350_000);
+    const provenance=await collectVenueProvenance({token,floorSlot,genesisRaw:rawArtifacts['rpc-genesis'],accountRaw:rawArtifacts['rpc-account'],nativeAbsenceRaw:nativePoolRaw,dexRaw:rawArtifacts['dex-pairs'],transport,now});
+    const provenanceRecord=JSON.parse(provenance.rawArtifacts['venue-provenance-record']) as {receipts:unknown[];failure:{stage:string;code:string}|null};
+    if(provenanceRecord.receipts.length>0||provenanceRecord.failure!==null){
+      const previous=venueRead;delete previous.rawArtifacts['venue-route-selection'];delete previous.retrievedAt['venue-route-selection'];
+      venueRead={...provenance,rawArtifacts:{...previous.rawArtifacts,...provenance.rawArtifacts},retrievedAt:{...previous.retrievedAt,...provenance.retrievedAt},marketEvidence:{...previous.marketEvidence,...provenance.marketEvidence}};
+    }
+  }
   if(venueRead&&ownStop())for(const key of Object.keys(venueRead.inspection.errors))venueRead.inspection.errors[key]=ownStop()!.code;
   const venueOutcome:VenueOutcome=venueRead?{state:'COMPLETED',origin:'PROVIDER',code:'VENUE_INSPECTED',evidenceIds:venueRead.inspection.evidenceIds}:token.chain!=='solana'?{state:'UNSUPPORTED',origin:'UNSUPPORTED',code:'EVM_READER_UNIMPLEMENTED',evidenceIds:[]}:{state:deadline.aborted?'CANCELLED':'NOT_STARTED',origin:ownStop()?.origin??'DEPENDENCY',code:ownStop()?.code??rpc.code??'LIVE_DEPENDENCY_SKIPPED',blockedBy:'FINALIZE',evidenceIds:rpcIds};
   for(const [id,raw] of Object.entries(venueRead?.rawArtifacts??{})){const a=venueRead?.marketEvidence?.[id],curve=id.startsWith('curve-'),derived=id==='venue-route-selection'||id==='curve-quote-calculation'||id==='curve-simulation-proof'||id==='curve-fee-requests'||/^curve-(?:entry|exit)-fee-recovery$/.test(id);addEvidence(id,raw,a?.sourceId??(id.startsWith('damm-')?(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)?'meteora-damm-derived':'meteora-damm-direct'):derived?'pump-curve-derived':curve?'pump-curve-direct':id.endsWith('-min-context-recovery')||['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'pumpswap-derived':'pumpswap-direct'),a?.sourceType??(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)?'CALCULATION':derived?'CALCULATION':id.endsWith('-min-context-recovery')?'RETRY_RECEIPT':['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'CALCULATION':id==='pump-sol-usd'?'PUBLIC_MARKET':'JSON_RPC'),a?.accessMode??(id==='damm-calculation'||id==='damm-requests'||/^damm-.*-recovery$/.test(id)||derived||id.endsWith('-min-context-recovery')||['pump-quote-calculation','pump-simulation-request','pump-slippage-refresh'].includes(id)?'LOCAL_DERIVED':'PUBLIC_API'),a?.scope??{operation:id,mint:token.address,pool:venueRead?.inspection.poolAddress},venueRead?.retrievedAt[id]);}
@@ -466,7 +490,16 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
   if(options.a24Capture!==undefined){
     if(!advisoryProof)throw Error('A24_ADVISORY_REQUIRED');
-    advisoryProof.saturation={captureId:addEvidence('advisory-saturation-capture',options.a24Capture,'advisory-saturation','HISTORICAL_RECEIPT','USER_IMPORT',{method:A24_CAPTURE_METHOD},now(),A24_CAPTURE_METHOD) as 'advisory-saturation-capture'};
+    advisoryProof.saturation={captureId:addEvidence('advisory-saturation-capture',options.a24Capture,'advisory-saturation','HISTORICAL_RECEIPT','USER_IMPORT',{method:a24Method!},now(),a24Method!) as 'advisory-saturation-capture'};
+  }
+  // The imported capture is stored once after every collector: retrievedAt keeps its copied latest source clock, availableAt is this import, and it stays USER_IMPORT reconstructed history, never a fresh read.
+  if(a29){
+    if(!advisoryProof)throw Error('A29_ADVISORY_REQUIRED');
+    // The adapter follows the decoded packet method: v1 keeps its DEFLATE archive, v2 stores the exact packet bytes.
+    const {request,stored,adapter}=a29;
+    evidence.push({id:A29_CAPTURE_ID,sourceId:A29_SOURCE_ID,sourceType:'RECONSTRUCTED_HISTORY',retrievedAt:a29.maxClock,availableAt:now(),contentHash:hash(stored),adapterVersion:adapter,accessMode:'USER_IMPORT',scope:{request}});
+    rawArtifacts[A29_CAPTURE_ID]=stored;
+    advisoryProof.a29={requests:{capture:request},artifactIds:{capture:A29_CAPTURE_ID},label:a29.label};
   }
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
   const social=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,cutoff,socialPacket.evidenceIds):undefined;
@@ -489,12 +522,12 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v37'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v38'},cutoff);
   const groups=sharedEnabled?entryGroupsForBundle({token,cutoff,profile:options.profile,evidence,rawArtifacts,collection,market:dex.market,details:{baseline,...(social?{social:social.facts}:{})}}):undefined;
   if(groups)addEvidence('entry-groups-derivation',JSON.stringify(groups),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:groups.method},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
   if(sharedEnabled){
-    const input={qualityMode:'ENTRY_GROUPS_V1' as const,groups,...(rawArtifacts['venue-route-selection']||rawArtifacts['damm-route-selection']?{venueInspection:venueRead!.inspection,venue:venueRead!.venue}:{}),token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
+    const input={qualityMode:'ENTRY_GROUPS_V1' as const,groups,...(rawArtifacts['venue-route-selection']||rawArtifacts['damm-route-selection']||rawArtifacts['venue-provenance-record']?{venueInspection:venueRead!.inspection,venue:venueRead!.venue}:{}),token,cutoff,profile:options.profile,baseline:structuredClone(baseline),features:structuredClone(features),evidence:[...evidence],observations,social:social?.facts,claims:sharedClaims(baseline,social?.facts),sources:sharedSources,audit:sharedAudit,semanticReceiptIds};
     const effective=expireSharedWitnesses(input);
     for(const a of effective.baseline)baseline[baseline.findIndex(b=>b.id===a.id)]=a;
     features.splice(0,features.length,...effective.features);

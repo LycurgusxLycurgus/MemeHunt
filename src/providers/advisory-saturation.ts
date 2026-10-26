@@ -4,6 +4,7 @@ import type { TokenRef } from '../domain/contracts.js';
 import { deriveHolderBounds } from '../domain/baseline.js';
 import { decodeHolderPopulation, decodeRawMintControls, SOLANA_MAINNET_GENESIS, LEGACY_TOKEN_PROGRAM, TOKEN_2022_PROGRAM } from './solana.js';
 import { decodeAdvisorySocial } from './advisory-social.js';
+import { unpackHolderPopulation } from './advisory-topology.js';
 import { deriveSaturationVector, hashQueryBasket, HOLDER_POPULATION_METHOD, SATURATION_LIMITATIONS, SATURATION_METHOD, DEX_PAID_SOURCE, type SaturationInput, type SaturationVector } from '../domain/advisory-saturation.js';
 
 /**
@@ -12,6 +13,9 @@ import { deriveSaturationVector, hashQueryBasket, HOLDER_POPULATION_METHOD, SATU
  * primitives, the frozen scope and the X SearchTimeline stream; holder, DEX, DOM and review decoders follow.
  */
 export const A24_CAPTURE_METHOD = 'a24-raw-capture-v1' as const;
+/** Unreleased transport: v1 except both holder population responses carry exact holder archives of their original UTF-8 bodies, and retained DOM also admits native mixed-case SVG element names in SVG context. */
+export const A24_CAPTURE_V2_METHOD = 'a24-raw-capture-v2' as const;
+export const A24_CAPTURE_METHODS = [A24_CAPTURE_METHOD, A24_CAPTURE_V2_METHOD] as const;
 export const A24_STREAM_END_RULE = 'OBSERVED_X_CLIENT_STREAM_EXHAUSTED_V1' as const;
 export const A24_LIMITS = { timelinePages: 20, detailPages: 40, captureWallMs: 900_000, retainedBytes: 8_388_608, perResponseBytes: 500_000, populationResponseBytes: 20_000_000, cursorRetries: 1 } as const;
 export const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
@@ -231,6 +235,9 @@ const failureSchema = z.strictObject({ status: z.literal('FAILED'), reasonCode: 
 
 const rpcExchangeSchema = z.strictObject({ origin: z.literal('https://mainnet.helius-rpc.com'), httpStatus: z.literal(200), requestStartedAt: instant, responseCompletedAt: instant, request: boundTextSchema, response: boundTextSchema });
 const endpointSchema = z.strictObject({ genesis: rpcExchangeSchema, mint: rpcExchangeSchema, population: rpcExchangeSchema, blockTime: rpcExchangeSchema });
+// v2 transport only: a population response is the canonical holder-archive container plus its original body's UTF-8 hash and length.
+const archivedTextSchema = z.strictObject({ archive: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().nonnegative() });
+const endpointV2Schema = z.strictObject({ genesis: rpcExchangeSchema, mint: rpcExchangeSchema, population: z.strictObject({ ...rpcExchangeSchema.shape, response: archivedTextSchema }), blockTime: rpcExchangeSchema });
 const dexSchema = z.strictObject({ url: z.string().max(512), httpStatus: z.literal(200), redirected: z.literal(false), credentialsUsed: z.literal(false), requestAt: instant, responseAt: instant, availableAt: instant, body: boundTextSchema });
 const domSchema = z.strictObject({ postId: z.string(), sourceUrl: z.string().max(512), sourceKind: z.literal('CHROME_DEVTOOLS_COPY_OUTER_HTML_DOM_SNAPSHOT'), observationStart: instant, copyCompletionObservedAt: instant.nullable(), availableAt: instant, html: boundTextSchema });
 const executionSchema = z.strictObject({ executor: z.enum(['CODEX_NATIVE', 'CLAUDE_CODE']), invocationId: z.string().min(8).max(200), prompt: z.string(), response: z.string(), availableAt: instant });
@@ -258,11 +265,32 @@ export const a24CaptureSchema = z.strictObject({
   dex: z.union([dexSchema, failureSchema]),
   classifications: a24ClassificationsSchema.nullable(),
 });
-export type A24Capture = z.infer<typeof a24CaptureSchema>;
+/** The v2 wire: every v1 field unchanged; holders are the same failure or two endpoints whose population responses are archived. */
+export const a24CaptureV2Schema = z.strictObject({ ...a24CaptureSchema.shape, method: z.literal(A24_CAPTURE_V2_METHOD), holders: z.union([z.strictObject({ s0: endpointV2Schema, s1: endpointV2Schema }), failureSchema]) });
+/** A decoded capture: plain original holder responses plus the transport method actually decoded. */
+export type A24Capture = Omit<z.infer<typeof a24CaptureSchema>, 'method'> & { method: (typeof A24_CAPTURE_METHODS)[number] };
+/** Each archived population is unpacked once by the existing single-level holder codec, then must reproduce its declared original length and hash. */
+function materializeHolders(c: z.infer<typeof a24CaptureV2Schema>): A24Capture {
+  if ('status' in c.holders) return { ...c, holders: c.holders };
+  const endpoint = (e: z.infer<typeof endpointV2Schema>) => {
+    let raw: string;
+    try { raw = unpackHolderPopulation(e.population.response.archive); } catch { throw new CaptureInvalid('A24_HOLDER_ARCHIVE_INVALID'); }
+    const response = { raw, sha256: e.population.response.sha256, bytes: e.population.response.bytes };
+    boundText(response, 'A24_HOLDER_ARCHIVE_HASH');
+    return { ...e, population: { ...e.population, response } };
+  };
+  return { ...c, holders: { s0: endpoint(c.holders.s0), s1: endpoint(c.holders.s1) } };
+}
+/** The serialized bound applies before any decode; the declared method selects exactly one strict schema. */
 export function decodeA24Capture(raw: string): A24Capture {
   need(Buffer.byteLength(raw, 'utf8') <= A24_LIMITS.retainedBytes, 'A24_CAPTURE_SIZE');
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new CaptureInvalid('A24_CAPTURE_JSON'); }
+  if ((value as { method?: unknown } | null)?.method === A24_CAPTURE_V2_METHOD) {
+    const v2 = a24CaptureV2Schema.safeParse(value);
+    need(v2.success, 'A24_CAPTURE_SCHEMA');
+    return materializeHolders(v2.data);
+  }
   const parsed = a24CaptureSchema.safeParse(value);
   need(parsed.success, 'A24_CAPTURE_SCHEMA');
   return parsed.data;
@@ -341,6 +369,8 @@ function measureDex(d: z.infer<typeof dexSchema>, token: TokenRef): SaturationIn
 // Strict single-article DOM reconstruction for native Chrome outerHTML; unsupported shapes and entities fail closed.
 type DomNode = { tag: string; attrs: Record<string, string>; children: (DomNode | string)[] };
 const VOID = new Set(['img', 'br', 'hr', 'input', 'meta', 'link', 'source', 'wbr']);
+/** v2 only: the HTML parser's fixed SVG tag-name case adjustments, the only mixed-case element names native serialization emits. */
+const SVG_NATIVE_TAGS = new Set(['altGlyph', 'altGlyphDef', 'altGlyphItem', 'animateColor', 'animateMotion', 'animateTransform', 'clipPath', 'feBlend', 'feColorMatrix', 'feComponentTransfer', 'feComposite', 'feConvolveMatrix', 'feDiffuseLighting', 'feDisplacementMap', 'feDistantLight', 'feDropShadow', 'feFlood', 'feFuncA', 'feFuncB', 'feFuncG', 'feFuncR', 'feGaussianBlur', 'feImage', 'feMerge', 'feMergeNode', 'feMorphology', 'feOffset', 'fePointLight', 'feSpecularLighting', 'feSpotLight', 'feTile', 'feTurbulence', 'foreignObject', 'glyphRef', 'linearGradient', 'radialGradient', 'textPath']);
 const ENTITIES: Record<string, string> = { amp: '&', quot: Q, lt: '<', gt: '>', '#39': String.fromCharCode(39), nbsp: String.fromCharCode(160) };
 function decodeEntities(text: string): string {
   const parts = text.split('&');
@@ -350,8 +380,12 @@ function decodeEntities(text: string): string {
     return ENTITIES[name] + part.slice(end + 1);
   }).join('');
 }
-export function parseArticle(html: string): DomNode {
-  const root: DomNode = { tag: '#root', attrs: {}, children: [] }, stack = [root];
+/** The frozen v1 grammar: lowercase element names only. */
+export function parseArticle(html: string): DomNode { return parseDom(html, false); }
+/** svgNative (v2 only) also admits a native mixed-case SVG name, delimited by a space or '>', for an element opened in SVG context (inside svg, outside foreignObject); every v1-accepted article parses identically. */
+function parseDom(html: string, svgNative: boolean): DomNode {
+  // svg[k]: whether children of stack[k] are in SVG context; local state, never attached to a returned node.
+  const root: DomNode = { tag: '#root', attrs: {}, children: [] }, stack = [root], svg = [false];
   let i = 0, elements = 0;
   while (i < html.length) {
     if (html[i] !== '<') {
@@ -362,10 +396,15 @@ export function parseArticle(html: string): DomNode {
     if (html[i + 1] === '/') {
       const end = html.indexOf('>', i);
       need(end > 0 && stack.length > 1 && stack.at(-1)!.tag === html.slice(i + 2, end), 'A24_DOM_NESTING');
-      stack.pop(); i = end + 1; continue;
+      stack.pop(); svg.pop(); i = end + 1; continue;
     }
     let j = i + 1;
     while (j < html.length && /[a-z0-9]/.test(html[j]!)) j++;
+    if (svgNative && svg.at(-1)) {
+      let k = j;
+      while (k < html.length && /[A-Za-z0-9]/.test(html[k]!)) k++;
+      if (SVG_NATIVE_TAGS.has(html.slice(i + 1, k)) && (html[k] === ' ' || html[k] === '>')) j = k;
+    }
     const tag = html.slice(i + 1, j), attrs: Record<string, string> = {};
     need(tag.length > 0, 'A24_DOM_TAG');
     for (;;) {
@@ -380,7 +419,7 @@ export function parseArticle(html: string): DomNode {
     need(++elements <= 5000, 'A24_DOM_SIZE');
     const node: DomNode = { tag, attrs, children: [] };
     stack.at(-1)!.children.push(node);
-    if (!VOID.has(tag)) stack.push(node);
+    if (!VOID.has(tag)) { stack.push(node); svg.push(tag === 'svg' || (tag !== 'foreignObject' && svg.at(-1)!)); }
     i = j;
   }
   need(stack.length === 1, 'A24_DOM_NESTING');
@@ -393,14 +432,14 @@ const textOf = (n: DomNode): string => n.children.map(c => (typeof c === 'string
 const textNodes = (n: DomNode, out: string[] = []): string[] => { for (const c of n.children) { if (typeof c === 'string') out.push(c); else textNodes(c, out); } return out; };
 export type BoundDom = { postId: string; sha256: string; availableAt: number; texts: string[]; labels: string[] };
 const MEDIA_TAIL = /^( https:[/][/]t[.]co[/][A-Za-z0-9]+)+$/;
-function bindDom(d: z.infer<typeof domSchema>, post: XPost, streamStart: string, cut: number): BoundDom {
+function bindDom(d: z.infer<typeof domSchema>, post: XPost, streamStart: string, cut: number, svgNative: boolean): BoundDom {
   const html = boundText(d.html, 'A24_DOM_HASH');
   need(d.html.bytes <= A24_LIMITS.perResponseBytes, 'A24_DOM_SIZE');
   // Stable author and post ids govern identity; the observed handle is display only and may differ from the wire handle.
   const source = /^https:[/][/]x[.]com([/][A-Za-z0-9_]{1,15}[/]status[/]([1-9][0-9]{0,19}))$/.exec(d.sourceUrl), permalink = source?.[1];
   need(source && source[2] === post.postId && d.observationStart === streamStart && ceilMs(d.observationStart) <= ceilMs(d.availableAt) && (d.copyCompletionObservedAt === null || (ceilMs(d.observationStart) <= ceilMs(d.copyCompletionObservedAt) && ceilMs(d.copyCompletionObservedAt) <= ceilMs(d.availableAt))), 'A24_DOM_BINDING');
   need(ceilMs(d.availableAt) <= cut, 'A24_DOM_AFTER_CUTOFF');
-  const article = parseArticle(html), times: string[] = [], bodies: string[] = [], labels: string[] = [];
+  const article = parseDom(html, svgNative), times: string[] = [], bodies: string[] = [], labels: string[] = [];
   let articles = 0, permalinks = 0, follows = 0;
   walk(article, n => {
     if (n.tag === 'article') articles++;
@@ -494,7 +533,7 @@ function prepareX(capture: A24Capture, x: { pages: XPage[]; observations: BoundT
   for (const d of capture.dom) {
     const post = byId.get(d.postId);
     need(post && eligible.includes(post) && !doms.has(d.postId), 'A24_DOM_ORPHAN');
-    doms.set(d.postId, bindDom(d, post, stream.startedAt, cut));
+    doms.set(d.postId, bindDom(d, post, stream.startedAt, cut, capture.method === A24_CAPTURE_V2_METHOD));
   }
   // The capture wall runs from the first timeline request through the last measurement source clock: responses, the used UI witness and every retained DOM.
   const last = Math.max(ceilMs(stream.lastResponseAt), stream.witness ? ceilMs(stream.witness.observedAt) : 0, ...[...doms.values()].map(d => d.availableAt));
@@ -510,7 +549,7 @@ function measureCapturedX(capture: A24Capture, x: { pages: XPage[]; observations
   const queries = [{ id: 'q-contract', kind: 'EXACT_CONTRACT' as const, query: q.query, bindingProofRef: null }], queryHash = hashQueryBasket(queries);
   const manifestSha256 = `sha256:${sha256(x.pages.map(p => p.body.sha256).join(':'))}`;
   return {
-    source: 'chrome-devtools-response-export', sourceVersion: A24_CAPTURE_METHOD, access: 'USER_SESSION_READ', queries, queryHash,
+    source: 'chrome-devtools-response-export', sourceVersion: capture.method, access: 'USER_SESSION_READ', queries, queryHash,
     eligibilityVersion: 'a24-own-body-mint-v1', forwardCallRubricVersion: A24_RUBRIC_VERSION, paidDisclosureRubricVersion: A24_RUBRIC_VERSION,
     windows: { w0: q.w0, w1: q.w1 },
     collector: { startedAt, finishedAt: new Date(last).toISOString(), maxClockSkewMs: 0 },
@@ -541,10 +580,15 @@ export function buildSaturationInput(capture: A24Capture, token: TokenRef, cutof
   const dex = 'status' in capture.dex ? failed(capture.dex.reasonCode, 'dex:failure') : measureDex(capture.dex, token);
   return { method: 'a24-saturation-input-v1', token: { chain: 'solana', mint }, frame: { t0: q.w1.start, t1: q.w1.end }, cutoff: new Date(cut).toISOString(), evidenceIds, x, holders, dex };
 }
+const invalidA24 = (error: unknown): SaturationVector => ({ id: 'A24', method: SATURATION_METHOD, quality: 'INVALID', reasonCode: error instanceof CaptureInvalid ? error.code : 'A24_CAPTURE_INVALID', evidenceIds: [], scope: null, data: null, limitations: SATURATION_LIMITATIONS });
+/** Provider API over one decoded capture, so a caller that binds the decoded method decodes and materializes it once. */
+export function deriveA24FromDecoded(capture: A24Capture, token: TokenRef, cutoff: string, rubric: string, evidenceIds: string[]): SaturationVector {
+  try { return deriveSaturationVector(buildSaturationInput(capture, token, cutoff, rubric, evidenceIds)); }
+  catch (error) { return invalidA24(error); }
+}
 /** Provider API: raw capture bytes to the descriptive A24 vector; contradictions are constant-coded INVALID, never partial KNOWN. */
 export function deriveA24FromCapture(raw: string, token: TokenRef, cutoff: string, rubric: string, evidenceIds: string[]): SaturationVector {
-  try { return deriveSaturationVector(buildSaturationInput(decodeA24Capture(raw), token, cutoff, rubric, evidenceIds)); }
-  catch (error) {
-    return { id: 'A24', method: SATURATION_METHOD, quality: 'INVALID', reasonCode: error instanceof CaptureInvalid ? error.code : 'A24_CAPTURE_INVALID', evidenceIds: [], scope: null, data: null, limitations: SATURATION_LIMITATIONS };
-  }
+  let capture: A24Capture;
+  try { capture = decodeA24Capture(raw); } catch (error) { return invalidA24(error); }
+  return deriveA24FromDecoded(capture, token, cutoff, rubric, evidenceIds);
 }

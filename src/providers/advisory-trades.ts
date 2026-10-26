@@ -7,7 +7,9 @@ import { decodeAdvisoryChain, type ChainHistory } from './advisory-chain.js';
 import { safeRpcCode, solanaRpc } from './solana.js';
 import { decodePinnedWindowInstruction,decodePinnedWindowEvent,reconcileWindowQuote,type QuoteAccounting } from './pumpswap-window-abi.js';
 type Request={method:string;params:unknown[]};
-export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting;virtualQuoteReservesAtomic?:string};
+export type DecodedTrade={signature:string;slot:number;at:string;user:string;side:'BUY'|'SELL';baseAtomic:string;quoteAtomic:string;poolBaseReservesAtomic:string;poolQuoteReservesAtomic:string;instructionIndex:number;instructionName?:string;quoteAccounting?:QuoteAccounting;virtualQuoteReservesAtomic?:string;provenance?:TradeProvenance};
+/** A29 v2 opt-in only: the containing Pump frame (top/position), its ordinal, the selected route hop and Pump event order (null for direct swaps), and the exact bound event payload. */
+export type TradeProvenance={top:number;position:number;pumpOrdinal:number;hop:number|null;routeEvent:number|null;eventPayload:string};
 export type TradeHistory={method:'pumpswap-decoded-sample-v1';token:TokenRef;pool:string|null;quoteMint:string;quoteDecimals:9;poolVerified:boolean;stateSlot:number|null;trades:DecodedTrade[];buyQuoteAtomic:string;sellQuoteAtomic:string;netQuoteAtomic:string;coveredInterval:{start:string;end:string}|null;sourceUniverseComplete:false;complete:false;transactionsInspected:number;transactionsExcluded:number;excluded:Array<{signature:string;code:string}>;limitations:string[]};
 /** extendedLegs (proof36 only) counts selected-pool trades decoded through a proof36-only mode: v3 accounting, a duplicate selected route venue or proof36 truncated recovery, plus foreign swaps proven only by proof36 truncated recovery. */
 export type WindowTransactionProof={trades:DecodedTrade[];foreignSwapLegs:number;nonSwapInvocations:number;cpiAuthorizedAccounts:string[];logRecovery?:LogRecovery;extendedLegs?:number};
@@ -37,7 +39,7 @@ const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{enc
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
 function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false,foreignRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number):DecodedTrade[]{
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false,foreignRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number,a29v2=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
@@ -145,7 +147,9 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   const leg=checkedLeg(hit[0],a[b+1],authority);if(leg.amount!==want||leg.fee!==null&&leg.fee!==tax)witnessFail();return witnessKind(leg.fee);
  };
  // Proof36 ordered route binder: the k-th PumpSwap event of a multi_hop_swap binds to the k-th non-curve hop. Every bound hop checks its pool, user, user/System roles, clock, fee masks, chain link to the previous bound hop and the route endpoints; only selected-pool hops add flow.
- const bindRouteEvent=(frame:Frame,event:any,instructionIndex:number)=>{
+ // A29 v2 only: provenance comes from the canonical binding point, never from ordinal arithmetic.
+ const prov=(frame:Frame,hop:number|null,routeEvent:number|null,payload:string|undefined)=>{if(!a29v2)return {};if(typeof payload!=='string')throw new Error('ADVISORY_TRADE_PROVENANCE');return {provenance:{top:frame.ix.top as number,position:frame.ix.position as number,pumpOrdinal:pumpInstructions.indexOf(frame.ix),hop,routeEvent,eventPayload:payload}};};
+ const bindRouteEvent=(frame:Frame,event:any,instructionIndex:number,payload?:string)=>{
   const md=event.data as any,ma=frame.ix.accounts,mh=frame.ix.multiHop,r=frame.route??={k:0,name:event.name,prev:null};
   if(r.k>=mh.poolHops.length)throw new Error('ADVISORY_TRADE_EVENT_DUPLICATE');
   if(event.name!==r.name)throw new Error('ADVISORY_TRADE_MULTIHOP_ROUTE');
@@ -164,11 +168,11 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   if(!signer&&!windowProof!.cpiAuthorizedAccounts.includes(ma[0]))windowProof!.cpiAuthorizedAccounts.push(ma[0]);
   frame.observedEvents++;
   if(base<=0n||BigInt(q.coreQuoteAtomic)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
-  const trade:DecodedTrade={signature:expected.signature,slot:expected.slot,at:expected.at!,user:ma[0],side:buyRoute?'BUY':'SELL',baseAtomic:String(base),quoteAtomic:q.coreQuoteAtomic,poolBaseReservesAtomic:atomic(md.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(md.poolQuoteTokenReserves),instructionIndex,instructionName:'multi_hop_swap',quoteAccounting:q,...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(md.virtualQuoteReserves)}:{})};
+  const trade:DecodedTrade={signature:expected.signature,slot:expected.slot,at:expected.at!,user:ma[0],side:buyRoute?'BUY':'SELL',baseAtomic:String(base),quoteAtomic:q.coreQuoteAtomic,poolBaseReservesAtomic:atomic(md.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(md.poolQuoteTokenReserves),instructionIndex,instructionName:'multi_hop_swap',quoteAccounting:q,...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(md.virtualQuoteReserves)}:{}),...prov(frame,h,r.k-1,payload)};
   frame.events.push(trade);if(q.method==='pumpswap-event-fee-exclusive-v3'||mh.selectedHops.length>1)extendedTrades.add(trade);
  };
  // Canonical selected-pool event->trade binding, reused by the live log path and the proof35 execution-proof recovery; instructionIndex replaces the live cursor position.
- const bindSelectedSwap=(frame:Frame,event:any,direction:'BUY'|'SELL',instructionIndex:number)=>{
+ const bindSelectedSwap=(frame:Frame,event:any,direction:'BUY'|'SELL',instructionIndex:number,payload?:string)=>{
   const d=event.data as any,a=frame.ix.accounts;
   const transactionSigner=Array.isArray(a)&&keys.some((k:any)=>k.pubkey===a[1]&&k.signer===true);
   const cpiAuthorized=!!windowProof&&frame.ix.depth>1&&Array.isArray(a)&&keys.some((k:any)=>k.pubkey===a[1]);
@@ -186,7 +190,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   if(v3&&quoteAccounting!.quoteTransferFeeAtomic!==null&&quoteAccounting!.quoteTransferFeeAtomic!=='0')quoteAccounting!.transferWitness=directWitness(frame.ix,quoteAccounting!,direction,!!pinned,d);
   const baseAtomic=atomic(direction==='BUY'?d.baseAmountOut:d.baseAmountIn),quoteAtomic=quoteAccounting?.coreQuoteAtomic??atomic(direction==='BUY'?d.quoteAmountIn:d.quoteAmountOut);
   if(BigInt(baseAtomic)<=0n||BigInt(quoteAtomic)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
-  const trade:DecodedTrade={signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex,...(quoteAccounting?{instructionName,quoteAccounting}:{}),...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(d.virtualQuoteReserves)}:{})};frame.events.push(trade);if(v3)extendedTrades.add(trade);
+  const trade:DecodedTrade={signature:expected.signature,slot:expected.slot,at:expected.at!,user:a[1],side:direction,baseAtomic,quoteAtomic,poolBaseReservesAtomic:atomic(d.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(d.poolQuoteTokenReserves),instructionIndex,...(quoteAccounting?{instructionName,quoteAccounting}:{}),...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(d.virtualQuoteReserves)}:{}),...prov(frame,null,null,payload)};frame.events.push(trade);if(v3)extendedTrades.add(trade);
  };
  for(const [n,line] of value.meta.logMessages.entries()){if(typeof line!=='string')throw new Error('ADVISORY_TRADE_LOG_SHAPE');if(recovery&&line==='Log truncated'){truncatedAt=n;break;}let m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/);
   if(m){const depth=Number(m[2]);if(depth!==stack.length+1)throw new Error('ADVISORY_TRADE_LOG_DEPTH');let ix=null;if(m[1]===program){ix=pumpInstructions[cursor++];if(!ix||ix.depth!==depth)throw new Error('ADVISORY_TRADE_INVOCATION_BINDING');if(windowProof&&ix.eventCpiPayload){const parent=stack.at(-1);let ok=parent?.program===program;if(ok&&parent!.ix?.multiHop){const q=parent!.eventPayloads??[],c=parent!.eventCpiConsumed??0;ok=c<q.length&&q[c]===ix.eventCpiPayload;parent!.eventCpiConsumed=c+1;}else if(ok)ok=parent!.eventPayload===ix.eventCpiPayload;if(!ok)throw new Error('ADVISORY_TRADE_EVENT_CPI_BINDING');}}if(stack.length)stack.at(-1)!.children++;stack.push({program:m[1]!,ix,events:[],observedEvents:0,children:0});continue;}
@@ -196,7 +200,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   const payload=line.slice(14);if(payload.length>4000||Buffer.from(payload,'base64').toString('base64')!==payload)throw new Error('ADVISORY_TRADE_EVENT_ENCODING');const event=decodeEvent(payload);if(windowProof&&event){if(frame.ix?.multiHop)(frame.eventPayloads??=[]).push(payload);else frame.eventPayload=payload;}
   if(windowProof&&frame.ix?.multiHop&&event){
    if(!['buyEvent','sellEvent'].includes(event.name))throw new Error('ADVISORY_TRADE_MULTIHOP_EVENT');
-   if(extended&&frame.ix.multiHop.poolHops){bindRouteEvent(frame,event,cursor-1);continue;}
+   if(extended&&frame.ix.multiHop.poolHops){bindRouteEvent(frame,event,cursor-1,payload);continue;}
    const md=event.data as any,ma=frame.ix.accounts,mh=frame.ix.multiHop;
    // One PumpSwap event per hop; a hop on another pool binds to its own user and clock only and never adds selected-pool flow.
    if(md.pool?.toBase58()!==poolKey){if(md.user?.toBase58()!==ma[0]||!clockOk(md.timestamp))throw new Error('ADVISORY_TRADE_FOREIGN_EVENT_BINDING');windowProof.foreignSwapLegs++;continue;}
@@ -214,7 +218,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
    frame.observedEvents++;
    const mQuote=reconcileWindowQuote('sell',md,modern),mBase=atomic(md.baseAmountIn),mQ=mQuote.coreQuoteAtomic;
    if(BigInt(mBase)<=0n||BigInt(mQ)<=0n)throw new Error('ADVISORY_TRADE_ZERO_AMOUNT');
-   frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:ma[0],side:'SELL',baseAtomic:mBase,quoteAtomic:mQ,poolBaseReservesAtomic:atomic(md.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(md.poolQuoteTokenReserves),instructionIndex:cursor-1,instructionName:'multi_hop_swap',quoteAccounting:mQuote,...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(md.virtualQuoteReserves)}:{})});
+   frame.events.push({signature:expected.signature,slot:expected.slot,at:expected.at!,user:ma[0],side:'SELL',baseAtomic:mBase,quoteAtomic:mQ,poolBaseReservesAtomic:atomic(md.poolBaseTokenReserves),poolQuoteReservesAtomic:atomic(md.poolQuoteTokenReserves),instructionIndex:cursor-1,instructionName:'multi_hop_swap',quoteAccounting:mQuote,...(retainVirtualQuote?{virtualQuoteReservesAtomic:signed128(md.virtualQuoteReserves)}:{}),...prov(frame,mh.selectedHop,frame.eventPayloads!.length-1,payload)});
    continue;
   }
   if(currentAbi&&frame.ix.pinned&&!direction){
@@ -233,13 +237,13 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
    if(a.length<17||a[16]!==program||d.pool?.toBase58()!==a[0]||d.user?.toBase58()!==a[1]||d.userBaseTokenAccount?.toBase58()!==a[5]||d.userQuoteTokenAccount?.toBase58()!==a[6]||!clockOk(d.timestamp))throw new Error('ADVISORY_TRADE_FOREIGN_EVENT_BINDING');
    windowProof.foreignSwapLegs++;continue;
   }
-  bindSelectedSwap(frame,event,direction,cursor-1);
+  bindSelectedSwap(frame,event,direction,cursor-1,payload);
  }
  if(truncatedAt>=0){
   // meta.err proves only top-level success: a nested frame still open above a closed flow frame, and every unbound invocation, stay unproven.
   const unresolved=[...stack.flatMap(f=>f.ix?[f.ix]:[]),...pumpInstructions.slice(cursor)];
   if(value.meta.logMessages.indexOf('Log truncated',truncatedAt+1)>=0)throw new Error('ADVISORY_TRADE_LOG_SHAPE');
-  const foreign=new Set<any>(),executed=new Set<any>();
+  const foreign=new Set<any>(),executed=new Set<any>();let openAncestorOk=false;
   if(foreignRecovery){
    // Opt-in: an unresolved swap is admitted only as a canonical foreign-pool leg bound to its own emit_cpi event in the instruction trace; it adds no flow and its execution stays unproven.
    const reject=():never=>{throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');};
@@ -276,6 +280,8 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
    for(const [t,top] of message.instructions.entries()){const path=[traceNode(t,-1,1,top?.programId,-1)];for(const [k,inner] of (groups.get(t)??[]).entries()){const h=obj(inner)?inner.stackHeight:null;if(!integer(h)||h<2||h>path.length+1)badTrace();path.length=h-1;path.push(traceNode(t,k,h,inner.programId,path[h-2]!));}}
    let logged=0;for(const line of value.meta.logMessages.slice(0,truncatedAt)){const m=line.match(/^Program ([1-9A-HJ-NP-Za-km-z]+) invoke \[(\d+)\]$/);if(!m)continue;const e=traceTree[logged++];if(!e||e.program!==m[1]||e.depth!==Number(m[2]))badTrace();}
    if(logged<traceTree.length&&traceTree[logged]!.depth>stack.length+1)badTrace();
+   // A29 v2 open-ancestor recovery: closed flow frames under still-open ancestors count only when every open frame is an ordinary SBF program and no unlogged trace node is Pump or touches the selected pool or vaults.
+   if(a29v2){const flat:any[]=[];for(const [t,top] of message.instructions.entries()){flat.push(top);for(const inner of groups.get(t)??[])flat.push(inner);}openAncestorOk=stack.every(f=>!NATIVE_BUILTINS.has(f.program))&&flat.slice(logged).every(n=>obj(n)&&n.programId!==program&&!selectedAccounts.includes(n.programId)&&Array.isArray(n.accounts)&&!n.accounts.some((k:unknown)=>selectedAccounts.includes(k as string)));}
    const ancestrySbf=(ix:any):boolean=>{const i=traceAt.get(`${ix.top}:${ix.position}`);if(i===undefined)return false;for(let n=traceTree[i]!.parent;n>=0;n=traceTree[n]!.parent)if(NATIVE_BUILTINS.has(traceTree[n]!.program))return false;return true;};
    // close_user_volume_accumulator takes no arguments, so its canonical serialization is exactly the 8-byte discriminator; any trailing bytes are rejected.
    const canonicalClose=(ix:any):boolean=>{try{const b=bytes58(ix.data),a=ix.accounts;return !!closeDef&&Buffer.from(closeDef.discriminator).equals(b.subarray(0,8))&&b.length===closeDef.discriminator.length&&a.length===closeDef.accounts.length&&authorized(a[0],ix.depth)&&a[1]===userVolumeAccumulatorPda(new PublicKey(a[0])).toBase58()&&a[2]===PUMP_AMM_EVENT_AUTHORITY_PDA.toBase58()&&a[3]===program&&!a.some((k:string)=>selectedAccounts.includes(k));}catch{return false;}};
@@ -290,7 +296,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
      if(!w||!unresolved.includes(w)&&!loggedWitness)continue;const ev=decodeEvent(w.eventCpiPayload);if(!ev||ev.name!==(dir==='BUY'?'buyEvent':'sellEvent'))continue;
      const frame:Frame=frameOf.get(ix)??{program,ix,events:[],observedEvents:0,children:0};
      // A first, unlogged event runs the shared selected-swap validators. An event logged before the marker already bound the trade, so its unlogged emit_cpi child is accepted as the swap's own witness only when the child payload is byte-identical to that logged event - the same payload-equality invariant the fully-logged EVENT_CPI_BINDING path enforces; a same-name child differing in pool, clock or amounts is rejected and the swap stays unproven.
-     if(frame.observedEvents===0){frame.observedEvents++;bindSelectedSwap(frame,ev,dir,pumpInstructions.indexOf(ix));}
+     if(frame.observedEvents===0){frame.observedEvents++;bindSelectedSwap(frame,ev,dir,pumpInstructions.indexOf(ix),w.eventCpiPayload);}
      else if(w.eventCpiPayload!==frame.eventPayload)continue;
      bound.add(w);if(loggedWitness)for(const t of frame.events)extendedTrades.add(t);trades.push(...frame.events);frame.events=[];executed.add(ix);if(unresolved.includes(w))executed.add(w);
     }else if(extended&&dir!==null&&!ix.multiHop&&Array.isArray(ix.accounts)&&ix.accounts[0]!==poolKey){
@@ -305,7 +311,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
      const own=traceTree.slice(i+1,end).filter(e=>e.pump).map(e=>e.parent===i&&e.pump.eventCpiPayload&&!bound.has(e.pump)?e.pump:null);
      const frame:Frame=frameOf.get(ix)??{program,ix,events:[],observedEvents:0,children:0},logged=frame.eventPayloads??[];
      if(own.length!==ix.multiHop.poolHops.length||own.some(w=>!w)||logged.length>own.length||logged.some((p,j)=>p!==own[j].eventCpiPayload)||own.slice(logged.length).some(w=>!unresolved.includes(w)))continue;
-     for(const w of own.slice(logged.length)){const ev=decodeEvent(w.eventCpiPayload);if(ev?.name!=='buyEvent'&&ev?.name!=='sellEvent')throw new Error('ADVISORY_TRADE_MULTIHOP_EVENT');bindRouteEvent(frame,ev,pumpInstructions.indexOf(ix));}
+     for(const w of own.slice(logged.length)){const ev=decodeEvent(w.eventCpiPayload);if(ev?.name!=='buyEvent'&&ev?.name!=='sellEvent')throw new Error('ADVISORY_TRADE_MULTIHOP_EVENT');bindRouteEvent(frame,ev,pumpInstructions.indexOf(ix),w.eventCpiPayload);}
      if(frame.observedEvents!==ix.multiHop.selectedHops.length||(frame.route?.k??0)!==ix.multiHop.poolHops.length)throw new Error('ADVISORY_TRADE_EVENT_MISSING');
      for(const w of own){bound.add(w);if(unresolved.includes(w))executed.add(w);}
      for(const t of frame.events)extendedTrades.add(t);trades.push(...frame.events);frame.events=[];executed.add(ix);
@@ -318,7 +324,7 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
     }
    }
   }
-  if(stack.slice(1).some(f=>f.flowBelow)||unresolved.some(ix=>!foreign.has(ix)&&!executed.has(ix)&&((side(ix,currentAbi)!==null||ix.pinned||(ix.multiHop?.selectedHop??-1)>=0)||ix.accounts.some((k:string)=>selectedAccounts.includes(k)))))throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');
+  if(stack.slice(1).some(f=>f.flowBelow)&&!openAncestorOk||unresolved.some(ix=>!foreign.has(ix)&&!executed.has(ix)&&((side(ix,currentAbi)!==null||ix.pinned||(ix.multiHop?.selectedHop??-1)>=0)||ix.accounts.some((k:string)=>selectedAccounts.includes(k)))))throw new Error('ADVISORY_TRADE_LOG_TRUNCATED');
   Object.assign(windowProof!.logRecovery!,{truncated:true,unresolvedInvocations:unresolved.length},modern?{executionProvenInvocations:executed.size}:{},foreignRecovery?{unresolvedForeignSwaps:foreign.size}:{});
  } else if(stack.length||cursor!==pumpInstructions.length)throw new Error('ADVISORY_TRADE_LOG_INCOMPLETE');
  const expectedSwaps=pumpInstructions.reduce((n,ix)=>n+((side(ix,currentAbi)!==null&&ix.accounts?.[0]===poolKey)?1:(ix.multiHop?.selectedHop??-1)>=0?ix.multiHop.selectedHops?.length??1:0),0);
@@ -330,7 +336,8 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
  * retainVirtualQuote is opt-in for fee-exclusive callers only: each selected-pool trade also carries its own verified event virtual_quote_reserves as a signed i128 decimal string; nothing else changes.
  * foreignFlowRecovery (requires logRecovery) also admits a truncated receipt whose unresolved swaps are canonical foreign-pool legs bound to their own trace event witness, with a canonical selected-disjoint tail; they are counted in logRecovery.unresolvedForeignSwaps, never as executed legs.
  * extended (proof36, requires modern) admits quote-transfer-taxed swaps with a checked transfer witness, v1 cashback, the historical +16 holder appendix, full ordered multi-hop BUY/SELL route binding and truncated route recovery. Under truncation it also completes a direct selected swap whose own event-CPI child was logged before the marker, and proves an open or unlogged foreign direct swap from its own bound event-CPI child; extendedLegs counts the selected trades decoded through these modes plus foreign swaps proven only by proof36 recovery. */
-export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false,retainVirtualQuote=false,foreignFlowRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number):WindowTransactionProof{
+export function decodePumpSwapWindowTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,currentAbi=false,feeExclusive=false,logRecovery=false,retainVirtualQuote=false,foreignFlowRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number,a29v2=false):WindowTransactionProof{
+ if(a29v2&&!(modern&&logRecovery))throw new Error('ADVISORY_TRADE_A29V2_SCOPE');
  if(feeExclusive&&!currentAbi)throw new Error('ADVISORY_TRADE_FEE_SCOPE');
  if(logRecovery&&!feeExclusive)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
  if(foreignFlowRecovery&&!logRecovery)throw new Error('ADVISORY_TRADE_RECOVERY_SCOPE');
@@ -338,7 +345,7 @@ export function decodePumpSwapWindowTransaction(value:unknown,expected:{signatur
  if(modern&&!feeExclusive)throw new Error('ADVISORY_TRADE_MODERN_SCOPE');
  if(extended&&!modern)throw new Error('ADVISORY_TRADE_EXTENDED_SCOPE');
  const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(logRecovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0,...(foreignFlowRecovery?{unresolvedForeignSwaps:0}:{})}}:{}),...(extended?{extendedLegs:0}:{})};
- proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery,retainVirtualQuote,foreignFlowRecovery,modern,quoteProgram,extended,quoteDecimals);return proof;
+ proof.trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,currentAbi,feeExclusive,logRecovery,retainVirtualQuote,foreignFlowRecovery,modern,quoteProgram,extended,quoteDecimals,a29v2);return proof;
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{

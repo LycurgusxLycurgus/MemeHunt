@@ -1,4 +1,8 @@
 import {deriveExitCapacity as deriveCustomExitCapacity} from '../providers/advisory-exit-capacity-custom.js';
+import { decodeA29Capture,deriveA29Absorption } from '../providers/advisory-absorption.js';
+import { decodeA29CaptureV2,deriveA29AbsorptionV2 } from '../providers/advisory-absorption-v2.js';
+import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
+import { deflateRawSync,inflateRawSync } from 'node:zlib';
 import {deriveExitCapacity,type ExitCapacityReceipts,EXIT_CAPACITY_REQUEST_CAP} from '../providers/advisory-exit-capacity.js';
 import {decodeCreatorEpisode,CREATOR_EPISODE_REQUEST_CAP,type CreatorEpisodeReceipts} from '../providers/advisory-creator-episode.js';
 import {decodeCreatorRoutes,CREATOR_ROUTE_REQUEST_CAP,type CreatorRouteReceipts} from '../providers/advisory-creator-routes.js';
@@ -23,7 +27,7 @@ import { decodeAdvisorySocial,deriveSocialAdvisory } from '../providers/advisory
 import { decodeAdvisoryTrades,deriveAdvisoryTrades } from '../providers/advisory-trades.js';
 import { decodeAdvisoryContextHistory } from '../providers/advisory-context-history.js';
 import { validateAdvisorySemanticWire,deriveAdvisorySemantic,advisorySemanticRequests,advisorySemanticRulesV3,type AdvisorySemanticWire } from '../providers/advisory-semantic.js';
-import { A24_CAPTURE_METHOD,A24_LIMITS,deriveA24FromCapture } from '../providers/advisory-saturation.js';
+import { A24_CAPTURE_METHODS,A24_LIMITS,decodeA24Capture,deriveA24FromDecoded } from '../providers/advisory-saturation.js';
 import { socialInputSchema,socialProposalSchema,socialReviewSchema } from '../domain/social.js';
 import { replayCallerHistory,supersedingCallerMetrics } from '../providers/advisory-caller-measures.js';
 import { CALLER_REQUEST_CAP } from '../providers/advisory-caller-history.js';
@@ -39,7 +43,7 @@ import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID,type FailedFeeReceipt } from '.
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24','advisory-provenance-v25','advisory-provenance-v26','advisory-provenance-v27','advisory-provenance-v28','advisory-provenance-v29','advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24','advisory-provenance-v25','advisory-provenance-v26','advisory-provenance-v27','advisory-provenance-v28','advisory-provenance-v29','advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -55,6 +59,7 @@ export const advisoryProofSchema=z.object({
   creatorEpisode:descriptor.nullable().optional(),
   exitCapacity:descriptor.extend({candidateSetId:z.literal('a12-reviewed-candidate-set'),impactBps:z.string().nullable()}).strict().nullable().optional(),
   saturation:z.object({captureId:z.literal('advisory-saturation-capture')}).strict().nullable().optional(),
+  a29:descriptor.extend({label:z.string().min(1)}).strict().nullable().optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
 export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -62,8 +67,65 @@ export const advisoryHash=(value:unknown)=>createHash('sha256').update(JSON.stri
 const FAILED_FEE_EVIDENCE_PREFIX='advisory-creatorFailedFees-';
 /** Evidence-id prefix of the window namespace; with its sourceId and the proof-v21 archive adapter it defines window catalog ownership. */
 const WINDOW_EVIDENCE_PREFIX='advisory-window-';
-/** Source id and evidence-id prefix of the A24 raw-capture namespace; with the capture adapter they define its catalog ownership. */
+/** Source id and evidence-id prefix of the A24 raw-capture namespace; with either capture transport adapter (v1 or v2) they define its catalog ownership. */
 const A24_SOURCE_ID='advisory-saturation',A24_EVIDENCE_PREFIX='advisory-saturation-';
+/** The A29 import adapter: one exact prior capture file is USER_IMPORT reconstructed history under its own source, record id and raw-deflate archive, never a live-v1 or fresh-collection receipt. */
+export const A29_SOURCE_ID='advisory-a29',A29_CAPTURE_ID='advisory-a29-capture',A29_CAPTURE_ADAPTER='a29-capture-archive-v1',A29_CAPTURE_SOURCE_BYTES=24_000_000;
+const sha256=(raw:string|Buffer)=>createHash('sha256').update(raw).digest('hex');
+/** The descriptor request names the provider-chosen label and the exact UTF-8 bytes of the imported file. */
+export const a29CaptureRequest=(raw:string,label:string)=>({method:'a29-capture-import-v1',label,fileSha256:sha256(raw),fileBytes:Buffer.byteLength(raw)});
+export function archiveA29Capture(raw:string){
+  const bytes=Buffer.from(raw,'utf8');if(bytes.length>A29_CAPTURE_SOURCE_BYTES)throw new Error('A29_CAPTURE_TOO_LARGE');
+  return JSON.stringify({method:A29_CAPTURE_ADAPTER,encoding:'DEFLATE_RAW_BASE64',sourceBytes:bytes.length,sourceHash:sha256(bytes),data:deflateRawSync(bytes).toString('base64')});
+}
+/** Restores the exact file under the fixed stored and inflate ceilings; any shape, length, hash or encoding mismatch fails closed. */
+export function unpackA29Capture(stored:string){
+  const fail=():never=>{throw new Error('A29_CAPTURE_ARCHIVE_INVALID');};
+  if(Buffer.byteLength(stored)>A29_CAPTURE_SOURCE_BYTES)fail();
+  const c=JSON.parse(stored);
+  if(!c||typeof c!=='object'||Object.keys(c).join()!=='method,encoding,sourceBytes,sourceHash,data'||c.method!==A29_CAPTURE_ADAPTER||c.encoding!=='DEFLATE_RAW_BASE64'||!Number.isSafeInteger(c.sourceBytes)||c.sourceBytes<1||c.sourceBytes>A29_CAPTURE_SOURCE_BYTES||typeof c.sourceHash!=='string'||typeof c.data!=='string')fail();
+  const packed=Buffer.from(c.data,'base64');if(packed.toString('base64')!==c.data)fail();
+  const inflated=inflateRawSync(packed,{maxOutputLength:c.sourceBytes,info:true}) as unknown as {buffer:Buffer;engine:{bytesWritten:number}};
+  if(inflated.engine.bytesWritten!==packed.length)fail();
+  const bytes=inflated.buffer,raw=bytes.toString('utf8');
+  if(bytes.length!==c.sourceBytes||sha256(bytes)!==c.sourceHash||!Buffer.from(raw,'utf8').equals(bytes))fail();
+  return raw;
+}
+/** Decodes one imported capture through the provider and binds its chosen label to the analyzed mint as USER_IMPORT provenance. */
+export function a29BoundCapture(raw:string,token:TokenRef){return a29BindToken(decodeA29Capture(raw),token);}
+/** v1 freezes list tokens and v2 freezes key them by label; either way the chosen label binds the analyzed mint under USER_IMPORT provenance. */
+function a29BindToken<C extends {freeze:unknown;label:string;provenance:unknown}>(capture:C,token:TokenRef):C{
+  const tokens:unknown=(capture.freeze as {tokens?:unknown}|null)?.tokens,entry=(Array.isArray(tokens)?tokens.find((t:{label?:unknown}|null|undefined)=>t?.label===capture.label):tokens&&typeof tokens==='object'&&Object.hasOwn(tokens,capture.label)?(tokens as Record<string,unknown>)[capture.label]:undefined) as {mint?:unknown}|null|undefined;
+  if(entry?.mint!==token.address||(capture.provenance as {accessMode?:unknown}|null|undefined)?.accessMode!=='USER_IMPORT')throw new Error('A29_CAPTURE_TOKEN_MISMATCH');
+  return capture;
+}
+
+/** The A29 v2 adapter stores the exact a29-retained-sources-v2 packet as UTF-8 with no outer archive; its receipts are already strict per-receipt archives. */
+export const A29_V2_CAPTURE_ADAPTER='a29-capture-v2',A29_V2_SOURCE_BYTES=128_000_000;
+export const a29CaptureRequestV2=(raw:string,label:string)=>({method:'a29-capture-import-v2',label,fileSha256:sha256(raw),fileBytes:Buffer.byteLength(raw)});
+const a29Owns=(e:EvidenceRecord)=>e.sourceId===A29_SOURCE_ID||e.id.startsWith('advisory-a29-')||e.adapterVersion===A29_CAPTURE_ADAPTER||e.adapterVersion===A29_V2_CAPTURE_ADAPTER;
+/** Chooses the exact decoder by the packet's own method; only v2 may exceed the v1 cap, and any other method fails closed. */
+export function a29ImportCapture(raw:string,token:TokenRef){
+  const bytes=Buffer.byteLength(raw);if(bytes>A29_V2_SOURCE_BYTES)throw new Error('A29_CAPTURE_TOO_LARGE');
+  const v2=bytes>A29_CAPTURE_SOURCE_BYTES||(()=>{const m=(JSON.parse(raw) as {method?:unknown}|null)?.method;if(m==='a29-retained-sources-v2')return true;if(m==='a29-retained-sources-v1')return false;throw new Error('A29_CAPTURE_METHOD_UNSUPPORTED');})();
+  if(!v2){const capture=a29BoundCapture(raw,token);return {adapter:A29_CAPTURE_ADAPTER,stored:archiveA29Capture(raw),request:a29CaptureRequest(raw,capture.label),label:capture.label,maxClock:capture.maxClock};}
+  const capture=a29BindToken(decodeA29CaptureV2(raw),token);
+  return {adapter:A29_V2_CAPTURE_ADAPTER,stored:raw,request:a29CaptureRequestV2(raw,capture.label),label:capture.label,maxClock:capture.maxClock};
+}
+function a29DeriveV2(d:NonNullable<AdvisoryProof['a29']>,record:EvidenceRecord,stored:string,token:TokenRef,cutoff:string):AdvisoryMetric{
+  if(Buffer.byteLength(stored)>A29_V2_SOURCE_BYTES)throw new Error('ADVISORY_PROOF_INVALID');
+  const capture=a29BindToken(decodeA29CaptureV2(stored),token);
+  if(advisoryHash(a29CaptureRequestV2(stored,capture.label))!==advisoryHash(d.requests.capture)||capture.label!==d.label||capture.maxClock!==record.retrievedAt)throw new Error('ADVISORY_PROOF_INVALID');
+  return deriveA29AbsorptionV2(capture.freeze,capture.label,capture.receipts,cutoff,[A29_CAPTURE_ID]);
+}
+/** Separate-bound eligibility: only a proof-v39 descriptor over exactly one owned, hash- and request-bound, provider-admitted and derivable v2 record qualifies; anything else stays under the default artifact budget. */
+export function a29VerifiedV2Id(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],rawArtifacts:Record<string,string>):string|null{
+  try{
+    const proof=advisoryProofSchema.parse(JSON.parse(rawArtifacts['advisory-derivation']??'null')),d=proof.a29,owned=evidence.filter(a29Owns),record=owned[0],stored=record?rawArtifacts[record.id]:undefined;
+    if(proof.method!=='advisory-provenance-v39'||proof.cutoff!==cutoff||proof.token.address!==token.address||!d||owned.length!==1||!record||record.id!==A29_CAPTURE_ID||Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||record.adapterVersion!==A29_V2_CAPTURE_ADAPTER||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))return null;
+    return a29DeriveV2(d,record,stored,token,cutoff).id==='A29'?record.id:null;
+  }catch{return null;}
+}
 
 /** Reconstruct measurements from retained responses, never from a claimed normalized cache. */
 export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:BaselineAssessment[],evidence:EvidenceRecord[],rawArtifacts:Record<string,string>,input:unknown,thesis:Thesis|null=null,features:FeatureResult[]=[]){
@@ -93,8 +155,11 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   if((version>=33?proof.exitCapacity===undefined:!!proof.exitCapacity)||!proof.exitCapacity&&(capacityOwned.length||candidateOwned.length))throw Error('ADVISORY_PROOF_INVALID');
   if(proof.exitCapacity){const ids=Object.values(proof.exitCapacity.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(capacityOwned.map(e=>e.id).sort())!==JSON.stringify(ids)||candidateOwned.length!==1)throw Error('ADVISORY_PROOF_INVALID');}
   // Proof v37 carries an explicit saturation key (null without an import); earlier proofs never carry it, and a populated descriptor owns exactly one source-, prefix- or adapter-identified capture.
-  const saturationOwned=evidence.filter(e=>e.sourceId===A24_SOURCE_ID||e.id.startsWith(A24_EVIDENCE_PREFIX)||e.adapterVersion===A24_CAPTURE_METHOD);
+  const saturationOwned=evidence.filter(e=>e.sourceId===A24_SOURCE_ID||e.id.startsWith(A24_EVIDENCE_PREFIX)||(A24_CAPTURE_METHODS as readonly string[]).includes(e.adapterVersion));
   if((version>=37?proof.saturation===undefined:proof.saturation!==undefined)||!proof.saturation&&saturationOwned.length||proof.saturation&&(saturationOwned.length!==1||saturationOwned[0]!.id!==proof.saturation.captureId))throw new Error('ADVISORY_PROOF_INVALID');
+  // Proof v38 also carries an explicit a29 key (null without an imported capture); proof v37 and earlier never carry the key, and a source-, prefix- or adapter-identified A29 record without its descriptor is an orphan.
+  const a29Owned=evidence.filter(a29Owns);
+  if((version>=38?proof.a29===undefined:proof.a29!==undefined)||!proof.a29&&a29Owned.length)throw new Error('ADVISORY_PROOF_INVALID');
   const routeOwned=evidence.filter(e=>e.sourceId==='advisory-creatorRoutes'||e.id.startsWith('advisory-creatorRoutes-'));
   if((version>=31?proof.creatorRoutes===undefined:!!proof.creatorRoutes)||proof.creatorRoutes&&!proof.creatorAccounting||!proof.creatorRoutes&&routeOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
   if(proof.creatorRoutes){const ids=Object.values(proof.creatorRoutes.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(routeOwned.map(e=>e.id).sort())!==JSON.stringify(ids))throw new Error('ADVISORY_PROOF_INVALID');}
@@ -258,11 +323,26 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   // Proof v37 re-derives A24 only from the exact retained capture bytes after its provenance holds; INVALID provenance rejects, and the result is appended last so it supersedes every earlier A24.
   if(version>=37&&proof.saturation){
     const record=saturationOwned[0]!,raw=rawArtifacts[record.id];
-    if(record.sourceId!==A24_SOURCE_ID||record.accessMode!=='USER_IMPORT'||record.sourceType!=='HISTORICAL_RECEIPT'||record.adapterVersion!==A24_CAPTURE_METHOD||evidence.filter(e=>e.id===record.id).length!==1||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||typeof raw!=='string'||Buffer.byteLength(raw)>A24_LIMITS.retainedBytes||record.contentHash!==createHash('sha256').update(raw).digest('hex')||JSON.stringify(record.scope)!==JSON.stringify({method:A24_CAPTURE_METHOD}))throw new Error('ADVISORY_PROOF_INVALID');
-    let vector:ReturnType<typeof deriveA24FromCapture>;
-    try{vector=deriveA24FromCapture(raw,token,cutoff,advisorySemanticRulesV3,[record.id]);}catch{throw new Error('ADVISORY_PROOF_INVALID');}
+    if(record.sourceId!==A24_SOURCE_ID||record.accessMode!=='USER_IMPORT'||record.sourceType!=='HISTORICAL_RECEIPT'||!(A24_CAPTURE_METHODS as readonly string[]).includes(record.adapterVersion)||evidence.filter(e=>e.id===record.id).length!==1||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||typeof raw!=='string'||Buffer.byteLength(raw)>A24_LIMITS.retainedBytes||record.contentHash!==createHash('sha256').update(raw).digest('hex')||JSON.stringify(record.scope)!==JSON.stringify({method:record.adapterVersion}))throw new Error('ADVISORY_PROOF_INVALID');
+    // The evidence adapter, its scope and the decoded transport method agree exactly; the capture is decoded and materialized once.
+    let vector:ReturnType<typeof deriveA24FromDecoded>;
+    try{const capture=decodeA24Capture(raw);if(capture.method!==record.adapterVersion)throw new Error('ADVISORY_PROOF_INVALID');vector=deriveA24FromDecoded(capture,token,cutoff,advisorySemanticRulesV3,[record.id]);}catch{throw new Error('ADVISORY_PROOF_INVALID');}
     if(vector.quality!=='KNOWN'&&vector.quality!=='MISSING')throw new Error('ADVISORY_PROOF_INVALID');
     additionalMetrics.push({id:'A24',quality:vector.quality,unit:'scoped-vector',data:vector,evidenceIds:[record.id],reasonCode:vector.reasonCode||(vector.quality==='KNOWN'?'A24_SATURATION_VECTOR_OBSERVED':'A24_SATURATION_VECTOR_MISSING')});
   }
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=37?'advisory-measurements-v36':version>=36?'advisory-measurements-v35':version>=35?'advisory-measurements-v34':version>=34?'advisory-measurements-v33':version>=33?'advisory-measurements-v32':version>=32?'advisory-measurements-v31':version>=31?'advisory-measurements-v30':version>=30?'advisory-measurements-v29':version>=29?'advisory-measurements-v28':version>=28?'advisory-measurements-v27':version>=27?'advisory-measurements-v26':version>=26?'advisory-measurements-v25':version>=25?'advisory-measurements-v24':version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
+  // Proof v38 adds A29 only from its one imported capture: the dedicated USER_IMPORT record keeps its copied latest source clock, its archive restores the exact file the descriptor hashes, and the provider re-derives the whole vector. Nothing else may cite it.
+  if(version>=38&&proof.a29){
+    const d=proof.a29,record=a29Owned[0],stored=record?rawArtifacts[record.id]:undefined;
+    if(Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||a29Owned.length!==1||!record||record.id!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||!(version>=39?[A29_CAPTURE_ADAPTER,A29_V2_CAPTURE_ADAPTER]:[A29_CAPTURE_ADAPTER]).includes(record.adapterVersion)||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))throw new Error('ADVISORY_PROOF_INVALID');
+    const metric=(():AdvisoryMetric=>{try{
+      // Proof v39 dispatches by the record's exact adapter; the v1 archive path below is unchanged.
+      if(record.adapterVersion===A29_V2_CAPTURE_ADAPTER)return a29DeriveV2(d,record,stored,token,cutoff);
+      const raw=unpackA29Capture(stored),capture=a29BoundCapture(raw,token);
+      if(advisoryHash(a29CaptureRequest(raw,capture.label))!==advisoryHash(d.requests.capture)||capture.label!==d.label||capture.maxClock!==record.retrievedAt)throw new Error('ADVISORY_PROOF_INVALID');
+      return deriveA29Absorption(capture.freeze,capture.label,capture.receipts,cutoff,[A29_CAPTURE_ID]);
+    }catch{throw new Error('ADVISORY_PROOF_INVALID');}})();
+    if(metric.id!=='A29'||metric.evidenceIds.some(id=>id!==A29_CAPTURE_ID)||[...socialMetrics,...additionalMetrics].some(m=>m.evidenceIds.includes(A29_CAPTURE_ID)))throw new Error('ADVISORY_PROOF_INVALID');
+    additionalMetrics.push(metric);
+  }
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=39?'advisory-measurements-v38':version>=38?'advisory-measurements-v37':version>=37?'advisory-measurements-v36':version>=36?'advisory-measurements-v35':version>=35?'advisory-measurements-v34':version>=34?'advisory-measurements-v33':version>=33?'advisory-measurements-v32':version>=32?'advisory-measurements-v31':version>=31?'advisory-measurements-v30':version>=30?'advisory-measurements-v29':version>=29?'advisory-measurements-v28':version>=28?'advisory-measurements-v27':version>=27?'advisory-measurements-v26':version>=26?'advisory-measurements-v25':version>=25?'advisory-measurements-v24':version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
 }

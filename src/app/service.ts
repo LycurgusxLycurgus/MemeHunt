@@ -21,6 +21,7 @@ import { validateSocialRepair,validateSocialWire } from '../providers/social-mod
 import { parseSourceResponse,sourceSpans } from '../providers/source-model.js';
 import { validateDammBundle } from '../providers/meteora-damm-v2.js';
 import { validateCurveBundle } from '../providers/pumpcurve.js';
+import { validateVenueProvenanceBundle } from '../providers/venue-provenance.js';
 import { decodeHolderPopulation } from '../providers/solana.js';
 import { decodeTokenMetadataUri } from '../providers/token-discovery.js';
 import { decodeSharedAuditProof } from '../providers/shared-model.js';
@@ -29,11 +30,11 @@ import { decodeSharedAudit,validSharedReassessment,sharedTemporalScopeSchema } f
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
 import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
 import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy-policy.js';
-import { reconstructAdvisory } from './advisory.js';
+import { A29_CAPTURE_ADAPTER,A29_SOURCE_ID,A29_V2_CAPTURE_ADAPTER,A29_V2_SOURCE_BYTES,a29VerifiedV2Id,reconstructAdvisory } from './advisory.js';
 import { HOLDER_ARCHIVE_ADAPTER, unpackHolderPopulation } from '../providers/advisory-topology.js';
 
 /** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
-const ADVISORY_SCREENS=Array.from({length:34},(_,i)=>`research-screen-advisory-v${i+1}`);
+const ADVISORY_SCREENS=Array.from({length:36},(_,i)=>`research-screen-advisory-v${i+1}`);
 
 /** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
 function validateAdvisoryDexBaseline(b:LiveBundle){
@@ -293,23 +294,27 @@ export class Service {
     const parsed = trustedLive ? liveBundleSchema.parse(input) : bundleSchema.parse(input);
     const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE'), ...(parsed.exitProofs ? { exitProofs: parsed.exitProofs.map(p => ({...p,token:normalizeToken(p.token,parsed.analysisKind==='FIXTURE')})) } : {}) };
     if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length || b.exitProofs?.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
-    const nativeCoverage=(()=>{try{const proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37'].includes(proof?.method)&&!!proof.creatorCoverage;}catch{return false;}})();
+    const nativeCoverage=(()=>{try{const proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39'].includes(proof?.method)&&!!proof.creatorCoverage;}catch{return false;}})();
     const nativeReceipts=nativeCoverage?b.evidence.filter(e=>e.sourceId==='advisory-creatorCoverage'||e.id.startsWith('advisory-creatorCoverage-')).length:0;
-    if (b.evidence.length-nativeReceipts > 1000 || nativeReceipts>(['advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37'].includes(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method)?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP) || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
+    if (b.evidence.length-nativeReceipts > 1000 || nativeReceipts>(['advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39'].includes(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method)?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP) || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
     const ids = new Set(b.evidence.map(e => e.id));
     if (ids.size !== b.evidence.length || new Set(b.features.map(f => f.id)).size !== b.features.length) throw new Error('DUPLICATE_BUNDLE_ID');
     for (const e of b.evidence) if (Date.parse(e.availableAt) > Date.parse(b.cutoff) || Date.parse(e.retrievedAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EVIDENCE');
     if (b.rawArtifacts && Object.keys(b.rawArtifacts).some(id => !ids.has(id))) throw new Error('UNREFERENCED_ARTIFACT');
     if ((b.analysisKind === 'USER_IMPORT' || b.analysisKind === 'LIVE') && b.evidence.some(e => b.rawArtifacts?.[e.id] === undefined)) throw new Error('RAW_ARTIFACT_REQUIRED');
+    // Only the one fully validated, owned A29 v2 record gets the separate 128 MB bound outside the default sum; descriptor presence or labels alone change nothing.
+    const a29Exempt=trustedLive&&b.analysisKind==='LIVE'?a29VerifiedV2Id(b.token,b.cutoff,b.evidence,b.rawArtifacts??{}):null;
     let artifactBytes = 0,populationBytes=0;
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
-      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
+      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw);
+      if(e.id===a29Exempt&&e.adapterVersion===A29_V2_CAPTURE_ADAPTER){if(bytes>A29_V2_SOURCE_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw new Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      artifactBytes += bytes;
       if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
       if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? nativeCoverage?64_000_000:24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','advisory-creatorAccounting':'PUBLIC_API','advisory-creatorCoverage':'PUBLIC_API','advisory-creatorRoutes':'FREE_ACCOUNT','advisory-creatorEpisode':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED','advisory-exitCapacity':'PUBLIC_API','a12-reviewed-candidate-set':'USER_IMPORT','advisory-saturation':'USER_IMPORT' };
+        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','advisory-creatorAccounting':'PUBLIC_API','advisory-creatorCoverage':'PUBLIC_API','advisory-creatorRoutes':'FREE_ACCOUNT','advisory-creatorEpisode':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED','advisory-exitCapacity':'PUBLIC_API','a12-reviewed-candidate-set':'USER_IMPORT','advisory-saturation':'USER_IMPORT','advisory-a29':'USER_IMPORT' };
         // Launchpad access is per receipt: only the keyed Lighthouse read is a free account; the Llama summaries are public.
         const access = e.sourceId==='advisory-creatorEpisode' ? (e.id==='advisory-creatorEpisode-helius'?'FREE_ACCOUNT':'PUBLIC_API') : e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
         if (access !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
@@ -334,6 +339,7 @@ export class Service {
       validatePumpRecoveryBundle(b);
       validateCurveBundle(b);
       validateDammBundle(b);
+      validateVenueProvenanceBundle(b);
       validateDexRecovery(b);
       validateFeeRecovery(b);
       validateHolderReconciliation(b);
@@ -345,6 +351,9 @@ export class Service {
         if(!b.details?.groups||b.details.shared?.qualityMode!=='ENTRY_GROUPS_V1'||captureGroupMethod!=='mandatory-entry-groups-v1'||!proof||proof.scope.method!=='mandatory-entry-groups-v1'||proof.availableAt!==b.cutoff||proof.retrievedAt!==b.cutoff||decisionHash(JSON.parse(b.rawArtifacts[proof.id]))!==decisionHash(b.details.groups))throw Error('ENTRY_GROUP_PROOF_INVALID');
       }
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
+      // An imported A29 capture is cited only by the advisory A29 metric; no feature, observation, claim, exit proof, assessment, entry group or shared/social fact consumes it.
+      const a29Ids=new Set(b.evidence.filter(e=>e.sourceId===A29_SOURCE_ID||e.adapterVersion===A29_CAPTURE_ADAPTER||e.adapterVersion===A29_V2_CAPTURE_ADAPTER||e.id.startsWith('advisory-a29-')).map(e=>e.id)),citesA29=(refs:string[])=>refs.some(id=>a29Ids.has(id));
+      if(a29Ids.size&&(b.features.some(f=>citesA29(f.evidenceIds))||b.observations.some(o=>citesA29(o.evidenceIds))||b.semantic.claims.some(c=>a29Ids.has(c.evidenceId))||(b.exitProofs??[]).some(p=>citesA29(p.evidenceIds))||!!b.details?.baseline.some(a=>citesA29(a.evidenceIds))||!!b.details?.groups?.groups.some(g=>citesA29(g.evidenceIds))||!!b.details?.shared?.witnesses.some(w=>citesA29(w.evidenceIds))||!!b.details?.shared?.freshness.some(f=>citesA29(f.evidenceIds))||citesA29(b.details?.social?.evidenceIds??[])))throw new Error('ADVISORY_PROOF_INVALID');
       // The proof-v22 holder archive keeps its canonical solana-rpc source, so its adapter alone also demands the advisory proof that binds it.
       const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
       if(hasAdvisoryEvidence&&!b.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
@@ -357,8 +366,8 @@ export class Service {
           if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
           try{
             const proof=JSON.parse(b.rawArtifacts[record.id]);
-            // Fresh persistence requires proof v37; historical snapshots replay their recorded facts.
-            if(proof.method!=='advisory-provenance-v37'||proof.exitCapacity&&proof.exitCapacity.impactBps!==(b.profile.risk.maxExitImpactBps??null))throw new Error('ADVISORY_PROOF_INVALID');
+            // Fresh persistence requires proof v39; historical snapshots replay their recorded facts.
+            if(proof.method!=='advisory-provenance-v39'||proof.exitCapacity&&proof.exitCapacity.impactBps!==(b.profile.risk.maxExitImpactBps??null))throw new Error('ADVISORY_PROOF_INVALID');
             if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
             const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
             if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
@@ -787,7 +796,7 @@ export class Service {
     const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,liveDetails?.advisory,entryComparison,entryGates,groups);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v34':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?'research-screen-advisory-v36':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');

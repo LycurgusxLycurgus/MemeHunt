@@ -77,7 +77,7 @@ function extensions(a:AccountInfo<Buffer>,kind:1|2){
  while(at<d.length){if(d.subarray(at).every(x=>x===0))break;if(at+4>d.length)bad();const type=d.readUInt16LE(at),len=d.readUInt16LE(at+2);at+=4;if(!type||out.has(type)||at+len>d.length)bad();out.set(type,d.subarray(at,at+len));at+=len;}
  return out;
 }
-function quoteAdmission(a:AccountInfo<Buffer>){
+export function quoteAdmission(a:AccountInfo<Buffer>){
  const ext=extensions(a,1),m=MintLayout.decode(a.data),risks:Record<string,string|null>={};
  if(!m.isInitialized||![0,1].includes(m.mintAuthorityOption)||![0,1].includes(m.freezeAuthorityOption))bad();
  risks.mintAuthority=m.mintAuthorityOption?m.mintAuthority.toBase58():null;risks.freezeAuthority=m.freezeAuthorityOption?m.freezeAuthority.toBase58():null;
@@ -96,7 +96,7 @@ function quoteAdmission(a:AccountInfo<Buffer>){
  }
  return {mint:m,extensions:ext,method:'current-ordinary-quote-transfer-v1' as const,authorityRisks:risks,activeTransferHook:false,paused:false,uiMultiplier:'1',destinationAssumption:'ordinary initialized unfrozen token account without additional transfer restrictions'};
 }
-function validateVaultData(a:AccountInfo<Buffer>,quote?:ReturnType<typeof quoteAdmission>){
+export function validateVaultData(a:AccountInfo<Buffer>,quote?:ReturnType<typeof quoteAdmission>){
  const ext=extensions(a,2);
  for(const [type,d]of ext){
   if(type===7&&d.length===0)continue;
