@@ -284,3 +284,26 @@ export async function qualifySocial(input:SocialInput,token:TokenRef,key:string,
     return {proposal:null,review:null,submittedSources:read.sources,read,rawArtifacts,code};
   }
 }
+
+/** Pure executor plan: the canonical keyed-decision proposal/review packets of hosted qualifySocial, frozen to the submitted scope without qualifiedAt; no selector/screening repair or citation closure. */
+export function socialExecutorPlan(read:SocialInput,token:TokenRef){
+  const {qualifiedAt,...submitted}=socialInputSchema.parse(read);
+  if(!submitted.sources.length)throw new Error('SOC_POST_CORPUS_UNAVAILABLE');
+  if(submitted.sources.reduce((sum,s)=>sum+s.text.length,0)>120000)throw new Error('SOC_TEXT_CAP');
+  const {catalog,spans}=socialCatalog(submitted);
+  if(catalog.some(s=>s.kind==='POST'&&!s.spans.length)||!spans.size)throw new Error('SOC_TEXT_CAP');
+  const context=socialModelContext(submitted,token),{bindingInventory,timeline}=context;
+  type Normalized=ReturnType<typeof normalizeSocialProposal>;
+  return {
+    proposalPacket:JSON.stringify({instruction:socialModelInstruction('proposal',submitted),...context}),
+    proposalSchema:socialDraftWireSchema(submitted) as z.ZodType,
+    normalizeProposal:(value:unknown):Normalized=>normalizeSocialProposal(value,submitted,token,false,false,false),
+    reviewPacket:(normalized:Normalized):string=>{
+      const {proposal,pairs,bodyManifest}=normalized;
+      const localChecks={identities:proposal.identities.map(claim=>({id:claim.id,accountId:claim.accountId,hasPossibleIndependentBindingPath:bindingInventory.some(b=>b.accountId===claim.accountId&&b.accountContractSourceIds.length>0&&b.independentPrimaryCandidateSourceIds.length>0)})),posts:proposal.posts.map(post=>({sourceId:post.sourceId,bodyComplete:post.bodyComplete,literalContractInBody:post.bodyComplete===true&&socialNamesAddress(post.body.quote,token),inCurrentWindow:timeline.find(t=>t.sourceId===post.sourceId)?.inCurrentWindow??false}))};
+      return JSON.stringify({instruction:socialModelInstruction('review',submitted),...context,proposal,pairs,bodySelectionManifest:bodyManifest,localChecks,requiredDecisionIds:socialDecisionIds(proposal),outputContract:'decisions is the exact object keyed by requiredDecisionIds. Copy each key unchanged, even identity:identity:<account>; do not add id inside values.'});
+    },
+    reviewSchema:(normalized:Normalized):z.ZodType=>socialReviewSchema.omit({pairs:true,decisions:true}).extend({decisions:z.object(Object.fromEntries(socialDecisionIds(normalized.proposal).map(id=>[id,socialReviewSchema.shape.decisions.element.omit({id:true})]))).strict(),pairs:z.object(Object.fromEntries(normalized.pairs.map(pair=>[pair.id,socialReviewSchema.shape.pairs.element.omit({id:true})]))).strict()}).strict(),
+    normalizeReview:(value:unknown,proposal:z.infer<typeof socialProposalSchema>)=>normalizeReview(value,proposal),
+  };
+}

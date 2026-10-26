@@ -1,3 +1,7 @@
+import { collectExecutorSocialBodies, EXECUTOR_SOCIAL_BODIES_METHOD } from '../providers/executor-social-bodies.js';
+import { qualifyExecutorSemantic, EXECUTOR_SEMANTIC_METHOD, EXECUTOR_SEMANTIC_METHOD_V3, type SemanticExecutor } from '../providers/executor-semantic.js';
+import { decodeRecordedIncentiveCapture, RECORDED_INCENTIVE_METHOD } from '../providers/advisory-recorded-incentives.js';
+import { decodeRecordedCallerCapture, RECORDED_CALLER_METHOD } from '../providers/advisory-recorded-callers.js';
 import {a12CandidateSetSchema,collectExitCapacity,type A12CandidateSet} from '../providers/advisory-exit-capacity-custom.js';
 import {collectCreatorEpisode} from '../providers/advisory-creator-episode.js';
 import {decodeA24Capture,type A24Capture} from '../providers/advisory-saturation.js';
@@ -40,7 +44,7 @@ import { collectAdvisoryChain } from '../providers/advisory-chain.js';
 import { collectAdvisoryMarket } from '../providers/advisory-market.js';
 import { collectAdvisorySocial } from '../providers/advisory-social.js';
 import { PUBLIC_SOLANA_RPC } from '../providers/solana.js';
-import { reconstructAdvisory,a29ImportCapture,A29_V2_SOURCE_BYTES,a29BoundCapture,a29CaptureRequest,archiveA29Capture,A29_CAPTURE_ADAPTER,A29_CAPTURE_ID,A29_CAPTURE_SOURCE_BYTES,A29_SOURCE_ID,type AdvisoryProof } from './advisory.js';
+import { reconstructAdvisory,a29ImportCapture,A29_V2_SOURCE_BYTES,A29_V2_CAPTURE_ADAPTER,a29BoundCapture,a29CaptureRequest,archiveA29Capture,A29_CAPTURE_ADAPTER,A29_CAPTURE_ID,A29_CAPTURE_SOURCE_BYTES,A29_SOURCE_ID,type AdvisoryProof } from './advisory.js';
 import { collectCreatorRole,decodeCreatorRole } from '../providers/advisory-creator-role-collector.js';
 import { collectLaunchpadContext } from '../providers/advisory-launchpad.js';
 import { collectCreatorInventoryRun,CREATOR_INVENTORY_REQUEST_CAP } from '../providers/advisory-creator-inventory-collector.js';
@@ -54,9 +58,10 @@ import { collectVenueProvenance, type VenueProvenanceRequest } from '../provider
 import { fetchReadResponse, readLimitedText } from '../providers/http.js';
 import { createLiveRun, type LiveRuntime } from './live-phases.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
+import { collectExecutableLiquidity, reconstructExecutableLiquidity, execLiqDerivationRecord, type ExecLiqCapture } from '../providers/executable-liquidity.js';
 
 
-export type LiveOptions = { a12CandidateSet?:A12CandidateSet; a24Capture?:string; a29Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
+export type LiveOptions = { a12CandidateSet?:A12CandidateSet; a24Capture?:string; recordedCallersCapture?:string; recordedIncentivesCapture?:string; creatorRoleOnly?:boolean; semanticExecutor?:SemanticExecutor; a29Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; executableLiquidity?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
 export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
@@ -80,6 +85,8 @@ export async function collectLiveSolana(token: TokenRef, options: LiveOptions): 
   return collectLiveToken(token,options);
 }
 export async function collectLiveToken(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
+  // Executable liquidity is an independent Solana-only opt-in; a foreign chain fails before any read.
+  if(options.executableLiquidity&&token.chain!=='solana')throw Error('EXEC_LIQ_SOLANA_REQUIRED');
   if(options.a12CandidateSet){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A12_ADVISORY_REQUIRED');a12CandidateSetSchema.parse(options.a12CandidateSet);}
   // The A24 capture stays the original file text so its exact bytes are retained; this validates size, schema and any holder archives, keeps the decoded transport method for its evidence binding, and the metric is re-derived at the final cutoff.
   let a24Method:A24Capture['method']|undefined;
@@ -95,11 +102,17 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   if(options.advisoryEnabled&&token.chain!=='solana')throw new Error('ADVISORY_CHAIN_UNSUPPORTED');
   const now = options.now ?? (() => new Date().toISOString());
   if(options.research)validateResearch(options.research,token,now());
+  if(options.semanticExecutor&&(!options.advisoryEnabled||options.semanticEnabled||token.chain!=='solana'))throw Error('ADVISORY_EXECUTOR_MODE_REQUIRED');
+  if(options.semanticExecutor&&!options.tinyfishKey)throw Error('TINYFISH_KEY_MISSING');
+  if(options.creatorRoleOnly&&(!options.advisoryEnabled||options.semanticEnabled||token.chain!=='solana'))throw Error('CREATOR_ROLE_MODE_REQUIRED');
+  if(options.creatorRoleOnly&&!options.tinyfishKey&&!options.creatorRolePrior)throw Error('TINYFISH_KEY_MISSING');
+  if(options.recordedIncentivesCapture!==undefined){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('RECORDED_INCENTIVE_ADVISORY_REQUIRED');try{decodeRecordedIncentiveCapture(options.recordedIncentivesCapture,token,now());}catch{throw Error('RECORDED_INCENTIVE_CAPTURE_INVALID');}}
+  if(options.recordedCallersCapture!==undefined){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('RECORDED_CALLER_ADVISORY_REQUIRED');try{decodeRecordedCallerCapture(options.recordedCallersCapture,token,now());}catch{throw Error('RECORDED_CALLER_CAPTURE_INVALID');}}
   const sharedEnabled=options.semanticEnabled&&!options.research;
   const runStartedAt=Date.now();
-  const runBudgetMs=!options.semanticEnabled&&options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)?1_800_000:sharedEnabled?840_000:120_000;
+  const runBudgetMs=!options.semanticEnabled&&options.advisoryEnabled&&(!options.creatorRoleOnly||!!options.semanticExecutor)&&(options.tinyfishKey||options.creatorRolePrior)?1_800_000:sharedEnabled?840_000:120_000;
   const baseDeadline=AbortSignal.any([AbortSignal.timeout(runBudgetMs),...(options.signal?[options.signal]:[])]);
-  const admission=admittedFetchers(options.fetcher??fetch,baseDeadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&options.semanticEnabled?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)?EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP:0,options.advisoryEnabled?WINDOW_EXPANDED_REQUEST_CAP:0),{fetcher:advisoryFetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher,windowFetcher}=admission;
+  const admission=admittedFetchers(options.fetcher??fetch,baseDeadline,options.advisoryEnabled?ACCOUNT_RECEIPT_CAP:0,options.advisoryEnabled?DEMAND_REQUEST_CAP:0,options.advisoryEnabled&&(options.semanticEnabled||!!options.semanticExecutor)?CALLER_REQUEST_CAP:0,options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)?CREATOR_INVENTORY_REQUEST_CAP:0,options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)?EXPANDED_CREATOR_FAILED_FEE_REQUEST_CAP:0,options.advisoryEnabled?WINDOW_EXPANDED_REQUEST_CAP:0),{fetcher:advisoryFetcher,accountFetcher,demandFetcher,callerFetcher,inventoryFetcher,failedFeeFetcher,windowFetcher}=admission;
   const run=createLiveRun(sharedEnabled,advisoryFetcher,now,options.runtime,options.signal);
   const collectionDeadline=AbortSignal.any([baseDeadline,...(sharedEnabled?[run.hardSignal]:[])]);
   let currentStage=run.begin(sharedEnabled?'PREFLIGHT':'FINALIZE');
@@ -205,13 +218,16 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     }
   }
   else await captureCanonical();
-  const advisoryPool=dex.market?.pairs.find(pair=>pair.baseAddress===token.address||pair.quoteAddress===token.address)?.pairAddress??null;
+  // Prefer target-base history over child pairs denominated in the target; DEX ranking
+  // is preserved within each side, and every downstream source still verifies binding.
+  const advisoryPool=(dex.market?.pairs.find(pair=>pair.baseAddress===token.address)
+    ??dex.market?.pairs.find(pair=>pair.quoteAddress===token.address))?.pairAddress??null;
   const advisoryAddresses=[token.address,...(advisoryPool?[advisoryPool]:[])];
   // Preregister one completed UTC hour; this is separate from the holding horizon.
   const advisoryWindowEnd=new Date(Math.floor(Date.parse(now())/3_600_000)*3_600_000).toISOString();
   // Creator-role reads run first on the shared pool, so its few candidate receipts are not rate-limited by the bulk historical reads; a mint already read under another token program is skipped.
   const creatorPending=options.advisoryEnabled&&(options.tinyfishKey||options.creatorRolePrior)&&!(rpc?.mint&&typeof rpc.mint.programId==='string'&&rpc.mint.programId!==TOKEN_2022_PROGRAM)?Promise.resolve().then(()=>{if(options.creatorRolePrior){if(decodeCreatorRole(token,options.creatorRolePrior,now(),true,true,true).quality!=='KNOWN')throw new Error('CREATOR_ROLE_REUSE_UNVERIFIED');return options.creatorRolePrior;}return collectCreatorRole(token,options.tinyfishKey!,options.rpcUrl??PUBLIC_SOLANA_RPC,advisoryFetcher,now,collectionDeadline);}).catch(error=>({error})):null;
-  const accountingPending=creatorPending?Promise.resolve(creatorPending).then(creator=>'error' in creator?null:collectCreatorQuoteAccounting(token,creator,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline,true)).catch(()=>null):null;
+  const accountingPending=creatorPending&&!options.creatorRoleOnly&&!options.semanticExecutor?Promise.resolve(creatorPending).then(creator=>'error' in creator?null:collectCreatorQuoteAccounting(token,creator,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline,true)).catch(()=>null):null;
   const routesPending=options.heliusKey&&accountingPending&&creatorPending?Promise.all([accountingPending,creatorPending]).then(([accounting,creator])=>{if(!accounting||'error' in creator)return null;const role=decodeCreatorRole(token,creator,now(),true,true,true);return collectCreatorRoutes(decodeCreatorQuoteAccounting(token,role,accounting,now(),true),accounting,options.heliusKey!,options.fetcher??fetch,now,collectionDeadline);}).catch(()=>null):null;
   const episodePending=options.heliusKey&&accountingPending&&creatorPending?Promise.all([accountingPending,creatorPending]).then(([accounting,creator])=>{if(!accounting||'error' in creator)return null;const role=decodeCreatorRole(token,creator,now(),true,true,true);return collectCreatorEpisode(role,decodeCreatorQuoteAccounting(token,role,accounting,now(),true),accounting,options.rpcUrl??PUBLIC_SOLANA_RPC,options.heliusKey!,options.fetcher??fetch,now,collectionDeadline);}).catch(()=>null):null;
   const coveragePending=accountingPending&&creatorPending?Promise.all([accountingPending,creatorPending]).then(async([accounting,creator])=>{if(!accounting||'error' in creator)return null;const role=decodeCreatorRole(token,creator,now(),true,true,true),native=decodeCreatorQuoteAccounting(token,role,accounting,now(),true);return collectCreatorCoverage(token,role,native.account,options.creatorCoveragePrior?{requests:{...options.creatorCoveragePrior.requests,...accounting.requests},rawArtifacts:{...options.creatorCoveragePrior.rawArtifacts,...accounting.rawArtifacts},retrievedAt:{...options.creatorCoveragePrior.retrievedAt,...accounting.retrievedAt}}:accounting,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-120_000-Date.now()))]),true);}).catch(()=>null):null;
@@ -236,7 +252,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   // Launchpad reads (one keyed Lighthouse, three public Llama) run independently on the shared pool and collectionDeadline; without a key nothing is requested, and a failed collector retains nothing.
   const launchpadPending=options.advisoryEnabled&&options.solanaTrackerKey?collectLaunchpadContext(options.solanaTrackerKey,advisoryFetcher,now,collectionDeadline).catch(()=>null):null;
   // Creator inventory starts once S13 and the complete A30 tape have both finished, reads only on its own allowance and, in the 600 s mode, stops at the caller reserve so late capture keeps its time.
-  const inventoryPending=advisoryPending&&creatorPending?Promise.all([advisoryPending,creatorPending]).then(([advisory,creator])=>'error' in advisory||'error' in creator?null:collectCreatorInventoryRun(token,creator,advisory.window,advisory.demand,options.rpcUrl??PUBLIC_SOLANA_RPC,inventoryFetcher,now,options.semanticEnabled?AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):collectionDeadline,true,true)).catch(error=>({error})):null;
+  const inventoryPending=advisoryPending&&creatorPending&&!options.creatorRoleOnly&&!options.semanticExecutor?Promise.all([advisoryPending,creatorPending]).then(([advisory,creator])=>'error' in advisory||'error' in creator?null:collectCreatorInventoryRun(token,creator,advisory.window,advisory.demand,options.rpcUrl??PUBLIC_SOLANA_RPC,inventoryFetcher,now,options.semanticEnabled?AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):collectionDeadline,true,true)).catch(error=>({error})):null;
   // Failed-fee receipts start once the inventory task has finished with receipts that will be ingested; they read only on their own allowance, stop at the same reserve, and the collector admits a read only after the recomputed S13/A30/O24/O25 gate holds.
   const failedFeesPending=inventoryPending?Promise.all([advisoryPending!,creatorPending!,inventoryPending]).then(([advisory,creator,inventory])=>'error' in advisory||'error' in creator||!inventory||'error' in inventory||!Object.keys(inventory.rawArtifacts).length?null:collectCreatorFailedFeesRun(token,creator,advisory.window,advisory.demand,inventory,options.rpcUrl??PUBLIC_SOLANA_RPC,failedFeeFetcher,now,options.semanticEnabled?AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,runStartedAt+runBudgetMs-CALLER_RESERVE_MS-Date.now()))]):collectionDeadline,true,true,true)).catch(error=>({error})):null;
   let web: LiveBundle['collection']['web'] = {state: options.semanticEnabled ? 'KEY_MISSING' : 'NOT_REQUESTED'};
@@ -249,6 +265,25 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   // Historical caller reads and their independent classification run in one background task on the caller pool; the late block only ingests its finished result once.
   type CallerRun={history:Awaited<ReturnType<typeof collectCallerHistory>>;classified:Awaited<ReturnType<typeof qualifyAdvisorySemantic>>|null;classifiedAt:string|null;status:string};
   let callerPending:Promise<CallerRun|{error:unknown}>|null=null,callerStatus='NOT_ATTEMPTED';
+  // The explicit executor path acquires its own fresh corpus; it never projects entry/shared judgments.
+  const executorPending=options.semanticExecutor?(async()=>{
+    let name:string|undefined;const discoveryUrls:string[]=[];
+    try{const pairs=JSON.parse(dex.raw??'[]') as Array<{baseToken?:{address:string;name?:string};info?:{websites?:Array<{url?:string}>;socials?:Array<{url?:string}>}}>;
+      for(const pair of pairs.filter(p=>p.baseToken?.address===token.address)){name??=pair.baseToken?.name;for(const link of [...pair.info?.websites??[],...pair.info?.socials??[]])if(typeof link.url==='string'&&!discoveryUrls.includes(link.url)&&discoveryUrls.length<4)discoveryUrls.push(link.url);}
+    }catch{/* Optional DEX discovery metadata supplies no identity authority. */}
+    const attentionRead=await collectAttentionSources(token,options.tinyfishKey!,advisoryFetcher,now,name,discoveryUrls,undefined,'public-support-v2');
+    web={state:attentionRead.sources.length?attentionRead.complete?'OBSERVED':'TRUNCATED':attentionRead.complete?'NO_RESULTS':'UNAVAILABLE',count:attentionRead.sources.length,...(attentionRead.codes.length?{code:attentionRead.codes[0]}:{})};
+    const socialRead=await collectSocialSources(token,attentionRead,options.tinyfishKey!,advisoryFetcher,now,collectionDeadline);
+    const {rawArtifacts:acquisition,...originalRead}=socialRead;
+    const bodies=await collectExecutorSocialBodies(originalRead,token,callerFetcher,now,collectionDeadline);
+    const read=bodies.read;
+    // Keep exact acquisition bytes in their own operator-recorded artifact; source body records are bound separately.
+    const earliest=Math.min(Date.parse(read.end),...read.sources.map(s=>Date.parse(s.availableAt)));
+    const signal=AbortSignal.any([collectionDeadline,AbortSignal.timeout(Math.max(1,earliest+900000-Date.parse(now())))]);
+    const result=await qualifyExecutorSemantic(read,token,options.semanticExecutor!,now,signal,{wire:'v3',bodyBySourceId:bodies.bodyBySourceId});
+    return {capture:result.capture,read,bodies,acquisition:{attention:attentionRead.rawArtifacts,social:acquisition}};
+  })():null;
+  void executorPending?.catch(()=>{});
   if(options.semanticEnabled&&options.tinyfishKey&&options.geminiKey){
     let attentionStartedAt=run.runtime.nowMs();
     let name:string|undefined,metadataUri:string|undefined;const discoveryUrls:string[]=[];
@@ -429,7 +464,8 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     // Window receipts are stored as exact window-archive-v1 archives under the 1.25 MB namespace ceiling (fail closed above it); the plain collected window already fed accounts, automation, demand, inventory and failed fees.
     // Proof v22 additionally binds the canonical rpc-holder-population receipt stored as one holder-population-archive-v1 archive.
     if(episode&&creatorRoutes&&creatorCoverage&&Object.keys(episode.rawArtifacts).length)creatorEpisode=ingest('creatorEpisode',episode);
-    advisoryProof={method:'advisory-provenance-v40',saturation:null,a29:null,exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
+    const cycle2Composite=a29?.adapter===A29_V2_CAPTURE_ADAPTER&&(!!options.semanticExecutor||options.recordedIncentivesCapture!==undefined||options.recordedCallersCapture!==undefined);
+    advisoryProof={method:cycle2Composite?'advisory-provenance-v46':options.semanticExecutor?'advisory-provenance-v45':options.recordedIncentivesCapture!==undefined?'advisory-provenance-v42':options.recordedCallersCapture!==undefined?'advisory-provenance-v41':'advisory-provenance-v40',...(cycle2Composite||options.semanticExecutor?{executorSemantic:null,recordedIncentives:null,recordedCallers:null}:options.recordedIncentivesCapture!==undefined?{recordedIncentives:null,recordedCallers:null}:options.recordedCallersCapture!==undefined?{recordedCallers:null}:{}),saturation:null,a29:null,exitCapacity:null,launchpad,creatorEpisode,creatorRoutes,creatorCoverage,creatorAccounting,creatorRole,creatorInventory,creatorFailedFees:null,topology:{requests:{},artifactIds:{}},window:{...ingest('window',archiveAdvisoryWindowReceipts(result.window,true)),end:advisoryWindowEnd},accounts:ingest('accounts',result.accounts),automation:ingest('automation',result.automation),demand:ingest('demand',result.demand),wallets:ingest('wallets',result.wallets),token:{chain:'solana',address:token.address},pool:advisoryPool,addresses:advisoryAddresses,chain:ingest('chain',chain),market:ingest('market',market),paid:ingest('paid',paid),trades:ingest('trades',trades),context:ingest('context',context),semantic:classification,callers,callerSemantic};
   }
   if(sharedEnabled){
     currentStage.finish();currentStage=run.begin('FINALIZE');fetcher=currentStage.fetcher;deadline=currentStage.signal;
@@ -488,6 +524,25 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     addEvidence('a12-reviewed-candidate-set',JSON.stringify(packet),'a12-reviewed-candidate-set','REVIEWED_CORPUS','USER_IMPORT',{method:packet.method},now());
     advisoryProof.exitCapacity={...ingest('exitCapacity',capacity),candidateSetId:'a12-reviewed-candidate-set',impactBps:options.profile.risk.maxExitImpactBps??null};
   }
+  if(executorPending){
+    const qualified=await executorPending;
+    if(!advisoryProof)throw Error('ADVISORY_EXECUTOR_MODE_REQUIRED');
+    const sourceIds=qualified.read.sources.map(source=>{
+      const expanded=Object.hasOwn(qualified.bodies.bodyBySourceId,source.id);
+      return addEvidence(`advisory-executor-source-${source.id}`,source.text,expanded?'advisory-executor-body-input':'advisory-executor-input',expanded?'COMPOSITE_SOURCE':'WEB_PAGE',expanded?'USER_IMPORT':'FREE_ACCOUNT',{url:source.url,publishedAt:source.publishedAt,authorId:source.authorId,kind:source.kind},source.availableAt);
+    });
+    const bodyCaptureId=addEvidence('advisory-executor-bodies',qualified.bodies.capture,'advisory-executor','SAMPLE_SCOPE','USER_IMPORT',{method:EXECUTOR_SOCIAL_BODIES_METHOD},now(),EXECUTOR_SOCIAL_BODIES_METHOD) as 'advisory-executor-bodies';
+    const acquisitionId=addEvidence('advisory-executor-acquisition',JSON.stringify(qualified.acquisition),'advisory-executor','SAMPLE_SCOPE','USER_IMPORT',{method:'executor-source-acquisition-v1'},now(),EXECUTOR_SEMANTIC_METHOD_V3) as 'advisory-executor-acquisition';
+    advisoryProof.executorSemantic={bodyCaptureId,acquisitionId,captureId:addEvidence('advisory-executor-capture',qualified.capture,'advisory-executor','MODEL_EXECUTION','USER_IMPORT',{method:EXECUTOR_SEMANTIC_METHOD_V3},now(),EXECUTOR_SEMANTIC_METHOD_V3) as 'advisory-executor-capture',sourceIds};
+  }
+  if(options.recordedIncentivesCapture!==undefined){
+    if(!advisoryProof)throw Error('RECORDED_INCENTIVE_ADVISORY_REQUIRED');
+    advisoryProof.recordedIncentives={captureId:addEvidence('advisory-recorded-incentives-capture',options.recordedIncentivesCapture,'advisory-recorded-incentives','HISTORICAL_RECEIPT','USER_IMPORT',{method:RECORDED_INCENTIVE_METHOD},now(),RECORDED_INCENTIVE_METHOD) as 'advisory-recorded-incentives-capture'};
+  }
+  if(options.recordedCallersCapture!==undefined){
+    if(!advisoryProof)throw Error('RECORDED_CALLER_ADVISORY_REQUIRED');
+    advisoryProof.recordedCallers={captureId:addEvidence('advisory-recorded-callers-capture',options.recordedCallersCapture,'advisory-recorded-callers','HISTORICAL_RECEIPT','USER_IMPORT',{method:RECORDED_CALLER_METHOD},now(),RECORDED_CALLER_METHOD) as 'advisory-recorded-callers-capture'};
+  }
   if(options.a24Capture!==undefined){
     if(!advisoryProof)throw Error('A24_ADVISORY_REQUIRED');
     advisoryProof.saturation={captureId:addEvidence('advisory-saturation-capture',options.a24Capture,'advisory-saturation','HISTORICAL_RECEIPT','USER_IMPORT',{method:a24Method!},now(),a24Method!) as 'advisory-saturation-capture'};
@@ -500,6 +555,12 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     evidence.push({id:A29_CAPTURE_ID,sourceId:A29_SOURCE_ID,sourceType:'RECONSTRUCTED_HISTORY',retrievedAt:a29.maxClock,availableAt:now(),contentHash:hash(stored),adapterVersion:adapter,accessMode:'USER_IMPORT',scope:{request}});
     rawArtifacts[A29_CAPTURE_ID]=stored;
     advisoryProof.a29={requests:{capture:request},artifactIds:{capture:A29_CAPTURE_ID},label:a29.label};
+  }
+  // Opt-in executable liquidity is read here, before the final cutoff, through a deadline-only wrapper outside every request pool and stage; its records stay out of evidence until every existing derivation has run.
+  let execLiqCapture:ExecLiqCapture|undefined;
+  if(options.executableLiquidity){
+    const execLiqBase=options.fetcher??fetch,execLiqFetcher:typeof fetch=(url,init)=>{if(collectionDeadline.aborted)throw collectionDeadline.reason;return execLiqBase(url,{...init,signal:init?.signal?AbortSignal.any([collectionDeadline,init.signal]):collectionDeadline});};
+    execLiqCapture=await collectExecutableLiquidity({token,fetcher:execLiqFetcher,rpcUrl:options.rpcUrl??PUBLIC_SOLANA_RPC,signal:collectionDeadline,now});
   }
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
   const social=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,cutoff,socialPacket.evidenceIds):undefined;
@@ -522,7 +583,7 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   }
 
   if(advisoryProof)addEvidence('advisory-thesis-context',JSON.stringify({method:'frozen-advisory-thesis-v1',token,cutoff,thesis}),'local-config','CONFIG','LOCAL_DERIVED',{method:'frozen-advisory-thesis-v1'},cutoff);
-  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:'advisory-provenance-v38'},cutoff);
+  if(advisoryProof)addEvidence('advisory-derivation',JSON.stringify({...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'}),'advisory-collector','CALCULATION','LOCAL_DERIVED',{method:advisoryProof.method},cutoff);
   const groups=sharedEnabled?entryGroupsForBundle({token,cutoff,profile:options.profile,evidence,rawArtifacts,collection,market:dex.market,details:{baseline,...(social?{social:social.facts}:{})}}):undefined;
   if(groups)addEvidence('entry-groups-derivation',JSON.stringify(groups),'shared-collector','CALCULATION','LOCAL_DERIVED',{method:groups.method},cutoff);
   let shared:ReturnType<typeof deriveShared>|undefined;
@@ -538,9 +599,17 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
   const advisory=advisoryProof?reconstructAdvisory(token,cutoff,baseline,evidence,rawArtifacts,{...advisoryProof,cutoff,socialDerivationId:socialPacket?'social-derivation':null,thesisContextId:'advisory-thesis-context'},thesis,features):undefined;
   const attentionModels=[...new Set(Object.entries(rawArtifacts).filter(([id])=>id.startsWith('attention-')&&id.includes('-transport-attempt-')).flatMap(([,raw])=>{const r=JSON.parse(raw);return r.code==='ATT_MODEL_HTTP_200'&&typeof r.model==='string'?[r.model]:[]}))];
   if(attentionModels.length)semantic.model=attentionModels.join(', ');
+  // Owned execliq records are reconstructed at the same cutoff and appended only now, so no earlier component sees or cites them.
+  const execLiq=execLiqCapture?reconstructExecutableLiquidity({token,cutoff,evidence:execLiqCapture.records,rawArtifacts:execLiqCapture.rawArtifacts}):undefined;
+  if(execLiq&&!execLiq.ok)throw Error(`EXEC_LIQ_PROOF_INVALID:${execLiq.code}`);
+  const executableLiquidity=execLiq&&execLiq.ok?execLiq.facts:undefined;
+  if(executableLiquidity&&execLiqCapture){
+    for(const r of execLiqCapture.records){evidence.push(r);rawArtifacts[r.id]=execLiqCapture.rawArtifacts[r.id]!;}
+    const derivation=execLiqDerivationRecord(executableLiquidity);evidence.push(derivation.record);rawArtifacts[derivation.record.id]=derivation.raw;
+  }
   return {
     token, cutoff, analysisKind: 'LIVE', evidence, rawArtifacts, observations, features, profile: options.profile,thesis,
     collection,semantic, market: dex.market ?? null,
-    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{}),...(advisory?{advisory}:{}),...(groups?{groups}:{})},
+    details:{version:1,profile:options.profile,thesis,baseline,origins:options.origins??{},stageInputs:{circulatingMarketCapUsd:null,tokenCreatedAt:null},...(social?{social:social.facts}:{}),...(shared?{shared:shared.facts}:{}),...(advisory?{advisory}:{}),...(groups?{groups}:{}),...(executableLiquidity?{executableLiquidity}:{})},
   };
 }

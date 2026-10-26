@@ -23,7 +23,12 @@ export type AdvisoryPersistenceDiagnostic={status:'ABSENT'|'VALID'|'REJECTED';co
 export type AdvisorySemantic={method:'advisory-source-classification-v2'|'advisory-source-classification-v3'|'advisory-source-classification-v4';token:TokenRef;sources:Array<Omit<z.infer<typeof classification>,'citations'>&{id:string;citations:Array<{sourceId:string;quote:string}>;complete:boolean;accepted:boolean}>;persistence:unknown;persistenceAccepted:boolean;persistenceDiagnostic?:AdvisoryPersistenceDiagnostic};
 /** Reconstruct classifications from the exact saved model envelopes and code-owned literal spans. */
 export function decodeAdvisorySemantic(input:SocialInput,proposalRaw:string,reviewRaw:string,token:TokenRef,wire:AdvisorySemanticWire=ADVISORY_SEMANTIC_WIRE):AdvisorySemantic{
-  const read=socialInputSchema.parse(input),shape=schemas(read),proposalValue=parseSourceResponse(proposalRaw,'ADV_SEMANTIC'),isolated=wire==='v4'?proposalV4(read,proposalValue,token):null,p=isolated?.proposal??shape.proposal.parse(proposalValue),r=shape.review.parse(parseSourceResponse(reviewRaw,'ADV_SEMANTIC'));
+  const proposalValue=parseSourceResponse(proposalRaw,'ADV_SEMANTIC');
+  return decodeAdvisorySemanticValues(input,proposalValue,parseSourceResponse(reviewRaw,'ADV_SEMANTIC'),token,wire);
+}
+/** Decode already-parsed proposal/review JSON values against code-owned literal spans; direct-JSON callers supply values without a hosted envelope. */
+export function decodeAdvisorySemanticValues(input:SocialInput,proposalValue:unknown,reviewValue:unknown,token:TokenRef,wire:AdvisorySemanticWire=ADVISORY_SEMANTIC_WIRE):AdvisorySemantic{
+  const read=socialInputSchema.parse(input),shape=schemas(read),isolated=wire==='v4'?proposalV4(read,proposalValue,token):null,p=isolated?.proposal??shape.proposal.parse(proposalValue),r=shape.review.parse(reviewValue);
   if(new Set(read.sources.map(s=>s.id)).size!==read.sources.length)throw new Error('ADV_SEMANTIC_SOURCE_DUPLICATE');
   for(const claims of [p.sources,r.sources])if(claims.length!==read.sources.length||new Set(claims.map(c=>c.id)).size!==read.sources.length||claims.some(c=>!read.sources.some(source=>source.id===c.id)))throw new Error('ADV_SEMANTIC_SOURCE_MEMBERSHIP');
   const resolve=resolver(read);
@@ -149,4 +154,17 @@ export function validateAdvisorySemanticWire(read:SocialInput,raw:Record<string,
   const reviewPrompt=JSON.stringify({...context,instruction:version.review,...reviewPayload(parsed,parseSourceResponse(raw['advisory-semantic-proposal-response'],'ADV_SEMANTIC'),token,wire)});
   if(raw['advisory-semantic-selection']!==selection||raw['advisory-semantic-proposal-prompt']!==proposalPrompt||raw['advisory-semantic-review-prompt']!==reviewPrompt)throw new Error('ADV_SEMANTIC_PROMPT_BINDING_INVALID');
   return decodeAdvisorySemantic(parsed,raw['advisory-semantic-proposal-response'],raw['advisory-semantic-review-response'],token,wire);
+}
+
+/** Pure packet plan for direct-JSON executors: hosted selection and prompt bytes plus schemas, no Gemini envelope. Decode responses with decodeAdvisorySemanticValues. */
+export function advisorySemanticPacketPlan(read:SocialInput,token:TokenRef,wire:AdvisorySemanticWire='v4'){
+  const parsed=socialInputSchema.parse(read),shape=schemas(parsed),version=protocol(wire),context={token,window:{start:parsed.start,end:parsed.end},sources:catalog(parsed),rules:version.rules};
+  return {
+    selection:JSON.stringify({method:version.selection,token,read:parsed}),
+    proposalPacket:JSON.stringify({...context,instruction:version.proposal}),
+    proposalSchema:shape.proposal as z.ZodType,
+    proposalLocalSchema:(wire==='v4'?shape.proposalV4:shape.proposal) as z.ZodType,
+    reviewPacket:(proposalValue:unknown):string=>JSON.stringify({...context,instruction:version.review,...reviewPayload(parsed,proposalValue,token,wire)}),
+    reviewSchema:shape.review as z.ZodType,
+  };
 }

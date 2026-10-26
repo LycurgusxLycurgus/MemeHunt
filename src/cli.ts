@@ -4,6 +4,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { createLocalSemanticExecutor } from './providers/local-semantic-executor.js';
+import type { SemanticExecutor } from './providers/executor-semantic.js';
 import { collectLiveToken } from './app/live.js';
 import { A29_V2_SOURCE_BYTES } from './app/advisory.js';
 import { guideConfig, guideThesis, loadConfig, materializeThesis, presetDescription, saveConfig, starterConfig, validateConfig, validateThesis, type Ask } from './app/config.js';
@@ -25,6 +27,7 @@ import { probeDexScreener } from './providers/dexscreener.js';
 import { decodeSolanaAddress, inspectSolanaRpc } from './providers/solana.js';
 
 type CliRuntime = {
+  semanticExecutor?:SemanticExecutor;
   env?: NodeJS.ProcessEnv;
   fetcher?: typeof fetch;
   now?: () => string;
@@ -64,6 +67,13 @@ const readA29Capture = (path: string) => {
   const bytes = readFileSync(path);
   try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new CliError('A29_CAPTURE_INVALID', 'The A29 capture is not exact UTF-8.'); }
 };
+/** Recorded caller history owns a separate strict UTF-8 ingress; other file readers retain their ceilings. */
+const readRecordedCapture = (path:string,invalidCode:string) => {
+  if(statSync(path).size>8_388_608)throw new Error('FILE_TOO_LARGE');
+  const bytes=readFileSync(path);
+  if(bytes.length>8_388_608)throw new Error('FILE_TOO_LARGE');
+  try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw Error(invalidCode);}
+};
 const knownErrorCodes = new Set([
   'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
   'INVALID_TOKEN_REF', 'INVALID_SOLANA_ADDRESS', 'INVALID_EVM_ADDRESS', 'INVALID_PROFILE',
@@ -85,12 +95,13 @@ const knownErrorCodes = new Set([
   'TRANSFER_COST_REQUIRES_BUY', 'OVERSELL_TRANSFER', 'TRANSFER_DIRECTION_REQUIRED',
   'ANALYSIS_MODES_CONFLICT', 'MODE_FLAG_ONLY_FOR_LIVE',
   'INVALID_CONFIG','CONFIG_EXISTS','CONFIG_NOT_FOUND','CONFIG_CANCELLED','CHECK_NOT_FOUND','CHAIN_SELECTION_REQUIRED','INVALID_ASSESSMENT_DETAILS','UNQUALIFIED_STAGE_INPUT','UNSUPPORTED_SNAPSHOT_VERSION','RESEARCH_TOKEN_MISMATCH','RESEARCH_DUPLICATE','RESEARCH_CITATION','RESEARCH_TIME_OR_BINDING','RESEARCH_LINEAGE','RESEARCH_WINDOW',
-  'RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH','A24_ADVISORY_REQUIRED','A24_CAPTURE_INVALID','A29_ADVISORY_REQUIRED','A29_CAPTURE_INVALID','A29_CAPTURE_TOO_LARGE',
+  'RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH','ADVISORY_EXECUTOR_MODE_REQUIRED','RECORDED_INCENTIVE_ADVISORY_REQUIRED','RECORDED_INCENTIVE_CAPTURE_INVALID','CREATOR_ROLE_MODE_REQUIRED','RECORDED_CALLER_ADVISORY_REQUIRED','RECORDED_CALLER_CAPTURE_INVALID','A24_ADVISORY_REQUIRED','A24_CAPTURE_INVALID','A29_ADVISORY_REQUIRED','A29_CAPTURE_INVALID','A29_CAPTURE_TOO_LARGE','EXEC_LIQ_SOLANA_REQUIRED','EXEC_LIQ_PROOF_INVALID',
 ]);
 const safeCode = (error: unknown) => {
   const raw = error instanceof Error ? error.message : '';
   if (knownErrorCodes.has(raw)) return raw;
   if (/^(?:RPC|DEX|WEB_SEARCH|WEB_FETCH|GEMINI)_HTTP_\d{3}$/.test(raw)) return raw;
+  if (/^EXEC_LIQ_PROOF_INVALID:[A-Z][A-Z0-9_]{0,63}$/.test(raw)) return raw;
   if (/SQLITE|database|EACCES|ENOENT/i.test(raw)) return 'STORAGE_ERROR';
   return 'COMMAND_FAILED';
 };
@@ -162,7 +173,10 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
   const interactive=runtime.isInteractive??(!!process.stdin.isTTY&&!!process.stderr.isTTY);
   let service: Service | undefined;
   try {
-    for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text','a24-capture','a29-capture'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
+    for(const name of ['config','db','profile','thesis','research','bundle','chain','file','check','text','a24-capture','a29-capture','recorded-callers-capture','recorded-incentives-capture'])if(hasFlag(argv,name)&&(!flagValue(argv,name)||flagValue(argv,name)!.startsWith('--')))throw new CliError('FLAG_VALUE_REQUIRED',`--${name} requires a value.`);
+    if(hasFlag(argv,'recorded-incentives-capture')&&(cmd!=='analyze'||hasFlag(argv,'bundle')))throw new CliError('RECORDED_INCENTIVE_ADVISORY_REQUIRED','Use --recorded-incentives-capture FILE with live --advisory analysis of a Solana address.');
+    if(hasFlag(argv,'recorded-callers-capture')&&(cmd!=='analyze'||hasFlag(argv,'bundle')))throw new CliError('RECORDED_CALLER_ADVISORY_REQUIRED','Use --recorded-callers-capture FILE with live --advisory analysis of a Solana address.');
+    if(hasFlag(argv,'executable-liquidity')&&(cmd!=='analyze'||hasFlag(argv,'bundle')))throw new CliError('EXEC_LIQ_SOLANA_REQUIRED','Use --executable-liquidity only with live analyze of a Solana address; bundles, reassess and other commands are not supported.');
     const requestedChecklist=flagValue(argv,'checklist');
     if(requestedChecklist&&!requestedChecklist.startsWith('--')&&!['entry','management'].includes(requestedChecklist))throw new CliError('INVALID_CHECKLIST','Choose entry or management.');
     if(cmd==='creator-position'||cmd==='creator-position-replay'){
@@ -184,15 +198,20 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history | --creator-role-only] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
         advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
+        recordedIncentivesCapture: '--advisory --recorded-incentives-capture FILE imports an exact historical public-incentive capture (strict UTF-8, at most 8 MiB) for S08 only; hidden compensation remains unmeasured.',
+        recordedCallersCapture: '--advisory --recorded-callers-capture FILE imports one exact historical caller capture (strict UTF-8, at most 8 MiB) for Solana; recorded independent agent outputs qualify only S07/S09/A21/A23. Imported execution metadata is not external authentication.',
         a24Capture: '--advisory --a24-capture FILE imports one byte-exact raw A24 capture packet (at most 8 MiB, strict UTF-8) for Solana as a USER_IMPORT receipt; the six-component saturation vector is re-derived from those bytes. No score, entry gate or price claim, and no network read for the capture.',
         a12Candidates: '--advisory --a12-candidates FILE imports a raw-source-bound independently reviewed factual candidate catalog and quotes the canonical PumpSwap index0 quote-verified route scope for every member. No other-venue or simulated execution claim.',
         a29Capture: '--advisory --a29-capture FILE imports one prior USER_IMPORT A29 capture (a29-retained-sources-v1) for the analyzed Solana mint. Its retained raw RPC receipts and copied source clocks are stored and replayed offline, never re-read or presented as fresh live collection. A29 is a descriptive advisory vector only.',
+        advisoryExecutor: '--partial --advisory --advisory-executor enables fresh TinyFish sources and one-shot independent Codex/Claude Code CLI classification for advisory metrics only. Requires both CLIs authenticated and TINYFISH_API_KEY. No Gemini; source freshness stays 15 minutes.',
+        creatorRoleOnly: '--partial --advisory --creator-role-only permits the bounded official Pump creator page and signed role proof for Solana; needs TINYFISH_API_KEY, skips creator accounting/history and Gemini.',
         creatorHistory: '--partial --advisory --creator-history explicitly permits the bounded TinyFish Pump creator page, DEX JSON recovery and public creator history for Solana; needs TINYFISH_API_KEY, uses no Gemini.',
+        executableLiquidity: '--executable-liquidity opts a live Solana analysis into fresh public RPC and keyless DEX USD reads of direct enumerated PumpSwap, Meteora DLMM and DAMM v2 cash routes: quote-net sell output at 300 bps fee-inclusive average impact per route. Quoted trading fees only; network, rent and setup costs excluded. Independent of --advisory, --full and --partial; not wallet availability and not an entry check. Rejected for EVM, bundles and reassess.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
         other: 'Use --bundle for offline fixture/import analysis; reassess requires --bundle.',
         networkCheck: 'doctor --network makes one bounded mainnet RPC check; no database, account lookup, or hosted providers. Plain doctor stays offline.',
@@ -266,6 +285,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
       if(hasFlag(argv,'a24-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with a live --advisory analysis of a Solana address.');
+      if(hasFlag(argv,'advisory-executor')&&(cmd!=='analyze'||hasBundle))throw new CliError('ADVISORY_EXECUTOR_MODE_REQUIRED','Use --advisory-executor with live --partial --advisory analysis of Solana.');
+      if(hasFlag(argv,'creator-role-only')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_ROLE_MODE_REQUIRED','Creator role collection is a live analyze mode; use --partial --advisory.');
       if(hasFlag(argv,'creator-history')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Creator history is a live analyze mode; use --partial --advisory.');
       if(hasFlag(argv,'a29-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A29_ADVISORY_REQUIRED','--a29-capture imports one prior capture into a live analyze --advisory run.');
       if (fullRequested && partialRequested) throw new Error('ANALYSIS_MODES_CONFLICT');
@@ -311,12 +332,21 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const token = parseToken({ chain, address:chain==='solana'?argv[1]:argv[1].toLowerCase() });
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
+        if(hasFlag(argv,'executable-liquidity')&&token.chain!=='solana')throw new CliError('EXEC_LIQ_SOLANA_REQUIRED','--executable-liquidity supports Solana addresses only.');
         if(hasFlag(argv,'a24-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with --advisory for a Solana address.');
+        if(hasFlag(argv,'recorded-incentives-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('RECORDED_INCENTIVE_ADVISORY_REQUIRED','Use --recorded-incentives-capture FILE with --advisory for Solana.');
+        const recordedIncentivesCapture=hasFlag(argv,'recorded-incentives-capture')?readRecordedCapture(flagValue(argv,'recorded-incentives-capture')!,'RECORDED_INCENTIVE_CAPTURE_INVALID'):undefined;
+        if(hasFlag(argv,'recorded-callers-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('RECORDED_CALLER_ADVISORY_REQUIRED','Use --recorded-callers-capture FILE with --advisory for Solana.');
+        const recordedCallersCapture=hasFlag(argv,'recorded-callers-capture')?readRecordedCapture(flagValue(argv,'recorded-callers-capture')!,'RECORDED_CALLER_CAPTURE_INVALID'):undefined;
         const a24Capture=hasFlag(argv,'a24-capture')?captureText(flagValue(argv,'a24-capture')):undefined;
         if(flagValue(argv,'a12-candidates')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A12_ADVISORY_REQUIRED','Use --a12-candidates FILE with --advisory for a Solana address.');
         if(hasFlag(argv,'a29-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A29_ADVISORY_REQUIRED','Use --a29-capture FILE with --advisory for a Solana address.');
         const a29Capture=hasFlag(argv,'a29-capture')?readA29Capture(flagValue(argv,'a29-capture')!):undefined;
-        const creatorHistory=hasFlag(argv,'creator-history');
+        const creatorHistory=hasFlag(argv,'creator-history'),creatorRoleOnly=hasFlag(argv,'creator-role-only'),advisoryExecutor=hasFlag(argv,'advisory-executor');
+        if(advisoryExecutor&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'||creatorHistory))throw new CliError('ADVISORY_EXECUTOR_MODE_REQUIRED','Use --advisory-executor with --partial --advisory for Solana, separately from --creator-history.');
+        if(advisoryExecutor&&!env.TINYFISH_API_KEY)throw new CliError('TINYFISH_KEY_MISSING','Advisory executor mode requires TINYFISH_API_KEY for fresh source acquisition.');
+        if(creatorRoleOnly&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'||creatorHistory))throw new CliError('CREATOR_ROLE_MODE_REQUIRED','Use --creator-role-only with --partial --advisory for Solana, separately from --creator-history.');
+        if(creatorRoleOnly&&!env.TINYFISH_API_KEY)throw new CliError('TINYFISH_KEY_MISSING','Creator role collection requires TINYFISH_API_KEY for the bounded official Pump page fetch.');
         if(creatorHistory&&(!partialRequested||!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('CREATOR_HISTORY_MODE_REQUIRED','Use --creator-history with --partial --advisory for a Solana address.');
         if(creatorHistory&&!env.TINYFISH_API_KEY)throw new CliError('TINYFISH_KEY_MISSING','Creator history requires TINYFISH_API_KEY for the bounded official Pump page fetch.');
         const parsedProfile = hasProfile ? profileSchema.safeParse(fileJson(profilePath)) : undefined;
@@ -352,7 +382,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
             ...(missing.length ? [`Full mode is missing: ${missing.join(', ')}.`, localKeySetup, keySetupInstructions(missing)] : []),
           ].join('\n'));
         }
-        if (partialRequested) stderr(creatorHistory?'CREATOR_HISTORY_MODE: --creator-history approves the bounded TinyFish Pump creator page and DEX JSON recovery plus public RPC/DEX history; Gemini is skipped.\n':'PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
+        if (partialRequested) stderr(advisoryExecutor?'ADVISORY_EXECUTOR_MODE: acquiring fresh bounded TinyFish sources and signed creator role; independent Codex/Claude CLI inference is advisory-only. Creator accounting/history and Gemini are skipped.\n':creatorRoleOnly?'CREATOR_ROLE_MODE: collecting the bounded official Pump creator page and signed role proof; creator accounting/history and Gemini are skipped.\n':creatorHistory?'CREATOR_HISTORY_MODE: --creator-history approves the bounded TinyFish Pump creator page and DEX JSON recovery plus public RPC/DEX history; Gemini is skipped.\n':'PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
         if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini for this analysis.\n');
         if(!saved&&!hasProfile){
           let initial=starterConfig();
@@ -367,13 +397,18 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         const live = await collectLiveToken(token, {
           profile,
           advisoryEnabled:hasFlag(argv,'advisory'),
+          ...(hasFlag(argv,'executable-liquidity')?{executableLiquidity:true}:{}),
+          ...(creatorRoleOnly?{creatorRoleOnly:true}:{}),
+          ...(advisoryExecutor?{semanticExecutor:runtime.semanticExecutor??createLocalSemanticExecutor()}:{}),
+          ...(recordedCallersCapture!==undefined?{recordedCallersCapture}:{}),
+          ...(recordedIncentivesCapture!==undefined?{recordedIncentivesCapture}:{}),
           ...(a24Capture!==undefined?{a24Capture}:{}),
           ...(flagValue(argv,'a12-candidates')?{a12CandidateSet:fileJson(flagValue(argv,'a12-candidates')) as import('./providers/advisory-exit-capacity-custom.js').A12CandidateSet}:{}),
           ...(a29Capture!==undefined?{a29Capture}:{}),
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
-          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : creatorHistory?{tinyfishKey:env.TINYFISH_API_KEY!}:{}),
+          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : creatorHistory||creatorRoleOnly||advisoryExecutor?{tinyfishKey:env.TINYFISH_API_KEY!}:{}),
           ...(hasFlag(argv,'advisory') && env.HELIUS_API_KEY ? { heliusKey: env.HELIUS_API_KEY } : {}),
           ...(hasFlag(argv,'advisory') && env.SOLANA_TRACKER_API_KEY ? { solanaTrackerKey: env.SOLANA_TRACKER_API_KEY } : {}),
           semanticEnabled: fullApproved,

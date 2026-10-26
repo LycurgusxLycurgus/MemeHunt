@@ -22,6 +22,8 @@ const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const time = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
 function fail(code: string): never { throw new Error(code); }
 
+/** The caller arithmetic consumes only four reviewed fields; hosted semantic packets structurally retain their historical contract. */
+export type CallerClassification = {token:TokenRef;method:AdvisorySemantic['method']|'recorded-caller-fields-v1';sources:Array<Pick<AdvisorySemantic['sources'][number],'id'|'binding'|'event'|'category'|'topic'|'citations'|'complete'|'accepted'>>};
 export type CallerSeed = { selection: CallerHistorySelection; raw: string; evidenceIds: string[] } | { selection: null; code: string };
 type Resolved = { raw: Record<string, string>; times: Record<string, string>; requests: Record<string, unknown>; ids: string[] };
 
@@ -83,7 +85,7 @@ export function replayCallerHistory(token: TokenRef, cutoff: string, evidence: E
 }
 
 /** Reviewed whole-body classifications over the fixed historical sample; roles are structural X metadata, never model labels. */
-export function deriveCallerHistoryMetrics(token: TokenRef, cutoff: string, history: CallerHistory, semantic: AdvisorySemantic | null, evidenceIds: string[]): AdvisoryMetric[] {
+export function deriveCallerHistoryMetrics(token: TokenRef, cutoff: string, history: CallerHistory, semantic: CallerClassification | null, evidenceIds: string[]): AdvisoryMetric[] {
   const read = history.socialInput, ids = [...new Set(evidenceIds)], metrics: AdvisoryMetric[] = [];
   const scope = { kind: 'HISTORICAL_FIXED_ATTENTION_SAMPLE', seedMethod: CALLER_SEED_METHOD, adapter: history.method, trust: history.trust, period: history.period, frozenAt: history.frozenAt, analysisCutoff: history.analysisCutoff,
     selectionHash: history.selectionHash, sourceScopeHash: history.sourceScopeHash, queries: read.queries, sourceIds: read.targetPostIds,
@@ -120,7 +122,7 @@ export function deriveCallerHistoryMetrics(token: TokenRef, cutoff: string, hist
   set('A23', fractionKnown, { eligible: eligible.length, classified: classified.length, unclassified: eligible.length - classified.length, numerator, fraction: fractionKnown ? new Decimal(numerator).div(classified.length).toFixed() : null },
     fractionKnown ? 'HISTORICAL_CLASSIFIED_FRACTION_OBSERVED' : blocked ?? (!eligible.length ? 'HISTORICAL_CLASSIFIED_FRACTION_DENOMINATOR_ZERO' : 'HISTORICAL_CLASSIFIED_FRACTION_INCOMPLETE'), 'fraction');
   // A21 exists only for the v3 origin rubric; legacy v2 categories conflated news with external origin and never become a historical value.
-  if (semantic?.method === 'advisory-source-classification-v3') {
+  if (semantic?.method === 'advisory-source-classification-v3' || semantic?.method === 'recorded-caller-fields-v1') {
     const categorized = eligible.filter(r => r.claim!.category !== 'UNKNOWN'), external = categorized.filter(r => r.claim!.category === 'EXTERNAL');
     const originKnown = measured && eligible.length > 0 && categorized.length === eligible.length;
     set('A21', originKnown, { ...ADVISORY_ORIGIN_CATEGORY, eligible: eligible.length, classified: categorized.length, unclassified: eligible.length - categorized.length, numerator: external.length,

@@ -1,3 +1,7 @@
+import { decodeExecutorSocialBodies, EXECUTOR_SOCIAL_BODIES_METHOD, EXECUTOR_SOCIAL_BODIES_LIMIT } from '../providers/executor-social-bodies.js';
+import { validateExecutorSemantic, deriveExecutorSemanticMetrics, EXECUTOR_SEMANTIC_METHOD, EXECUTOR_SEMANTIC_METHOD_V2, EXECUTOR_SEMANTIC_METHOD_V3, EXECUTOR_SEMANTIC_LIMIT } from '../providers/executor-semantic.js';
+import { decodeRecordedIncentiveCapture, deriveRecordedIncentiveMetrics, RECORDED_INCENTIVE_METHOD, RECORDED_INCENTIVE_LIMIT } from '../providers/advisory-recorded-incentives.js';
+import { decodeRecordedCallerCapture, deriveRecordedCallerMetrics, RECORDED_CALLER_METHOD, RECORDED_CALLER_LIMIT } from '../providers/advisory-recorded-callers.js';
 import {deriveExitCapacity as deriveCustomExitCapacity} from '../providers/advisory-exit-capacity-custom.js';
 import { decodeA29Capture,deriveA29Absorption } from '../providers/advisory-absorption.js';
 import { decodeA29CaptureV2,deriveA29AbsorptionV2 } from '../providers/advisory-absorption-v2.js';
@@ -43,7 +47,7 @@ import { FAILED_FEE_ADAPTER,FAILED_FEE_SOURCE_ID,type FailedFeeReceipt } from '.
 
 const descriptor=z.object({requests:z.record(z.string(),z.unknown()),artifactIds:z.record(z.string(),z.string())}).strict();
 export const advisoryProofSchema=z.object({
-  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24','advisory-provenance-v25','advisory-provenance-v26','advisory-provenance-v27','advisory-provenance-v28','advisory-provenance-v29','advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
+  method:z.enum(['advisory-provenance-v2','advisory-provenance-v3','advisory-provenance-v4','advisory-provenance-v5','advisory-provenance-v6','advisory-provenance-v7','advisory-provenance-v8','advisory-provenance-v9','advisory-provenance-v10','advisory-provenance-v11','advisory-provenance-v12','advisory-provenance-v13','advisory-provenance-v14','advisory-provenance-v15','advisory-provenance-v16','advisory-provenance-v17','advisory-provenance-v18','advisory-provenance-v19','advisory-provenance-v20','advisory-provenance-v21','advisory-provenance-v22','advisory-provenance-v23','advisory-provenance-v24','advisory-provenance-v25','advisory-provenance-v26','advisory-provenance-v27','advisory-provenance-v28','advisory-provenance-v29','advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46']),token:z.object({chain:z.literal('solana'),address:z.string()}).strict(),cutoff:z.iso.datetime({offset:true}),
   pool:z.string().nullable(),addresses:z.array(z.string()).min(1).max(3),chain:descriptor,market:descriptor,paid:descriptor,trades:descriptor,context:descriptor,semantic:descriptor.nullable(),wallets:descriptor.optional(),
   socialDerivationId:z.literal('social-derivation').nullable(),thesisContextId:z.literal('advisory-thesis-context'),
   window:descriptor.extend({end:z.iso.datetime({offset:true})}).strict().optional(),
@@ -59,6 +63,9 @@ export const advisoryProofSchema=z.object({
   creatorEpisode:descriptor.nullable().optional(),
   exitCapacity:descriptor.extend({candidateSetId:z.literal('a12-reviewed-candidate-set'),impactBps:z.string().nullable()}).strict().nullable().optional(),
   saturation:z.object({captureId:z.literal('advisory-saturation-capture')}).strict().nullable().optional(),
+  executorSemantic:z.object({bodyCaptureId:z.literal('advisory-executor-bodies').optional(),captureId:z.literal('advisory-executor-capture'),acquisitionId:z.literal('advisory-executor-acquisition'),sourceIds:z.array(z.string()).max(64)}).strict().nullable().optional(),
+  recordedIncentives:z.object({captureId:z.literal('advisory-recorded-incentives-capture')}).strict().nullable().optional(),
+  recordedCallers:z.object({captureId:z.literal('advisory-recorded-callers-capture')}).strict().nullable().optional(),
   a29:descriptor.extend({label:z.string().min(1)}).strict().nullable().optional(),
 }).strict();
 export type AdvisoryProof=z.infer<typeof advisoryProofSchema>;
@@ -71,6 +78,9 @@ const WINDOW_EVIDENCE_PREFIX='advisory-window-';
 const A24_SOURCE_ID='advisory-saturation',A24_EVIDENCE_PREFIX='advisory-saturation-';
 /** The A29 import adapter: one exact prior capture file is USER_IMPORT reconstructed history under its own source, record id and raw-deflate archive, never a live-v1 or fresh-collection receipt. */
 export const A29_SOURCE_ID='advisory-a29',A29_CAPTURE_ID='advisory-a29-capture',A29_CAPTURE_ADAPTER='a29-capture-archive-v1',A29_CAPTURE_SOURCE_BYTES=24_000_000;
+export const EXECUTOR_SOURCE='advisory-executor',EXECUTOR_INPUT_SOURCE='advisory-executor-input',EXECUTOR_BODY_INPUT_SOURCE='advisory-executor-body-input',EXECUTOR_ID='advisory-executor-capture';
+export const RECORDED_INCENTIVE_SOURCE='advisory-recorded-incentives',RECORDED_INCENTIVE_ID='advisory-recorded-incentives-capture';
+export const RECORDED_CALLER_SOURCE='advisory-recorded-callers',RECORDED_CALLER_ID='advisory-recorded-callers-capture';
 const sha256=(raw:string|Buffer)=>createHash('sha256').update(raw).digest('hex');
 /** The descriptor request names the provider-chosen label and the exact UTF-8 bytes of the imported file. */
 export const a29CaptureRequest=(raw:string,label:string)=>({method:'a29-capture-import-v1',label,fileSha256:sha256(raw),fileBytes:Buffer.byteLength(raw)});
@@ -122,7 +132,7 @@ function a29DeriveV2(d:NonNullable<AdvisoryProof['a29']>,record:EvidenceRecord,s
 export function a29VerifiedV2Id(token:TokenRef,cutoff:string,evidence:EvidenceRecord[],rawArtifacts:Record<string,string>):string|null{
   try{
     const proof=advisoryProofSchema.parse(JSON.parse(rawArtifacts['advisory-derivation']??'null')),d=proof.a29,owned=evidence.filter(a29Owns),record=owned[0],stored=record?rawArtifacts[record.id]:undefined;
-    if(!['advisory-provenance-v39','advisory-provenance-v40'].includes(proof.method)||proof.cutoff!==cutoff||proof.token.address!==token.address||!d||owned.length!==1||!record||record.id!==A29_CAPTURE_ID||Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||record.adapterVersion!==A29_V2_CAPTURE_ADAPTER||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))return null;
+    if(!['advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v46'].includes(proof.method)||proof.cutoff!==cutoff||proof.token.address!==token.address||!d||owned.length!==1||!record||record.id!==A29_CAPTURE_ID||Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||record.adapterVersion!==A29_V2_CAPTURE_ADAPTER||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))return null;
     return a29DeriveV2(d,record,stored,token,cutoff,proof.method==='advisory-provenance-v40').id==='A29'?record.id:null;
   }catch{return null;}
 }
@@ -160,6 +170,18 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   // Proof v38 also carries an explicit a29 key (null without an imported capture); proof v37 and earlier never carry the key, and a source-, prefix- or adapter-identified A29 record without its descriptor is an orphan.
   const a29Owned=evidence.filter(a29Owns);
   if((version>=38?proof.a29===undefined:proof.a29!==undefined)||!proof.a29&&a29Owned.length)throw new Error('ADVISORY_PROOF_INVALID');
+  const recordedOwned=evidence.filter(e=>e.sourceId===RECORDED_CALLER_SOURCE||e.id.startsWith('advisory-recorded-callers-')||e.adapterVersion===RECORDED_CALLER_METHOD);
+  if(Object.keys(rawArtifacts).some(id=>id.startsWith('advisory-recorded-callers-')&&!recordedOwned.some(e=>e.id===id))||[...baseline,...features].some(v=>v.evidenceIds.some(id=>recordedOwned.some(e=>e.id===id))))throw Error('ADVISORY_PROOF_INVALID');
+  if((version===41?!proof.recordedCallers:version>=42?proof.recordedCallers===undefined:proof.recordedCallers!==undefined)||!proof.recordedCallers&&recordedOwned.length||proof.recordedCallers&&(recordedOwned.length!==1||recordedOwned[0]!.id!==RECORDED_CALLER_ID))throw new Error('ADVISORY_PROOF_INVALID');
+  const incentiveOwned=evidence.filter(e=>e.sourceId===RECORDED_INCENTIVE_SOURCE||e.id.startsWith('advisory-recorded-incentives-')||e.adapterVersion===RECORDED_INCENTIVE_METHOD);
+  if(Object.keys(rawArtifacts).some(id=>id.startsWith('advisory-recorded-incentives-')&&!incentiveOwned.some(e=>e.id===id))||[...baseline,...features].some(v=>v.evidenceIds.some(id=>incentiveOwned.some(e=>e.id===id))))throw Error('ADVISORY_PROOF_INVALID');
+  if((version===42?!proof.recordedIncentives:version>=43?proof.recordedIncentives===undefined:proof.recordedIncentives!==undefined)||!proof.recordedIncentives&&incentiveOwned.length||proof.recordedIncentives&&(incentiveOwned.length!==1||incentiveOwned[0]!.id!==RECORDED_INCENTIVE_ID))throw Error('ADVISORY_PROOF_INVALID');
+  const executorOwned=evidence.filter(e=>e.sourceId===EXECUTOR_SOURCE||e.sourceId===EXECUTOR_INPUT_SOURCE||e.sourceId===EXECUTOR_BODY_INPUT_SOURCE||e.id.startsWith('advisory-executor-')||e.adapterVersion===EXECUTOR_SEMANTIC_METHOD);
+  const executorIds=new Set(executorOwned.map(e=>e.id));
+  if(Object.keys(rawArtifacts).some(id=>id.startsWith('advisory-executor-')&&!executorIds.has(id))||[...baseline,...features].some(v=>v.evidenceIds.some(id=>executorIds.has(id))))throw Error('ADVISORY_PROOF_INVALID');
+  if((version===46?proof.executorSemantic===undefined:version>=43?!proof.executorSemantic:proof.executorSemantic!==undefined)||!proof.executorSemantic&&executorOwned.length)throw Error('ADVISORY_PROOF_INVALID');
+  if(proof.executorSemantic){if(version>=44?!proof.executorSemantic.bodyCaptureId:proof.executorSemantic.bodyCaptureId!==undefined)throw Error('ADVISORY_PROOF_INVALID');const ids=[proof.executorSemantic.captureId,proof.executorSemantic.acquisitionId,...(proof.executorSemantic.bodyCaptureId?[proof.executorSemantic.bodyCaptureId]:[]),...proof.executorSemantic.sourceIds];if(new Set(ids).size!==ids.length||executorOwned.length!==ids.length||JSON.stringify([...executorIds].sort())!==JSON.stringify(ids.sort()))throw Error('ADVISORY_PROOF_INVALID');}
+  if(version===46&&(!proof.a29||a29Owned[0]?.adapterVersion!==A29_V2_CAPTURE_ADAPTER||!(proof.executorSemantic||proof.recordedCallers||proof.recordedIncentives)))throw Error('ADVISORY_PROOF_INVALID');
   const routeOwned=evidence.filter(e=>e.sourceId==='advisory-creatorRoutes'||e.id.startsWith('advisory-creatorRoutes-'));
   if((version>=31?proof.creatorRoutes===undefined:!!proof.creatorRoutes)||proof.creatorRoutes&&!proof.creatorAccounting||!proof.creatorRoutes&&routeOwned.length)throw new Error('ADVISORY_PROOF_INVALID');
   if(proof.creatorRoutes){const ids=Object.values(proof.creatorRoutes.artifactIds).sort();if(new Set(ids).size!==ids.length||JSON.stringify(routeOwned.map(e=>e.id).sort())!==JSON.stringify(ids))throw new Error('ADVISORY_PROOF_INVALID');}
@@ -333,10 +355,10 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
   // Proof v38 adds A29 only from its one imported capture: the dedicated USER_IMPORT record keeps its copied latest source clock, its archive restores the exact file the descriptor hashes, and the provider re-derives the whole vector. Nothing else may cite it.
   if(version>=38&&proof.a29){
     const d=proof.a29,record=a29Owned[0],stored=record?rawArtifacts[record.id]:undefined;
-    if(Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||a29Owned.length!==1||!record||record.id!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||!(version>=39?[A29_CAPTURE_ADAPTER,A29_V2_CAPTURE_ADAPTER]:[A29_CAPTURE_ADAPTER]).includes(record.adapterVersion)||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))throw new Error('ADVISORY_PROOF_INVALID');
+    if(Object.keys(d.requests).join()!=='capture'||Object.keys(d.artifactIds).join()!=='capture'||d.artifactIds.capture!==A29_CAPTURE_ID||a29Owned.length!==1||!record||record.id!==A29_CAPTURE_ID||record.sourceId!==A29_SOURCE_ID||record.sourceType!=='RECONSTRUCTED_HISTORY'||record.accessMode!=='USER_IMPORT'||!((version===39||version===40||version===46)?[A29_CAPTURE_ADAPTER,A29_V2_CAPTURE_ADAPTER]:[A29_CAPTURE_ADAPTER]).includes(record.adapterVersion)||Object.keys(record.scope).join()!=='request'||advisoryHash(record.scope.request)!==advisoryHash(d.requests.capture)||typeof stored!=='string'||record.contentHash!==sha256(stored)||Date.parse(record.retrievedAt)>Date.parse(record.availableAt)||Date.parse(record.availableAt)>Date.parse(cutoff))throw new Error('ADVISORY_PROOF_INVALID');
     const metric=(():AdvisoryMetric=>{try{
       // Proof v39 dispatches by the record's exact adapter; the v1 archive path below is unchanged.
-      if(record.adapterVersion===A29_V2_CAPTURE_ADAPTER)return a29DeriveV2(d,record,stored,token,cutoff,version>=40);
+      if(record.adapterVersion===A29_V2_CAPTURE_ADAPTER)return a29DeriveV2(d,record,stored,token,cutoff,version===40);
       const raw=unpackA29Capture(stored),capture=a29BoundCapture(raw,token);
       if(advisoryHash(a29CaptureRequest(raw,capture.label))!==advisoryHash(d.requests.capture)||capture.label!==d.label||capture.maxClock!==record.retrievedAt)throw new Error('ADVISORY_PROOF_INVALID');
       return deriveA29Absorption(capture.freeze,capture.label,capture.receipts,cutoff,[A29_CAPTURE_ID]);
@@ -344,5 +366,57 @@ export function reconstructAdvisory(token:TokenRef,cutoff:string,baseline:Baseli
     if(metric.id!=='A29'||metric.evidenceIds.some(id=>id!==A29_CAPTURE_ID)||[...socialMetrics,...additionalMetrics].some(m=>m.evidenceIds.includes(A29_CAPTURE_ID)))throw new Error('ADVISORY_PROOF_INVALID');
     additionalMetrics.push(metric);
   }
-  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version>=40?'advisory-measurements-v39':version>=39?'advisory-measurements-v38':version>=38?'advisory-measurements-v37':version>=37?'advisory-measurements-v36':version>=36?'advisory-measurements-v35':version>=35?'advisory-measurements-v34':version>=34?'advisory-measurements-v33':version>=33?'advisory-measurements-v32':version>=32?'advisory-measurements-v31':version>=31?'advisory-measurements-v30':version>=30?'advisory-measurements-v29':version>=29?'advisory-measurements-v28':version>=28?'advisory-measurements-v27':version>=27?'advisory-measurements-v26':version>=26?'advisory-measurements-v25':version>=25?'advisory-measurements-v24':version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
+  if(version>=43&&proof.executorSemantic){
+    const record=executorOwned.find(e=>e.id===EXECUTOR_ID),raw=rawArtifacts[EXECUTOR_ID];
+    if(!record||record.sourceId!==EXECUTOR_SOURCE||record.accessMode!=='USER_IMPORT'||record.sourceType!=='MODEL_EXECUTION'||record.adapterVersion!==(version>=45?EXECUTOR_SEMANTIC_METHOD_V3:version===44?EXECUTOR_SEMANTIC_METHOD_V2:EXECUTOR_SEMANTIC_METHOD)||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||typeof raw!=='string'||Buffer.byteLength(raw)>EXECUTOR_SEMANTIC_LIMIT||record.contentHash!==sha256(raw)||JSON.stringify(record.scope)!==JSON.stringify({method:version>=45?EXECUTOR_SEMANTIC_METHOD_V3:version===44?EXECUTOR_SEMANTIC_METHOD_V2:EXECUTOR_SEMANTIC_METHOD}))throw Error('ADVISORY_PROOF_INVALID');
+    try{
+      if(JSON.parse(raw).method!==record.adapterVersion)throw Error('ADVISORY_PROOF_INVALID');
+      const decoded=validateExecutorSemantic(raw,token,record.availableAt),d=proof.executorSemantic;
+      const acquisitionRecord=executorOwned.find(e=>e.id===d.acquisitionId),acquisitionRaw=rawArtifacts[d.acquisitionId];
+      if(!acquisitionRecord||acquisitionRecord.sourceId!==EXECUTOR_SOURCE||acquisitionRecord.sourceType!=='SAMPLE_SCOPE'||acquisitionRecord.accessMode!=='USER_IMPORT'||acquisitionRecord.adapterVersion!==(version>=45?EXECUTOR_SEMANTIC_METHOD_V3:version===44?EXECUTOR_SEMANTIC_METHOD_V2:EXECUTOR_SEMANTIC_METHOD)||acquisitionRecord.retrievedAt!==acquisitionRecord.availableAt||Date.parse(acquisitionRecord.availableAt)>Date.parse(record.availableAt)||typeof acquisitionRaw!=='string'||acquisitionRecord.contentHash!==sha256(acquisitionRaw)||JSON.stringify(acquisitionRecord.scope)!==JSON.stringify({method:'executor-source-acquisition-v1'}))throw Error('ADVISORY_PROOF_INVALID');
+      const acquisition=JSON.parse(acquisitionRaw),sourceRead=JSON.parse(acquisition.social['social-acquisition-scope']).read;
+      delete sourceRead.qualifiedAt;
+      let bodies:ReturnType<typeof decodeExecutorSocialBodies>|undefined;
+      if(version>=44){
+        const r=executorOwned.find(e=>e.id===d.bodyCaptureId),bodyRaw=d.bodyCaptureId?rawArtifacts[d.bodyCaptureId]:undefined;
+        if(!r||r.sourceId!==EXECUTOR_SOURCE||r.sourceType!=='SAMPLE_SCOPE'||r.accessMode!=='USER_IMPORT'||r.adapterVersion!==EXECUTOR_SOCIAL_BODIES_METHOD||r.availableAt!==r.retrievedAt||Date.parse(r.availableAt)>Date.parse(record.availableAt)||typeof bodyRaw!=='string'||Buffer.byteLength(bodyRaw)>EXECUTOR_SOCIAL_BODIES_LIMIT||r.contentHash!==sha256(bodyRaw)||JSON.stringify(r.scope)!==JSON.stringify({method:EXECUTOR_SOCIAL_BODIES_METHOD}))throw Error('ADVISORY_PROOF_INVALID');
+        bodies=decodeExecutorSocialBodies(bodyRaw,token,r.availableAt);
+        if(Date.parse(bodies.availableAt)>Date.parse(r.availableAt)||advisoryHash(sourceRead)!==advisoryHash(bodies.originalRead)||advisoryHash(bodies.read)!==advisoryHash(JSON.parse(raw).read)||advisoryHash(bodies.bodyBySourceId)!==advisoryHash(JSON.parse(raw).bodyBySourceId))throw Error('ADVISORY_PROOF_INVALID');
+      }else if(advisoryHash(sourceRead)!==advisoryHash(JSON.parse(raw).read))throw Error('ADVISORY_PROOF_INVALID');
+      if(d.sourceIds.length!==decoded.read.sources.length)throw Error('ADVISORY_PROOF_INVALID');
+      for(const source of decoded.read.sources){
+        const id=`advisory-executor-source-${source.id}`,r=executorOwned.find(e=>e.id===id);
+        const expanded=!!bodies&&Object.hasOwn(bodies.bodyBySourceId,source.id);
+        if(!d.sourceIds.includes(id)||!r||r.sourceId!==(expanded?EXECUTOR_BODY_INPUT_SOURCE:EXECUTOR_INPUT_SOURCE)||r.sourceType!==(expanded?'COMPOSITE_SOURCE':'WEB_PAGE')||r.accessMode!==(expanded?'USER_IMPORT':'FREE_ACCOUNT')||r.adapterVersion!=='live-v1'||r.availableAt!==source.availableAt||r.retrievedAt!==source.availableAt||rawArtifacts[id]!==source.text||r.contentHash!==sha256(source.text)||JSON.stringify(r.scope)!==JSON.stringify({url:source.url,publishedAt:source.publishedAt,authorId:source.authorId,kind:source.kind}))throw Error('ADVISORY_PROOF_INVALID');
+      }
+      const allowed=['A06','A07','A08','A19','A20','A21','A22','A23','S07','S08','S09','S11','S12'];
+      const metrics=deriveExecutorSemanticMetrics(raw,token,cutoff,[EXECUTOR_ID],paidData);
+      if(new Set(metrics.map(m=>m.id)).size!==metrics.length||metrics.some(m=>!allowed.includes(m.id)||m.evidenceIds.length!==1||m.evidenceIds[0]!==EXECUTOR_ID))throw Error('ADVISORY_PROOF_INVALID');
+      for(const metric of metrics){const current=[...socialMetrics,...additionalMetrics].filter(m=>m.id===metric.id).at(-1);if(current?.quality!=='KNOWN')additionalMetrics.push(metric);}
+    }catch{throw Error('ADVISORY_PROOF_INVALID');}
+  }
+  if(version>=41&&proof.recordedCallers){
+    const record=recordedOwned[0]!,raw=rawArtifacts[record.id];
+    if(record.sourceId!==RECORDED_CALLER_SOURCE||record.accessMode!=='USER_IMPORT'||record.sourceType!=='HISTORICAL_RECEIPT'||record.adapterVersion!==RECORDED_CALLER_METHOD||evidence.filter(e=>e.id===record.id).length!==1||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||typeof raw!=='string'||Buffer.byteLength(raw)>RECORDED_CALLER_LIMIT||record.contentHash!==sha256(raw)||JSON.stringify(record.scope)!==JSON.stringify({method:RECORDED_CALLER_METHOD}))throw new Error('ADVISORY_PROOF_INVALID');
+    try{
+      const decoded=decodeRecordedCallerCapture(raw,token,cutoff);
+      if(Date.parse(decoded.availableAt)>Date.parse(record.availableAt))throw Error('ADVISORY_PROOF_INVALID');
+      const metrics=deriveRecordedCallerMetrics(raw,token,cutoff,[record.id]);
+      if(metrics.length!==4||new Set(metrics.map(m=>m.id)).size!==4||metrics.some(m=>!['S07','S09','A21','A23'].includes(m.id)||m.evidenceIds.length!==1||m.evidenceIds[0]!==record.id)||[...socialMetrics,...additionalMetrics].some(m=>m.evidenceIds.includes(record.id)))throw Error('ADVISORY_PROOF_INVALID');
+      additionalMetrics.push(...supersedingCallerMetrics([...socialMetrics,...additionalMetrics],metrics));
+    }catch{throw Error('ADVISORY_PROOF_INVALID');}
+  }
+  if(version>=42&&proof.recordedIncentives){
+    const record=incentiveOwned[0]!,raw=rawArtifacts[record.id];
+    if(record.sourceId!==RECORDED_INCENTIVE_SOURCE||record.accessMode!=='USER_IMPORT'||record.sourceType!=='HISTORICAL_RECEIPT'||record.adapterVersion!==RECORDED_INCENTIVE_METHOD||evidence.filter(e=>e.id===record.id).length!==1||record.availableAt!==record.retrievedAt||Date.parse(record.availableAt)>Date.parse(cutoff)||typeof raw!=='string'||Buffer.byteLength(raw)>RECORDED_INCENTIVE_LIMIT||record.contentHash!==sha256(raw)||JSON.stringify(record.scope)!==JSON.stringify({method:RECORDED_INCENTIVE_METHOD}))throw Error('ADVISORY_PROOF_INVALID');
+    try{
+      const decoded=decodeRecordedIncentiveCapture(raw,token,cutoff);
+      if(Date.parse(decoded.availableAt)>Date.parse(record.availableAt))throw Error('ADVISORY_PROOF_INVALID');
+      const metrics=deriveRecordedIncentiveMetrics(raw,token,cutoff,[record.id]);
+      if(metrics.length!==1||metrics[0]!.id!=='S08'||metrics[0]!.evidenceIds.length!==1||metrics[0]!.evidenceIds[0]!==record.id||[...socialMetrics,...additionalMetrics].some(m=>m.evidenceIds.includes(record.id)))throw Error('ADVISORY_PROOF_INVALID');
+      const current=[...socialMetrics,...additionalMetrics].filter(m=>m.id==='S08').at(-1);
+      if(metrics[0]!.quality==='KNOWN'&&current?.quality!=='KNOWN')additionalMetrics.push(...metrics);
+    }catch{throw Error('ADVISORY_PROOF_INVALID');}
+  }
+  return deriveAdvisory({token,cutoff,baseline,evidence,chain:chainData,market:marketData,socialMetrics,chainIds:chain.ids,marketIds:market.ids,paidIds:paid.ids,additionalMetrics,contextHistory:contextData,contextIds:context.ids,thesis,features,thesisEvidenceId:thesisRecord.id,method:version===46?'advisory-measurements-v45':version===45?'advisory-measurements-v44':version===44?'advisory-measurements-v43':version===43?'advisory-measurements-v42':version===42?'advisory-measurements-v41':version===41?'advisory-measurements-v40':version===40?'advisory-measurements-v39':version===39?'advisory-measurements-v38':version>=38?'advisory-measurements-v37':version>=37?'advisory-measurements-v36':version>=36?'advisory-measurements-v35':version>=35?'advisory-measurements-v34':version>=34?'advisory-measurements-v33':version>=33?'advisory-measurements-v32':version>=32?'advisory-measurements-v31':version>=31?'advisory-measurements-v30':version>=30?'advisory-measurements-v29':version>=29?'advisory-measurements-v28':version>=28?'advisory-measurements-v27':version>=27?'advisory-measurements-v26':version>=26?'advisory-measurements-v25':version>=25?'advisory-measurements-v24':version>=24?'advisory-measurements-v23':version>=21?'advisory-measurements-v22':version>=20?'advisory-measurements-v21':version>=19?'advisory-measurements-v20':version>=18?'advisory-measurements-v19':version>=17?'advisory-measurements-v18':version>=16?'advisory-measurements-v17':version>=15?'advisory-measurements-v16':version>=14?'advisory-measurements-v15':version>=13?'advisory-measurements-v14':'advisory-measurements-v13',supplements});
 }

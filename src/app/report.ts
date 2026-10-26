@@ -6,6 +6,10 @@ import type { AssessmentDetails, EntrySnapshot, ManagementSnapshot, Predicate } 
 type Snapshot=EntrySnapshot|ManagementSnapshot;
 export const cleanText=(value:unknown,max=400)=>String(value??'').replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
 const metricValueText=(value:unknown)=>{try{return cleanText(JSON.stringify(value)??String(value),220);}catch{return '[unavailable]';}};
+/** Rounded display of an exact {num,den} rational; the exact rational stays in JSON. */
+const rationalText=(r:{num:string;den:string},places=2)=>{const n=BigInt(r.num),d=BigInt(r.den),neg=(n<0n)!==(d<0n),a=n<0n?-n:n,b=d<0n?-d:d,scale=10n**BigInt(places),q=(a*scale*2n+b)/(2n*b),f=(q%scale).toString().padStart(places,'0');return `${neg&&q>0n?'-':''}${(q/scale).toLocaleString('en-US')}${places?`.${f}`:''}`;};
+/** Exact decimal quantity from output-mint atoms and their decimals. */
+const atomsText=(atoms:string,decimals:number)=>{const s=atoms.padStart(decimals+1,'0');return decimals?`${s.slice(0,-decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/,''):s;};
 const names:Record<string,string>={'ID-01':'Token identity','CTX-01':'Your trade settings','CAP-01':'Chain and venue coverage','SEC-01':'Supply authority','SEC-02':'Transfer restrictions','SEC-03':'Program controls','SEC-04':'Transfer fees','SEC-05':'Venue provenance','LIQ-01':'Liquidity withdrawal exposure','EXE-01':'Entry and acquired-size exit','EXE-02':'Trade friction and costs','EXE-03':'Read-only simulation','OWN-01':'Holder coverage','OWN-02':'Owner/control concentration','MKT-01':'Valuation and scoped activity','NAR-01':'Narrative and game','NAR-02':'Origin and catalyst','NAR-03':'Explainable thesis','CAN-01':'Competing representations','CAN-02':'Observed leadership','ATT-01':'Qualified attention sample','ATT-02':'Attention or community growth','SOC-01':'Social identity binding','SOC-02':'Source integrity','SOC-03':'Independent participation','DAT-01':'Freshness and completeness','DAT-02':'Semantic qualification','DAT-03':'Conflicts','ADV-01':'Ownership patterns','ADV-02':'Flow patterns','ADV-03':'Attention context','ADV-04':'Actor context','ADV-05':'Market and lifecycle context','MG-01':'Frozen baseline','MG-02':'Current integrity','MG-03':'Exit feasibility','MG-04':'Thesis evidence','MG-05':'Age and cap context','MG-06':'Thesis support','MG-07':'Invalidation clear','MG-08':'Catalyst','MG-09':'On-chain traction','MG-10':'External traction','MG-11':'Warnings','MG-12':'Realization trigger','MG-13':'Position and exit plan','MG-14':'Holding horizon','MG-15':'Proposal feasibility'};
 export function predicateRefs(p:Predicate):string[]{return 'feature' in p?[p.feature]:p.children.flatMap(predicateRefs);}
 function describePredicate(p:Predicate):string {
@@ -76,6 +80,39 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
   if(snapshot.checklistKind==='ENTRY')for(const pillar of ['ONCHAIN','ATTENTION','SOCIAL','SHARED'] as const){const checks=snapshot.result.checks.filter(c=>c.pillar===pillar&&c.required);lines.push(`${pillar.toLowerCase()} pillar: ${checks.filter(c=>c.status==='PASS').length} supported, ${checks.filter(c=>c.status==='FAIL').length} contradicted, ${checks.filter(c=>c.status==='UNKNOWN').length} unknown.`);}
   const market=snapshot.market?.pairs.find(p=>p.mintSide==='base'&&p.priceUsd!==null);
   if(market)lines.push(`Market observation: $${market.priceUsd}/token; displayed liquidity $${market.liquidityUsd??'unknown'}; rolling 24h volume $${market.volume24hUsd??'unknown'}. This is not executable depth.`);
+  const execLiq=details?.executableLiquidity;
+  if(execLiq){
+    const a=execLiq.aggregate,f=execLiq.freshness,routes=execLiq.routes.length,known=execLiq.routes.filter(r=>r.outcome.status==='KNOWN').length;
+    const asOf=`as of ${execLiq.cutoff}${f.bankClockAt?`; on-chain bank clock ${f.bankClockAt}`:''}${f.usdObservedAt?`; USD references observed ${f.usdObservedAt}`:''}${f.expiresAt?`; expires ${f.expiresAt}`:''}; ${f.freshAtCutoff?'fresh':'not fresh'} at the cutoff`;
+    if(a.status==='PRIMARY_KNOWN'){
+      lines.push(`Executable sell liquidity: ~$${rationalText(a.netUsd)} quote-net cash output across ${routes} enumerated direct route${routes===1?'':'s'}, each at the approved ${execLiq.impactBps} bps fee-inclusive average price impact versus its own pre-trade on-chain price; reference notional ~$${rationalText(a.referenceNotionalUsd)} for ${a.chosenInputSumAtoms} token atoms sold${a.weightedImpactBps?`; weighted impact ~${rationalText(a.weightedImpactBps,1)} bps`:''}; ${asOf}.`);
+      for(const x of a.assets)lines.push(`  ${x.cashAsset}: ${atomsText(x.netAtoms,x.decimals)} net (~$${rationalText(x.netUsd)}${x.usdPerUnit?` at recorded reference ~$${rationalText(x.usdPerUnit,4)}/${x.cashAsset}`:''}) from ${x.routePools.length} route${x.routePools.length===1?'':'s'}.`);
+    }else{
+      lines.push(`Executable sell liquidity: not a complete total — ${known}/${routes} enumerated direct cash routes known at the ${execLiq.impactBps} bps fee-inclusive average-impact limit; blockers: ${a.blockers.map(b=>`${b.code}${b.subjects.length?` (${b.subjects.length})`:''}`).join(', ')}; ${asOf}.`);
+      for(const x of a.knownSubtotals)lines.push(`  Known-route subtotal only, not a completion: ${x.cashAsset} ${atomsText(x.knownSubtotalAtoms,x.decimals)} net from ${x.knownPools.length} route${x.knownPools.length===1?'':'s'}.`);
+    }
+    const phys=execLiq.routes.flatMap(r=>r.outcome.status==='KNOWN'?[{asset:String(r.cashAsset),v:r.outcome.facts.vaults.output,d:r.outcome.facts.decimals.output}]:[]);
+    if(phys.length){
+      const byVault=new Map<string,{asset:string;mint:string;d:number;atoms:string}>(),conflictVaults=new Set<string>();
+      for(const p of phys){const addr=String(p.v.address),cur={asset:p.asset,mint:String(p.v.mint),d:p.d,atoms:String(p.v.amountAtoms)},prev=byVault.get(addr);if(!prev)byVault.set(addr,cur);else if(prev.asset!==cur.asset||prev.mint!==cur.mint||prev.d!==cur.d||prev.atoms!==cur.atoms)conflictVaults.add(addr);}
+      const byMint=new Map<string,{asset:string;d:number;atoms:bigint;vaults:number;conflict:boolean}>();
+      for(const [addr,x] of byVault){const c=conflictVaults.has(addr),m=byMint.get(x.mint);if(!m)byMint.set(x.mint,{asset:x.asset,d:x.d,atoms:c?0n:BigInt(x.atoms),vaults:1,conflict:c});else{m.vaults++;if(c||m.asset!==x.asset||m.d!==x.d)m.conflict=true;else m.atoms+=BigInt(x.atoms);}}
+      const refs=execLiq.usd?.status==='OBSERVED'?execLiq.usd.refs:[];
+      let total:{num:bigint;den:bigint}|null={num:0n,den:1n};
+      lines.push(`  Physical output-vault balances (separate context, not sellable capacity): from ${known}/${routes} enumerated routes known${known<routes?' — partial, not complete':''}; ${byVault.size} distinct output vault${byVault.size===1?'':'s'} after deduplicating shared vault addresses; recorded raw balances include accrued fees and dust; wrapped SOL counts the recorded token amount only, not rent or surplus lamports; ${asOf}.`);
+      for(const [mint,m] of byMint){
+        if(m.conflict){total=null;lines.push(`  Physical ${m.asset}: unavailable — conflicting duplicate vault metadata across ${m.vaults} vault${m.vaults===1?'':'s'}; no sum shown.`);continue;}
+        const ref=refs.find(r=>r.mint===mint);
+        if(ref&&ref.status==='KNOWN'&&ref.asset===m.asset){
+          const num=m.atoms*BigInt(ref.priceUsd.num),den=BigInt(ref.priceUsd.den)*10n**BigInt(m.d);
+          if(total)total={num:total.num*den+num*total.den,den:total.den*den};
+          lines.push(`  Physical ${m.asset}: ${atomsText(m.atoms.toString(),m.d)} in ${m.vaults} vault${m.vaults===1?'':'s'} (~$${rationalText({num:num.toString(),den:den.toString()})} at recorded reference ~$${rationalText(ref.priceUsd,4)}/${m.asset}).`);
+        }else{total=null;lines.push(`  Physical ${m.asset}: ${atomsText(m.atoms.toString(),m.d)} in ${m.vaults} vault${m.vaults===1?'':'s'}; USD reference unavailable.`);}
+      }
+      lines.push(total?`  Physical reference-USD total, known-route vaults only: ~$${rationalText({num:total.num.toString(),den:total.den.toString()})}${known<routes?' (partial coverage)':''}; not sellable capacity.`:'  No physical reference-USD total: a needed USD reference or vault binding is unavailable.');
+    }
+    lines.push('  Scope: direct enumerated PumpSwap, Meteora DLMM and DAMM v2 pools selling into WSOL/USDC/USDT/WBTC; only quoted trading fees are deducted, network fees, rent, account setup, priority fees and unwrapping are not included. The sale size is hypothetical, not wallet availability; physical output-vault balances are separate context, not capacity. Dollar figures are rounded; exact rationals are in JSON. This indicator is not an entry check.');
+  }
   if(snapshot.collection)lines.push(`Sources: RPC ${snapshot.collection.rpc.state}${snapshot.collection.rpc.code?`/${snapshot.collection.rpc.code}`:''}; DEX ${snapshot.collection.dex.state}; web ${snapshot.collection.web.state}${snapshot.collection.web.code?`/${snapshot.collection.web.code}`:''}.`);
   const recovered=snapshot.evidence.filter(e=>e.scope.method==='tinyfish-live-dex-json-v1').map(e=>e.id);
   if(details?.advisory){
@@ -84,6 +121,18 @@ export function renderSnapshot(snapshot:Snapshot,options:{details?:AssessmentDet
     for(const group of a.groups){
       lines.push(`  ${group.checkId}: ${group.known}/${group.total} measured; ${group.unresolved.length} unresolved.`);
       for(const id of group.unresolved){const metric=a.metrics.find(m=>m.id===id)!;lines.push(`    ${id}: ${cleanText(metric.reasonCode)}.`);}
+    }
+    if(snapshot.evidence.some(e=>e.id==='advisory-executor-capture'&&e.accessMode==='USER_IMPORT'))lines.push('Current advisory executor review (USER_IMPORT): fresh bounded source bodies, classified by separate Codex and Claude Code CLI executions. Operator-recorded execution provenance; entry judgments are excluded, and unresolved fields stay unknown.');
+    if(snapshot.evidence.some(e=>e.id==='advisory-executor-bodies'))lines.push('  Expanded post text is provider-reported FxTwitter text. Official X receipts corroborate identity, time, revision and visible prefix; they do not authenticate the unseen suffix. Original rendered context is retained separately from the selected own body.');
+    if(snapshot.evidence.some(e=>e.id==='advisory-recorded-incentives-capture'&&e.accessMode==='USER_IMPORT')){
+      const metric=a.metrics.find(m=>m.id==='S08');
+      lines.push(`Recorded historical public incentives (USER_IMPORT): S08 ${metric?.quality??'MISSING'}. Prior captured source bodies and operator-recorded independent classifications; hidden compensation and activity outside this sample remain unmeasured.`);
+    }
+    const recordedCallers=snapshot.evidence.find(e=>e.id==='advisory-recorded-callers-capture'&&e.accessMode==='USER_IMPORT');
+    if(recordedCallers){
+      const measured=a.metrics.filter(m=>m.evidenceIds.includes(recordedCallers.id));
+      lines.push(`Recorded historical caller review (USER_IMPORT): ${measured.map(m=>`${m.id} ${m.quality}`).join('; ')||'no qualified measurements'}.`,
+        '  Prior captured source bodies, classified in separate Codex and Claude Code executions; not a current platform-wide activity measure. Execution provenance is operator-recorded.');
     }
     const absorptionCapture=snapshot.evidence.find(e=>e.id==='advisory-a29-capture'&&e.accessMode==='USER_IMPORT');
     if(absorptionCapture){

@@ -48,6 +48,43 @@ const fetcher:typeof fetch=async(input,init)=>{
 const collect=(semanticEnabled=false)=>collectLiveToken(token,{profile:starterProfile(),semanticEnabled,advisoryEnabled:true,fetcher,now:()=>at});
 const rehash=(bundle:Awaited<ReturnType<typeof collect>>,id:string)=>{bundle.evidence.find(e=>e.id===id)!.contentHash=createHash('sha256').update(bundle.rawArtifacts[id]!).digest('hex');};
 
+test('advisory collection keeps target-base history when a higher-liquidity child quotes the target',async()=>{
+  const child=encodeSolanaAddress(Buffer.alloc(32,31)),otherBase=encodeSolanaAddress(Buffer.alloc(32,32));
+  const seen:string[]=[],fixture:typeof fetch=async(input,init)=>{
+    const url=String(input);seen.push(url);
+    if(url.includes('/token-pairs/')){
+      const original=await (await fetcher(input,init)).json() as unknown[];
+      return new Response(JSON.stringify([{chainId:'solana',dexId:'pumpswap',pairAddress:child,baseToken:{address:otherBase},quoteToken:{address:token.address},priceUsd:'10',liquidity:{usd:1000000}},...original]));
+    }
+    return fetcher(input,init);
+  };
+  const b=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:fixture,now:()=>at});
+  assert.equal(b.market!.pairs[0]!.pairAddress,child);assert.equal(b.market!.pairs[0]!.priceUsd,null);
+  const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);
+  assert.equal(proof.pool,pool);assert.deepEqual(proof.addresses,[token.address,pool]);
+  assert.ok(seen.some(url=>url.includes(`/pools/${pool}/ohlcv/`)));
+  assert.ok(!seen.some(url=>url.includes(`/pools/${child}/`)));
+  assert.equal(b.details!.advisory!.metrics.find(m=>m.id==='C08')!.quality,'KNOWN');
+  assert.deepEqual(reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features),b.details!.advisory);
+  const dir=mkdtempSync(join(tmpdir(),'advisory-pair-side-')),file=join(dir,'run.sqlite');let id:string;
+  try{
+    const s=new Service(file);try{const saved=s.analyzeLive(b);id=saved.id;assert.deepEqual(s.replay(id),saved);}finally{s.close();}
+    const reopened=new Service(file);try{assert.deepEqual(reopened.replay(id),reopened.show(id));}finally{reopened.close();}
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('advisory collection retains a target-quote pool when no target-base pair exists',async()=>{
+  const otherBase=encodeSolanaAddress(Buffer.alloc(32,32));
+  const fixture:typeof fetch=async(input,init)=>{
+    if(String(input).includes('/token-pairs/'))return new Response(JSON.stringify([{chainId:'solana',dexId:'pumpswap',pairAddress:pool,baseToken:{address:otherBase},quoteToken:{address:token.address},liquidity:{usd:1000}}]));
+    return fetcher(input,init);
+  };
+  const b=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,fetcher:fixture,now:()=>at});
+  const proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);
+  assert.equal(proof.pool,pool);assert.deepEqual(proof.addresses,[token.address,pool]);
+  assert.deepEqual(reconstructAdvisory(token,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features),b.details!.advisory);
+});
+
 import { a29LiveFetcher,buildA29Capture } from './a29-fixtures.js';
 
 test('opt-in advisory history persists 50 truthful metric states and freezes distinct policy/reopen replay',async()=>{
