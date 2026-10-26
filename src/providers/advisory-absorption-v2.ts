@@ -6,7 +6,7 @@ import {quoteAdmission,validateVaultData} from './advisory-exit-capacity-custom.
 import {demandTransactionRequest,unpackDemandReceipt} from './advisory-demand-windows.js';
 import {decodeRawMintControls,SOLANA_MAINNET_GENESIS} from './solana.js';
 import {decodeA29Whirlpool,a29FxThreshold} from './a29-fx-whirlpool.js';
-import {decodeA29TradesV2,bindA29TradeAccountV2} from './advisory-absorption-v2-owner.js';
+import {decodeA29TradesV2,bindA29TradeAccountV2,decodeA29TradesV3,bindA29TradeAccountV3} from './advisory-absorption-v2-owner.js';
 import {canonicalJson,fmt,rank,endpointData,eligibleBuyer,info,populationState,A29Gap,type Entry} from './advisory-absorption.js';
 import type {AdvisoryMetric} from '../domain/advisory-contracts.js';
 import {a29DataSchemaV2} from '../domain/advisory-contracts.js';
@@ -261,7 +261,7 @@ function tapeV2(e:EntryV2,slot0:number,slot1:number,t0:number,L:number,r:A29V2Re
  return{selected,firstAt};
 }
 
-function measure(e:EntryV2,scope:Record<string,any>,r:A29V2Receipts,cutoff:string,used:Set<string>,onInterval:(value:Interval)=>void){
+function measure(e:EntryV2,scope:Record<string,any>,r:A29V2Receipts,cutoff:string,used:Set<string>,onInterval:(value:Interval)=>void,a29Recovery=false){
  const z=e.endpoint0,e0=endpointV2('a29-e0',e,r,cutoff,true);
  if(e0.slot!==z.bankSlot||e0.people.slot!==z.populationSlot||String(e0.state.supply)!==z.supplyAtomic||String(e0.people.total)!==z.totalAtomic||e0.people.accounts!==z.accounts||e0.time*1000!==Date.parse(z.chainTime)||String(e0.state.B)!==z.baseVaultAtomic||String(e0.state.P)!==z.quoteVaultAtomic)fail('A29_V2_FREEZE_ENDPOINT0_MISMATCH');
  if(e0.state.threshold!==e.threshold||(e0.state.fx?.sqrtPriceX64??null)!==e.fxSqrt)fail('A29_V2_FREEZE_THRESHOLD_MISMATCH');
@@ -286,7 +286,7 @@ function measure(e:EntryV2,scope:Record<string,any>,r:A29V2Receipts,cutoff:strin
   if(v===null)missing('A29_V2_TRANSACTION_ABSENT');
   if(!object(v)||v.slot!==row.slot||v.blockTime!==row.blockTime||!object(v.meta)||v.meta.err!==null)fail('A29_V2_TRANSACTION_MISMATCH');
   let decoded:ReturnType<typeof decodeA29TradesV2>;
-  try{decoded=decodeA29TradesV2(v,{signature:row.signature,slot:row.slot,at:iso(row.blockTime as number)},e.pool,e1.state.pool,e1.slot,tx.retrieved,TOKENKEG,e.quoteDecimals);}
+  try{decoded=(a29Recovery?decodeA29TradesV3:decodeA29TradesV2)(v,{signature:row.signature,slot:row.slot,at:iso(row.blockTime as number)},e.pool,e1.state.pool,e1.slot,tx.retrieved,TOKENKEG,e.quoteDecimals);}
   catch(error){if(error instanceof Error&&['A29_TRANSACTION_SIGNATURE','A29_V2_TRANSACTION_SIGNATURE'].includes(error.message))throw error;missing('A29_V2_TRADE_UNSUPPORTED');}
   const legs=new Set<number>(),cpi=(decoded as unknown as Record<string,unknown>).cpiAuthorizedAccounts;
   for(const trade of decoded.trades){
@@ -297,7 +297,7 @@ function measure(e:EntryV2,scope:Record<string,any>,r:A29V2Receipts,cutoff:strin
    }
    if(window!=='measured')continue;
    let bound:ReturnType<typeof bindA29TradeAccountV2>;
-   try{bound=bindA29TradeAccountV2(decoded.projected,trade,e.mint,e.baseVault);}catch{missing('A29_V2_OWNER_BINDING_UNSUPPORTED');}
+   try{bound=(a29Recovery?bindA29TradeAccountV3:bindA29TradeAccountV2)(decoded.projected,trade,e.mint,e.baseVault);}catch{missing('A29_V2_OWNER_BINDING_UNSUPPORTED');}
    // Any measured ambiguity or reused leg withholds the whole vector.
    if(bound.ambiguous)missing('A29_V2_OWNER_AMBIGUOUS');
    if(legs.has(bound.legPosition))missing('A29_V2_OWNER_LEG_DUPLICATE');
@@ -332,7 +332,7 @@ function measure(e:EntryV2,scope:Record<string,any>,r:A29V2Receipts,cutoff:strin
 }
 
 /** A29 v2 metric: KNOWN only when all five components resolve; otherwise MISSING or TRUNCATED with a null vector. Malformed sources throw. */
-export function deriveA29AbsorptionV2(freeze:unknown,label:string,receipts:A29V2Receipts,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
+export function deriveA29AbsorptionV2(freeze:unknown,label:string,receipts:A29V2Receipts,cutoff:string,evidenceIds:string[],a29Recovery=false):AdvisoryMetric{
  if(!instant(cutoff))fail('A29_V2_CUTOFF');
  const e=entryV2(freeze,label);
  const frame={method:A29_DATA_METHOD_V2,freezeKind:A29_FREEZE_KIND_V2,freezeSha256:createHash('sha256').update(canonicalJson(freeze)).digest('hex'),token:{chain:'solana',address:e.mint},label,
@@ -350,7 +350,7 @@ export function deriveA29AbsorptionV2(freeze:unknown,label:string,receipts:A29V2
  const used=new Set<string>();consumed.set(receipts,used);
  let vector:unknown;
  try{
-  vector=measure(e,freeze as Record<string,any>,receipts,cutoff,used,value=>{interval=value;});
+  vector=measure(e,freeze as Record<string,any>,receipts,cutoff,used,value=>{interval=value;},a29Recovery);
   if(ids.length!==used.size||ids.some(id=>!used.has(id)))fail('A29_V2_RECEIPT_UNUSED');
  }
  catch(error){

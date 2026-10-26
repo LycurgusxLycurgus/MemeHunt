@@ -46,7 +46,7 @@ const appendCompressed=(stored:string)=>{const a=JSON.parse(stored);a.data=Buffe
 async function exerciseImportedCapture(c:Capture){
   const decoded=decodeA29Capture(c.raw),bundle=await collect({a29Capture:c.raw,address:c.token.address,now:c.after});
   const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),record=captureRecord(bundle),stored=bundle.rawArtifacts[A29_CAPTURE_ID]!;
-  assert.equal(proof.method,'advisory-provenance-v39');
+  assert.equal(proof.method,'advisory-provenance-v40');
   assert.deepEqual(proof.a29,{requests:{capture:a29CaptureRequest(c.raw,decoded.label)},artifactIds:{capture:A29_CAPTURE_ID},label:decoded.label});
   assert.deepEqual([record.sourceId,record.sourceType,record.accessMode,record.adapterVersion,record.retrievedAt,record.availableAt,record.contentHash,record.scope],[A29_SOURCE_ID,'RECONSTRUCTED_HISTORY','USER_IMPORT',A29_CAPTURE_ADAPTER,c.latestClock,c.after,sha(stored),{request:proof.a29.requests.capture}]);
   assert.deepEqual([unpackA29Capture(stored),decoded.maxClock],[c.raw,c.latestClock]);
@@ -90,12 +90,12 @@ async function exerciseImportedCapture(c:Capture){
 
 test('fresh advisory proof v38 carries an explicit null a29 key, facts v37 and policy v35, and replays without any A29 import',async()=>{
   const bundle=await collect(),proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,a29=facts.metrics.find(m=>m.id==='A29')!;
-  assert.deepEqual([proof.method,proof.saturation,proof.a29,facts.method],['advisory-provenance-v39',null,null,'advisory-measurements-v38']);
+  assert.deepEqual([proof.method,proof.saturation,proof.a29,facts.method],['advisory-provenance-v40',null,null,'advisory-measurements-v39']);
   assert.notEqual(a29.quality,'KNOWN');assert.notEqual((a29.data as {method?:string}|null)?.method,'prospective-same-slot-absorption-v1');
   assert.ok(!bundle.evidence.some(e=>e.sourceId===A29_SOURCE_ID||e.adapterVersion===A29_CAPTURE_ADAPTER||e.id.startsWith('advisory-a29-')));
   await withService('a29-fresh-',(service,file)=>{
     const saved=service.analyzeLive(bundle);assert.deepEqual(service.replay(saved.id),saved);
-    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v36');}finally{db.close();}
+    const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v37');}finally{db.close();}
   });
 });
 

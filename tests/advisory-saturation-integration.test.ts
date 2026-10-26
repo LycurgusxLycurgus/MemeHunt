@@ -369,12 +369,12 @@ const rehash = (b: Any) => { for (const e of b.evidence) e.contentHash = sha(b.r
 test('live proof37 carries the raw capture, reconstructs the full vector and survives Service save/reopen/replay', async () => {
   const raw = JSON.stringify(capture()), bundle: Any = await live(raw);
   const proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']);
-  assert.deepEqual([proof.method, proof.saturation, proof.a29], ['advisory-provenance-v39', { captureId: CAPTURE }, null]);
+  assert.deepEqual([proof.method, proof.saturation, proof.a29], ['advisory-provenance-v40', { captureId: CAPTURE }, null]);
   assert.equal(bundle.rawArtifacts[CAPTURE], raw);
   const ev = bundle.evidence.find((e: Any) => e.id === CAPTURE);
   assert.deepEqual([ev.scope, ev.contentHash], [{ method: A24_CAPTURE_METHOD }, sha(raw)]);
   for (const s of ['advisory-saturation', 'USER_IMPORT', 'HISTORICAL_RECEIPT']) assert.ok(JSON.stringify(ev).includes(s), s);
-  assert.equal(bundle.details.advisory.method, 'advisory-measurements-v38');
+  assert.equal(bundle.details.advisory.method, 'advisory-measurements-v39');
   const metric = a24Of(bundle.details.advisory.metrics);
   assert.equal(metric.quality, 'KNOWN');
   assert.deepEqual(metric.data, deriveA24FromCapture(raw, target, CUT, RUBRIC, metric.data.evidenceIds));
@@ -547,7 +547,7 @@ test('a constructed ~15 MB holder population pair is admitted through v2 inside 
 test('fresh live proof binds the v2 adapter, scope and decoded method; replay rejects any disagreement or orphan', async () => {
   const raw = JSON.stringify(asV2()), bundle: Any = await live(raw);
   const proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']), ev = bundle.evidence.find((e: Any) => e.id === CAPTURE);
-  assert.deepEqual([proof.method, proof.saturation, bundle.rawArtifacts[CAPTURE], ev.adapterVersion, ev.scope, ev.contentHash], ['advisory-provenance-v39', { captureId: CAPTURE }, raw, V2, { method: V2 }, sha(raw)]);
+  assert.deepEqual([proof.method, proof.saturation, bundle.rawArtifacts[CAPTURE], ev.adapterVersion, ev.scope, ev.contentHash], ['advisory-provenance-v40', { captureId: CAPTURE }, raw, V2, { method: V2 }, sha(raw)]);
   const metric = a24Of(bundle.details.advisory.metrics);
   assert.deepEqual([metric.quality, metric.data], ['KNOWN', deriveA24FromCapture(raw, target, CUT, RUBRIC, [CAPTURE])]);
   assert.equal(sourceVersion(metric.data), V2);

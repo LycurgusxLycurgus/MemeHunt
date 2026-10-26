@@ -27,16 +27,16 @@ async function withService(name:string,run:(service:Service,file:string)=>void|P
   try{await run(service,file);}finally{service.close();rmSync(directory,{recursive:true,force:true});}
 }
 
-test('fresh proof v39 keeps the exact v1 dispatch, archive and native units',async()=>{
+test('fresh proof v40 keeps the exact v1 dispatch, archive and native units',async()=>{
   const c=await buildA29Capture(),b=await collect(c.raw,c),proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),m=metric(b);
-  assert.deepEqual([proof.method,b.details!.advisory!.method,rec(b).adapterVersion,proof.a29.requests.capture.method],['advisory-provenance-v39','advisory-measurements-v38',A29_CAPTURE_ADAPTER,'a29-capture-import-v1']);
+  assert.deepEqual([proof.method,b.details!.advisory!.method,rec(b).adapterVersion,proof.a29.requests.capture.method],['advisory-provenance-v40','advisory-measurements-v39',A29_CAPTURE_ADAPTER,'a29-capture-import-v1']);
   assert.equal(m.quality,'KNOWN');assert.ok(a29DataSchema.safeParse(m.data).success);assert.equal((m.data as any).vector.units.quoteMint,WSOL);
   await withService('a29-v1-fresh-',service=>{const saved=service.analyzeLive(b);assert.deepEqual(service.replay(saved.id),saved);});
 });
 
 test('a SYNTHETIC v2 WSOL packet derives KNOWN zero activity via exact v2 dispatch and survives forgeries, Service and reopen',async()=>{
   const c=await buildA29CaptureV2(),b=await collect(c.raw,c),proof=JSON.parse(b.rawArtifacts['advisory-derivation']!),r=rec(b);
-  assert.deepEqual([proof.method,r.adapterVersion,r.sourceType,r.accessMode,r.retrievedAt,r.availableAt,b.rawArtifacts[A29_CAPTURE_ID],r.contentHash],['advisory-provenance-v39',A29_V2_CAPTURE_ADAPTER,'RECONSTRUCTED_HISTORY','USER_IMPORT',c.latestClock,c.after,c.raw,sha(c.raw)]);
+  assert.deepEqual([proof.method,r.adapterVersion,r.sourceType,r.accessMode,r.retrievedAt,r.availableAt,b.rawArtifacts[A29_CAPTURE_ID],r.contentHash],['advisory-provenance-v40',A29_V2_CAPTURE_ADAPTER,'RECONSTRUCTED_HISTORY','USER_IMPORT',c.latestClock,c.after,c.raw,sha(c.raw)]);
   assert.deepEqual(proof.a29.requests.capture,a29CaptureRequestV2(c.raw,c.label));
   const x=decodeA29CaptureV2(c.raw),m=metric(b),d=m.data as any;
   assert.deepEqual(m,deriveA29AbsorptionV2(x.freeze,x.label,x.receipts,b.cutoff,[A29_CAPTURE_ID]));

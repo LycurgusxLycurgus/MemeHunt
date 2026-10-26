@@ -64,7 +64,7 @@ export function decodePinnedWindowEvent(payload:string,accounting=false,modern=f
  return event;
 }
 
-export type QuoteAccounting={method:'pumpswap-event-fee-exclusive-v1'|'pumpswap-event-fee-exclusive-v2'|'pumpswap-event-fee-exclusive-v3';basis:'BUY_CORE'|'EXACT_QUOTE_BUY_GROSS'|'SELL_CORE';eventLayout:'SDK_PREFIX'|'CURRENT_APPENDIX'|'TRANSFER_FEE_APPENDIX'|'HOLDER_APPENDIX';eventQuoteAtomic:string;userQuoteAtomic:string;coreQuoteAtomic:string;grossQuoteAtomic:string;lpFeeAtomic:string;protocolFeeAtomic:string;creatorFeeAtomic:string;totalFeeAtomic:string;buybackFeeAtomic:string;cashbackAtomic:string;holderRewardsBps:string|null;holderRewardsAtomic:string|null;creatorFeeUnclaimedAtomic:string|null;quoteTransferFeeAtomic?:string|null;bookedQuoteAtomic?:string;walletQuoteAtomic?:string|null;budgetRemainderAtomic?:string|null;route?:QuoteRoute|null;transferWitness?:'NONE'|'TRANSFER_CHECKED'|'TRANSFER_CHECKED_WITH_FEE'};
+export type QuoteAccounting={method:'pumpswap-event-fee-exclusive-v1'|'pumpswap-event-fee-exclusive-v2'|'pumpswap-event-fee-exclusive-v3'|'pumpswap-event-fee-exclusive-v4';basis:'BUY_CORE'|'EXACT_QUOTE_BUY_GROSS'|'SELL_CORE';eventLayout:'SDK_PREFIX'|'CURRENT_APPENDIX'|'TRANSFER_FEE_APPENDIX'|'HOLDER_APPENDIX';eventQuoteAtomic:string;userQuoteAtomic:string;coreQuoteAtomic:string;grossQuoteAtomic:string;lpFeeAtomic:string;protocolFeeAtomic:string;creatorFeeAtomic:string;totalFeeAtomic:string;buybackFeeAtomic:string;cashbackAtomic:string;holderRewardsBps:string|null;holderRewardsAtomic:string|null;creatorFeeUnclaimedAtomic:string|null;quoteTransferFeeAtomic?:string|null;bookedQuoteAtomic?:string;walletQuoteAtomic?:string|null;budgetRemainderAtomic?:string|null;budgetAtomic?:string|null;route?:QuoteRoute|null;transferWitness?:'NONE'|'TRANSFER_CHECKED'|'TRANSFER_CHECKED_WITH_FEE'};
 /** Proof36 position of one multi_hop_swap PumpSwap hop event: its index among all route hops and the route hop count. */
 export type QuoteRoute={hop:number;hops:number};
 const U64_MAX=18446744073709551615n;
@@ -77,7 +77,7 @@ const U64_MAX=18446744073709551615n;
  * protocol only on the first BUY / last SELL hop and LP, creator and holder only on the target hop; a tax is admitted only on
  * the first BUY / last SELL hop. Cashback is a direct v1 charge only, and holder rewards must duplicate the creator charge.
  */
-function reconcileExtendedQuote(name:string,d:any,route?:QuoteRoute):QuoteAccounting{
+function reconcileExtendedQuote(name:string,d:any,route?:QuoteRoute,budgetExact=false):QuoteAccounting{
  const fail=():never=>{throw new Error('ADVISORY_TRADE_FEE_BINDING');};
  const amount=(value:unknown):bigint=>{const s=String(value);if(!/^(0|[1-9]\d{0,19})$/.test(s)||BigInt(s)>U64_MAX)fail();return BigInt(s);};
  const routeBuy=name==='multi_hop_swap',buy=['buy','buy_v2'].includes(name),exact=['buy_exact_quote_in','buy_exact_quote_in_v2'].includes(name),sell=['sell','sell_v2'].includes(name),layout=d.eventLayout;
@@ -92,6 +92,15 @@ function reconcileExtendedQuote(name:string,d:any,route?:QuoteRoute):QuoteAccoun
  const holderPresent=holderBps!==null&&holderBps!==0n||holder!==null&&holder!==0n;
  if(buyback>protocol||fees>U64_MAX||holderPresent&&(holder!==creator||holderBps!==creatorBps))fail();
  if((cashback!==0n||cashbackBps!==0n)&&(route||!['buy','buy_exact_quote_in','sell'].includes(name)))fail();
+ // A29 recovery v4 only: a direct untaxed cashback-free exact-in books core+event fees within the declared budget Q, and the remainder Q-booked is never flow.
+ // The pinned SDK buyQuoteInput/fee() ceil integer path (dist SHA-256 1ede6b4184a808cf986cd20a89d7c7487c4623054065238c5b9656f6b7309547) must reproduce U and every fee exactly; it is a consistency check, not an on-chain theorem.
+ if(budgetExact&&exact&&!route&&tax===0n&&cashback===0n&&cashbackBps===0n&&quote>user+fees){
+  const ceil=(x:bigint,bps:bigint)=>(x*bps+9999n)/10000n,creatorOn=d.coinCreator?.toBase58?.()!==PublicKey.default.toBase58(),cBps=creatorOn?creatorBps:0n;
+  let e=quote*10000n/(10000n+lpBps+protocolBps+cBps);const over=e+ceil(e,lpBps)+ceil(e,protocolBps)+ceil(e,cBps);if(over>quote)e-=over-quote;
+  const booked=user+fees;
+  if(amount(d.maxQuoteAmountIn)!==quote||lpLeg!==user+lp||booked>quote||user<=0n||user!==e||lp!==ceil(e,lpBps)||protocol!==ceil(e,protocolBps)||creator!==ceil(e,cBps))fail();
+  return {method:'pumpswap-event-fee-exclusive-v4',basis:'EXACT_QUOTE_BUY_GROSS',eventLayout:layout,eventQuoteAtomic:String(quote),userQuoteAtomic:String(user),coreQuoteAtomic:String(user),grossQuoteAtomic:String(booked),lpFeeAtomic:String(lp),protocolFeeAtomic:String(protocol),creatorFeeAtomic:String(creator),totalFeeAtomic:String(fees),buybackFeeAtomic:String(buyback),cashbackAtomic:'0',holderRewardsBps:holderBps===null?null:String(holderBps),holderRewardsAtomic:holder===null?null:String(holder),creatorFeeUnclaimedAtomic:unclaimed===null?null:String(unclaimed),quoteTransferFeeAtomic:transfer===null?null:String(transfer),bookedQuoteAtomic:String(booked),walletQuoteAtomic:String(booked),budgetAtomic:String(quote),budgetRemainderAtomic:String(quote-booked),route:null,transferWitness:'NONE'};
+ }
  if(route){
   const last=route.hops-1,protocolLeg=routeBuy?route.hop===0:route.hop===last,targetLeg=routeBuy?route.hop===last:route.hop===0;
   if(!protocolLeg&&(protocol!==0n||protocolBps!==0n)||!targetLeg&&(lp!==0n||lpBps!==0n||creator!==0n||creatorBps!==0n||holderPresent))fail();
@@ -113,8 +122,8 @@ function reconcileExtendedQuote(name:string,d:any,route?:QuoteRoute):QuoteAccoun
  * layout: a holder reward that duplicates the coin creator fee is accepted but not re-added, and a nonzero
  * quote transfer fee is explicitly unsupported rather than ignored.
  */
-export function reconcileWindowQuote(name:string,d:any,modern=false,extended=false,route?:QuoteRoute):QuoteAccounting{
- if(extended)return reconcileExtendedQuote(name,d,route);
+export function reconcileWindowQuote(name:string,d:any,modern=false,extended=false,route?:QuoteRoute,budgetExact=false):QuoteAccounting{
+ if(extended)return reconcileExtendedQuote(name,d,route,budgetExact);
  const fail=():never=>{throw new Error('ADVISORY_TRADE_FEE_BINDING');};
  const amount=(value:unknown):bigint=>{const s=String(value);if(!/^(0|[1-9]\d{0,19})$/.test(s)||BigInt(s)>18446744073709551615n)fail();return BigInt(s);};
  const buy=['buy','buy_v2'].includes(name),exact=['buy_exact_quote_in','buy_exact_quote_in_v2'].includes(name),sell=['sell','sell_v2'].includes(name);

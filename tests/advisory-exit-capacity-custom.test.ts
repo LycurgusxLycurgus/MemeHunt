@@ -130,7 +130,7 @@ const baselineFetch:typeof fetch=async(input,init)=>{
 test('fresh proof34 persists custom passive quote bytes and rejects namespace, route and legacy-dispatch substitutions',async()=>{
  const x=await passiveQuote(),fetcher:typeof fetch=(url,init)=>{if(init?.method==='POST'){const r=JSON.parse(String(init.body));if(r.method==='getMultipleAccounts'&&r.params[0][0]===GLOBAL_CONFIG_PDA.toBase58())return x.f.fetcher(url,init);}return baselineFetch(url,init);};
  const b=await collectLiveToken(target,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,a12CandidateSet:x.p,fetcher,now:()=>at}),proof=JSON.parse(b.rawArtifacts['advisory-derivation']!);
- assert.equal(proof.method,'advisory-provenance-v39');assert.equal(b.details!.advisory!.metrics.find(m=>m.id==='A12')!.quality,'KNOWN');assert.equal(b.evidence.find(e=>e.id==='a12-reviewed-candidate-set')!.scope!.method,'a12-reviewed-candidate-set-v2');
+ assert.equal(proof.method,'advisory-provenance-v40');assert.equal(b.details!.advisory!.metrics.find(m=>m.id==='A12')!.quality,'KNOWN');assert.equal(b.evidence.find(e=>e.id==='a12-reviewed-candidate-set')!.scope!.method,'a12-reviewed-candidate-set-v2');
  assert.deepEqual(reconstructAdvisory(target,at,b.details!.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features),b.details!.advisory);
  const dir=mkdtempSync(join(tmpdir(),'meme-a12custom-')),file=join(dir,'case.sqlite');let service=new Service(file);
  try{const saved=service.analyzeLive(b);service.close();service=new Service(file);assert.deepEqual(service.replay(saved.id),saved);

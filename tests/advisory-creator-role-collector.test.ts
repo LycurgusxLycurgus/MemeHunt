@@ -231,7 +231,7 @@ const rehash=(bundle:{evidence:Array<{id:string;contentHash:string}>;rawArtifact
 test('live collection persists one verified S13 creator role through Service and rejects forged, downgraded, orphaned and claimed receipts',async()=>{
  const bundle=await collectLiveToken(token,{profile:starterProfile(),semanticEnabled:false,advisoryEnabled:true,tinyfishKey:'tinyfish-live-key',fetcher:liveFetcher,now:()=>at});
  const proof=JSON.parse(bundle.rawArtifacts['advisory-derivation']!),facts=bundle.details!.advisory!,s13=facts.metrics.find(m=>m.id==='S13')!;
- assert.deepEqual([proof.method,facts.method],['advisory-provenance-v39','advisory-measurements-v38']);
+ assert.deepEqual([proof.method,facts.method],['advisory-provenance-v40','advisory-measurements-v39']);
  assert.deepEqual(Object.keys(proof.creatorRole.artifactIds),['page','index','transaction-0','transaction-1']);
  const receipts=bundle.evidence.filter(e=>e.sourceId==='advisory-creator-role');
  assert.ok(receipts.length===4&&receipts.every(e=>e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'&&Object.keys(e.scope).join()==='request'));
@@ -255,7 +255,7 @@ test('live collection persists one verified S13 creator role through Service and
    for(const [name,candidate] of cases)assert.throws(()=>writer.analyzeLive(candidate),/ADVISORY_PROOF_INVALID/,name);
   }finally{writer.close();}
   const reader=new Service(file);try{assert.deepEqual(reader.replay(id),reader.show(id));assert.equal(reader.analyzeLive(bundle).id,id);}finally{reader.close();}
-  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v36');}finally{db.close();}
+  const db=new DatabaseSync(file);try{assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as {semantic:string}).semantic).policyVersion,'research-screen-advisory-v37');}finally{db.close();}
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
 

@@ -3,6 +3,7 @@ import type { PUMP_AMM_SDK } from '@pump-fun/pump-swap-sdk';
 import { decodePumpSwapWindowTransaction, type DecodedTrade } from './advisory-trades.js';
 import { executedWindowInstructions, recordedWindowInstructions } from './advisory-window-accounts.js';
 import { projectCompiledTransaction } from './advisory-demand-windows.js';
+import { runtimeWindowSteps } from './advisory-runtime-proof.js';
 
 type Pool=ReturnType<typeof PUMP_AMM_SDK.decodePool>;
 type Step={ix:any;depth:number;top:number;executed:boolean};
@@ -112,5 +113,82 @@ export function bindA29TradeAccountV2(projected:any,trade:DecodedTrade,baseMint:
  else if(pre===undefined){if(inits.length!==1||inits[0]!.q>=legPosition||inits[0]!.owner!==post)ambiguous=true;}
  else if(pre===null||pre!==post||inits.length)ambiguous=true;
  if(owners.size!==1)ambiguous=true;
+ return{account,owners:[...owners].sort(),ambiguous,legPosition};
+}
+
+/** A29 v3 decode: v2 with the shared decoder's committed-step recovery profile (a29Recovery). */
+export function decodeA29TradesV3(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:Pool,stateSlot:number,retrieved:string,quoteProgram:string,quoteDecimals:number):{projected:any;trades:DecodedTrade[];cpiAuthorizedAccounts:string[];coverage?:Record<string,number>}{
+ const projected=projectCompiledTransaction(value);
+ if(projected.transaction.signatures[0]!==expected.signature)fail('A29_TRANSACTION_SIGNATURE');
+ const proof=decodePumpSwapWindowTransaction(projected,expected,poolKey,pool,stateSlot,retrieved,true,true,true,true,true,true,quoteProgram,true,quoteDecimals,true,true);
+ for(const t of proof.trades)if(t.signature!==expected.signature||t.slot!==expected.slot||!t.quoteAccounting||t.quoteAccounting.coreQuoteAtomic!==t.quoteAtomic||!t.provenance)fail('A29_TRADE_CORE_QUOTE');
+ const r=proof.logRecovery;
+ return{projected,trades:proof.trades,cpiAuthorizedAccounts:proof.cpiAuthorizedAccounts,...(r?.truncated?{coverage:{truncated:1,unresolvedInvocations:r.unresolvedInvocations,executionProvenInvocations:r.executionProvenInvocations??0}}:{})};
+}
+
+type OwnerMove={q:number;kind:'INIT'|'SET_OWNER'|'CLOSE';owner?:string};
+// Token and Token-2022 instructions that cannot change any account's owner, keyed by tag to their exact data length.
+const KEEP_OWNER=new Map<number,number>([[3,9],[4,9],[5,1],[7,9],[8,9],[10,1],[11,1],[12,10],[13,10],[14,10],[15,10],[17,1],[22,1]]);
+// Only the canonical target accounts[0] of a well-formed lifecycle instruction can change the owner; anything unrecognized is UNKNOWN.
+function ownerEffect(ix:any,account:string):Omit<OwnerMove,'q'>|'KEEP'|'UNKNOWN'{
+ const a=ix.accounts as string[];let d:Buffer;try{d=decode58(ix.data);}catch{return 'UNKNOWN';}
+ const tag=d[0],target=a[0]===account;
+ if(tag!==undefined&&KEEP_OWNER.get(tag)===d.length)return 'KEEP';
+ if(tag===9&&d.length===1&&a.length>=3)return target?{kind:'CLOSE'}:'KEEP';
+ if(tag===1&&d.length===1&&a.length>=4)return target?{kind:'INIT',owner:address(a[2]!)}:'KEEP';
+ if((tag===16&&a.length>=3||tag===18&&a.length>=2)&&d.length===33)return target?{kind:'INIT',owner:pubkeyAt(d,1)}:'KEEP';
+ if(tag===6&&a.length>=2&&(d.length===3&&d[2]===0||d.length===35&&d[2]===1)){
+  if(!target||d[1]===0||d[1]===1||d[1]===3)return 'KEEP';
+  return d[1]===2?{kind:'SET_OWNER',...(d[2]===1?{owner:pubkeyAt(d,3)}:{})}:'UNKNOWN';
+ }
+ return 'UNKNOWN';
+}
+function tokenOwnerAt(rows:unknown,index:number,baseMint:string):string|null|undefined{
+ if(!Array.isArray(rows))fail('A29_TOKEN_BALANCES');
+ const hits=(rows as unknown[]).filter(r=>object(r)&&r.accountIndex===index);if(hits.length>1)fail('A29_TOKEN_BALANCES');
+ const r=hits[0] as any;if(!r)return undefined;if(r.mint!==baseMint)fail('A29_TOKEN_BALANCE_MINT');
+ return typeof r.owner==='string'?address(r.owner):null;
+}
+
+/** V3 binder: the v2 frame/event/leg binding over committed runtime steps, then the owner at the leg. A sole terminal close after the leg is the only accepted later change; the trade user is never the owner. */
+export function bindA29TradeAccountV3(projected:any,trade:DecodedTrade,baseMint:string,baseVault:string):{account:string;owners:string[];ambiguous:boolean;legPosition:number}{
+ const p=trade.provenance??fail('A29V2_PROVENANCE');
+ const {list}=runtimeWindowSteps(projected,true),at=list.findIndex(s=>s.top===p.top&&s.position===p.position),step=list[at];
+ if(!step||step.ix.programId!==PUMP||!step.executed)fail('A29_TRADE_STEP');
+ let end=at+1;while(end<list.length&&list[end]!.top===step!.top&&list[end]!.depth>step!.depth)end++;
+ const events:number[]=[];for(let q=at+1;q<end;q++)if(list[q]!.parent===at&&eventPayload(list[q]!.ix)!==null)events.push(q);
+ const k=p.routeEvent,ev=k===null?(events.length===1?events[0]:undefined):events[k];
+ if(ev===undefined||eventPayload(list[ev]!.ix)!==p.eventPayload||!list[ev]!.executed)fail('A29V2_EVENT_IDENTITY');
+ const from=k===null?at+1:trade.side==='BUY'?ev!+1:k>0?events[k-1]!+1:at+1;
+ const to=k===null?end:trade.side==='BUY'?(events[k+1]??end):ev!;
+ const legs:Array<{q:number;leg:NonNullable<ReturnType<typeof legOf>>}>=[];
+ for(let q=from;q<to;q++){
+  const s=list[q]!;if(s.proof==='ROLLED_BACK'||!TOKEN.has(s.ix.programId)||!s.ix.accounts.includes(baseVault))continue;
+  if(!s.executed)fail('A29V3_LEG_UNPROVEN');
+  const leg=legOf(s.ix);
+  if(!leg||leg.source!==baseVault&&leg.destination!==baseVault)fail('A29_TRADE_VAULT_UNRECOGNIZED');
+  if(leg!.mint!==null&&leg!.mint!==baseMint)fail('A29_TRADE_LEG_MINT');
+  legs.push({q,leg:leg!});
+ }
+ if(legs.length!==1)fail('A29_TRADE_LEG');
+ const {q:legPosition,leg}=legs[0]!;
+ if(leg.amount!==BigInt(trade.baseAtomic))fail('A29_TRADE_LEG_AMOUNT');
+ const account=trade.side==='SELL'&&leg.destination===baseVault&&leg.source!==baseVault?leg.source:trade.side==='BUY'&&leg.source===baseVault&&leg.destination!==baseVault?leg.destination:fail('A29_TRADE_LEG_DIRECTION');
+ const index=projected.transaction.message.accountKeys.map((x:any)=>x.pubkey).indexOf(account);if(index<0)fail('A29_TRADE_ACCOUNT');
+ const pre=tokenOwnerAt(projected.meta.preTokenBalances,index,baseMint),post=tokenOwnerAt(projected.meta.postTokenBalances,index,baseMint),moves:OwnerMove[]=[];
+ let ambiguous=false;
+ for(const [q,s] of list.entries()){
+  if(s.proof==='ROLLED_BACK'||!TOKEN.has(s.ix.programId)||!s.ix.accounts.includes(account))continue;
+  const e=ownerEffect(s.ix,account);
+  if(e==='KEEP')continue;
+  if(e==='UNKNOWN'||!s.executed)ambiguous=true;else moves.push({q,...e});
+ }
+ const before=moves.filter(m=>m.q<legPosition),after=moves.filter(m=>m.q>legPosition);
+ // Owner at the leg: the proven pre-owner, or a unique executed init before the leg when no pre-owner exists (the v2 rule).
+ const owner=!before.length&&typeof pre==='string'?pre:pre===undefined&&before.length===1&&before[0]!.kind==='INIT'?before[0]!.owner:undefined;
+ // Afterwards the post-owner is unchanged, or a sole executed terminal close of a proven pre-owner explains the absent post row.
+ const kept=!after.length&&typeof post==='string'&&post===owner,terminal=typeof pre==='string'&&!before.length&&after.length===1&&after[0]!.kind==='CLOSE'&&post===undefined;
+ if(owner===undefined||!kept&&!terminal)ambiguous=true;
+ const owners=new Set<string>(ambiguous?[pre,post,...moves.map(m=>m.owner)].filter((o):o is string=>typeof o==='string'):[owner!]);
  return{account,owners:[...owners].sort(),ambiguous,legPosition};
 }

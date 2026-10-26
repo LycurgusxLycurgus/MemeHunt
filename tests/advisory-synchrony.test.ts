@@ -218,7 +218,7 @@ const rehash = (bundle: Awaited<ReturnType<typeof collectLive>>, id: string) => 
 
 test('live collection persists and replays a known-zero O23 from proof v13 onward, while proof v12 reconstruction leaves it unmeasured', async () => {
   const bundle = await collectLive(liveRows()), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v39', 'advisory-measurements-v38', 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v40', 'advisory-measurements-v39', 'KNOWN']);
   const o23 = facts.metrics.find(m => m.id === 'O23')!, data = o23.data as any;
   assert.deepEqual([o23.quality, o23.reasonCode, data.denominator, data.fundingClasses, data.sponsors.accounts], ['KNOWN', 'SPONSORED_SYNCHRONY_OBSERVED', 3, { SELF: 2, SPONSORED: 1, PROGRAM: 0 }, 1]);
   assert.ok(data.bins.every((bin: any) => bin.synchronizedTrades === 0 && bin.fraction === '0' && bin.null.permutations === SYNCHRONY_PERMUTATIONS && bin.null.maxFraction === '0' && bin.null.atLeastObserved === SYNCHRONY_PERMUTATIONS));
@@ -250,7 +250,7 @@ test('live collection persists and replays a known-zero O23 from proof v13 onwar
     const reader = new Service(file);
     try { assert.deepEqual(reader.replay(id), reader.show(id)); assert.equal(reader.analyzeLive(bundle).id, id); } finally { reader.close(); }
     const db = new DatabaseSync(file);
-    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v36'); } finally { db.close(); }
+    try { assert.equal(JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(id) as { semantic: string }).semantic).policyVersion, 'research-screen-advisory-v37'); } finally { db.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -270,7 +270,7 @@ test('proof v16 persists the supplementary one-hour report recomputed from the s
   const transactions = new Map<string, unknown>([...liveTransactions(old), [inScope[0]!.signature, swaps(inScope[0]!, [b58(U4)], [U4])], [inScope[1]!.signature, routed(inScope[1]!, K, P)], [inScope[2]!.signature, swaps(inScope[2]!, [b58(U1)], [U1])], [inScope[3]!.signature, swaps(inScope[3]!, [b58(U1)], [U1])]]);
   const live = (mutate?: (request: RpcRequest, body: any) => any) => collectLiveToken(token, { profile: starterProfile(), semanticEnabled: false, advisoryEnabled: true, fetcher: liveFetcher(rows, transactions, mutate), now: () => liveAt });
   const bundle = await live(), proof = JSON.parse(bundle.rawArtifacts['advisory-derivation']!), facts = bundle.details!.advisory!, s = facts.supplements!.shortDemand;
-  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v39', 'advisory-measurements-v38', 50, 'KNOWN']);
+  assert.deepEqual([proof.method, facts.method, facts.metrics.length, facts.metrics.find(m => m.id === 'A30')!.quality], ['advisory-provenance-v40', 'advisory-measurements-v39', 50, 'KNOWN']);
   assert.deepEqual([s.status, s.reportEnd, s.baseline.start, s.baseline.end, s.measured.start], ['COMPLETE', '2026-10-10T12:00:00.000Z', '2026-10-10T10:00:00.000Z', '2026-10-10T11:00:00.000Z', '2026-10-10T11:00:00.000Z']);
   assert.deepEqual(s.windows.map(w => w.condition), [false, false, false, false, false, true]);
   assert.deepEqual(s.windows.map(w => w.firstObservedBuyerCount), [0, 0, 0, 0, 0, 1]);
