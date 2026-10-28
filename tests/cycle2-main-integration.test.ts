@@ -66,10 +66,10 @@ async function collect(kind: Kind, pad: number) {
 }
 const live = (kind: Kind, pad = 0) => { const k = `${kind}:${pad}`; let p = runs.get(k); if (!p) runs.set(k, p = collect(kind, pad)); return p; };
 
-for (const kind of ['EXECUTOR', 'CALLERS'] as const) test(`${kind} + synthetic A29 v2 freezes proof46/facts45/policy43 and replays offline`, async () => {
+for (const kind of ['EXECUTOR', 'CALLERS'] as const) test(`${kind} + synthetic A29 v2 freezes proof47/facts46/policy44 and replays offline`, async () => {
   const { b, c, callers, hosts, executions } = await live(kind), ord = (await live('ORDINARY')).b, proof = proofOf(b), r = rec(b);
   assert.deepEqual([proofOf(ord).method, ord.details.advisory.method], ['advisory-provenance-v40', 'advisory-measurements-v39'], 'ordinary uses accepted A29 recovery profile40');
-  assert.deepEqual([proof.method, b.details.advisory.method], ['advisory-provenance-v46', 'advisory-measurements-v45']);
+  assert.deepEqual([proof.method, b.details.advisory.method], ['advisory-provenance-v47', 'advisory-measurements-v46']);
   assert.deepEqual([r.adapterVersion, b.rawArtifacts[A29_CAPTURE_ID], r.contentHash, r.retrievedAt], [A29_V2_CAPTURE_ADAPTER, c.raw, sha(c.raw), c.latestClock], 'exact original capture');
   assert.ok(Date.parse(r.retrievedAt) <= Date.parse(r.availableAt) && Date.parse(r.availableAt) <= Date.parse(b.cutoff));
   assert.deepEqual(proof.a29.requests.capture, a29CaptureRequestV2(c.raw, c.label));
@@ -93,7 +93,7 @@ for (const kind of ['EXECUTOR', 'CALLERS'] as const) test(`${kind} + synthetic A
   await withDir(async (dir, file) => {
     let s = new Service(file), saved!: Loose;
     try { saved = s.analyzeLive(structuredClone(b) as any); assert.equal(s.analyzeLive(structuredClone(b) as any).id, saved.id); assert.deepEqual(s.replay(saved.id), saved); } finally { s.close(); }
-    assert.equal(policy(file, saved.id), 'research-screen-advisory-v43');
+    assert.equal(policy(file, saved.id), 'research-screen-advisory-v44');
     s = new Service(file); try { assert.deepEqual(s.replay(saved.id), saved); } finally { s.close(); }
     let out = '', err = '', network = 0, calls = 0;
     const exit = await runCli(['replay', saved.id, '--db', file, '--config', join(dir, 'config.json'), '--json'], { env: {}, isInteractive: false,
@@ -103,7 +103,7 @@ for (const kind of ['EXECUTOR', 'CALLERS'] as const) test(`${kind} + synthetic A
   });
 });
 
-test('A29 v2 is admitted only under proof39||40||46 with facts38||39||45; downgrades and nullability fail closed', async () => {
+test('A29 v2 is admitted only under proof39||40||46||47 with facts38||39||45||46; downgrades and nullability fail closed', async () => {
   const ord = (await live('ORDINARY')).b;
   assert.equal(a29VerifiedV2Id(ord.token, ord.cutoff, ord.evidence, ord.rawArtifacts), A29_CAPTURE_ID, 'valid v40');
   assert.ok(advisoryFactsSchema.safeParse(ord.details.advisory).success, 'facts39 accepts v2');
@@ -113,29 +113,34 @@ test('A29 v2 is admitted only under proof39||40||46 with facts38||39||45; downgr
   assert.ok(advisoryFactsSchema.safeParse({ ...ord.details.advisory, method: 'advisory-measurements-v39' }).success);
   for (const kind of ['EXECUTOR', 'CALLERS'] as const) {
     const { b } = await live(kind), p = proofOf(b), facts = b.details.advisory;
-    assert.equal(a29VerifiedV2Id(b.token, b.cutoff, b.evidence, b.rawArtifacts), A29_CAPTURE_ID, `${kind} valid v46`);
-    const unregistered = structuredClone(b); unregistered.rawArtifacts['advisory-derivation'] = JSON.stringify({ ...p, method: 'advisory-provenance-v47' });
-    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v47' }), Error, 'unregistered proof47 rejects');
-    assert.equal(a29VerifiedV2Id(unregistered.token, unregistered.cutoff, unregistered.evidence, unregistered.rawArtifacts), null, 'unregistered proof47 cannot earn a v2 budget');
+    assert.equal(a29VerifiedV2Id(b.token, b.cutoff, b.evidence, b.rawArtifacts), A29_CAPTURE_ID, `${kind} valid v47`);
+    const unregistered = structuredClone(b); unregistered.rawArtifacts['advisory-derivation'] = JSON.stringify({ ...p, method: 'advisory-provenance-v49' });
+    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v49' }), Error, 'unregistered proof49 rejects');
+    assert.equal(a29VerifiedV2Id(unregistered.token, unregistered.cutoff, unregistered.evidence, unregistered.rawArtifacts), null, 'unregistered proof49 cannot earn a v2 budget');
     for (const v of [41, 42, 43, 44, 45]) {
       const q = { ...p, method: `advisory-provenance-v${v}` }, x = structuredClone(b);
       assert.throws(rebuild(b, q), PROOF, `${kind} proof${v}`);
       x.rawArtifacts['advisory-derivation'] = JSON.stringify(q);
       assert.equal(a29VerifiedV2Id(x.token, x.cutoff, x.evidence, x.rawArtifacts), null, `${kind} budget proof${v}`);
     }
-    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v39' }), PROOF, 'downgrade 46->39 with cycle2 descriptors');
+    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v39' }), PROOF, 'downgrade 47->39 with cycle2 descriptors');
     for (const key of ['executorSemantic', 'recordedCallers', 'recordedIncentives']) { const q = structuredClone(p); delete q[key]; assert.throws(rebuild(b, q), `${kind} ${key} key required`); }
     const bare = structuredClone(b); bare.evidence = bare.evidence.filter((e: Loose) => !cycle2(e.id));
     for (const id of Object.keys(bare.rawArtifacts)) if (cycle2(id)) delete bare.rawArtifacts[id];
-    assert.throws(rebuild(bare, { ...p, executorSemantic: null, recordedCallers: null, recordedIncentives: null }), PROOF, 'v46 needs a cycle2 namespace even with v2 A29');
-    assert.ok(advisoryFactsSchema.safeParse(facts).success, 'facts45 accepts v2');
+    assert.throws(rebuild(bare, { ...p, executorSemantic: null, recordedCallers: null, recordedIncentives: null }), PROOF, 'v47 needs a cycle2 namespace even with v2 A29');
+    assert.ok(advisoryFactsSchema.safeParse(facts).success, 'facts46 accepts v2');
+    const frozen = rebuild(b, { ...p, method: 'advisory-provenance-v46' })();
+    assert.equal(frozen.method, 'advisory-measurements-v45');
+    assert.ok(advisoryFactsSchema.safeParse(frozen).success, 'saved facts45 remains admitted');
+    assert.deepEqual(frozen.metrics, facts.metrics, 'constructed ordinary vector remains identical under frozen46 and fresh47');
+
     for (const v of [40, 41, 42, 43, 44]) assert.ok(!advisoryFactsSchema.safeParse({ ...facts, method: `advisory-measurements-v${v}` }).success, `facts${v} rejects v2`);
   }
 });
 
-test('a 25 MB synthetic v2 capture earns its own budget under proof46; foreign padding cannot inherit it', async () => {
+test('a 25 MB synthetic v2 capture earns its own budget under proof47; foreign padding cannot inherit it', async () => {
   const { b } = await live('CALLERS', 25_000_000);
-  assert.equal(proofOf(b).method, 'advisory-provenance-v46'); assert.ok(Buffer.byteLength(b.rawArtifacts[A29_CAPTURE_ID]) > 24_000_000);
+  assert.equal(proofOf(b).method, 'advisory-provenance-v47'); assert.ok(Buffer.byteLength(b.rawArtifacts[A29_CAPTURE_ID]) > 24_000_000);
   await withDir((_dir, file) => {
     const s = new Service(file);
     try {

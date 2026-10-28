@@ -75,7 +75,7 @@ const readRecordedCapture = (path:string,invalidCode:string) => {
   try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw Error(invalidCode);}
 };
 const knownErrorCodes = new Set([
-  'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
+  'O28_ADVISORY_REQUIRED', 'O28_PRIOR_POOL_MISMATCH', 'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
   'INVALID_TOKEN_REF', 'INVALID_SOLANA_ADDRESS', 'INVALID_EVM_ADDRESS', 'INVALID_PROFILE',
   'CURVE_PROOF_INVALID', 'LIVE_IMPORT_FORBIDDEN', 'PROFILE_ONLY_FOR_LIVE', 'ADDRESS_BUNDLE_MISMATCH', 'CHAIN_BUNDLE_MISMATCH',
   'BUNDLE_OR_ADDRESS_AND_CHAIN_REQUIRED', 'REASSESS_BUNDLE_REQUIRED', 'MANUAL_EMPTY_MUST_BE_EMPTY', 'BUNDLE_LIMIT', 'DUPLICATE_BUNDLE_ID',
@@ -200,6 +200,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       output({
         usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history | --creator-role-only] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
         advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
+        o28Expanded: '--advisory --o28-expanded permits up to 2048 selected-hour transaction reads and 16 MB of stored O28 archives, with a ten-minute minimum run budget. Gaps remain unresolved; other pools and metrics retain their own scope.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
         creatorPosition: 'creator-position <SOLANA_MINT> --json: provider-reported cross-venue USD position; requires SOLANA_TRACKER_API_KEY, opens no DB/config. Save JSON and use creator-position-replay --file PACKET --json offline. Not audited S15; SOL/stablecoins and unavailable histories can be missing.',
@@ -333,6 +334,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
         if(hasFlag(argv,'executable-liquidity')&&token.chain!=='solana')throw new CliError('EXEC_LIQ_SOLANA_REQUIRED','--executable-liquidity supports Solana addresses only.');
+        if(hasFlag(argv,'o28-expanded')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('O28_ADVISORY_REQUIRED','Use --o28-expanded with --advisory for a Solana address.');
         if(hasFlag(argv,'a24-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with --advisory for a Solana address.');
         if(hasFlag(argv,'recorded-incentives-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('RECORDED_INCENTIVE_ADVISORY_REQUIRED','Use --recorded-incentives-capture FILE with --advisory for Solana.');
         const recordedIncentivesCapture=hasFlag(argv,'recorded-incentives-capture')?readRecordedCapture(flagValue(argv,'recorded-incentives-capture')!,'RECORDED_INCENTIVE_CAPTURE_INVALID'):undefined;
@@ -397,6 +399,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         const live = await collectLiveToken(token, {
           profile,
           advisoryEnabled:hasFlag(argv,'advisory'),
+          ...(hasFlag(argv,'o28-expanded')?{o28Expanded:true}:{}),
           ...(hasFlag(argv,'executable-liquidity')?{executableLiquidity:true}:{}),
           ...(creatorRoleOnly?{creatorRoleOnly:true}:{}),
           ...(advisoryExecutor?{semanticExecutor:runtime.semanticExecutor??createLocalSemanticExecutor()}:{}),
