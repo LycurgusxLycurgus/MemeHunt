@@ -4,10 +4,12 @@ import { PUMP_AMM_SDK, PUMP_AMM_PROGRAM_ID, poolPda, pumpPoolAuthorityPda } from
 import { deriveEntryGroups } from '../domain/entry-groups.js';
 import type { EntryGroupInputs } from '../domain/entry-groups.js';
 import type { AssessmentDetails, EvidenceRecord, LiveCollection, LiveMarketSummary, Profile, TokenRef } from '../domain/contracts.js';
+import { entryContextDecisionMethod } from '../domain/contracts.js';
 import { decodeHolderPopulation } from './solana.js';
 import { parseDexPairs } from './dexscreener.js';
 import { decodeCurveState } from './pumpcurve.js';
-import { decodeDammState } from './meteora-damm-v2.js';
+import { decodeDammState,decodeEmptyDammState } from './meteora-damm-v2.js';
+import { EMPTY_DAMM_VERSION } from '../domain/venue-entry.js';
 
 export type EntryGroupBundle={token:TokenRef;cutoff:string;profile:Profile;evidence:EvidenceRecord[];rawArtifacts:Record<string,string>;collection:LiveCollection;market?:LiveMarketSummary|null;details:Pick<AssessmentDetails,'baseline'|'social'>};
 const info=(v:any):AccountInfo<Buffer>=>{
@@ -19,6 +21,9 @@ const info=(v:any):AccountInfo<Buffer>=>{
 /** Recompute from retained acquisition, rather than accepting imported group verdicts. */
 export function entryGroupsForBundle(b:EntryGroupBundle){
  const raw=b.rawArtifacts,input:EntryGroupInputs={token:b.token,cutoff:b.cutoff,profile:b.profile,evidence:b.evidence,collection:b.collection,baseline:b.details.baseline,social:b.details.social};
+ const capture=raw['live-state-capture']?JSON.parse(raw['live-state-capture']):undefined,method=capture?.contextDecisionMethod;
+ if(method!==undefined&&method!==entryContextDecisionMethod)throw Error('ENTRY_CONTEXT_METHOD_INVALID');
+ if(method)input.contextDecisionMethod=method;
  const record=(id:string)=>b.evidence.find(e=>e.id===id),observed=(id:string,source:string)=>record(id)?.sourceId===source&&raw[id]!==undefined;
  try{
   if(!observed('rpc-mint-raw','solana-rpc')||!observed('rpc-holder-population','solana-rpc'))throw Error('HOLDER_POPULATION_REQUIRED');
@@ -34,7 +39,7 @@ export function entryGroupsForBundle(b:EntryGroupBundle){
  }catch{input.marketCode=b.collection.dex.code??'ACTIVITY_FIELDS_MISSING';}
  // Exclude only an adapter-verified target vault, never an arbitrary claimed pool owner.
  const venue=b.details.baseline.find(a=>a.id==='O08'&&a.quality==='KNOWN'&&a.projection?.value===true)?.data as {poolAddress?:string;version?:string;certificateId?:string}|undefined;
- const prefix=venue?.version==='pumpswap-sdk-1.20.0-canonical-wsol-v1'?'pumpswap-canonical-wsol:':venue?.version==='pump-curve-sdk-4.0.0-sol-v1'?'pump-curve-sol:':venue?.version==='meteora-damm-v2-sdk-1.5.1-native-b-v1'?'meteora-damm-v2-native-b:':null;
+ const prefix=venue?.version==='pumpswap-sdk-1.20.0-canonical-wsol-v1'?'pumpswap-canonical-wsol:':venue?.version==='pump-curve-sdk-4.0.0-sol-v1'?'pump-curve-sol:':venue?.version==='meteora-damm-v2-sdk-1.5.1-native-b-v1'?'meteora-damm-v2-native-b:':venue?.version===EMPTY_DAMM_VERSION?'meteora-damm-v2-native-empty:':null;
  input.venuePoolAddress=venue?.poolAddress??(prefix&&venue?.certificateId?.startsWith(prefix)?venue.certificateId.slice(prefix.length):undefined);
  if(venue&&input.holders)try{
   if(!input.venuePoolAddress)throw Error('GROUP_VAULT_PROOF_INVALID');
@@ -53,6 +58,9 @@ export function entryGroupsForBundle(b:EntryGroupBundle){
   }else if(venue.version==='meteora-damm-v2-sdk-1.5.1-native-b-v1'){
    if(!observed('damm-state','meteora-damm-direct'))throw Error('GROUP_VAULT_PROOF_INVALID');
    const state=decodeDammState(raw['damm-state'],b.token,pool,0);input.excludedVaults=[state.pool.tokenAVault.toBase58()];input.exclusionEvidenceIds=['damm-state'];
+  }else if(venue.version===EMPTY_DAMM_VERSION){
+   if(!observed('damm-state','meteora-damm-direct'))throw Error('GROUP_VAULT_PROOF_INVALID');
+   const state=decodeEmptyDammState(raw['damm-state'],b.token,pool,0);input.excludedVaults=[state.assetVault];input.exclusionEvidenceIds=['damm-state'];
   }else throw Error('GROUP_VAULT_ADAPTER_UNSUPPORTED');
  }catch{input.holders=undefined;input.holderCode='GROUP_VAULT_PROOF_INVALID';}
  return deriveEntryGroups(input);

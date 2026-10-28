@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readLimitedText } from './http.js';
 
-function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+export function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return pending;
   if (signal.aborted) { void pending.catch(() => {}); return Promise.reject(signal.reason); }
   return new Promise<T>((resolve, reject) => {

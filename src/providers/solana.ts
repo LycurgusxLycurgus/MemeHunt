@@ -39,26 +39,47 @@ export type SolanaRead = {
   mint?: SolanaMint;
 };
 
-export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void): Promise<{raw: string; value: unknown}> {
+export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void,onContextError?:(attempt:number,raw:string)=>void): Promise<{raw: string; value: unknown}> {
+  const reads = new Set(['getGenesisHash','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
+  // Fee readers already own a proof-bound min-context retry; keep one owner.
+  const contextRead=method!=='getFeeForMessage'&&reads.has(method)&&params.some(p=>object(p)&&p.commitment==='finalized'&&Number.isSafeInteger(p.minContextSlot)&&Number(p.minContextSlot)>=0);
+  // The same bank floor must survive catch-up. One deadline bounds HTTP and
+  // JSON-RPC retries together; ordinary no-floor requests retain their recovery.
+  const contextSignal=contextRead?AbortSignal.timeout(30_000):undefined;
+  const requestSignal=contextSignal?(signal?AbortSignal.any([signal,contextSignal]):contextSignal):signal;
   const init:RequestInit = {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    signal,
+    signal:requestSignal,
   };
-  const reads = new Set(['getGenesisHash','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
-  const response = reads.has(method)
-    ? await fetchReadResponse(url, init, fetcher, method==='getProgramAccounts'?15_000:8000, true)
-    : await fetcher(url,{...init,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
-  if (!response.ok) throw new Error(`RPC_HTTP_${response.status}`);
-  const raw = await readLimitedText(response, maxBytes);
-  onResponse?.(raw);
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error('RPC_SHAPE'); }
-  if (object(value) && object(value.error) && Number.isSafeInteger(value.error.code) && Math.abs(Number(value.error.code))<=999999) throw new Error(`RPC_REMOTE_${value.error.code}`);
-  if (!object(value) || value.error || !('result' in value)) throw new Error('RPC_SHAPE');
-  return { raw, value: value.result };
+  for(let attempt=1;;attempt++){
+    requestSignal?.throwIfAborted();
+    const response = reads.has(method)
+      ? await fetchReadResponse(url, init, fetcher, method==='getProgramAccounts'?15_000:8000, !contextRead)
+      : await fetcher(url,{...init,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
+    if (!response.ok) throw new Error(`RPC_HTTP_${response.status}`);
+    const raw = await readLimitedText(response, maxBytes);
+    requestSignal?.throwIfAborted();
+    onResponse?.(raw);
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { throw new Error('RPC_SHAPE'); }
+    if (object(value) && object(value.error) && Number.isSafeInteger(value.error.code) && Math.abs(Number(value.error.code))<=999999){
+      if(contextRead&&value.error.code===-32016){
+        onContextError?.(attempt,raw);
+        if(attempt<3){
+          try{await delay(attempt*1000,undefined,{signal:requestSignal});}
+          catch(error){requestSignal?.throwIfAborted();throw error;}
+          continue;
+        }
+      }
+      throw new Error(`RPC_REMOTE_${value.error.code}`);
+    }
+    if (!object(value) || value.error || !('result' in value)) throw new Error('RPC_SHAPE');
+    return { raw, value: value.result };
+  }
 }
+
 const rpc=solanaRpc, safeCode=safeRpcCode;
 
 const BASE58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -136,7 +157,8 @@ export function decodeHolderPopulation(result:unknown,address:string,programId:s
   return {supplyAtomic,accounts,complete:true,slot:Number(result.context.slot),evidenceIds:['rpc-genesis','rpc-holder-population','rpc-mint-raw']};
 }
 export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,signal?:AbortSignal,now?:()=>string):Promise<SolanaDetails> {
-  const rpc=(endpoint:string,method:string,params:unknown[],request:typeof fetch,maxBytes=350_000)=>solanaRpc(endpoint,method,params,request,maxBytes,signal);
+  let contextAttempt=0;
+  const rpc=(endpoint:string,method:string,params:unknown[],request:typeof fetch,maxBytes=350_000)=>solanaRpc(endpoint,method,params,request,maxBytes,signal,undefined,method==='getProgramAccounts'?(_attempt,raw)=>{const id='rpc-holder-context-attempt-'+(++contextAttempt);result.rawArtifacts[id]=raw;if(now)result.retrievedAt![id]=now();}:undefined);
   const result:SolanaDetails={rawArtifacts:{},errors:{},...(now?{retrievedAt:{}}:{})};
   if(mint.kind!=='MINT_LEGACY'&&mint.kind!=='MINT_TOKEN_2022_PARTIAL')return result;
   let holderSupply=mint.supplyAtomic,holderSlot=mint.slot;

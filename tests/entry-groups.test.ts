@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EvidenceRecord } from '../src/domain/contracts.js';
-import { deriveEntryGroups, type EntryGroupInputs } from '../src/domain/entry-groups.js';
+import { deriveEntryGroups, resolveNecessaryAttentionContext, type EntryGroupInputs } from '../src/domain/entry-groups.js';
+import { entryContextDecisionMethod } from '../src/domain/contracts.js';
+import { acquisitionEvidenceMethod } from '../src/providers/acquisition-evidence.js';
 import { SHARED_CUTOFF, sharedFixture } from './shared-fixtures.js';
 
 const tokenTime = (secondsAgo: number) => new Date(Date.parse(SHARED_CUTOFF) - secondsAgo * 1000).toISOString();
@@ -96,6 +98,96 @@ test('a reviewed closed post-sample gap fails current attention while narrative 
   assert.equal(group.metrics.qualifiedOriginals, null);
   assert.equal(group.metrics.sourceAccounts, null);
   assert.match(group.rationale, /does not establish sufficient current narrative/);
+});
+
+test('a fresh completed negative narrative decision is the only context witness when exact counts are missing', () => {
+  const input = currentInput();
+  input.evidence.push(evidence('attention-page', 'tinyfish-fetch'));
+  const target = input.baseline.find(item => item.id === 'A05')!;
+  target.quality = 'KNOWN';
+  target.projection!.quality = 'KNOWN';
+  target.projection!.value = false;
+  target.projection!.availableAt = input.cutoff;
+  target.evidenceIds = ['attention-page'];
+  target.data = {
+    entryDecisionMethod: 'binary-public-support-v5', entryCriterion: 'NAR-03',
+    outcomeBasisMethod: 'entry-outcome-basis-v1', acquisitionEvidenceMethod,
+    decision: {
+      verdict: 'FAIL', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE',
+      rationale: 'The completed retained public review does not establish an explainable thesis.',
+      citations: [{ sourceId: 'attention-page', quote: 'The thesis is not explained.' }],
+    },
+  };
+  for (const id of ['A15', 'A16', 'A17']) {
+    const row = input.baseline.find(item => item.id === id)!;
+    row.quality = 'MISSING';
+    row.projection!.quality = 'MISSING';
+    row.projection!.value = null;
+  }
+
+  const groups = deriveEntryGroups({ ...input, contextDecisionMethod: entryContextDecisionMethod });
+  const attention = groups.groups.find(group => group.checkId === 'ADV-03')!;
+  assert.deepEqual(groups.contextDecisionMethod, entryContextDecisionMethod);
+  assert.deepEqual([attention.status, attention.code], ['FAIL', 'NECESSARY_ATTENTION_CONTEXT']);
+  assert.deepEqual([attention.featureIds, attention.evidenceIds], [['A05'], ['attention-page']],
+    'the selected completed NAR-03 decision owns the group without importing missing sample measurements');
+  assert.deepEqual([attention.metrics.outcome, attention.metrics.basis, attention.metrics.criterion,
+    attention.metrics.qualifiedOriginals, attention.metrics.sourceAccounts],
+  ['INSUFFICIENT', 'PUBLIC_SUPPORT_INADEQUATE', 'NAR-03', null, null]);
+
+  const legacy = deriveEntryGroups({ ...input, contextDecisionMethod: undefined });
+  const legacyAttention = legacy.groups.find(group => group.checkId === 'ADV-03')!;
+  assert.equal(Object.hasOwn(legacy, 'contextDecisionMethod'), false);
+  assert.equal(legacyAttention.code, 'CURRENT_ATTENTION_CONTEXT');
+  assert.ok(legacyAttention.featureIds.includes('A16') && legacyAttention.featureIds.includes('A17'),
+    'unmarked legacy inputs keep their original evidence projection');
+
+  const measured = structuredClone(input);
+  for (const [id, value] of [['A15', true], ['A16', '2'], ['A17', '4']] as const) {
+    const row = measured.baseline.find(item => item.id === id)!;
+    row.quality = 'KNOWN';
+    row.projection!.quality = 'KNOWN';
+    row.projection!.value = value;
+  }
+  const measuredAttention = deriveEntryGroups({ ...measured, contextDecisionMethod: entryContextDecisionMethod })
+    .groups.find(group => group.checkId === 'ADV-03')!;
+  assert.deepEqual([measuredAttention.status, measuredAttention.code, measuredAttention.metrics.qualifiedOriginals,
+    measuredAttention.metrics.sourceAccounts], ['FAIL', 'CURRENT_ATTENTION_CONTEXT', '2', '4'],
+  'a qualified measured shortfall remains the direct contradiction before the separate necessary-context witness');
+});
+
+test('necessary context selection rejects unfinished, unowned, mismatched, stale, and future decisions', () => {
+  const valid = currentInput();
+  const target = valid.baseline.find(item => item.id === 'A05')!;
+  target.quality = 'KNOWN';
+  target.projection!.quality = 'KNOWN';
+  target.projection!.value = false;
+  target.projection!.availableAt = valid.cutoff;
+  target.evidenceIds = ['attention-page'];
+  target.data = {
+    entryDecisionMethod: 'binary-public-support-v5', entryCriterion: 'NAR-03',
+    outcomeBasisMethod: 'entry-outcome-basis-v1', acquisitionEvidenceMethod,
+    decision: {
+      verdict: 'FAIL', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE',
+      rationale: 'The completed retained public review does not establish an explainable thesis.',
+      citations: [{ sourceId: 'attention-page', quote: 'The thesis is not explained.' }],
+    },
+  };
+  assert.equal(resolveNecessaryAttentionContext(valid.baseline, valid.cutoff)?.criterion, 'NAR-03');
+  const reject = (mutate: (row: typeof target) => void) => {
+    const baseline = structuredClone(valid.baseline);
+    mutate(baseline.find(item => item.id === 'A05')!);
+    assert.equal(resolveNecessaryAttentionContext(baseline, valid.cutoff), null);
+  };
+  reject(row => { (row.data as Record<string, unknown>).entryDecisionMethod = 'binary-public-support-v4'; });
+  reject(row => { (row.data as Record<string, unknown>).entryCriterion = 'NAR-01'; });
+  reject(row => { (row.data as Record<string, unknown>).outcomeBasisMethod = 'missing'; });
+  reject(row => { (row.data as Record<string, unknown>).acquisitionEvidenceMethod = undefined; });
+  reject(row => { row.evidenceIds = []; });
+  reject(row => { ((row.data as { decision: { citations: unknown[] } }).decision).citations = []; });
+  reject(row => { row.projection!.availableAt = tokenTime(901); });
+  reject(row => { row.projection!.availableAt = new Date(Date.parse(valid.cutoff) + 1).toISOString(); });
+  reject(row => { (row.data as { decision: { verdict: string } }).decision.verdict = 'UNRESOLVED'; });
 });
 
 test('collection outage and unfinished attention or actor review remain UNKNOWN with their causes', () => {

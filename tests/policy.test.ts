@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { evaluateEntry, evaluateManagement, evaluatePredicate, resolveStage } from '../src/domain/policy.js';
+import { resolveOriginEntryCriterion } from '../src/domain/attention.js';
 import { entryGroupFactsSchema, type EntryGroupFacts } from '../src/domain/contracts.js';
 import {
   completeFixtureEntryFeatures, FIXTURE_CUTOFF, fixtureEpisode, fixtureFeature,
   fixturePosition, illustrativeUncalibratedProfile,
 } from '../examples/fixtures.js';
+import { freshOriginAssessment, type OriginDecision } from './origin-constitution-fixtures.js';
 
 const predicate = (feature: string, value: string | boolean, unit: string, op: 'eq' | 'gt' = 'eq') => ({ op, feature, value, unit } as const);
 const entryGroupIds = ['ADV-01','ADV-02','ADV-03','ADV-04','ADV-05'] as const;
@@ -136,6 +138,66 @@ test('new origin review grades NAR-02 from canonical A03 without inventing the o
     FIXTURE_CUTOFF, 'QUALIFIED_V4', undefined, false, undefined, { originTraceability: true });
   assert.equal(mismatched.checks.find(row => row.checkId === 'NAR-02')?.status, 'UNKNOWN',
     'a gate receipt that disagrees with the known canonical A03 projection cannot decide the row');
+});
+
+test('fresh NAR-02 origin resolution is independent of factual A03/A04 and fails closed on invalid or stale decisions', () => {
+  const features = completeFixtureEntryFeatures({ A03: true, A04: null });
+  const a03 = features.find(feature => feature.id === 'A03')!;
+  const catalyst = features.find(feature => feature.id === 'A04')!;
+  catalyst.value = null;
+  catalyst.quality = 'MISSING';
+  const citation = { sourceId: 'origin-source', quote: 'The cited original source binds the observed project relationship to this token.' };
+  const start = '2025-12-31T23:00:00.000Z';
+  const end = FIXTURE_CUTOFF;
+  const decision = (verdict: 'PASS' | 'FAIL', negativeBasis?: 'FACTUAL_COUNTEREVIDENCE' | 'PUBLIC_SUPPORT_INADEQUATE'): OriginDecision =>
+    verdict === 'PASS'
+      ? { verdict, rationale: 'The cited record supports the bounded observed origin relationship.' }
+      : { verdict, negativeBasis: negativeBasis!, rationale: 'The completed review assessed this bounded origin criterion.' };
+  const record = (grade?: OriginDecision, availableAt = FIXTURE_CUTOFF, quality: 'KNOWN' | 'STALE' | 'MISSING' = 'KNOWN') =>
+    freshOriginAssessment({ evidenceIds: a03.evidenceIds, citation, availableAt, start, end, decision: grade, quality });
+  const evaluate = (owner: ReturnType<typeof record>) => {
+    const resolution = resolveOriginEntryCriterion([owner]);
+    assert.ok(resolution);
+    const result = evaluateEntry(features, illustrativeUncalibratedProfile, FIXTURE_CUTOFF,
+      'QUALIFIED_V4', undefined, false, undefined, { originResolution: resolution });
+    return { resolution, row: result.checks.find(check => check.checkId === 'NAR-02')! };
+  };
+
+  const supported = evaluate(record(decision('PASS')));
+  assert.equal(supported.resolution.outcome, 'SUPPORTED');
+  assert.equal(supported.row.status, 'PASS');
+  assert.deepEqual(supported.row.featureRefs, ['A03']);
+  assert.deepEqual(supported.row.evidenceRefs, a03.evidenceIds);
+  assert.equal(a03.value, true, 'the criterion judgment does not rewrite the factual A03 projection');
+  assert.equal(catalyst.value, null, 'a missing factual A04 stays missing when origin support passes');
+
+  const inadequate = evaluate(record(decision('FAIL', 'PUBLIC_SUPPORT_INADEQUATE')));
+  assert.equal(inadequate.resolution.outcome, 'INSUFFICIENT');
+  assert.equal(inadequate.row.status, 'FAIL');
+  assert.deepEqual(inadequate.row.featureRefs, ['A03']);
+  const contradicted = evaluate(record(decision('FAIL', 'FACTUAL_COUNTEREVIDENCE')));
+  assert.equal(contradicted.resolution.outcome, 'CONTRADICTED');
+  assert.equal(contradicted.resolution.basis, 'FACTUAL_COUNTEREVIDENCE');
+  assert.equal(contradicted.row.status, 'FAIL');
+
+  const missingFinal = evaluate(record());
+  assert.equal(missingFinal.resolution.outcome, 'UNKNOWN');
+  assert.equal(missingFinal.row.status, 'UNKNOWN');
+  const invalidFinalOwner = record(decision('PASS'));
+  const invalidFinalData = invalidFinalOwner.data as { entryCriterionDecision: Record<string, unknown> };
+  invalidFinalOwner.data = { ...invalidFinalData, entryCriterionDecision: {
+    ...invalidFinalData.entryCriterionDecision,
+    decision: { verdict: 'PASS', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE', rationale: 'A positive may not carry a negative basis.', citations: [citation] },
+  } };
+  const invalidFinal = evaluate(invalidFinalOwner);
+  assert.equal(invalidFinal.resolution.outcome, 'UNKNOWN');
+  assert.equal(invalidFinal.row.status, 'UNKNOWN');
+  const stale = evaluate(record(decision('PASS'), FIXTURE_CUTOFF, 'STALE'));
+  assert.equal(stale.resolution.outcome, 'UNKNOWN');
+  assert.equal(stale.row.status, 'UNKNOWN');
+  const future = evaluate(record(decision('PASS'), '2026-01-01T00:01:00.000Z'));
+  assert.equal(future.resolution.outcome, 'SUPPORTED', 'the recorded final is structurally valid before cutoff policy is applied');
+  assert.equal(future.row.status, 'UNKNOWN', 'policy freshness rejects a future origin decision');
 });
 
 test('complete evidence cannot fill missing user-owned size, horizon, or risk settings', () => {

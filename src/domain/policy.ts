@@ -1,3 +1,5 @@
+import type {VenueEntryResolution} from './venue-entry.js';
+import type {AttentionEntryResolution,OriginEntryResolution} from './attention.js';
 import { Decimal } from 'decimal.js';
 import type { EntryCheckResult, EntryGroupFacts, EntryResult, FeatureResult, ManagementCheckResult, ManagementResult, PositionEvent, PositionRecord, Predicate, Profile, ThesisEpisode, SocialPolicyFacts } from './contracts.js';
 import { entryGroupFactsSchema } from './contracts.js';
@@ -64,18 +66,24 @@ export function resolveStage(cap: string | null, tokenCreatedAt: string | null, 
   return { capBand, ageBand };
 }
 
-export type EntryEvidenceGates={sample?:false;growth?:false;originTraceability?:boolean};
+export type EntryEvidenceGates={sample?:boolean;growth?:boolean;originTraceability?:boolean;originResolution?:OriginEntryResolution;venueResolutions?:Partial<Record<VenueEntryResolution['checkId'],VenueEntryResolution>>;resolutions?:Partial<Record<'sample'|'growth',AttentionEntryResolution>>};
 export function evaluateEntry(features: FeatureResult[], profile: Profile, cutoff: string, attentionPolicy:'LEGACY'|'QUALIFIED'|'QUALIFIED_V2'|'QUALIFIED_V3'|'QUALIFIED_V4'='LEGACY', social?:SocialPolicyFacts, shared=false,entryComparison?:boolean,entryGates?:EntryEvidenceGates,groups?:EntryGroupFacts): EntryResult {
   const mandatoryGroups = groups !== undefined;
   const parsedGroups = groups === undefined ? undefined : entryGroupFactsSchema.safeParse(groups);
   const validGroups = parsedGroups?.success && groups?.cutoff === cutoff ? parsedGroups.data : undefined;
   const socialUsable=(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&social&&Date.parse(social.availableAt)<=Date.parse(cutoff)&&Date.parse(social.end)<=Date.parse(cutoff)&&Date.parse(social.start)<Date.parse(social.end)&&Date.parse(cutoff)-Date.parse(social.availableAt)<=900000;
-  const gateWitness=(id:string)=>features.some(f=>f.id===id&&f.quality!=='STALE'&&f.evidenceIds.length>0&&Date.parse(f.availableAt)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(f.availableAt)<=900000);
+  const gateWitness=(id:string,key:'sample'|'growth')=>{
+    const resolution=entryGates?.resolutions?.[key];
+    const fresh=(f:FeatureResult|undefined)=>!!f&&f.quality!=='STALE'&&f.evidenceIds.length>0&&Date.parse(f.availableAt)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(f.availableAt)<=900000;
+    if(!resolution)return features.some(f=>f.id===id&&fresh(f));
+    return resolution.status!=='UNKNOWN'&&entryGates?.[key]===(resolution.status==='PASS')&&resolution.featureIds.includes(id)&&resolution.evidenceIds.length>0&&resolution.featureIds.every(id=>fresh(features.find(f=>f.id===id)))&&resolution.evidenceIds.every(id=>resolution.featureIds.some(fid=>features.find(f=>f.id===fid)?.evidenceIds.includes(id)));
+  };
   const checks: EntryCheckResult[] = entryDefinitionsFor(mandatoryGroups).map(d => {
-    const ruleIds=d.checkId==='CAN-01'&&entryComparison!==undefined?['A09']:d.checkId==='NAR-02'&&entryGates?.originTraceability!==undefined?['A03']:d.featureIds;
+    const ruleIds=d.checkId==='CAN-01'&&entryComparison!==undefined?['A09']:d.checkId==='NAR-02'&&(entryGates?.originResolution||entryGates?.originTraceability!==undefined)?['A03']:d.featureIds;
     let status: EntryCheckResult['status'] = boolRule(features, ruleIds, cutoff);
     if(d.checkId==='CAN-01'&&entryComparison!==undefined&&lookup(features,'A09',cutoff)?.value!==entryComparison)status='UNKNOWN';
-    if(d.checkId==='NAR-02'&&entryGates?.originTraceability!==undefined&&lookup(features,'A03',cutoff)?.value!==entryGates.originTraceability)status='UNKNOWN';
+    if(d.checkId==='NAR-02'&&entryGates?.originResolution){const r=entryGates.originResolution;const f=features.find(f=>f.id==='A03');status=r.status!=='UNKNOWN'&&f&&f.quality!=='STALE'&&r.evidenceIds.length>0&&r.evidenceIds.every(id=>f.evidenceIds.includes(id))&&Date.parse(r.availableAt)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(r.availableAt)<=900000&&Date.parse(r.end)<=Date.parse(cutoff)&&Date.parse(cutoff)-Date.parse(r.end)<=900000?r.status:'UNKNOWN';}
+    else if(d.checkId==='NAR-02'&&entryGates?.originTraceability!==undefined&&lookup(features,'A03',cutoff)?.value!==entryGates.originTraceability)status='UNKNOWN';
     if (d.checkId === 'CTX-01') status = !profile.sizeUsd || !profile.horizonSeconds || ['maxTransferFeeBps','maxDirectControlShare','maxEntryImpactBps','maxExitImpactBps','maxRoundTripLossBps','maxRemovableLiquidityShare'].some(k => profile.risk[k] === undefined) ? 'UNKNOWN' : status;
     if (d.checkId === 'CAP-01' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false)) status = 'UNKNOWN';
     if (d.checkId === 'SEC-04') status = numericLimit(features, 'O07', profile.risk.maxTransferFeeBps, 'bps', cutoff);
@@ -88,7 +96,7 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
     if (d.checkId === 'ATT-01') {
       const posts = lookup(features, 'A16', cutoff), authors = lookup(features, 'A17', cutoff);
       const measured=posts&&authors&&typeof posts.value==='string'&&typeof authors.value==='string'&&(attentionPolicy==='LEGACY'||lookup(features,'A15',cutoff)?.value===true);
-      status = measured ? new Decimal(posts.value as string).gte(10)&&new Decimal(authors.value as string).gte(3)?'PASS':attentionPolicy!=='LEGACY'?'FAIL':'UNKNOWN' : entryGates?.sample===false&&gateWitness('A15')?'FAIL':'UNKNOWN';
+      status = measured ? new Decimal(posts.value as string).gte(10)&&new Decimal(authors.value as string).gte(3)?'PASS':attentionPolicy!=='LEGACY'?'FAIL':'UNKNOWN' : entryGates?.sample!==undefined&&gateWitness('A15','sample')?(entryGates.sample?'PASS':'FAIL'):'UNKNOWN';
     }
     if (d.checkId === 'CAN-02' && (attentionPolicy==='QUALIFIED_V2'||attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')) status = boolRule(features,['A14'],cutoff);
     if((attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL'){
@@ -101,14 +109,16 @@ export function evaluateEntry(features: FeatureResult[], profile: Profile, cutof
       status=!socialUsable||!judgment||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';
     }
     if(attentionPolicy==='QUALIFIED_V4'&&d.checkId==='SOC-03'&&status==='UNKNOWN'&&social?.participationReview){const judgment=social.participationReview;status=!socialUsable||judgment.verdict==='UNRESOLVED'?'UNKNOWN':judgment.verdict==='SUPPORTED'?'PASS':'FAIL';}
-    if (d.checkId === 'ATT-02') { const measuredGrowth=boolRule(features,['A18'],cutoff), a=measuredGrowth==='UNKNOWN'&&entryGates?.growth===false&&gateWitness('A18')?'FAIL':measuredGrowth, s = boolRule(features,['S10'],cutoff); const reviewedCommunity=attentionPolicy==='QUALIFIED_V4'&&socialUsable?social?.communityBreadthReview:undefined;const community=s==='UNKNOWN'&&reviewedCommunity&&reviewedCommunity.verdict!=='UNRESOLVED'?(reviewedCommunity.verdict==='SUPPORTED'?'PASS':'FAIL'):s;status = a === 'PASS' || community === 'PASS' ? 'PASS' : a === 'FAIL' && community === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
+    if (d.checkId === 'ATT-02') { const measuredGrowth=boolRule(features,['A18'],cutoff), a=measuredGrowth==='UNKNOWN'&&entryGates?.growth!==undefined&&gateWitness('A18','growth')?(entryGates.growth?'PASS':'FAIL'):measuredGrowth, s = boolRule(features,['S10'],cutoff); const reviewedCommunity=attentionPolicy==='QUALIFIED_V4'&&socialUsable?social?.communityBreadthReview:undefined;const community=s==='UNKNOWN'&&reviewedCommunity&&reviewedCommunity.verdict!=='UNRESOLVED'?(reviewedCommunity.verdict==='SUPPORTED'?'PASS':'FAIL'):s;status = a === 'PASS' || community === 'PASS' ? 'PASS' : a === 'FAIL' && community === 'FAIL' ? 'FAIL' : 'UNKNOWN'; }
     const group = validGroups?.groups.find(item => item.checkId === d.checkId);
     if (mandatoryGroups && d.checkId.startsWith('ADV-')) status = group?.status ?? 'UNKNOWN';
     if (d.role === 'REQUIRED_EVIDENCE' && status === 'FAIL' && !(shared&&d.checkId.startsWith('DAT-')||attentionPolicy!=='LEGACY'&&d.pillar==='ATTENTION'||(attentionPolicy==='QUALIFIED_V3'||attentionPolicy==='QUALIFIED_V4')&&d.pillar==='SOCIAL')) status = 'UNKNOWN';
     if (d.role === 'ADVISORY' && d.featureIds.length === 0) status = 'UNKNOWN';
-    const reasonCode = group ? group.code : mandatoryGroups && d.checkId.startsWith('ADV-') ? 'ENTRY_GROUP_FACTS_INVALID' : d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
-    const featureRefs = group ? group.featureIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : ruleIds;
-    const evidenceRefs = group ? group.evidenceIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : [...new Set(ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
+    const venue=entryGates?.venueResolutions?.[d.checkId as VenueEntryResolution['checkId']];
+    if(venue){const f=features.find(f=>f.id==='O08');status=venue.status!=='UNKNOWN'&&f&&f.quality==='KNOWN'&&f.value===true&&venue.evidenceIds.every(id=>f.evidenceIds.includes(id))&&Date.parse(venue.availableAt)<=Date.parse(cutoff)&&Date.parse(cutoff)<=Date.parse(venue.expiresAt)?venue.status:'UNKNOWN';}
+    const reasonCode = venue ? (status==='UNKNOWN'?'DAMM_EMPTY_EVALUATION_INCOMPLETE':venue.code) : group ? group.code : mandatoryGroups && d.checkId.startsWith('ADV-') ? 'ENTRY_GROUP_FACTS_INVALID' : d.checkId === 'CAP-01' && status === 'UNKNOWN' && (features.find(f => f.id === 'C02')?.quality === 'UNSUPPORTED' || lookup(features,'C02',cutoff)?.value === false) ? 'UNSUPPORTED_CAPABILITY' : status === 'UNKNOWN' ? (d.checkId === 'CTX-01' ? 'POLICY_PARAMETER_MISSING' : 'INSUFFICIENT_EVIDENCE') : status === 'FAIL' ? 'RULE_FAILED' : 'RULE_SATISFIED';
+    const featureRefs = venue ? venue.featureIds : d.checkId==='NAR-02'&&entryGates?.originResolution ? entryGates.originResolution.featureIds : group ? group.featureIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : ruleIds;
+    const evidenceRefs = venue ? venue.evidenceIds : d.checkId==='NAR-02'&&entryGates?.originResolution ? entryGates.originResolution.evidenceIds : group ? group.evidenceIds : mandatoryGroups && d.checkId.startsWith('ADV-') ? [] : [...new Set(ruleIds.flatMap(id => features.find(f => f.id === id)?.evidenceIds ?? []))];
     return { checkId: d.checkId, checklistKind: 'ENTRY' as const, role: d.role, pillar: d.pillar, required: d.required, status, reasonCode, featureRefs, evidenceRefs };
   }).sort((a,b) => a.checkId.localeCompare(b.checkId));
   const required = checks.filter(c => c.required && c.status !== 'NOT_APPLICABLE');

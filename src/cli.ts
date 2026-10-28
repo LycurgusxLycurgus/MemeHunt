@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { collectLiveToken } from './app/live.js';
 import { guideConfig, guideThesis, loadConfig, materializeThesis, presetDescription, saveConfig, starterConfig, validateConfig, validateThesis, type Ask } from './app/config.js';
-import { renderSnapshot } from './app/report.js';
+import { buildEntryReport, renderSnapshot } from './app/report.js';
 import { validateResearch } from './domain/baseline.js';
 import { Service, decisionHash as ServiceHash } from './app/service.js';
 import {
@@ -139,7 +139,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       if(selected==='entry'&&snapshot.checklistKind==='MANAGEMENT'&&service)snapshot=service.show(snapshot.baselineSnapshotId);
       stdout(renderSnapshot(snapshot,{details:snapshot.details??service?.frozenDetails(snapshot.id),checklist:hasFlag(argv,'checklist'),check:flagValue(argv,'check'),evidence:hasFlag(argv,'evidence')}));
     }
-    else stdout(`${JSON.stringify(value)}\n`);
+    else {const snapshot=value as ReturnType<Service['show']>;stdout(`${JSON.stringify(snapshot&&snapshot.checklistKind==='ENTRY'?{...snapshot,report:buildEntryReport(snapshot,snapshot.details??service?.frozenDetails(snapshot.id))}:value)}\n`);}
   };
   const cmd = argv[0];
   const configPath=flagValue(argv,'config')??join(dirname(flagValue(argv,'db')??'.data/dd.sqlite'),'config.json');
@@ -214,6 +214,11 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         networkCheck: 'Use doctor --network for one mainnet RPC connectivity check; no snapshot or hosted calls.',
         tinyfishKeyPresent: !!env.TINYFISH_API_KEY,
         geminiKeyPresent: !!env.GEMINI_API_KEY,
+        nvidiaKeyPresent: !!env.NVIDIA_API_KEY,
+        nvidiaFallbackConfigured: false,
+        openrouterKeyPresent: !!env.OPENROUTER_API_KEY,
+        openrouterFallbackConfigured: !!env.OPENROUTER_API_KEY,
+        fallbackModel: env.OPENROUTER_API_KEY?'nvidia/nemotron-3.5-super-vl:free':null,
         fullPassKeysPresent: missing.length === 0,
         fullPassMissingKeys: missing,
         fullPassApproval: '--full or interactive y/yes per analysis run',
@@ -313,7 +318,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           ].join('\n'));
         }
         if (partialRequested) stderr('PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
-        if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini for this analysis.\n');
+        if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini with the configured free OpenRouter fallback for this analysis.\n');
         if(!saved&&!hasProfile){
           let initial=starterConfig();
           if(interactive){stderr(presetDescription+'\n');const guided=await guideConfig(runtime.ask??askInput,initial);if(!guided)throw new Error('CONFIG_CANCELLED');initial=guided;}
@@ -329,7 +334,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
-          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY! } : {}),
+          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY!, ...(env.OPENROUTER_API_KEY?{openrouterKey:env.OPENROUTER_API_KEY}:{}) } : {}),
           semanticEnabled: fullApproved,
           fetcher: runtime.fetcher ?? fetch,
           ...(runtime.now ? { now: runtime.now } : {}),
@@ -340,7 +345,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           : service.analyzeLive(live);
         result = snapshot;
         if (snapshot.checklistKind === 'ENTRY' && snapshot.result.classification === 'INSUFFICIENT_DATA') {
-          stderr(`INSUFFICIENT_DATA: ${snapshot.result.coverage.known}/${snapshot.result.coverage.total} required checks are known. Observations, pairs, pages and semantic candidate claims do not verify the remaining checks. Inspect result.checks and run profile options for missing user choices. This is missing evidence, not a detected-rug verdict.\n`);
+          const coverage=buildEntryReport(snapshot).coverage;
+          stderr(`INSUFFICIENT_DATA: unresolved analysis (legacy classification code); ${coverage.known}/${coverage.total} required decisions are resolved. Observations, pairs, pages and semantic candidate claims do not complete the remaining evaluations. Inspect report.checks and run profile options for missing user choices. This is an unresolved evaluation, not a completed INSUFFICIENT judgment or a detected-rug verdict.\n`);
         }
       }
       output(result);

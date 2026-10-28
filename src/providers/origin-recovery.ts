@@ -69,7 +69,7 @@ export function verifiedOriginExclusion(read:AttentionRead,item:OriginExclusion,
 
 /** Canonical bounded original recovery selection, also reconstructed by entry proof validation. */
 export function originRecoveryCandidates(read:AttentionRead,acquisition=read.originScope?.acquisition){
-  return acquisition?.urls.filter(u=>['UNAVAILABLE','OMITTED'].includes(u.state)&&originContext(read,u.url).length).slice(0,2)??[];
+  return acquisition?.urls.filter(u=>['UNAVAILABLE','OMITTED'].includes(u.state)&&(originContext(read,u.url).length||read.originRecoveryCandidateMethod==='mint-metadata-subject-v1'&&read.metadataLinkMethod==='onchain-metadata-v1'&&read.metadataUri===u.url&&read.discoveryUrls?.includes(u.url))).slice(0,2)??[];
 }
 /** Fresh recovery researches the indexed token/subject, not just the blocked site's role. */
 export function originRecoveryQuery(read:AttentionRead,token:TokenRef,url:string){
@@ -99,6 +99,9 @@ export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,
       for(const r of fetched.results){if(ids.length>=urls.length||out.sources.length>=attentionInitialPageLimit(out)||ids.some(id=>out.sources.find(s=>s.id===id)?.url===r.url)||!urls.includes(r.url)||(r.final_url??r.url)!==r.url||typeof r.text!=='string'||r.text.length<8||r.text.length>120000||ids.reduce((n,id)=>n+out.sources.find(s=>s.id===id)!.text.length,0)+r.text.length>120000||r.text.trim().toLowerCase()==='safety check')continue;const s:AttentionSource={id:`origin-role-page-${index}-${ids.length+1}`,url:r.url,text:r.text,kind:'PAGE',publishedAt:null,authorId:null,availableAt:now()};out.sources.push(s);ids.push(s.id);}
       if(!ids.length)continue;
       const context=originContext(out,lead.url);
+      // A mint-owned URI is a recovery subject, not evidence of the site's role.
+      // Its actual alternate bodies go to public-support review without a fake exclusion.
+      if(!context.length)continue;
       const call=async<S extends z.ZodType>(suffix:string,prompt:string,schema:S)=>{out.rawArtifacts[id+'-'+suffix+'-prompt']=prompt;return (await requestSourceJson(prompt,schema,geminiKey,fetcher,(raw,retrying,attempt)=>{out.rawArtifacts[id+'-'+suffix+(attempt?`-transport-attempt-${attempt}`:'-response')]=raw;},delay,signal,'ATT_MODEL',routing)).value;};
       const corroboration=ids.map(id=>out.sources.find(s=>s.id===id)!);
       const role=await call('proposal',originRolePrompt('proposal',token,lead.url,context,corroboration),roleSchema),review=await call('review',originRolePrompt('review',token,lead.url,context,corroboration,role),roleReviewSchema);
@@ -120,6 +123,13 @@ function rawDigest(url:string):Buffer|null{
     return buffer.length===36&&buffer.subarray(0,4).equals(Buffer.from([1,0x55,0x12,0x20]))?buffer.subarray(4):null;
   }catch{return null;}
 }
+function rawCidGateway(originUrl:string):string|null{
+  if(!rawDigest(originUrl))return null;
+  return `https://gateway.pinata.cloud/ipfs/${new URL(originUrl).pathname.split('/')[2]}`;
+}
+export function exactOriginalSubjectForCidMirror(originalUrls:readonly string[],requestedUrl:string):string|null{
+  return originalUrls.find(url=>rawCidGateway(url)===requestedUrl&&new URL(url).hostname!=='gateway.pinata.cloud')??null;
+}
 /** Markdown wrappers are removed only if the exact recovered bytes match the CID. */
 export function verifiedOriginText(originUrl:string,fetchedText:string):string|null{
   const digest=rawDigest(originUrl);if(!digest)return null;
@@ -132,7 +142,7 @@ export function verifyOriginAlias(alias:OriginAlias,sources:AttentionSource[],ra
   try{
     const digest=rawDigest(alias.originUrl),source=sources.find(s=>s.id===alias.sourceId),response=JSON.parse(rawArtifacts[alias.responseId]);
     if(alias.method!=='raw-cid-sha256-v1'||!digest||!source||!Array.isArray(response.results)||!Array.isArray(response.errors)||!Number.isSafeInteger(alias.resultIndex))return null;
-    const result=response.results[alias.resultIndex],cid=new URL(alias.originUrl).pathname.split('/')[2],gateway=`https://gateway.pinata.cloud/ipfs/${cid}`;
+    const result=response.results[alias.resultIndex],gateway=rawCidGateway(alias.originUrl);
     if(result?.url!==gateway||(result.final_url??gateway)!==gateway||source.url!==gateway||typeof result.text!=='string')return null;
     const text=verifiedOriginText(alias.originUrl,result.text);
     return text!==null&&text===source.text?source:null;
@@ -143,7 +153,7 @@ export function verifyOriginAlias(alias:OriginAlias,sources:AttentionSource[],ra
 export async function recoverOriginPages(read:AttentionRead,token:TokenRef,key:string,fetcher:typeof fetch,now:()=>string):Promise<AttentionRead>{
   if(!read.sources.length||read.sources.length>=attentionInitialPageLimit(read)||!read.originScope?.acquisition)return read;
   const missing=read.originScope.acquisition.urls.filter(u=>u.state==='UNAVAILABLE'||u.state==='OMITTED');
-  const gateways=missing.flatMap(u=>rawDigest(u.url)?[{origin:u.url,url:`https://gateway.pinata.cloud/ipfs/${new URL(u.url).pathname.split('/')[2]}`}]:[]).slice(0,1);
+  const gateways=missing.flatMap(u=>{const url=rawCidGateway(u.url);return url?[{origin:u.url,url}]:[];}).slice(0,1);
   const dexLead=read.comparisonAcquisition?.leads.some(l=>l.url&&new URL(l.url).hostname.replace(/^www\./,'')==='dexscreener.com'&&l.acquisitionStatus!=='ACQUIRED');
   const dexUrl=`https://api.dexscreener.com/token-pairs/v1/${token.chain}/${token.address}`;
   const poolLead=token.chain==='solana'?read.comparisonAcquisition?.leads.find(l=>l.acquisitionStatus!=='ACQUIRED'&&geckoPoolApiUrl(l.url)):undefined;

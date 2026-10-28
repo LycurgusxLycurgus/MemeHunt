@@ -7,7 +7,7 @@ import test from 'node:test';
 import { runCli } from '../src/cli.js';
 import { starterConfig } from '../src/app/config.js';
 import { fixtureBundle } from '../examples/fixtures.js';
-import type { Bundle, EvidenceRecord, TokenRef } from '../src/domain/contracts.js';
+import type { Bundle, EntrySnapshot, EvidenceRecord, TokenRef } from '../src/domain/contracts.js';
 
 const CUTOFF = '2026-09-29T12:00:00.000Z';
 const TOKEN: TokenRef = { chain: 'solana', address: '3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump' };
@@ -27,6 +27,24 @@ async function invoke(directory: string, argv: string[], options: Parameters<typ
     ...options,
   });
   return { exitCode, stdout: stdout.join(''), stderr: stderr.join('') };
+}
+
+type CliEntryReportCheck = { checkId: string; policyStatus: string; outcome: string; basis: string };
+
+function cliEntrySnapshot(stdout: string): {
+  snapshot: EntrySnapshot;
+  report: { method: string; checks: CliEntryReportCheck[]; [key: string]: unknown };
+} {
+  const parsed = JSON.parse(stdout) as EntrySnapshot & {
+    report?: { method?: string; checks?: CliEntryReportCheck[]; [key: string]: unknown };
+  };
+  const { report, ...snapshot } = parsed;
+  assert.equal(report?.method, 'entry-outcomes-v1', 'JSON snapshot output includes the current normalized report');
+  assert.ok(Array.isArray(report?.checks), 'JSON snapshot report includes per-check normalized outcomes');
+  return {
+    snapshot: snapshot as EntrySnapshot,
+    report: report as { method: string; checks: CliEntryReportCheck[]; [key: string]: unknown },
+  };
 }
 
 function userImportWithDirectClaim(): Bundle {
@@ -90,10 +108,8 @@ test('CLI imports cannot promote direct user facts; human reports and JSON repla
     const imported = await invoke(directory, ['analyze', TOKEN.address, '--bundle', inputPath]);
     assert.equal(imported.exitCode, 0);
     assert.equal(imported.stdout.trim().split('\n').length, 1);
-    const snapshot = JSON.parse(imported.stdout) as {
-      id: string; analysisKind: string; features: Array<{ id: string; value: unknown; quality: string }>;
-      result: { binary: string; classification: string };
-    };
+    const importedResult = cliEntrySnapshot(imported.stdout);
+    const snapshot = importedResult.snapshot;
     assert.equal(snapshot.analysisKind, 'USER_IMPORT');
     const direct = snapshot.features.find(feature => feature.id === 'O03');
     assert.equal(direct?.value, true, 'the imported assertion remains visible for review');
@@ -103,8 +119,9 @@ test('CLI imports cannot promote direct user facts; human reports and JSON repla
 
     const human = await invoke(directory, ['show', snapshot.id], {}, false);
     assert.equal(human.exitCode, 0);
-    assert.match(human.stdout, /^ENTRY — INSUFFICIENT DATA/);
-    assert.match(human.stdout, /Unknown is missing evidence, not a detected-rug finding/);
+    assert.match(human.stdout, /^ENTRY — UNRESOLVED ANALYSIS/);
+    assert.match(human.stdout, /UNKNOWN=unresolved evaluation or fact/);
+    assert.match(human.stdout, /Required decisions resolved: 0\/27/);
     assert.match(human.stdout, /SAVED_DEFAULT|FROZEN_INPUT/);
     assert.doesNotMatch(human.stdout.trim(), /^\{/);
 
@@ -112,8 +129,12 @@ test('CLI imports cannot promote direct user facts; human reports and JSON repla
     const offline = { env: {}, fetcher: async (input: string | URL | Request) => { calls.push(String(input)); throw new Error('REPLAY_MUST_STAY_OFFLINE'); } };
     const shown = await invoke(directory, ['show', snapshot.id], offline);
     const replayed = await invoke(directory, ['replay', snapshot.id], offline);
-    assert.deepEqual(JSON.parse(shown.stdout), snapshot);
-    assert.deepEqual(JSON.parse(replayed.stdout), snapshot);
+    const shownResult = cliEntrySnapshot(shown.stdout);
+    const replayedResult = cliEntrySnapshot(replayed.stdout);
+    assert.deepEqual(shownResult.snapshot, snapshot);
+    assert.deepEqual(replayedResult.snapshot, snapshot);
+    assert.deepEqual(shownResult.report, importedResult.report);
+    assert.deepEqual(replayedResult.report, importedResult.report);
     assert.equal(calls.length, 0);
 
     const explain = await invoke(directory, ['explain', snapshot.id, '--check', 'SEC-01', '--evidence'], {}, false);
@@ -134,7 +155,9 @@ test('fixture output is visibly synthetic and bundle analysis does not require p
     const human = await invoke(directory, ['analyze', TOKEN.address, '--bundle', path], {}, false);
     assert.equal(human.exitCode, 0);
     assert.match(human.stdout, /Evidence mode: FIXTURE — SYNTHETIC TEST SCENARIO; not a live token assessment/);
-    assert.match(human.stdout, /Required coverage:/);
+    assert.match(human.stdout, /^ENTRY — UNRESOLVED ANALYSIS/);
+    assert.match(human.stdout, /Required decisions resolved: 0\/27/);
+    assert.match(human.stdout, /All checklist UNKNOWN rows: 33 \(27 required; 6 outside required coverage\)/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

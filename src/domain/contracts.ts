@@ -144,7 +144,7 @@ export type ManagementSnapshot = {
   details?: AssessmentDetails;
 };
 export const socialJudgmentSchema = z.object({
-  verdict:z.enum(['SUPPORTED','CONTRADICTED','UNRESOLVED']),rationale:z.string().min(1).max(1000),
+  verdict:z.enum(['SUPPORTED','CONTRADICTED','UNRESOLVED']),negativeBasis:z.enum(['FACTUAL_COUNTEREVIDENCE','PUBLIC_SUPPORT_INADEQUATE']).optional(),rationale:z.string().min(1).max(1000),
   citations:z.array(z.object({sourceId:z.string().min(1),quote:z.string().min(8).max(1000)}).strict()).min(1).max(5),
 }).strict();
 const socialQualifiedJudgmentSchema = socialJudgmentSchema.extend({
@@ -152,7 +152,8 @@ const socialQualifiedJudgmentSchema = socialJudgmentSchema.extend({
   missingIndicators:z.array(z.enum(['ACCOUNT_HISTORY','ENGAGEMENT','COMPARABLE_HISTORY'])).max(3),
 }).strict();
 export const socialPolicyFactsSchema = z.object({
-  version:z.literal('social-policy-v1'),method:z.literal('social-source-review-v1'),token:tokenRefSchema,
+  acquisitionEvidenceMethod:z.literal('bounded-acquisition-receipts-v1').optional(),acquisitionScopeComplete:z.boolean().optional(),
+  outcomeBasisMethod:z.literal('entry-outcome-basis-v1').optional(),version:z.literal('social-policy-v1'),method:z.literal('social-source-review-v1'),token:tokenRefSchema,
   start:z.iso.datetime({offset:true}),end:z.iso.datetime({offset:true}),availableAt:z.iso.datetime({offset:true}),evidenceIds:z.array(z.string()).max(1000),
   postCorpusObserved:z.boolean(),sampleComplete:z.boolean(),lineageComplete:z.boolean(),
   qualifiedOriginalCount:z.number().int().nonnegative().safe().nullable(),accountUpperBound:z.number().int().nonnegative().safe().nullable(),
@@ -160,8 +161,9 @@ export const socialPolicyFactsSchema = z.object({
   identityReview:socialQualifiedJudgmentSchema.optional(),integrityReview:socialQualifiedJudgmentSchema.optional(),participationReview:socialQualifiedJudgmentSchema.optional(),communityBreadthReview:socialQualifiedJudgmentSchema.optional(),
 }).strict();
 export type SocialPolicyFacts = z.infer<typeof socialPolicyFactsSchema>;
+export const entryContextDecisionMethod='necessary-public-support-witness-v1' as const;
 export const entryGroupFactsSchema = z.object({
-  method: z.literal('mandatory-entry-groups-v1'), token: tokenRefSchema, cutoff: z.iso.datetime({ offset: true }),
+  method: z.literal('mandatory-entry-groups-v1'), contextDecisionMethod:z.literal(entryContextDecisionMethod).optional(), token: tokenRefSchema, cutoff: z.iso.datetime({ offset: true }),
   groups: z.array(z.object({
     checkId: z.enum(['ADV-01', 'ADV-02', 'ADV-03', 'ADV-04', 'ADV-05']),
     status: z.enum(['PASS', 'FAIL', 'UNKNOWN']), rationale: z.string().min(1).max(1500), code: z.string(),
@@ -174,7 +176,10 @@ export const entryGroupFactsSchema = z.object({
 });
 export type EntryGroupFacts = z.infer<typeof entryGroupFactsSchema>;
 export const sharedPolicyFactsSchema=z.object({
-  method:z.literal('shared-evidence-v1'),qualityMode:z.enum(['ENTRY_GATES_V1','ENTRY_GROUPS_V1']).optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
+ decisionMethod:z.enum(['independent-final-dispositions-v1','source-support-and-conflict-v2']).optional(),
+ supportCompleted:z.boolean().optional(),supportQualified:z.boolean().optional(),
+ claimSupport:z.array(z.object({id:z.string(),featureIds:z.array(z.string()),support:z.enum(['SUPPORTED','INSUFFICIENT','UNRESOLVED']),rationale:z.string(),evidenceIds:z.array(z.string())}).strict()).optional(),
+  method:z.literal('shared-evidence-v1'),completionMethod:z.literal('reviewed-audit-completion-v1').optional(),auditCompleted:z.boolean().optional(),qualityMode:z.enum(['ENTRY_GATES_V1','ENTRY_GROUPS_V1']).optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
   witnesses:z.array(z.object({checkId:z.string(),status:z.enum(['PASS','FAIL','UNKNOWN']),featureIds:z.array(z.string()),evidenceIds:z.array(z.string()),route:z.string()}).strict()).max(40),
   freshness:z.array(z.object({featureId:z.string(),ttlSeconds:z.number().int().positive(),eventAt:z.string().nullable(),fresh:z.boolean(),evidenceIds:z.array(z.string())}).strict()).max(61),
   unresolved:z.array(z.string()),semanticQualified:z.boolean(),auditQualified:z.boolean(),

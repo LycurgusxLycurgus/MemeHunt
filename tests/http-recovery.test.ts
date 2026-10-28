@@ -11,6 +11,14 @@ async function flushMicrotasks() {
   for (let index = 0; index < 12; index++) await Promise.resolve();
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 4_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('TEST_WAIT_CONDITION_TIMEOUT');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
 test('read recovery retries only bounded transient HTTP statuses and returns the final response', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const calls: Array<{ url: string; init: RequestInit }> = [];
@@ -530,6 +538,131 @@ test('Solana RPC retries allowlisted reads only and does not retry successful re
     controller.abort(reason);
     await assert.rejects(pending, error => error === reason);
     assert.equal(calls, 1, 'non-allowlisted methods do not gain retries');
+  });
+});
+
+test('Solana RPC context-lag recovery preserves the finalized request and stays within one bounded budget', async t => {
+  const params = ['Mint111', { encoding: 'base64', commitment: 'finalized', minContextSlot: 321 }];
+  const lagRaw = JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32016, message: 'minimum context slot not reached' } });
+
+  await t.test('two context errors retry the exact serialized request and report each raw attempt', async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    const contextErrors: Array<{ attempt: number; raw: string }> = [];
+    const pending = solanaRpc(URL, 'getAccountInfo', params, async (input, init) => {
+      calls.push({ url: String(input), body: String(init?.body) });
+      return calls.length < 3
+        ? new Response(lagRaw, { status: 200 })
+        : new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { context: { slot: 322 }, value: null } }), { status: 200 });
+    }, undefined, undefined, undefined, (attempt, raw) => contextErrors.push({ attempt, raw }));
+
+    await flushMicrotasks();
+    assert.equal(calls.length, 1);
+    await waitForCondition(() => calls.length === 2);
+    assert.equal(calls.length, 2);
+    await waitForCondition(() => calls.length === 3);
+    assert.deepEqual(await pending, { raw: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { context: { slot: 322 }, value: null } }), value: { context: { slot: 322 }, value: null } });
+    assert.deepEqual(calls, Array.from({ length: 3 }, () => ({
+      url: URL,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params }),
+    })), 'each context retry uses the original method, params, commitment, floor, and endpoint');
+    assert.deepEqual(contextErrors, [{ attempt: 1, raw: lagRaw }, { attempt: 2, raw: lagRaw }]);
+  });
+
+  await t.test('persistent context errors invoke the callback through exhaustion and keep the safe remote code', async () => {
+    const contextErrors: Array<{ attempt: number; raw: string }> = [];
+    let calls = 0;
+    const pending = solanaRpc(URL, 'getAccountInfo', params, async () => {
+      calls++;
+      return new Response(lagRaw, { status: 200 });
+    }, undefined, undefined, undefined, (attempt, raw) => contextErrors.push({ attempt, raw }));
+    const rejected = assert.rejects(pending, /RPC_REMOTE_-32016/);
+    await flushMicrotasks();
+    await waitForCondition(() => calls === 3);
+    await rejected;
+    assert.equal(calls, 3, 'two bounded additional context attempts follow the original call');
+    assert.deepEqual(contextErrors, [{ attempt: 1, raw: lagRaw }, { attempt: 2, raw: lagRaw }, { attempt: 3, raw: lagRaw }],
+      'the final exhausted error response is retained before the public error is thrown');
+  });
+
+  await t.test('no-floor, unsafe-floor, non-finalized, non-read, malformed, and other-code failures do not use context recovery', async () => {
+    const cases: Array<{ method: string; params: unknown[]; raw: string; error: RegExp }> = [
+      { method: 'getAccountInfo', params: ['Mint111', { encoding: 'base64', commitment: 'finalized' }], raw: lagRaw, error: /RPC_REMOTE_-32016/ },
+      { method: 'getAccountInfo', params: ['Mint111', { encoding: 'base64', commitment: 'finalized', minContextSlot: Number.MAX_SAFE_INTEGER + 1 }], raw: lagRaw, error: /RPC_REMOTE_-32016/ },
+      { method: 'getAccountInfo', params: ['Mint111', { encoding: 'base64', commitment: 'confirmed', minContextSlot: 321 }], raw: lagRaw, error: /RPC_REMOTE_-32016/ },
+      { method: 'sendTransaction', params: ['signed-placeholder', { commitment: 'finalized', minContextSlot: 321 }], raw: lagRaw, error: /RPC_REMOTE_-32016/ },
+      { method: 'getFeeForMessage', params: ['serialized-message', { commitment: 'finalized', minContextSlot: 321 }], raw: lagRaw, error: /RPC_REMOTE_-32016/ },
+      { method: 'getAccountInfo', params, raw: JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'unsupported' } }), error: /RPC_REMOTE_-32601/ },
+      { method: 'getAccountInfo', params, raw: '{', error: /RPC_SHAPE/ },
+    ];
+    for (const [index, item] of cases.entries()) {
+      let calls = 0;
+      let callbacks = 0;
+      await assert.rejects(solanaRpc(URL, item.method, item.params, async () => {
+        calls++;
+        return new Response(item.raw, { status: 200 });
+      }, undefined, undefined, undefined, () => callbacks++), item.error, `case ${index + 1}`);
+      assert.equal(calls, 1, `case ${index + 1} has no context retry`);
+      assert.equal(callbacks, 0, `case ${index + 1} does not expose an ineligible or different failure`);
+    }
+  });
+
+  await t.test('caller cancellation during the context wait prevents another request', async () => {
+    const controller = new AbortController();
+    const reason = new DOMException('collection cancelled', 'AbortError');
+    let calls = 0;
+    const contextAttempts: number[] = [];
+    const pending = solanaRpc(URL, 'getAccountInfo', params, async () => {
+      calls++;
+      return new Response(lagRaw, { status: 200 });
+    }, undefined, controller.signal, undefined, attempt => contextAttempts.push(attempt));
+    await flushMicrotasks();
+    assert.equal(calls, 1);
+    assert.deepEqual(contextAttempts, [1]);
+    controller.abort(reason);
+    await assert.rejects(pending, error => error === reason);
+    assert.equal(calls, 1);
+  });
+
+  await t.test('inner getProgramAccounts HTTP retries share the single 30-second context signal', async st => {
+    st.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+    const timeoutDurations: number[] = [];
+    const contextController = new AbortController();
+    st.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+      timeoutDurations.push(milliseconds);
+      if (milliseconds === 30_000) {
+        const timer = setTimeout(() => contextController.abort(new DOMException('context budget ended', 'TimeoutError')), milliseconds);
+        contextController.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+        return contextController.signal;
+      }
+      return new AbortController().signal;
+    });
+    let calls = 0;
+    const contextAttempts: number[] = [];
+    const pending = solanaRpc(URL, 'getProgramAccounts', ['Token111', { encoding: 'base64', commitment: 'finalized', minContextSlot: 321 }],
+      async (_input, init) => {
+        calls++;
+        if (calls <= 2) return new Response('provider busy', { status: 503 });
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init?.signal?.reason), { once: true });
+        });
+      }, undefined, undefined, undefined, attempt => contextAttempts.push(attempt));
+
+    await flushMicrotasks();
+    assert.equal(calls, 1);
+    st.mock.timers.tick(1000);
+    await flushMicrotasks();
+    assert.equal(calls, 2);
+    st.mock.timers.tick(2000);
+    await flushMicrotasks();
+    assert.equal(calls, 3);
+    st.mock.timers.tick(27_000);
+    await assert.rejects(pending, error => error instanceof Error && error.name === 'TimeoutError');
+    assert.equal(calls, 3, 'the shared context deadline aborts the third HTTP request at t=30s');
+    assert.deepEqual(contextAttempts, [], 'HTTP response retries do not masquerade as JSON-RPC context-lag callbacks');
+    assert.equal(timeoutDurations.filter(milliseconds => milliseconds === 30_000).length, 1,
+      'one context deadline is created for the whole RPC recovery loop');
+    assert.equal(timeoutDurations.filter(milliseconds => milliseconds === 15_000).length, 3,
+      'each HTTP attempt remains capped by the same context signal and uses no delayed timeout fallback');
   });
 });
 

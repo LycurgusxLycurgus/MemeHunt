@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deriveShared, expireSharedWitnesses, sharedAuditSchema, sharedClaimSchema, sharedClaims } from '../src/domain/shared.js';
+import { attentionEntryGates, deriveShared, expireSharedWitnesses, sharedAuditSchema, sharedClaimSchema, sharedClaims, sharedWitnesses } from '../src/domain/shared.js';
 import { SHARED_CUTOFF, SHARED_TOKEN, requalifyAudit, sharedFixture } from './shared-fixtures.js';
+import { attentionBoundsFixture } from './attention-bounds-fixtures.js';
 
 const assessment = (rows: ReturnType<typeof deriveShared>['assessments'], id: string) => rows.find(row => row.id === id)!;
 
@@ -19,6 +20,78 @@ test('shared claims preserve qualified narrative, exact-contract candidate, orig
   assert.match(socialStatement!, /retrieval time does not make an older post current/);
   assert.deepEqual(sharedClaims(input.baseline, { ...input.social!, identityReview: { ...input.social!.identityReview!, verdict: 'UNRESOLVED' } })
     .map(claim => claim.id).includes('SOC-01'), false, 'unresolved social judgments do not become claims');
+});
+
+test('fresh origin resolution selects a separate Shared entry claim and NAR-02 witness without factual A04', () => {
+  const input = sharedFixture();
+  const originRow = input.baseline.find(row => row.id === 'A03')!;
+  const a04 = input.baseline.find(row => row.id === 'A04')!;
+  const a04Feature = input.features.find(feature => feature.id === 'A04')!;
+  const source = input.sources[0]!;
+  const citation = { sourceId: source.id, quote: source.text.split('\n')[6]! };
+  const evidenceId = originRow.evidenceIds[0]!;
+  const originalFactual = originRow.data as { summary?: string; citations?: Array<{ sourceId: string; quote: string }> };
+  originRow.data = {
+    ...originalFactual,
+    semanticJudgmentMethod: 'evidence-constitution-v1',
+    entryCriterionDecision: {
+      method: 'evidence-constitution-v1', criterion: 'NAR-02',
+      decision: { verdict: 'PASS', rationale: 'The independently reviewed original supports the bounded observed-origin criterion.', citations: [citation] },
+      availableAt: SHARED_CUTOFF, start: '2026-10-01T11:00:00.000Z', end: SHARED_CUTOFF,
+      evidenceIds: [evidenceId],
+    },
+  };
+  a04.quality = 'MISSING';
+  a04.projection = { ...a04.projection!, value: null, quality: 'MISSING' };
+  a04Feature.value = null;
+  a04Feature.quality = 'MISSING';
+  a04Feature.applicability = 'UNRESOLVED';
+
+  const gates = attentionEntryGates(input.baseline, true)!;
+  assert.equal(gates.originResolution?.outcome, 'SUPPORTED');
+  const witness = sharedWitnesses(input.features, input.profile, input.cutoff, undefined, undefined, gates,
+    undefined, input.baseline).find(row => row.checkId === 'NAR-02')!;
+  assert.equal(witness.status, 'PASS');
+  assert.deepEqual(witness.featureIds, ['A03']);
+  assert.deepEqual(witness.evidenceIds, [evidenceId]);
+
+  const claims = sharedClaims(input.baseline, input.social, 'source-support-and-conflict-v2');
+  const selected = claims.find(claim => claim.id === 'A03:entry')!;
+  assert.match(selected.statement, /^SUPPORTED:/);
+  assert.deepEqual(selected.citations, [citation]);
+  assert.notDeepEqual(selected.citations, originalFactual.citations,
+    'the selected entry claim keeps its own final citation instead of borrowing the broader factual A03 summary');
+  assert.ok(claims.some(claim => claim.id === 'A03'), 'the independently qualified factual A03 summary remains a separate Shared claim');
+  assert.equal(claims.some(claim => claim.id === 'A04'), false, 'missing factual A04 is not needed for the origin criterion claim');
+});
+
+test('Shared claims retain the fresh criterion value, verdict basis, proof and original public decision', () => {
+  const input = sharedFixture();
+  const a05 = input.baseline.find(row => row.id === 'A05')!;
+  const source = input.sources[0]!;
+  const citation = { sourceId: source.id, quote: source.text.split('\n')[6]! };
+  const decision = {
+    verdict: 'FAIL' as const, negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE' as const,
+    rationale: 'The complete independent review lacks a required explanation premise.', citations: [citation],
+    criterionProof: { kind: 'PUBLIC_SUPPORT_INADEQUATE' as const, criterion: 'NAR-03' as const,
+      gap: 'The retained complete review lacks a grounded prerequisite assessment.' },
+  };
+  a05.quality = 'KNOWN';
+  a05.projection = { ...a05.projection!, value: true, quality: 'KNOWN' };
+  a05.data = {
+    semanticPremiseMethod: 'criterion-premises-v1',
+    summary: 'The factual thesis remains independently qualified.', citations: [citation],
+    entryDecisionMethod: 'binary-public-support-v5', decision,
+    entryCriterionDecision: { decision },
+  };
+
+  const claim = sharedClaims([a05]).find(item => item.id === 'A05')!;
+  assert.deepEqual(claim.criterionContext, {
+    method: 'criterion-premises-v1', criterion: 'NAR-03', value: true,
+    publicDecision: decision, verdict: 'FAIL', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE', proof: decision.criterionProof,
+  });
+  assert.deepEqual(sharedClaimSchema.parse(claim), claim,
+    'the typed Shared wire keeps the original criterion decision and factual value together without regrading either');
 });
 
 test('shared audit keeps public-support entry grade separate from factual origin', () => {
@@ -169,6 +242,138 @@ test('conflict audit is unknown when incomplete, passes complete clear coverage,
   assert.equal(deriveShared(incompleteSource).facts.values.C06, null);
 });
 
+test('fresh Shared audit separates completed unclear support from incomplete audit and factual conflict', () => {
+  const fresh = sharedFixture();
+  fresh.qualityMode = 'ENTRY_GATES_V1';
+  fresh.completionMethod = 'reviewed-audit-completion-v1';
+  const attention = attentionBoundsFixture({ posts: { lower: 2, upper: 4 }, accounts: { lower: 2, upper: 4 } });
+  fresh.baseline = fresh.baseline.map(row => attention.find(item => item.id === row.id && ['A15', 'A16', 'A17', 'A18'].includes(item.id)) ?? row);
+  fresh.features = fresh.features.map(feature => {
+    const replacement = attention.find(row => row.id === feature.id && ['A15', 'A16', 'A17', 'A18'].includes(row.id));
+    return replacement ? { ...feature, value: null, quality: 'MISSING' as const,
+      availableAt: replacement.projection!.availableAt, evidenceIds: replacement.evidenceIds } : feature;
+  });
+  const posts = attention.find(row => row.id === 'A15')!.evidenceIds;
+  const addedSources = posts.map((id, index) => ({
+    id, url: `https://x.com/writer${index + 1}/status/${index + 1}`,
+    text: `Retained exact token post ${index + 1}.`, publishedAt: null,
+    authorId: `x.com:writer${index + 1}`, availableAt: fresh.cutoff, kind: 'POST' as const,
+  }));
+  fresh.sources.push(...addedSources);
+  fresh.evidence.push(...posts.map(id => ({
+    id, sourceId: 'attention-test-post', sourceType: 'WEB_PAGE', retrievedAt: fresh.cutoff,
+    availableAt: fresh.cutoff, contentHash: 'e'.repeat(64), adapterVersion: 'shared-test-v1',
+    accessMode: 'FREE_ACCOUNT' as const, scope: { fixture: true },
+  })));
+  const resetAudit = (disposition: 'CLEAR' | 'CONFLICT' | 'UNCLEAR' = 'CLEAR') => {
+    fresh.claims = sharedClaims(fresh.baseline, fresh.social);
+    const unclearClaim = fresh.claims.find(claim => claim.id.startsWith('attention-bounds:'));
+    fresh.audit = {
+      claims: fresh.claims.map(claim => ({
+        id: claim.id, disposition: claim === unclearClaim ? disposition : 'CLEAR',
+        rationale: 'The complete synthetic retained corpus was inspected for this claim.',
+        citations: disposition === 'CONFLICT' && claim === unclearClaim && fresh.sources.length > 1
+          ? [claim.citations[0]!, { sourceId: fresh.sources[1]!.id, quote: fresh.sources[1]!.text.split('\n')[0]! }]
+          : claim.citations,
+      })),
+      review: fresh.claims.map(claim => ({ id: claim.id, accepted: true })),
+      sources: fresh.sources.map(source => ({ id: source.id, complete: true })),
+    };
+    return unclearClaim;
+  };
+
+  const unclearClaim = resetAudit('UNCLEAR');
+  assert.ok(unclearClaim?.id.startsWith('attention-bounds:'), 'the current marked route sends its selected interval claim to Shared');
+  const completedUnclear = deriveShared(fresh);
+  assert.equal(completedUnclear.facts.semanticQualified, true);
+  assert.equal(completedUnclear.facts.auditCompleted, true,
+    'all claims, accepted decisions and all retained source inspections establish operational completion');
+  assert.equal(completedUnclear.facts.auditQualified, false,
+    'an accepted UNCLEAR disposition does not become a clear audit');
+  assert.equal(completedUnclear.facts.values.C06, false, 'the data-quality gate records completed but inadequate audit coverage');
+  assert.deepEqual(completedUnclear.facts.conflicts, [], 'unclear evidence does not invent a factual contradiction');
+  assert.equal((assessment(completedUnclear.assessments, 'C06').data as { conflictAssessment?: string }).conflictAssessment,
+    'COMPLETED_INSUFFICIENT');
+  const legacyUnclear = structuredClone(fresh);
+
+  const unfinishedCases = [
+    ['missing audit', (input: typeof fresh) => { input.audit = null; }],
+    ['rejected review', (input: typeof fresh) => { input.audit!.review[0]!.accepted = false; }],
+    ['uninspected source', (input: typeof fresh) => { input.audit!.sources[0]!.complete = false; }],
+    ['malformed pair', (input: typeof fresh) => { input.audit = 'malformed' as never; }],
+  ] as const;
+  for (const [name, mutate] of unfinishedCases) {
+    const candidate = structuredClone(fresh);
+    mutate(candidate);
+    const result = deriveShared(candidate);
+    assert.equal(result.facts.auditCompleted, false, `${name}: unfinished work is not operational completion`);
+    assert.equal(result.facts.auditQualified, false, `${name}: unfinished work does not qualify the audit`);
+    assert.equal(result.facts.values.C06, false, `${name}: the configured quality gate records its failed audit requirement`);
+    assert.deepEqual(result.facts.conflicts, [], `${name}: no actual two-sided contradiction exists`);
+  }
+
+  const conflicted = structuredClone(fresh);
+  resetAudit('CONFLICT');
+  conflicted.audit = structuredClone(fresh.audit);
+  const conflictResult = deriveShared(conflicted);
+  assert.equal(conflictResult.facts.auditCompleted, true, 'an accepted, fully inspected conflict is still a completed audit');
+  assert.equal(conflictResult.facts.auditQualified, true);
+  assert.equal(conflictResult.facts.values.C06, false);
+  assert.ok(conflictResult.facts.conflicts.some(conflict => conflict.field.startsWith('attention-bounds:')),
+    'only the independently accepted two-sided conflict becomes a factual audit conflict');
+
+  const legacy = legacyUnclear;
+  delete legacy.completionMethod;
+  const legacyFacts = deriveShared(legacy).facts;
+  assert.equal(legacyFacts.auditCompleted, undefined, 'marker-absent facts retain the historical wire shape');
+  assert.equal(legacyFacts.auditQualified, false, 'legacy UNCLEAR behavior remains unqualified');
+});
+
+test('v4 Shared completion uses independently authored final dispositions while retaining rejected draft bits', () => {
+  const fresh = sharedFixture();
+  fresh.qualityMode = 'ENTRY_GATES_V1';
+  fresh.completionMethod = 'reviewed-audit-completion-v1';
+  fresh.sourceInspectionMethod = 'acquired-text-inspection-v1';
+  fresh.decisionMethod = 'independent-final-dispositions-v1';
+  const unclear = fresh.claims[0]!;
+  fresh.audit = {
+    decisionMethod: fresh.decisionMethod,
+    claims: fresh.claims.map(claim => ({
+      id: claim.id,
+      disposition: claim.id === unclear.id ? 'UNCLEAR' : 'CLEAR',
+      rationale: claim.id === unclear.id
+        ? 'The fully inspected retained sources do not resolve this claim.'
+        : 'The fully inspected retained sources show no incompatible assertion.',
+      citations: claim.citations,
+    })),
+    review: fresh.claims.map(claim => ({ id: claim.id, accepted: false })),
+    sources: fresh.sources.map(source => ({ id: source.id, complete: true })),
+  };
+
+  const result = deriveShared(fresh);
+  assert.equal(result.facts.auditCompleted, true, 'the marked route requires final judgments and complete source inspection, not accepted draft bits');
+  assert.equal(result.facts.auditQualified, false);
+  assert.equal(result.facts.values.C06, false);
+  assert.deepEqual(result.facts.conflicts, [], 'final UNCLEAR is not upgraded into an opposite factual claim');
+  assert.equal(assessment(result.assessments, 'C06').data &&
+    (assessment(result.assessments, 'C06').data as { conflictAssessment?: string }).conflictAssessment,
+  'COMPLETED_INSUFFICIENT');
+
+  const unfinished = structuredClone(fresh);
+  unfinished.audit!.sources[0]!.complete = false;
+  assert.equal(deriveShared(unfinished).facts.auditCompleted, false,
+    'independent final decisions do not substitute for inspection of every retained source');
+
+  const missingMarker = structuredClone(fresh);
+  delete missingMarker.audit!.decisionMethod;
+  assert.throws(() => deriveShared(missingMarker), /SHARED_DECISION_METHOD_INVALID/,
+    'a v4 packet cannot be reinterpreted as a legacy accepted-draft audit');
+  const missingInspection = structuredClone(fresh);
+  delete missingInspection.sourceInspectionMethod;
+  assert.throws(() => deriveShared(missingInspection), /SHARED_DECISION_METHOD_INVALID/,
+    'final dispositions require the fresh complete-source inspection contract');
+});
+
 test('observed conflicts compare the same token, field, unit, and instant with numeric normalization', () => {
   const equivalent = sharedFixture();
   equivalent.observations = [
@@ -182,10 +387,13 @@ test('observed conflicts compare the same token, field, unit, and instant with n
     id: 'obs-4', subject: SHARED_TOKEN, field: 'supply', value: '99', unit: 'token',
     evidenceIds: ['feature-evidence-O04'], observedAt: SHARED_CUTOFF, availableAt: SHARED_CUTOFF, quality: 'KNOWN',
   });
-  const conflict = deriveShared(equivalent).facts.conflicts;
-  assert.equal(conflict.length, 1);
-  assert.match(conflict[0]!.field, /supply/);
-  assert.deepEqual(conflict[0]!.evidenceIds, ['feature-evidence-O01', 'feature-evidence-O02', 'feature-evidence-O04']);
+  equivalent.audit = null;
+  const disputed = deriveShared(equivalent);
+  assert.equal(disputed.facts.auditQualified, false, 'the independent semantic audit is still incomplete');
+  assert.equal(disputed.facts.values.C06, null, 'an unfinished audit does not resolve the separate quality gate');
+  assert.equal(disputed.facts.conflicts.length, 1, 'the qualified same-subject/time observation conflict remains factual evidence');
+  assert.match(disputed.facts.conflicts[0]!.field, /supply/);
+  assert.deepEqual(disputed.facts.conflicts[0]!.evidenceIds, ['feature-evidence-O01', 'feature-evidence-O02', 'feature-evidence-O04']);
 });
 
 test('an audited A09 inadequacy claim is source-bound and yields a CAN-01 failure without A10', () => {

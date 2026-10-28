@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { tokenRefSchema, socialJudgmentSchema, socialPolicyFactsSchema, type TokenRef, type SocialPolicyFacts } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
+import { acquisitionEvidenceMethod, acquisitionScopeSchema, acquisitionCitationAllowed } from '../providers/acquisition-evidence.js';
 export { socialPolicyFactsSchema } from './contracts.js';
 export type { SocialPolicyFacts } from './contracts.js';
 
@@ -11,7 +12,7 @@ const field=z.object({text:z.string().min(1).max(200),citation}).strict();
 const association=z.object({key:z.string().min(1).max(300),citation}).strict();
 export const socialSourceSchema=z.object({id:z.string().min(1),url:z.string().url(),text:z.string().max(120000),publishedAt:timestamp.nullable(),authorId:z.string().nullable(),availableAt:timestamp,kind:z.enum(['POST','PAGE']),discoveredFrom:z.string().optional()}).strict();
 export const socialInputSchema=z.object({
-  schemaVersion:z.literal(1),identityUnavailableSources:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(8).optional(),screeningConstraintMethod:z.literal('frozen-positive-guards-v1').optional(),associationCitationMethod:z.literal('literal-associations-v1').optional(),inspectionRecoveryMethod:z.literal('historical-post-inspection-v1').optional(),postSampleScope:z.object({method:z.literal('terminal-post-gap-v1'),complete:z.boolean(),sourceIds:z.array(z.string()).max(64),gaps:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(128),blockers:z.array(z.string()).max(200)}).strict().optional(),reviewCriterionMethod:z.enum(['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4']).optional(),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(64),start:timestamp,end:timestamp,
+  schemaVersion:z.literal(1),acquisitionEvidenceMethod:z.literal(acquisitionEvidenceMethod).optional(),acquisitionScope:acquisitionScopeSchema.optional(),outcomeBasisMethod:z.literal('entry-outcome-basis-v1').optional(),identityUnavailableSources:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(8).optional(),screeningConstraintMethod:z.enum(['frozen-positive-guards-v1','frozen-positive-guards-v2']).optional(),associationCitationMethod:z.literal('literal-associations-v1').optional(),inspectionRecoveryMethod:z.enum(['historical-post-inspection-v1','retained-source-inspection-v2']).optional(),postSampleScope:z.object({method:z.literal('terminal-post-gap-v1'),complete:z.boolean(),sourceIds:z.array(z.string()).max(64),gaps:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(128),blockers:z.array(z.string()).max(200)}).strict().optional(),reviewCriterionMethod:z.enum(['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4']).optional(),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(64),start:timestamp,end:timestamp,
   targetPostIds:z.array(z.string()).max(64),identitySourceIds:z.array(z.string()).max(64),sampleComplete:z.boolean(),identityComplete:z.boolean(),
   previousComparable:z.boolean(),codes:z.array(z.string()).max(200),queries:z.array(z.string()).max(20),qualifiedAt:timestamp.optional(),
 }).strict();
@@ -27,6 +28,7 @@ export const socialProposalSchema=z.object({
 export const socialReviewSchema=z.object({
   decisions:z.array(z.object({id:z.string(),accepted:z.boolean(),rationale:z.string().min(1).max(500)}).strict()).max(200),
   sources:z.array(z.object({sourceId:z.string(),complete:z.boolean(),rationale:z.string().min(1).max(500)}).strict()).max(64),
+  acquisitionInspection:z.array(z.object({sourceId:z.string().min(1),complete:z.boolean(),rationale:z.string().min(8).max(500)}).strict()).max(2).optional(),
   pairs:z.array(z.object({id:z.string(),relation:z.enum(['COPIED_ENDORSEMENT','DISTINCT_COMMENTARY','UNRESOLVED']),rationale:z.string().min(1).max(500)}).strict()).max(2016),
 }).strict();
 export type SocialInput=z.infer<typeof socialInputSchema>;
@@ -58,8 +60,15 @@ export function socialCopyPairs(proposal:SocialProposal,token:TokenRef):Array<{i
 }
 export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null,reviewInput:SocialReview|null,token:TokenRef,cutoff:string,evidenceIds:string[]):SocialResult {
   const read=socialInputSchema.parse(input),byId=new Map(read.sources.map(s=>[s.id,s])),at=Date.parse(cutoff);
+  const scopeResult=read.acquisitionScope?acquisitionScopeSchema.safeParse(read.acquisitionScope):null;
+  const acquisitionScope=scopeResult?.success?scopeResult.data:undefined;
+  const sameToken=(a:TokenRef,b:TokenRef)=>a.chain===b.chain&&(a.chain==='solana'?a.address===b.address:a.address.toLowerCase()===b.address.toLowerCase());
+  const freshAcquisition=read.acquisitionEvidenceMethod===acquisitionEvidenceMethod&&!!acquisitionScope&&acquisitionScope.method===acquisitionEvidenceMethod&&acquisitionScope.group==='SOCIAL_ENTRY'&&sameToken(acquisitionScope.token,token)&&JSON.stringify(acquisitionScope.sourceIds)===JSON.stringify(read.sources.map(source=>source.id))&&acquisitionScope.requiredEvidenceIds.length===1&&acquisitionScope.requiredEvidenceIds[0]==='acquisition-social-scope'&&acquisitionScope.evidence.length===1&&acquisitionScope.evidence[0]?.id==='acquisition-social-scope'&&sameToken(acquisitionScope.evidence[0].token,token);
+  const acquisitionFresh=()=>freshAcquisition&&acquisitionScope!.complete&&acquisitionScope!.blockers.length===0&&acquisitionScope!.evidence.every(record=>{
+    const age=at-Date.parse(record.availableAt);return Number.isFinite(age)&&age>=0&&age<=900000;
+  });
   const availableAt=new Date(Math.max(Date.parse(read.qualifiedAt??read.end),Date.parse(read.end),...read.sources.map(s=>Date.parse(s.availableAt)))).toISOString();
-  const facts:SocialPolicyFacts={version:'social-policy-v1',method:'social-source-review-v1',token,start:read.start,end:read.end,availableAt,evidenceIds:[...new Set(evidenceIds)],postCorpusObserved:read.targetPostIds.length>0,sampleComplete:false,lineageComplete:false,qualifiedOriginalCount:null,accountUpperBound:null,independentGroupCount:null,independentCommunityCount:null};
+  const facts:SocialPolicyFacts={...(read.outcomeBasisMethod?{outcomeBasisMethod:read.outcomeBasisMethod}:{}),version:'social-policy-v1',method:'social-source-review-v1',token,start:read.start,end:read.end,availableAt,evidenceIds:[...new Set(evidenceIds)],postCorpusObserved:read.targetPostIds.length>0,sampleComplete:false,lineageComplete:false,qualifiedOriginalCount:null,accountUpperBound:null,independentGroupCount:null,independentCommunityCount:null};
   const output=new Map<string,BaselineAssessment>();
   const set=(id:typeof ids[number],value:boolean|null,code:string,data:unknown={})=>{
     const scopeBlocked=value===null&&(['S02','S03','S10'].includes(id)&&!read.sampleComplete||id==='S01'&&!read.identityComplete);
@@ -75,8 +84,23 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     if(at-Date.parse(read.end)>900000||read.sources.some(s=>at-Date.parse(s.availableAt)>900000))throw new Error('SOC_SOURCE_STALE');
     if(proposalInput===null||reviewInput===null)return finish();
     p=socialProposalSchema.parse(proposalInput);r=socialReviewSchema.parse(reviewInput);
+    const acquisitionInspectionComplete=()=>{
+      const required=acquisitionScope?.requiredEvidenceIds??[],inspection=r.acquisitionInspection??[];
+      return acquisitionFresh()&&required.length>0&&inspection.length===required.length&&new Set(inspection.map(item=>item.sourceId)).size===inspection.length&&required.every(id=>inspection.some(item=>item.sourceId===id&&item.complete));
+    };
+    if(freshAcquisition){
+      const required=acquisitionScope!.requiredEvidenceIds,inspection=r.acquisitionInspection??[];
+      if(inspection.length!==required.length||new Set(inspection.map(item=>item.sourceId)).size!==inspection.length||required.some(id=>!inspection.some(item=>item.sourceId===id)))throw new Error('SOC_ACQUISITION_INSPECTION_INVALID');
+    }else if(read.acquisitionEvidenceMethod||read.acquisitionScope||r.acquisitionInspection)throw new Error('SOC_ACQUISITION_PROOF_INVALID');
+    if(read.outcomeBasisMethod&&[p.identityAssessment,p.integrityAssessment,p.participationAssessment,p.communityBreadthAssessment].some(j=>j&&(j.verdict==='CONTRADICTED'?!j.negativeBasis:j.negativeBasis!==undefined)))throw Error('SOC_OUTCOME_BASIS_INVALID');
     if(read.entryDecisionMethod?(!p.participationAssessment||(read.entryDecisionMethod==='public-support-v3'?!p.communityBreadthAssessment:!!p.communityBreadthAssessment)):p.participationAssessment||p.communityBreadthAssessment||p.posts.some(post=>post.body.quote.length>1000))throw Error('SOC_REVIEW_INVALID');
     const cite=(c:z.infer<typeof citation>)=>{const s=byId.get(c.sourceId);if(!s||!s.text.includes(c.quote))throw new Error('SOC_CITATION_INVALID');return s;};
+    const assessmentCitation=(judgment:z.infer<typeof socialJudgmentSchema>,c:z.infer<typeof citation>)=>{
+      const source=byId.get(c.sourceId);if(source){if(!source.text.includes(c.quote))throw new Error('SOC_CITATION_INVALID');return source;}
+      const receiptAllowed=judgment.verdict==='UNRESOLVED'||judgment.verdict==='CONTRADICTED'&&judgment.negativeBasis==='PUBLIC_SUPPORT_INADEQUATE';
+      if(!receiptAllowed||!freshAcquisition||!acquisitionInspectionComplete()||!acquisitionCitationAllowed(acquisitionScope,c,token,cutoff)||!r.acquisitionInspection?.some(item=>item.sourceId===c.sourceId&&item.complete))throw new Error('SOC_CITATION_INVALID');
+      return null;
+    };
     const unique=(values:string[])=>{if(new Set(values).size!==values.length)throw new Error('SOC_REVIEW_INVALID');};
     unique(p.posts.map(x=>x.sourceId));unique(p.identities.map(x=>x.id));unique(p.accounts.map(x=>x.accountId));unique(r.decisions.map(x=>x.id));unique(r.sources.map(x=>x.sourceId));unique(r.pairs.map(x=>x.id));
     const expected=[...p.posts.map(x=>`post:${x.sourceId}`),...p.identities.map(x=>`identity:${x.id}`),...p.accounts.map(x=>`account:${x.accountId}`),...(p.identityAssessment?['assessment:identity']:[]),...(p.integrityAssessment?['assessment:integrity']:[]),...(p.participationAssessment?['assessment:participation']:[]),...(p.communityBreadthAssessment?['assessment:communityBreadth']:[])];
@@ -85,11 +109,14 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     for(const post of p.posts){cite(post.body);for(const c of post.bindingProof)cite(c);for(const assoc of [post.origin,post.community,post.campaign])if(assoc){cite(assoc.citation);if(!assoc.citation.quote.includes(assoc.key))throw new Error('SOC_ASSOCIATION_INVALID');}for(const f of Object.values(post.metrics))if(f){cite(f.citation);if(f.citation.sourceId!==post.sourceId||!f.citation.quote.includes(f.text))throw new Error('SOC_FIELD_INVALID');}}
     for(const claim of p.identities){if(!/^x\.com:[a-z0-9_]+$/.test(claim.accountId))throw new Error('SOC_ACCOUNT_INVALID');for(const c of claim.citations)cite(c);}
     for(const account of p.accounts){if(!/^x\.com:[a-z0-9_]+$/.test(account.accountId))throw new Error('SOC_ACCOUNT_INVALID');if(account.createdAt){const s=cite(account.createdAt.citation);if(socialAccount(s.url)!==account.accountId||!account.createdAt.citation.quote.includes(account.createdAt.text))throw new Error('SOC_FIELD_INVALID');}for(const id of account.historySourceIds)if(!byId.has(id)||socialAccount(byId.get(id)!.url)!==account.accountId)throw new Error('SOC_HISTORY_INVALID');}
-    for(const judgment of [p.identityAssessment,p.integrityAssessment,p.participationAssessment,p.communityBreadthAssessment])if(judgment)for(const c of judgment.citations)cite(c);
+    for(const judgment of [p.identityAssessment,p.integrityAssessment,p.participationAssessment,p.communityBreadthAssessment])if(judgment)for(const c of judgment.citations)assessmentCitation(judgment,c);
     const pairs=socialCopyPairs(p,token);if(r.pairs.length!==pairs.length||r.pairs.some(x=>!pairs.some(pair=>pair.id===x.id)))throw new Error('SOC_PAIR_REVIEW_INVALID');
   }catch(error){const code=error instanceof Error&&/^SOC_/.test(error.message)?error.message:'SOC_REVIEW_REJECTED';for(const id of ids)set(id,null,code);return finish();}
   const accepted=(id:string)=>r.decisions.find(d=>d.id===id)?.accepted===true;
   const reviewed=(id:string)=>r.sources.find(s=>s.sourceId===id)?.complete===true;
+  const requiredAcquisitionIds=acquisitionScope?.requiredEvidenceIds??[],acquisitionInspection=r.acquisitionInspection??[];
+  const acquisitionInspected=acquisitionFresh()&&requiredAcquisitionIds.length>0&&acquisitionInspection.length===requiredAcquisitionIds.length&&new Set(acquisitionInspection.map(item=>item.sourceId)).size===acquisitionInspection.length&&requiredAcquisitionIds.every(id=>acquisitionInspection.some(item=>item.sourceId===id&&item.complete));
+  if(acquisitionInspected){facts.acquisitionEvidenceMethod=acquisitionEvidenceMethod;facts.acquisitionScopeComplete=true;}
   const bound=(post:SocialProposal['posts'][number])=>post.bodyComplete!==false&&(post.binding==='EXACT_CONTRACT'?socialNamesAddress(post.body.quote,token):post.binding==='PROVEN_ACCOUNT'&&post.bindingProof.length>=2&&post.bindingProof.every(c=>reviewed(c.sourceId))&&new Set(post.bindingProof.map(c=>c.sourceId)).size>=2&&!!byId.get(post.sourceId)?.authorId&&post.bindingProof.some(c=>socialNamesAddress(c.quote,token))&&post.bindingProof.some(c=>namesAccount(c.quote,byId.get(post.sourceId)!.authorId!)));
   const inWindow=(id:string,start=read.start,end=read.end)=>{const s=byId.get(id)!;return !!s.publishedAt&&Date.parse(s.publishedAt)>=Date.parse(start)&&Date.parse(s.publishedAt)<Date.parse(end);};
   // A reviewed unrelated/excluded source is a valid disposition; a claimed bound source must prove its binding.
@@ -179,11 +206,16 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   for(const [name,judgment] of [['identity',p.identityAssessment],['integrity',p.integrityAssessment],['participation',p.participationAssessment],['communityBreadth',p.communityBreadthAssessment]] as const)if(judgment){
     const terminalNegative=!!read.reviewCriterionMethod&&judgment.verdict==='CONTRADICTED'&&read.postSampleScope?.complete===true;
     const scopeQualified=name==='identity'?identityComplete:(read.sampleComplete||terminalNegative)&&(!!read.entryDecisionMethod||facts.sampleComplete&&facts.postCorpusObserved)&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id));
-    const sourceQualified=scopeQualified&&accepted(`assessment:${name}`)&&judgment.citations.every(c=>reviewed(c.sourceId));
+    const acquisitionNegative=acquisitionInspected&&read.sources.every(source=>reviewed(source.id))&&accepted(`assessment:${name}`)&&judgment.verdict==='CONTRADICTED'&&judgment.negativeBasis==='PUBLIC_SUPPORT_INADEQUATE'&&judgment.citations.length>0&&judgment.citations.every(c=>{
+      const source=byId.get(c.sourceId);return source?reviewed(source.id):!!acquisitionScope&&acquisitionCitationAllowed(acquisitionScope,c,token,cutoff)&&acquisitionInspection.some(item=>item.sourceId===c.sourceId&&item.complete);
+    });
+    const sourceQualified=scopeQualified&&accepted(`assessment:${name}`)&&judgment.citations.every(c=>reviewed(c.sourceId))||acquisitionNegative;
     const invalidMetric=posts.some(post=>Object.entries(post.metrics).some(([metricName,value])=>value!==null&&metric(value,metricName)===null));
     const supportQualified=name==='communityBreadth'?facts.sampleComplete&&facts.lineageComplete&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=3:name==='participation'?facts.sampleComplete&&facts.lineageComplete&&facts.accountUpperBound!==null&&facts.accountUpperBound>=3&&facts.independentGroupCount!==null&&facts.independentGroupCount>=2&&facts.independentCommunityCount!==null&&facts.independentCommunityCount>=2:name==='identity'?output.get('S01')?.projection?.value===true&&p.identities.some(claim=>claim.status==='PUBLIC_BINDING_SUPPORTED'&&identityBinding(claim)&&claim.citations.some(c=>{const source=byId.get(c.sourceId)!;return source.kind==='PAGE'&&socialAccount(source.url)===null&&socialNamesAddress(c.quote,token)&&namesAccount(c.quote,claim.accountId);})):facts.sampleComplete&&facts.lineageComplete&&posts.length>0&&output.get('S02')?.projection?.value===true&&output.get('S04')?.projection?.value!==false&&!invalidMetric;
     const verdict=sourceQualified&&(judgment.verdict!=='SUPPORTED'||supportQualified)?judgment.verdict:'UNRESOLVED';
-    facts[name==='identity'?'identityReview':name==='participation'?'participationReview':name==='communityBreadth'?'communityBreadthReview':'integrityReview']={...judgment,verdict,method:'source-transparency-review-v1',missingIndicators:name==='integrity'?missingIndicators:[]};
+    const qualifiedJudgment={...judgment};
+    if(verdict==='UNRESOLVED'&&read.outcomeBasisMethod)delete qualifiedJudgment.negativeBasis;
+    facts[name==='identity'?'identityReview':name==='participation'?'participationReview':name==='communityBreadth'?'communityBreadthReview':'integrityReview']={...qualifiedJudgment,verdict,method:'source-transparency-review-v1',missingIndicators:name==='integrity'?missingIndicators:[]};
   }
   return finish();
 }

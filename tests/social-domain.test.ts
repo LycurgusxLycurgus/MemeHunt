@@ -7,6 +7,7 @@ import {
   socialCopyPairs,
   socialNamesAddress,
 } from '../src/domain/social.js';
+import { decisionHash } from '../src/app/service.js';
 import {
   addSocialJudgments,
   makeSocialFixture,
@@ -348,6 +349,46 @@ test('bodyComplete false excludes a post from participation, history, and copy-p
   assert.ok(history.every(account => account.historyPosts === 0), 'incomplete bodies do not enter account history');
 });
 
+test('fresh retained-source inspection can qualify evidence judgments without repairing unknown body facts', () => {
+  const fixture = makeSocialFixture();
+  fixture.read.inspectionRecoveryMethod = 'retained-source-inspection-v2';
+  fixture.read.outcomeBasisMethod = 'entry-outcome-basis-v1';
+  fixture.read.screeningConstraintMethod = 'frozen-positive-guards-v1';
+  fixture.read.associationCitationMethod = 'literal-associations-v1';
+  fixture.read.reviewCriterionMethod = 'verdict-aware-v4';
+  fixture.read.entryDecisionMethod = 'public-support-v3';
+  const target = fixture.proposal.posts.find(post => post.sourceId === 'post-alice-1');
+  assert.ok(target);
+  target.bodyComplete = false;
+  target.role = 'UNCLEAR';
+  target.binding = 'UNCLEAR';
+  addSocialJudgments(fixture, {
+    identity: 'CONTRADICTED', integrity: 'CONTRADICTED',
+    participation: 'CONTRADICTED', communityBreadth: 'CONTRADICTED',
+  });
+  for (const judgment of [fixture.proposal.identityAssessment, fixture.proposal.integrityAssessment,
+    fixture.proposal.participationAssessment, fixture.proposal.communityBreadthAssessment]) {
+    assert.ok(judgment);
+    judgment.negativeBasis = 'PUBLIC_SUPPORT_INADEQUATE';
+  }
+  const result = deriveSocial(fixture.read, fixture.proposal, fixture.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
+  assert.equal(result.facts.integrityReview?.verdict, 'CONTRADICTED',
+    'completed inspection can support an evidence-standard judgment even when an original post body stays UNCLEAR');
+  assert.equal(result.facts.integrityReview?.negativeBasis, 'PUBLIC_SUPPORT_INADEQUATE');
+  assert.equal(result.facts.sampleComplete, false);
+  assert.equal(result.facts.lineageComplete, false);
+  assert.equal(result.facts.qualifiedOriginalCount, null);
+  assert.equal(result.facts.accountUpperBound, null);
+  assert.equal(result.facts.independentGroupCount, null);
+  assert.equal(result.facts.independentCommunityCount, null);
+  assert.equal(assessment(result, 'S02').quality, 'MISSING');
+  assert.equal(assessment(result, 'S03').quality, 'MISSING');
+  assert.equal(assessment(result, 'S10').quality, 'MISSING');
+  assert.equal(target.bodyComplete, false, 'source inspection does not relabel the unresolved original-body boundary');
+  assert.equal(target.role, 'UNCLEAR');
+  assert.equal(target.binding, 'UNCLEAR');
+});
+
 test('platform handles and unidentifiable community names cannot establish independent communities', () => {
   const fixture = makeSocialFixture({ communityKey: '@mytelegramgroup' });
   const result = deriveSocial(fixture.read, fixture.proposal, fixture.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-1']);
@@ -631,6 +672,68 @@ test('public-support-v3 preserves the three-community positive guard and leaves 
   assert.equal(guarded.facts.independentCommunityCount, 2);
   assert.equal(guarded.facts.communityBreadthReview?.verdict, 'UNRESOLVED', 'a positive community judgment requires at least three qualified communities');
   assert.equal(assessment(guarded, 'S10').projection?.value, false, 'the independently known two-community factual shortfall remains separately recorded');
+});
+
+test('fresh social facts require and retain a typed basis while legacy negatives remain replayable', () => {
+  const fresh = makeSocialFixture();
+  fresh.read.outcomeBasisMethod = 'entry-outcome-basis-v1';
+  fresh.read.entryDecisionMethod = 'public-support-v3';
+  fresh.read.identityComplete = true;
+  addSocialJudgments(fresh, {
+    identity: 'CONTRADICTED', integrity: 'CONTRADICTED',
+    participation: 'CONTRADICTED', communityBreadth: 'CONTRADICTED',
+  });
+  for (const judgment of [fresh.proposal.identityAssessment, fresh.proposal.integrityAssessment,
+    fresh.proposal.participationAssessment, fresh.proposal.communityBreadthAssessment]) {
+    assert.ok(judgment);
+    judgment.negativeBasis = 'PUBLIC_SUPPORT_INADEQUATE';
+  }
+
+  const result = deriveSocial(fresh.read, fresh.proposal, fresh.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(result.facts.outcomeBasisMethod, 'entry-outcome-basis-v1');
+  for (const judgment of [result.facts.identityReview, result.facts.integrityReview,
+    result.facts.participationReview, result.facts.communityBreadthReview]) {
+    assert.equal(judgment?.verdict, 'CONTRADICTED');
+    assert.equal(judgment?.negativeBasis, 'PUBLIC_SUPPORT_INADEQUATE');
+  }
+
+  const missingBasis = structuredClone(fresh);
+  delete missingBasis.proposal.integrityAssessment!.negativeBasis;
+  const rejected = deriveSocial(missingBasis.read, missingBasis.proposal, missingBasis.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(rejected.facts.integrityReview, undefined, 'a fresh negative without its basis cannot enter canonical facts');
+  assert.equal(assessment(rejected, 'S02').causes[0]?.code, 'SOC_OUTCOME_BASIS_INVALID');
+
+  const legacy = structuredClone(fresh);
+  delete legacy.read.outcomeBasisMethod;
+  for (const judgment of [legacy.proposal.identityAssessment, legacy.proposal.integrityAssessment,
+    legacy.proposal.participationAssessment, legacy.proposal.communityBreadthAssessment]) delete judgment!.negativeBasis;
+  const replay = deriveSocial(legacy.read, legacy.proposal, legacy.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(replay.facts.outcomeBasisMethod, undefined);
+  assert.equal(replay.facts.integrityReview?.verdict, 'CONTRADICTED',
+    'old unmarked policy receipts keep their prior verdict and facts without inventing a basis');
+  assert.equal(replay.facts.integrityReview?.negativeBasis, undefined);
+});
+
+test('a rejected fresh negative becomes serializable UNRESOLVED while accepted positives and negatives keep their basis semantics', () => {
+  const fixture = makeSocialFixture();
+  fixture.read.outcomeBasisMethod = 'entry-outcome-basis-v1';
+  fixture.read.entryDecisionMethod = 'public-support-v3';
+  addSocialJudgments(fixture, {
+    identity: 'SUPPORTED', integrity: 'CONTRADICTED', participation: 'UNRESOLVED', communityBreadth: 'CONTRADICTED',
+  });
+  fixture.proposal.integrityAssessment!.negativeBasis = 'PUBLIC_SUPPORT_INADEQUATE';
+  fixture.proposal.communityBreadthAssessment!.negativeBasis = 'PUBLIC_SUPPORT_INADEQUATE';
+  fixture.review.decisions.find(row => row.id === 'assessment:communityBreadth')!.accepted = false;
+
+  const result = deriveSocial(fixture.read, fixture.proposal, fixture.review, SOCIAL_TOKEN, SOCIAL_CUTOFF, ['social-evidence-v3']);
+  assert.equal(result.facts.identityReview?.verdict, 'SUPPORTED');
+  assert.equal(result.facts.identityReview?.negativeBasis, undefined, 'affirmative judgments still omit negative basis');
+  assert.equal(result.facts.integrityReview?.verdict, 'CONTRADICTED');
+  assert.equal(result.facts.integrityReview?.negativeBasis, 'PUBLIC_SUPPORT_INADEQUATE', 'accepted negative judgments retain their required basis');
+  assert.equal(result.facts.communityBreadthReview?.verdict, 'UNRESOLVED', 'a rejected negative review cannot qualify its judgment');
+  assert.equal(Object.hasOwn(result.facts.communityBreadthReview!, 'negativeBasis'), false,
+    'an unresolved judgment omits the optional basis rather than storing undefined');
+  assert.doesNotThrow(() => decisionHash(result.facts), 'fresh unresolved facts remain canonically serializable');
 });
 
 test('a reviewed integrity negative may use missing desired indicators without turning missing metrics into zero', () => {
