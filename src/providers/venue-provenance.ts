@@ -1,3 +1,4 @@
+import {validateEntryRouteBundle} from './entry-route.js';
 import { createHash } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
 import { AccountLayout, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
@@ -390,6 +391,12 @@ export function venueProvenanceInspection(record: VenueProvenanceRecord): VenueI
   const provenance: Record<string, unknown> = structuredClone({ method: record.method, version: record.version, lifecycle: record.lifecycle, identity: record.identity, deployments: record.deployments, inventory: record.inventory, selected: record.selected, floorSlot: record.floorSlot, availableAt: record.availableAt, expiresAt: record.expiresAt, ttlSeconds: record.ttlSeconds });
   return { token: structuredClone(record.token), poolAddress: record.poolAddress, certificateId: record.certificateId, version: VERSION, availableAt: record.availableAt, bindingVerified: record.bindingVerified, evidenceIds: [RECORD_ID, ...record.receipts.map(r => r.id)], errors: { ...record.errors }, limitations: [...record.limitations], provenance };
 }
+/** New entry acquisition can cross the original O08 deadline; retain its unchanged witness as STALE. */
+export function expireVenueProvenanceAssessment(a:BaselineAssessment,cutoff:string):BaselineAssessment {
+  const d=a.data;
+  if(a.id!=='O08'||a.quality!=='KNOWN'||!obj(d)||d.version!==VERSION||!obj(d.provenance)||typeof d.provenance.expiresAt!=='string'||Date.parse(cutoff)<=Date.parse(d.provenance.expiresAt))return a;
+  return {...a,quality:'STALE',...(a.projection?{projection:{...a.projection,quality:'STALE' as const}}:{})};
+}
 const receiptScope = (record: VenueProvenanceRecord, r: VenueProvenanceRecord['receipts'][number]): Record<string, unknown> => ({ method: METHOD, operation: r.stage, mint: record.token.address, request: r.request });
 const recordScope = (record: VenueProvenanceRecord): Record<string, unknown> => ({ method: METHOD, operation: 'record', mint: record.token.address, pool: record.poolAddress || null });
 
@@ -468,6 +475,7 @@ function rejectContradictedLegacy(bundle: LiveBundle, o08: BaselineAssessment | 
 }
 
 export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
+  const independentEntry=validateEntryRouteBundle(bundle);
   const raw = bundle.rawArtifacts, baseline = bundle.details?.baseline ?? [];
   const o08 = baseline.find(a => a.id === 'O08');
   if (bundle.evidence.some(e => !e.id.startsWith(PREFIX) && typeof e.scope.method === 'string' && e.scope.method.startsWith('pump-venue-provenance'))) throw new Error('VENUE_PROVENANCE_FOREIGN_METHOD');
@@ -530,7 +538,7 @@ export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
     const selection = parseJson(marker);
     if (!obj(selection) || (typeof selection.selected === 'string' && selection.selected !== 'UNVERIFIED' && selection.selected !== 'NONE')) throw new Error('VENUE_PROVENANCE_ROUTE_CONTRADICTION');
   }
-  if (features.some(f => PROMOTION_IDS.includes(f.id) && (f.quality === 'KNOWN' || f.quality === 'STALE'))) throw new Error('VENUE_PROVENANCE_PROMOTION');
+  if (features.some(f => PROMOTION_IDS.includes(f.id) && (f.quality === 'KNOWN' || f.quality === 'STALE') && !(f.id==='O10'&&independentEntry&&stable(f)===stable(independentEntry.projection)))) throw new Error('VENUE_PROVENANCE_PROMOTION');
   if (!bundle.details) {
     if (features.some(f => f.id === 'O08' && (f.quality === 'KNOWN' || f.quality === 'STALE'))) throw new Error('VENUE_PROVENANCE_DETAILS_MISSING');
     return;
@@ -554,6 +562,7 @@ export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
   if (f08?.quality === 'KNOWN' && (!inspection.bindingVerified || f08.value !== true)) throw new Error('VENUE_PROVENANCE_O08_FEATURE');
   for (const id of ['O09', 'O10', 'O11', 'O12', 'O13', 'O14', 'O15', 'O16']) {
     const a = baseline.find(x => x.id === id);
+    if(id==='O10'&&independentEntry&&stable(a)===stable(independentEntry))continue;
     if (a && (a.quality === 'KNOWN' || a.data !== null)) throw new Error('VENUE_PROVENANCE_PROMOTION');
   }
 }
