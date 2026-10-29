@@ -84,12 +84,14 @@ function canonicalSignature(text:unknown):text is string{
  const bytes=Buffer.concat([Buffer.alloc(text.match(/^1*/)![0].length),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);
  return bytes.length===64&&encodeSolanaAddress(bytes)===text;
 }
+// Pinned solana-transaction-error3.0.0 serde unit variants; payload variants remain object-shaped.
+const WINDOW_UNIT_ERROR_VARIANTS=new Set<string>(["AccountInUse","AccountLoadedTwice","AccountNotFound","ProgramAccountNotFound","InsufficientFundsForFee","InvalidAccountForFee","AlreadyProcessed","BlockhashNotFound","CallChainTooDeep","MissingSignatureForFee","InvalidAccountIndex","SignatureFailure","InvalidProgramForExecution","SanitizeFailure","ClusterMaintenance","AccountBorrowOutstanding","WouldExceedMaxBlockCostLimit","UnsupportedVersion","InvalidWritableAccount","WouldExceedMaxAccountCostLimit","WouldExceedAccountDataBlockLimit","TooManyAccountLocks","AddressLookupTableNotFound","InvalidAddressLookupTableOwner","InvalidAddressLookupTableData","InvalidAddressLookupTableIndex","InvalidRentPayingAccount","WouldExceedMaxVoteCostLimit","WouldExceedAccountDataTotalLimit","MaxLoadedAccountsDataSizeExceeded","InvalidLoadedAccountsDataSizeLimit","ResanitizationNeeded","UnbalancedTransaction","ProgramCacheHitMaxLimit","CommitCancelled"]);
 /** Bounded local parser for dense pages only; the shared 32-row chain parser stays unchanged for chain and window-v3 replay. */
-function densePageRows(value:unknown,retrieved:number,limit=WINDOW_DENSE_PAGE_LIMIT):SignatureRow[]{
+function densePageRows(value:unknown,retrieved:number,limit=WINDOW_DENSE_PAGE_LIMIT,unitErrorVariants=false):SignatureRow[]{
  if(!Array.isArray(value)||value.length>limit)fail('ADVISORY_WINDOW_PAGE_SHAPE');
  const seen=new Set<string>();let previous=Infinity;
  return (value as unknown[]).map(v=>{
-  if(!object(v)||!canonicalSignature(v.signature)||seen.has(v.signature)||!integer(v.slot)||v.slot>previous||!(v.blockTime===null||integer(v.blockTime)&&v.blockTime*1000<=retrieved)||!('err' in v)||!(v.err===null||object(v.err))||v.confirmationStatus!=='finalized')fail('ADVISORY_WINDOW_PAGE_SHAPE');
+  if(!object(v)||!canonicalSignature(v.signature)||seen.has(v.signature)||!integer(v.slot)||v.slot>previous||!(v.blockTime===null||integer(v.blockTime)&&v.blockTime*1000<=retrieved)||!('err' in v)||!(v.err===null||object(v.err)||unitErrorVariants&&typeof v.err==='string'&&WINDOW_UNIT_ERROR_VARIANTS.has(v.err))||v.confirmationStatus!=='finalized')fail('ADVISORY_WINDOW_PAGE_SHAPE');
   const row=v as Record<string,any>;seen.add(row.signature);previous=row.slot;
   return {signature:row.signature as string,slot:row.slot as number,blockTime:row.blockTime as number|null,err:row.err};
  });
@@ -144,7 +146,8 @@ const EXTENDED_LIMITATION=`Proof36 extended modes: a quote-transfer-taxed swap r
  * expanded (requires dense) selects proof28 acquisition limits and verifies quote admission before any transaction download.
  * logRecovery (requires dense) is the O28-only v4 decode: strict receipts decode exactly as v3, and only a strict failure with terminal log truncation is retained.
  * extended (proof36, requires modern) admits the proof36-only modes; a non-v5 window that consumes any of them becomes native v6, which v3/v4-only consumers fence. */
-export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:string,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,currentAbi=false,feeExclusive=false,dense=false,logRecovery=false,expanded=false,modern=false,extended=false,busy=false):AdvisoryWindowHistory{
+export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:string,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,currentAbi=false,feeExclusive=false,dense=false,logRecovery=false,expanded=false,modern=false,extended=false,busy=false,unitErrorVariants=false):AdvisoryWindowHistory{
+ if(unitErrorVariants&&!busy)fail('ADVISORY_WINDOW_UNIT_ERROR_SCOPE');
  if(busy&&!(extended&&logRecovery))fail('ADVISORY_WINDOW_BUSY_SCOPE');
  if(extended&&!modern)fail('ADVISORY_WINDOW_EXTENDED_SCOPE');
  if(feeExclusive&&!currentAbi)fail('ADVISORY_WINDOW_FEE_SCOPE');
@@ -152,7 +155,7 @@ export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:s
  if(expanded&&!dense)fail('ADVISORY_WINDOW_EXPANDED_SCOPE');
  if(logRecovery&&!dense)fail('ADVISORY_WINDOW_RECOVERY_SCOPE');
  if(modern&&!expanded)fail('ADVISORY_WINDOW_MODERN_SCOPE');
- const window=scope(token,pool,windowEnd),receipts={rawArtifacts,retrievedAt,requests},g=expanded?EXPANDED:dense?DENSE:LEGACY,transactionCap=busy?WINDOW_BUSY_TRANSACTION_CAP:expanded?WINDOW_EXPANDED_TRANSACTION_CAP:WINDOW_DENSE_TRANSACTION_CAP,requestCap=busy?WINDOW_BUSY_REQUEST_CAP:expanded?WINDOW_EXPANDED_REQUEST_CAP:WINDOW_DENSE_REQUEST_CAP,storedCap=busy?WINDOW_BUSY_STORED_BYTES:expanded?WINDOW_EXPANDED_STORED_BYTES:WINDOW_DENSE_STORED_BYTES;
+ const window=scope(token,pool,windowEnd),receipts={rawArtifacts,retrievedAt,requests},chosenGeometry=expanded?EXPANDED:dense?DENSE:LEGACY,g:Geometry=unitErrorVariants?{...chosenGeometry,rows:(v,t)=>densePageRows(v,t,chosenGeometry.limit,true)}:chosenGeometry,transactionCap=busy?WINDOW_BUSY_TRANSACTION_CAP:expanded?WINDOW_EXPANDED_TRANSACTION_CAP:WINDOW_DENSE_TRANSACTION_CAP,requestCap=busy?WINDOW_BUSY_REQUEST_CAP:expanded?WINDOW_EXPANDED_REQUEST_CAP:WINDOW_DENSE_REQUEST_CAP,storedCap=busy?WINDOW_BUSY_STORED_BYTES:expanded?WINDOW_EXPANDED_STORED_BYTES:WINDOW_DENSE_STORED_BYTES;
  if(!Number.isFinite(Date.parse(cutoff))||Date.parse(windowEnd)>Date.parse(cutoff))fail('ADVISORY_WINDOW_TIME');
  if(busy){let bytes=0;for(const raw of Object.values(rawArtifacts)){const size=Buffer.byteLength(raw);if(size>WINDOW_ARCHIVE_SOURCE_BYTES||(bytes+=size)>WINDOW_BUSY_SOURCE_BYTES)fail('ADVISORY_WINDOW_SOURCE_CAP');}}
  const rawKeys=Object.keys(rawArtifacts).sort();if(rawKeys.length>(dense?requestCap:48)||JSON.stringify(rawKeys)!==JSON.stringify(Object.keys(requests).sort())||JSON.stringify(rawKeys)!==JSON.stringify(Object.keys(retrievedAt).sort()))fail('ADVISORY_WINDOW_RECEIPT_MEMBERSHIP');
@@ -161,6 +164,7 @@ export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:s
  if(feeExclusive){result.method='pumpswap-selected-pool-window-v3';result.limitations[result.limitations.length-1]='Pinned v2 swaps are quote flow; fee sweeps contribute zero notionals. Sweep recipients are checked for instruction/event consistency and associated-token-account derivation; creator/protocol economic roles and ownership are not independently verified.';result.limitations.push('The source IDL is a mutable public document pinned by hash; the upgradeable program deployed during this window is not independently version-attested. Runtime account/event/argument bindings are verified.','Instruction-specific core quote amounts reconcile LP, protocol and creator fees exactly. Buyback is not added to protocol fees again; cashback and holder-reward accounting without a supported identity prevents observation. Accrued creatorFeeUnclaimed is state, not a per-trade fee.');}
  if(logRecovery){result.method='pumpswap-selected-pool-window-v4';result.limitations.push(RECOVERY_LIMITATION);if(modern)result.limitations.push(MODERN_RECOVERY_LIMITATION);result.logRecovery={truncatedTransactions:0,unresolvedNonFlowInvocations:0,emptyForeignSweeps:0};}
  if(busy)result.limitations.push('Finalized receipt reuse retains its original requests and source clocks; the measured historical hour is distinct from the later reconstruction cutoff.');
+ if(unitErrorVariants)result.limitations.push('Selected-window signature errors additionally admit only the35 named unit TransactionError variants pinned to solana-transaction-error3.0.0; exact strings remain failed references and never enter successful trade flow. This error codec changes no transaction ABI, quote units, window, coverage or resource bounds.');
  if(dense){result.limitations.push(busy?'Busy-hour acquisition: finalized cursor-linked 1000-row pages (at most16),2048 successful selected-hour receipts, two concurrent reads,500KB per response,16MB stored namespace and128MB aggregate source. Every selected receipt must decode; missing/capped/unsupported evidence remains incomplete.':expanded?'Expanded acquisition: finalized cursor-linked 1000-row pages (at most16),1024 successful selected-hour receipts, two concurrent reads,500KB per response and8MB stored namespace. Every selected receipt must decode; missing/capped/unsupported evidence remains incomplete.':DENSE_LIMITATION);result.acquisition={version:busy?'window-dense-v3':expanded?'window-dense-v2':WINDOW_DENSE_VERSION,pageLimit:g.limit,maxPages:g.maxPages??4,transactionCap,requestCap,responseBytes:WINDOW_RESPONSE_BYTES,storedBytesCap:storedCap,indexedReferences:0,newerReferences:0,witnessRow:null,stopCode:null};}
  // A receipt replaced at the namespace ceiling leaves the whole dense window incomplete under one precise reason.
  const capped=dense&&Object.values(rawArtifacts).includes(STORAGE_CAP_RECEIPT);
@@ -228,7 +232,8 @@ export function decodeAdvisoryWindow(token:TokenRef,pool:string|null,windowEnd:s
 
 /** Bounded acquisition; reuse retains the original finalized raw envelope, request and clock.
  * dense returns plain receipts for in-run consumers while metering their archive size against the namespace ceiling. */
-export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,windowEnd:string,signal?:AbortSignal,reuse?:AdvisoryWindowReuse,currentAbi=true,feeExclusive=true,dense=false,logRecovery=false,expanded=false,modern=false,extended=false,busy=false):Promise<ReceiptSet&{data:AdvisoryWindowHistory}>{
+export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,windowEnd:string,signal?:AbortSignal,reuse?:AdvisoryWindowReuse,currentAbi=true,feeExclusive=true,dense=false,logRecovery=false,expanded=false,modern=false,extended=false,busy=false,unitErrorVariants=false):Promise<ReceiptSet&{data:AdvisoryWindowHistory}>{
+ if(unitErrorVariants&&!busy)fail('ADVISORY_WINDOW_UNIT_ERROR_SCOPE');
  if(busy&&!(extended&&logRecovery))fail('ADVISORY_WINDOW_BUSY_SCOPE');
  if(extended&&!modern)fail('ADVISORY_WINDOW_EXTENDED_SCOPE');
  if(feeExclusive&&!currentAbi)fail('ADVISORY_WINDOW_FEE_SCOPE');
@@ -236,14 +241,14 @@ export async function collectAdvisoryWindow(token:TokenRef,pool:string|null,rpcU
  if(expanded&&!dense)fail('ADVISORY_WINDOW_EXPANDED_SCOPE');
  if(logRecovery&&!dense)fail('ADVISORY_WINDOW_RECOVERY_SCOPE');
  if(modern&&!expanded)fail('ADVISORY_WINDOW_MODERN_SCOPE');
- const window=scope(token,pool,windowEnd),receipts:ReceiptSet={rawArtifacts:{},retrievedAt:{},requests:{}},g=expanded?EXPANDED:dense?DENSE:LEGACY,transactionCap=busy?WINDOW_BUSY_TRANSACTION_CAP:expanded?WINDOW_EXPANDED_TRANSACTION_CAP:WINDOW_DENSE_TRANSACTION_CAP,requestCap=busy?WINDOW_BUSY_REQUEST_CAP:expanded?WINDOW_EXPANDED_REQUEST_CAP:WINDOW_DENSE_REQUEST_CAP,storedCap=busy?WINDOW_BUSY_STORED_BYTES:expanded?WINDOW_EXPANDED_STORED_BYTES:WINDOW_DENSE_STORED_BYTES;
+ const window=scope(token,pool,windowEnd),receipts:ReceiptSet={rawArtifacts:{},retrievedAt:{},requests:{}},chosenGeometry=expanded?EXPANDED:dense?DENSE:LEGACY,g:Geometry=unitErrorVariants?{...chosenGeometry,rows:(v,t)=>densePageRows(v,t,chosenGeometry.limit,true)}:chosenGeometry,transactionCap=busy?WINDOW_BUSY_TRANSACTION_CAP:expanded?WINDOW_EXPANDED_TRANSACTION_CAP:WINDOW_DENSE_TRANSACTION_CAP,requestCap=busy?WINDOW_BUSY_REQUEST_CAP:expanded?WINDOW_EXPANDED_REQUEST_CAP:WINDOW_DENSE_REQUEST_CAP,storedCap=busy?WINDOW_BUSY_STORED_BYTES:expanded?WINDOW_EXPANDED_STORED_BYTES:WINDOW_DENSE_STORED_BYTES;
  // Dense only: a receipt whose archive would overflow the ceiling (room is kept for one in-flight sibling) is replaced, and no later request is made.
  let storedBytes=0,sourceBytes=0,capped=false;
  const keep=(id:string,raw:string,at:string)=>{
   if(dense){const size=Buffer.byteLength(archiveDemandReceipt(raw));if(capped||storedBytes+size+2*STORAGE_CAP_STORED>storedCap||busy&&sourceBytes+Buffer.byteLength(raw)+2*Buffer.byteLength(STORAGE_CAP_RECEIPT)>WINDOW_BUSY_SOURCE_BYTES){capped=true;raw=STORAGE_CAP_RECEIPT;storedBytes+=STORAGE_CAP_STORED;}else storedBytes+=size;sourceBytes+=Buffer.byteLength(raw);}
   receipts.rawArtifacts[id]=raw;receipts.retrievedAt[id]=at;
  };
- const decode=()=>decodeAdvisoryWindow(token,pool,windowEnd,receipts.rawArtifacts,receipts.retrievedAt,receipts.requests,now(),currentAbi,feeExclusive,dense,logRecovery,expanded,modern,extended,busy);
+ const decode=()=>decodeAdvisoryWindow(token,pool,windowEnd,receipts.rawArtifacts,receipts.retrievedAt,receipts.requests,now(),currentAbi,feeExclusive,dense,logRecovery,expanded,modern,extended,busy,unitErrorVariants);
  const run=async(id:string,request:Request,reusable=false)=>{
   if(capped)return;
   receipts.requests[id]=request;

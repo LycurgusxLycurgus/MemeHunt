@@ -75,7 +75,7 @@ const readRecordedCapture = (path:string,invalidCode:string) => {
   try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw Error(invalidCode);}
 };
 const knownErrorCodes = new Set([
-  'HISTORICAL_TOPIC_REUSE_REQUIRED', 'O30_ADVISORY_REQUIRED', 'O28_ADVISORY_REQUIRED', 'O28_PRIOR_POOL_MISMATCH', 'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
+  'O28_RPC_ERRORS_REQUIRED', 'HISTORICAL_TOPIC_REUSE_REQUIRED', 'O30_ADVISORY_REQUIRED', 'O28_ADVISORY_REQUIRED', 'O28_PRIOR_POOL_MISMATCH', 'FILE_REQUIRED', 'FILE_TOO_LARGE', 'STORAGE_ERROR', 'COMMAND_FAILED', 'USAGE',
   'INVALID_TOKEN_REF', 'INVALID_SOLANA_ADDRESS', 'INVALID_EVM_ADDRESS', 'INVALID_PROFILE',
   'CURVE_PROOF_INVALID', 'LIVE_IMPORT_FORBIDDEN', 'PROFILE_ONLY_FOR_LIVE', 'ADDRESS_BUNDLE_MISMATCH', 'CHAIN_BUNDLE_MISMATCH',
   'BUNDLE_OR_ADDRESS_AND_CHAIN_REQUIRED', 'REASSESS_BUNDLE_REQUIRED', 'MANUAL_EMPTY_MUST_BE_EMPTY', 'BUNDLE_LIMIT', 'DUPLICATE_BUNDLE_ID',
@@ -207,6 +207,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         wbtcEntry: '--wbtc-entry independently quotes O10 for an already verified canonical WBTC PumpSwap pool at the configured USD size. Ordinary funded WBTC account assumed; no wallet, exit, simulation or external-cost proof.',
         historicalTopicReuse: '--partial --advisory --advisory-executor --recorded-callers-capture FILE --historical-topic-reuse permits topic-only evidence reuse for an identical historical post under the same rubric. The fixed historical sample and current-corpus rejections stay explicit. Requires ordinary window mode and complete matching evidence.',
         o30RegistryAbsence: '--advisory --o28-expanded --o30-registry-absence enables fixed Jupiter legacy DCA registry absence over a complete verified WBTC pool-hour. WBTC registered calls stay unresolved; unregistered automation is unmeasured. Existing native v3/v4 windows retain the original flash-fill attribution, which may be positive; unsupported window versions remain unresolved.',
+        o28RpcErrors: '--advisory --o28-expanded --o28-rpc-errors accepts documented named RPC transaction failures in the selected-hour index. Failed rows remain excluded from committed flow; all coverage and resource limits stay unchanged. Use separately from O30 registry absence or historical-topic reuse.',
         o28Expanded: '--advisory --o28-expanded permits up to 2048 selected-hour transaction reads and 16 MB of stored O28 archives, with a ten-minute minimum run budget. Gaps remain unresolved; other pools and metrics retain their own scope.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
@@ -292,6 +293,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
+      if(hasFlag(argv,'o28-rpc-errors')&&(cmd!=='analyze'||hasBundle))throw new CliError('O28_RPC_ERRORS_REQUIRED','Use --o28-rpc-errors with live Solana --advisory --o28-expanded.');
       if(hasFlag(argv,'historical-topic-reuse')&&(cmd!=='analyze'||hasBundle))throw new CliError('HISTORICAL_TOPIC_REUSE_REQUIRED','Use --historical-topic-reuse with live Solana --partial --advisory --advisory-executor and --recorded-callers-capture FILE.');
       if(hasFlag(argv,'o30-registry-absence')&&(cmd!=='analyze'||hasBundle))throw new CliError('O30_ADVISORY_REQUIRED','Use --o30-registry-absence with live Solana --advisory --o28-expanded analysis.');
       if((hasFlag(argv,'wbtc-entry')||hasFlag(argv,'wbtc-exit')||hasFlag(argv,'wbtc-simulate')||hasFlag(argv,'wbtc-impacts')||hasFlag(argv,'wbtc-costs'))&&(cmd!=='analyze'||hasBundle))throw new CliError('ENTRY_ROUTE_MODE_REQUIRED','Use --wbtc-entry, --wbtc-exit, --wbtc-simulate, --wbtc-impacts or --wbtc-costs with live Solana analysis.');
@@ -344,6 +346,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       {
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
         if(hasFlag(argv,'executable-liquidity')&&token.chain!=='solana')throw new CliError('EXEC_LIQ_SOLANA_REQUIRED','--executable-liquidity supports Solana addresses only.');
+        if(hasFlag(argv,'o28-rpc-errors')&&(!hasFlag(argv,'advisory')||!hasFlag(argv,'o28-expanded')||hasFlag(argv,'o30-registry-absence')||hasFlag(argv,'historical-topic-reuse')||token.chain!=='solana'))throw new CliError('O28_RPC_ERRORS_REQUIRED','Use --o28-rpc-errors with live Solana --advisory --o28-expanded, separately from O30 or historical topic reuse.');
         if(hasFlag(argv,'historical-topic-reuse')&&(!hasFlag(argv,'advisory')||!hasFlag(argv,'advisory-executor')||!hasFlag(argv,'recorded-callers-capture')||hasFlag(argv,'o28-expanded')||token.chain!=='solana'))throw new CliError('HISTORICAL_TOPIC_REUSE_REQUIRED','Use --historical-topic-reuse with ordinary-window live Solana --partial --advisory --advisory-executor and --recorded-callers-capture FILE.');
         if(hasFlag(argv,'o30-registry-absence')&&(!hasFlag(argv,'advisory')||!hasFlag(argv,'o28-expanded')||token.chain!=='solana'))throw new CliError('O30_ADVISORY_REQUIRED','Use --o30-registry-absence with --advisory --o28-expanded for a Solana address.');
         if(hasFlag(argv,'o28-expanded')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('O28_ADVISORY_REQUIRED','Use --o28-expanded with --advisory for a Solana address.');
@@ -418,6 +421,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           ...(hasFlag(argv,'wbtc-exit')?{wbtcExit:true}:{}),
           ...(hasFlag(argv,'wbtc-entry')?{wbtcEntry:true}:{}),
           ...(hasFlag(argv,'o28-expanded')?{o28Expanded:true}:{}),
+          ...(hasFlag(argv,'o28-rpc-errors')?{o28RpcErrors:true}:{}),
           ...(hasFlag(argv,'o30-registry-absence')?{o30RegistryAbsence:true}:{}),
           ...(hasFlag(argv,'historical-topic-reuse')?{historicalTopicReuse:true}:{}),
           ...(hasFlag(argv,'executable-liquidity')?{executableLiquidity:true}:{}),
