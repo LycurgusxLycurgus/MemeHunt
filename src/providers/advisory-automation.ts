@@ -7,7 +7,7 @@ import type { DecodedTrade } from './advisory-trades.js';
 import type { AdvisoryWindowHistory, AdvisoryWindowReuse } from './advisory-window.js';
 import { executedWindowInstructions } from './advisory-window-accounts.js';
 import { fetchReadResponse, readLimitedText } from './http.js';
-import { LEGACY_TOKEN_PROGRAM, safeRpcCode, solanaRpc } from './solana.js';
+import { LEGACY_TOKEN_PROGRAM, TOKEN_2022_PROGRAM, safeRpcCode, solanaRpc } from './solana.js';
 
 export type AutomationReceipts={rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,unknown>};
 export const DCA_PROGRAM='DCA265Vj8a9CEuX1eb1LWRnDT7uK6q1xMipnNyatn23M';
@@ -31,6 +31,20 @@ export const OFFICIAL_AUTOMATION_SOURCES=[
  {id:'dca-readme',url:`${COMMIT}/README.md`,sha256:'2c3f1f396d4fd3201bf081f7a22d6572cb603b9ae02cb7fa0df6f61793ef9fa2',bytes:246,pinnedRetrievedAt:'2026-10-11T21:40:45.716274+00:00',programId:DCA_PROGRAM,role:'JUPITER_DCA_PRODUCT_BINDING',literal:'CPI helpers for the [Jupiter DCA](https://jup.ag/dca/USDC-SOL) program.'},
  {id:'recurring-doc',url:'https://developers.jup.ag/docs/recurring.md',sha256:'735e27be4fc85ab44049646f4f9fb6c92ee68b52e6479a09b14b5c973539224b',bytes:2685,pinnedRetrievedAt:'2026-10-11T21:44:37.784392+00:00',programId:DCA_PROGRAM,role:'LEGACY_AUTOMATIC_EXECUTION_STATEMENT',literal:'regular token swaps that execute automatically'},
 ] as const;
+/** Reviewed formatting-only upstream revision, admitted only by the explicit v49 WBTC absence branch. Legacy source pins stay frozen. */
+export const OFFICIAL_AUTOMATION_ABSENCE_SOURCES=[OFFICIAL_AUTOMATION_SOURCES[0],OFFICIAL_AUTOMATION_SOURCES[1],OFFICIAL_AUTOMATION_SOURCES[2],{...OFFICIAL_AUTOMATION_SOURCES[3],sha256:'44ed1d0010e73161639bbd14f90f77e61c696d8faa19c56fc095f22f5fdd71f6',bytes:2760,pinnedReviewedAt:'2026-10-29T11:39:30.994Z'}] as const;
+export const AUTOMATION_ABSENCE_REGISTRY_VERSION='jupiter-legacy-dca-flash-fill-absence-v2';
+export const AUTOMATION_ABSENCE_METHOD='official-automation-registry-absence-window-v2';
+const WBTC='3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh';
+const ABSENCE_MEANING="Fixed Jupiter legacy DCA registry fraction over one selected-pool WBTC hour. KNOWN zero certifies only that none of that hour's trade-bearing finalized transactions invokes the registered program in its complete parsed top-level or inner instruction arrays, excluding a same-transaction legacy flash-fill invocation. It certifies no positive fill or absence of unregistered automation.";
+const ABSENCE_LIMITATIONS=[
+ 'Registry covers only the Jupiter legacy DCA program; zero is not absence of bots, other automation, routers, manual intent or organic activity. Successor products are outside this fixed registry.',
+ 'Only selected-pool trade-bearing transactions in the declared historical hour are covered; other pools, hours and non-trade-bearing transactions are excluded. Every selected trade stays in the fee-exclusive denominator.',
+ 'Complete finalized parsed instruction arrays and pool-bound Pump/Token CPI nonvacuity witnesses support invocation absence without inferring execution order from truncated logs. A registered program reference in either instruction array remains unresolved; a program key merely listed as an account is not an invocation.',
+ 'This WBTC branch never guesses positive flash-fill attribution from shared users, timing or route roles. All measured flow remains unattributed; unregistered automation remains unmeasured.',
+ 'The finalized Program account read attests its executable flag and loader owner at the read slot only. No ProgramData, bytecode, upgrade history or correspondence between the pinned IDL and deployed binary is attested at any slot.',
+ 'The retained half-open pool-hour and all original nested source clocks are explicit; a later registry/program receipt does not make the historical tape current. There is no cross-provider corroboration.',
+];
 const MEANING='Selected-pool WSOL flow certified as Jupiter legacy DCA keeper flash fills under one fixed registry, divided by all decoded selected-pool trade flow in the same complete hour. Zero means only that no flow matched this registry in this pool-hour; it is never total automation, bot-free, organic or manual activity.';
 const LIMITATIONS=[
  'Registry covers only the Jupiter legacy DCA program; routers, trading terminals, wallet labels and unregistered automation remain unattributed, not zero.',
@@ -45,16 +59,18 @@ const sourceRequest=(url:string)=>({method:'GET',url});
 const programRequest=(anchorSlot:number)=>({method:'getAccountInfo',params:[DCA_PROGRAM,{encoding:'base64',commitment:'finalized',minContextSlot:anchorSlot,dataSlice:{offset:0,length:0}}]});
 const transactionRequest=(signature:string)=>({method:'getTransaction',params:[signature,{commitment:'finalized',encoding:'jsonParsed',maxSupportedTransactionVersion:1}]});
 const eligible=(w:AdvisoryWindowHistory)=>w.complete&&['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(w.method)&&w.pool!==null&&w.anchorSlot!==null&&w.trades.length>0;
-function plan(window:AdvisoryWindowHistory):Record<string,unknown>{
- if(!eligible(window))return {};
+const absenceQuote=(w:AdvisoryWindowHistory)=>w.method==='pumpswap-selected-pool-window-v5'&&w.quote?.mint===WBTC&&w.quote.decimals===8&&w.quote.program===LEGACY_TOKEN_PROGRAM&&w.poolAdmission?.status==='CUSTOM_QUOTE'&&w.poolAdmission.quoteMint===WBTC;
+const absenceEligible=(w:AdvisoryWindowHistory)=>w.complete&&w.genesisVerified&&w.poolVerified&&w.pool!==null&&w.anchorSlot!==null&&w.trades.length>0&&absenceQuote(w);
+function plan(window:AdvisoryWindowHistory,registryAbsence=false):Record<string,unknown>{
+ if(!eligible(window)&&!(registryAbsence&&absenceEligible(window)))return {};
  return Object.fromEntries([...OFFICIAL_AUTOMATION_SOURCES.map(s=>[`source-${s.id}`,sourceRequest(s.url)]),['program-account',programRequest(window.anchorSlot!)]]);
 }
 const sourceCode=(error:unknown)=>error instanceof Error&&error.message==='PROVIDER_RESPONSE_LIMIT'?'AUTOMATION_SOURCE_LIMIT':error instanceof Error&&error.message==='PROVIDER_EMPTY_RESPONSE'?'AUTOMATION_SOURCE_EMPTY':error instanceof Error&&['TimeoutError','AbortError'].includes(error.name)?'AUTOMATION_SOURCE_TIMEOUT':'AUTOMATION_SOURCE_TRANSPORT';
 
 /** Fixed reads only after a complete selected-pool hour with trades: four pinned official sources and one finalized program-account state. Failures are retained, never thrown. */
-export async function collectAdvisoryAutomation(token:TokenRef,window:AdvisoryWindowHistory,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<AutomationReceipts>{
+export async function collectAdvisoryAutomation(token:TokenRef,window:AdvisoryWindowHistory,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,registryAbsence=false):Promise<AutomationReceipts>{
  if(token.chain!=='solana'||window.token.chain!==token.chain||window.token.address!==token.address)fail('ADVISORY_AUTOMATION_SCOPE');
- const receipts:AutomationReceipts={rawArtifacts:{},retrievedAt:{},requests:{}},requests=plan(window);
+ const receipts:AutomationReceipts={rawArtifacts:{},retrievedAt:{},requests:{}},requests=plan(window,registryAbsence);
  if(!Object.keys(requests).length)return receipts;
  await Promise.all(OFFICIAL_AUTOMATION_SOURCES.map(async source=>{
   const id=`source-${source.id}`;receipts.requests[id]=requests[id];
@@ -135,24 +151,26 @@ export function bindFlashFills(value:unknown,tokenMint:string,pool:string,trades
  });
  return {fills,attributions};
 }
-function windowValue(signature:string,receipts:AdvisoryWindowReuse){
- const expected=JSON.stringify(transactionRequest(signature)),entry=Object.entries(receipts.requests).find(([,request])=>JSON.stringify(request)===expected);
+function windowValue(signature:string,receipts:AdvisoryWindowReuse,unique=false){
+ const expected=JSON.stringify(transactionRequest(signature)),matches=unique?Object.entries(receipts.requests).filter(([,request])=>JSON.stringify(request)===expected):null;
+ if(matches&&matches.length!==1)fail('ADVISORY_AUTOMATION_WINDOW_RECEIPT');
+ const entry=matches?matches[0]:Object.entries(receipts.requests).find(([,request])=>JSON.stringify(request)===expected);
  let value:any=null;try{value=entry?JSON.parse(receipts.rawArtifacts[entry[0]]??'').result:null;}catch{value=null;}
  if(!object(value)||value.transaction?.signatures?.[0]!==signature||!object(value.meta)||value.meta.err!==null)fail('ADVISORY_AUTOMATION_WINDOW_RECEIPT');
  return value;
 }
 
-type SourceProof={id:string;url:string;sha256:string;bytes:number;role:string;pinnedRetrievedAt:string;retrievedAt:string;status:'VERIFIED'|'UNVERIFIED';code:string|null};
-function verifySources(receipts:AutomationReceipts){
+type SourceProof={id:string;url:string;sha256:string;bytes:number;role:string;pinnedRetrievedAt:string;pinnedReviewedAt?:string;retrievedAt:string;status:'VERIFIED'|'UNVERIFIED';code:string|null};
+function verifySources(receipts:AutomationReceipts,registryAbsence=false){
  const bodies:Record<string,string>={};
- const sources=OFFICIAL_AUTOMATION_SOURCES.map((s):SourceProof=>{
+ const sources=(registryAbsence?OFFICIAL_AUTOMATION_ABSENCE_SOURCES:OFFICIAL_AUTOMATION_SOURCES).map((s):SourceProof=>{
   const id=`source-${s.id}`;let w:unknown=null;try{w=JSON.parse(receipts.rawArtifacts[id]!);}catch{w=null;}
   // Exact URL, status, bytes, hash and literal; a legitimate upstream change fails closed against the pin.
   const code:string|null=!object(w)?'AUTOMATION_SOURCE_INVALID':typeof w.code==='string'?(/^AUTOMATION_SOURCE_[A-Z_]{1,40}$/.test(w.code)?w.code:'AUTOMATION_SOURCE_INVALID')
    :w.httpStatus!==200?'AUTOMATION_SOURCE_HTTP':w.url!==s.url?'AUTOMATION_SOURCE_URL':typeof w.body!=='string'?'AUTOMATION_SOURCE_INVALID'
    :Buffer.byteLength(w.body,'utf8')!==s.bytes||sha256(w.body)!==s.sha256?'AUTOMATION_SOURCE_CHANGED':!w.body.includes(s.literal)?'AUTOMATION_SOURCE_LITERAL':null;
   if(code===null&&object(w))bodies[s.id]=w.body;
-  return {id:s.id,url:s.url,sha256:s.sha256,bytes:s.bytes,role:s.role,pinnedRetrievedAt:s.pinnedRetrievedAt,retrievedAt:receipts.retrievedAt[id]!,status:code===null?'VERIFIED':'UNVERIFIED',code};
+  return {id:s.id,url:s.url,sha256:s.sha256,bytes:s.bytes,role:s.role,pinnedRetrievedAt:s.pinnedRetrievedAt,...('pinnedReviewedAt' in s?{pinnedReviewedAt:s.pinnedReviewedAt}:{}),retrievedAt:receipts.retrievedAt[id]!,status:code===null?'VERIFIED':'UNVERIFIED',code};
  });
  return {sources,bodies};
 }
@@ -182,42 +200,61 @@ function completeInstructionsWithoutDca(value:unknown):boolean{
  }
  return !instructions.some((ix:any)=>ix.programId===DCA_PROGRAM)&&!inner.some((group:any)=>group.instructions.some((ix:any)=>ix.programId===DCA_PROGRAM));
 }
+/** Absence-only nonvacuity witnesses; no ordering, transfer payload or direct-route role inference. Shape validation runs first. */
+function requireAbsenceWitnesses(value:any,pool:string,trades:number){
+ const inner=value.meta.innerInstructions.flatMap((group:any)=>group.instructions),all=[...value.transaction.message.instructions,...inner];
+ const poolPumps=all.filter((ix:any)=>ix.programId===PUMP_PROGRAM&&Array.isArray(ix.accounts)&&ix.accounts.includes(pool));
+ const tokenCpis=inner.filter((ix:any)=>ix.programId===LEGACY_TOKEN_PROGRAM||ix.programId===TOKEN_2022_PROGRAM);
+ if(poolPumps.length<trades||tokenCpis.length===0)fail('ADVISORY_AUTOMATION_INSTRUCTION_WITNESS_MISSING');
+}
 /** O30 over one complete selected-pool hour; incomplete sources, programs, windows or fill evidence leave it unresolved. */
-export function deriveO30Window(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,receipts:AutomationReceipts,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
+export function deriveO30Window(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,receipts:AutomationReceipts,cutoff:string,evidenceIds:string[],registryAbsence=false):AdvisoryMetric{
  if(token.chain!=='solana'||window.token.chain!==token.chain||window.token.address!==token.address)fail('ADVISORY_AUTOMATION_SCOPE');
  const cut=Date.parse(cutoff);if(!Number.isFinite(cut)||Date.parse(window.window.end)>cut)fail('ADVISORY_AUTOMATION_TIME');
- const requests=plan(window),keys=Object.keys(requests).sort(),same=(m:unknown)=>object(m)&&JSON.stringify(Object.keys(m).sort())===JSON.stringify(keys);
+ const requests=plan(window,registryAbsence),keys=Object.keys(requests).sort(),same=(m:unknown)=>object(m)&&JSON.stringify(Object.keys(m).sort())===JSON.stringify(keys);
  if(!same(receipts.rawArtifacts)||!same(receipts.retrievedAt)||!same(receipts.requests))fail('ADVISORY_AUTOMATION_RECEIPT_MEMBERSHIP');
  for(const key of keys){
   if(JSON.stringify(receipts.requests[key])!==JSON.stringify(requests[key])||typeof receipts.rawArtifacts[key]!=='string')fail('ADVISORY_AUTOMATION_REQUEST');
   const at=Date.parse(receipts.retrievedAt[key]??'');if(!Number.isFinite(at)||at>cut)fail('ADVISORY_AUTOMATION_RECEIPT_TIME');
  }
- const ids=[...new Set(evidenceIds)];
- const base={method:'official-automation-flash-fill-window-v1',registryVersion:AUTOMATION_REGISTRY_VERSION,scope:'VERIFIED_PUMPSWAP_WSOL_POOL_HOUR',window:{pool:window.pool,start:window.window.start,end:window.window.end,anchorSlot:window.anchorSlot,method:window.method,complete:window.complete},quoteMint:WSOL,quoteDecimals:9,quoteBasis:'fee-exclusive core quote atomic units',unknownAutomation:'NOT_MEASURED',meaning:MEANING,limitations:LIMITATIONS};
- const unresolved=(reasonCode:string,extra:Record<string,unknown>={}):AdvisoryMetric=>({id:'O30',quality:'MISSING',unit:UNIT,data:{...base,coveredQuoteAtomic:null,knownAutomatedQuoteAtomic:null,knownAutomatedTrades:null,knownAutomatedTransactions:null,knownAutomatedFraction:null,unattributedQuoteAtomic:null,...extra},evidenceIds:ids,reasonCode});
- if(!keys.length)return unresolved(!window.complete||!['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(window.method)||!window.pool?'AUTOMATION_WINDOW_INCOMPLETE':'AUTOMATION_WINDOW_WITHOUT_TRADES');
- const {sources,bodies}=verifySources(receipts),program=verifyProgram(receipts,window);
+ const ids=[...new Set(evidenceIds)],absence=registryAbsence&&window.method==='pumpswap-selected-pool-window-v5',unit=absence?'quote-token fee-exclusive quote fraction':UNIT;
+ const base={method:'official-automation-flash-fill-window-v1',registryVersion:AUTOMATION_REGISTRY_VERSION,scope:'VERIFIED_PUMPSWAP_WSOL_POOL_HOUR',window:{pool:window.pool,start:window.window.start,end:window.window.end,anchorSlot:window.anchorSlot,method:window.method,complete:window.complete},quoteMint:WSOL,quoteDecimals:9,quoteBasis:'fee-exclusive core quote atomic units',unknownAutomation:'NOT_MEASURED',meaning:MEANING,limitations:LIMITATIONS,...(absence?{method:AUTOMATION_ABSENCE_METHOD,registryVersion:AUTOMATION_ABSENCE_REGISTRY_VERSION,scope:absenceEligible(window)?'VERIFIED_PUMPSWAP_WBTC_POOL_HOUR':'UNVERIFIED_OR_UNSUPPORTED_SELECTED_POOL_HOUR',quoteMint:window.quote?.mint??null,quoteDecimals:window.quote?.decimals??null,quoteProgram:window.quote?.program??null,meaning:ABSENCE_MEANING,limitations:ABSENCE_LIMITATIONS}:{})};
+ const unresolved=(reasonCode:string,extra:Record<string,unknown>={}):AdvisoryMetric=>({id:'O30',quality:'MISSING',unit,data:{...base,coveredQuoteAtomic:null,knownAutomatedQuoteAtomic:null,knownAutomatedTrades:null,knownAutomatedTransactions:null,knownAutomatedFraction:null,unattributedQuoteAtomic:null,...extra},evidenceIds:ids,reasonCode});
+ if(!keys.length){
+  if(absence){
+   if(!window.complete||!window.genesisVerified||!window.poolVerified||window.pool===null||window.anchorSlot===null)return unresolved('AUTOMATION_WINDOW_INCOMPLETE');
+   if(!absenceQuote(window))return unresolved('AUTOMATION_QUOTE_UNSUPPORTED');
+   return unresolved('AUTOMATION_WINDOW_WITHOUT_TRADES');
+  }
+  return unresolved(!window.complete||!['pumpswap-selected-pool-window-v3','pumpswap-selected-pool-window-v4'].includes(window.method)||!window.pool?'AUTOMATION_WINDOW_INCOMPLETE':'AUTOMATION_WINDOW_WITHOUT_TRADES');
+ }
+ const {sources,bodies}=verifySources(receipts,absence),program=verifyProgram(receipts,window);
  let abi:FlashFillAbi|null=null;try{if(bodies['dca-idl'])abi=flashFillAbi(bodies['dca-idl']);}catch{abi=null;}
- const registry={version:AUTOMATION_REGISTRY_VERSION,programs:[{programId:DCA_PROGRAM,role:'KEEPER_EXECUTED_FLASH_FILL',sources,account:program}]};
+ const registry={version:absence?AUTOMATION_ABSENCE_REGISTRY_VERSION:AUTOMATION_REGISTRY_VERSION,programs:[{programId:DCA_PROGRAM,role:'KEEPER_EXECUTED_FLASH_FILL',sources,account:program}]};
  const unverified=sources.find(s=>s.status!=='VERIFIED')?.code??program.code??(abi?null:'AUTOMATION_SOURCE_IDL');
  if(unverified||!abi)return unresolved(unverified??'AUTOMATION_SOURCE_IDL',{registry});
  const covered=window.trades.reduce((n,t)=>n+BigInt(t.quoteAtomic),0n);
  if(covered<=0n)return unresolved('AUTOMATION_DENOMINATOR_ZERO',{registry,coveredQuoteAtomic:String(covered)});
  const proofs:TradeProof[]=[],fills:FlashFill[]=[];
  try{
+  if(absence){
+   const signatures=new Set(window.trades.map(t=>t.signature)),witnesses=window.transactions.filter(t=>t.status==='OBSERVED'&&t.trades>0);
+   if(window.transactions.some(t=>!integer(t.trades))||window.transactions.reduce((n,t)=>n+t.trades,0)!==window.trades.length||witnesses.length!==signatures.size||witnesses.some(t=>!signatures.has(t.signature))||new Set(witnesses.map(t=>t.signature)).size!==signatures.size)fail('ADVISORY_AUTOMATION_WINDOW_RECEIPT');
+  }
   for(const signature of [...new Set(window.trades.map(t=>t.signature))]){
-   const own=window.trades.filter(t=>t.signature===signature),value=windowValue(signature,windowReceipts),windowTransaction=window.transactions.filter(t=>t.signature===signature);
+   const own=window.trades.filter(t=>t.signature===signature),value=windowValue(signature,windowReceipts,absence),windowTransaction=window.transactions.filter(t=>t.signature===signature);
    if(windowTransaction.length!==1||windowTransaction[0]!.status!=='OBSERVED'||windowTransaction[0]!.trades!==own.length)fail('ADVISORY_AUTOMATION_WINDOW_RECEIPT');
    const recovery=windowTransaction[0]!.logRecovery;
    const recovered=window.method==='pumpswap-selected-pool-window-v4'&&recovery?.truncated===true&&recovery.unresolvedInvocations===0&&recovery.emptyForeignSweeps===0;
-   if(recovered&&!completeInstructionsWithoutDca(value))fail('ADVISORY_ACCOUNTS_LOG_INCOMPLETE');
-   const bound=recovered?null:bindFlashFills(value,token.address,window.pool!,own,abi);
+   if(absence){if(!completeInstructionsWithoutDca(value))fail('ADVISORY_AUTOMATION_REGISTERED_CALL_REQUIRES_BOUND_EXECUTION');requireAbsenceWitnesses(value,window.pool!,own.length);}
+   if(!absence&&recovered&&!completeInstructionsWithoutDca(value))fail('ADVISORY_ACCOUNTS_LOG_INCOMPLETE');
+   const bound=absence||recovered?null:bindFlashFills(value,token.address,window.pool!,own,abi);
    if(bound)fills.push(...bound.fills);
-   own.forEach((t,i)=>{const fill=bound?.attributions[i]??null;proofs.push({signature:t.signature,slot:t.slot,at:t.at,instructionIndex:t.instructionIndex,side:t.side,user:t.user,quoteAtomic:t.quoteAtomic,attribution:fill?'JUPITER_LEGACY_DCA_FLASH_FILL':'UNATTRIBUTED',attributionBasis:recovered?'COMPLETE_PARSED_INSTRUCTIONS_NO_REGISTERED_DCA':'STRICT_EXECUTION_LOGS',fill});});
+   own.forEach((t,i)=>{const fill=bound?.attributions[i]??null;proofs.push({signature:t.signature,slot:t.slot,at:t.at,instructionIndex:t.instructionIndex,side:t.side,user:t.user,quoteAtomic:t.quoteAtomic,attribution:fill?'JUPITER_LEGACY_DCA_FLASH_FILL':'UNATTRIBUTED',attributionBasis:absence||recovered?'COMPLETE_PARSED_INSTRUCTIONS_NO_REGISTERED_DCA':'STRICT_EXECUTION_LOGS',fill});});
   }
  }catch(error){return unresolved(errorCode(error),{registry,coveredQuoteAtomic:String(covered)});}
  const attributed=proofs.filter(p=>p.fill!==null),known=attributed.reduce((n,p)=>n+BigInt(p.quoteAtomic),0n);
- return {id:'O30',quality:'KNOWN',unit:UNIT,data:{...base,registry,coveredTrades:proofs.length,coveredQuoteAtomic:String(covered),fillsObserved:fills.length,poolOrientedFills:fills.filter(f=>f.side!==null).length,
+ return {id:'O30',quality:'KNOWN',unit,data:{...base,registry,coveredTrades:proofs.length,coveredQuoteAtomic:String(covered),fillsObserved:fills.length,poolOrientedFills:fills.filter(f=>f.side!==null).length,
   knownAutomatedQuoteAtomic:String(known),knownAutomatedTrades:attributed.length,knownAutomatedTransactions:new Set(attributed.map(p=>p.signature)).size,knownAutomatedFraction:new Decimal(known.toString()).div(covered.toString()).toFixed(),unattributedQuoteAtomic:String(covered-known),trades:proofs},
-  evidenceIds:ids,reasonCode:'OFFICIAL_AUTOMATION_FLOW_OBSERVED'};
+  evidenceIds:ids,reasonCode:absence?'OFFICIAL_AUTOMATION_REGISTRY_ABSENCE_OBSERVED':'OFFICIAL_AUTOMATION_FLOW_OBSERVED'};
 }
