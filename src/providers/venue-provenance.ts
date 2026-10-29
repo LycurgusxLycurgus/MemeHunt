@@ -1,3 +1,4 @@
+import {validateExitRouteBundle} from './exit-route.js';
 import {validateEntryRouteBundle} from './entry-route.js';
 import { createHash } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
@@ -475,7 +476,7 @@ function rejectContradictedLegacy(bundle: LiveBundle, o08: BaselineAssessment | 
 }
 
 export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
-  const independentEntry=validateEntryRouteBundle(bundle);
+  const independentEntry=validateEntryRouteBundle(bundle),independentExit=validateExitRouteBundle(bundle);
   const raw = bundle.rawArtifacts, baseline = bundle.details?.baseline ?? [];
   const o08 = baseline.find(a => a.id === 'O08');
   if (bundle.evidence.some(e => !e.id.startsWith(PREFIX) && typeof e.scope.method === 'string' && e.scope.method.startsWith('pump-venue-provenance'))) throw new Error('VENUE_PROVENANCE_FOREIGN_METHOD');
@@ -538,7 +539,7 @@ export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
     const selection = parseJson(marker);
     if (!obj(selection) || (typeof selection.selected === 'string' && selection.selected !== 'UNVERIFIED' && selection.selected !== 'NONE')) throw new Error('VENUE_PROVENANCE_ROUTE_CONTRADICTION');
   }
-  if (features.some(f => PROMOTION_IDS.includes(f.id) && (f.quality === 'KNOWN' || f.quality === 'STALE') && !(f.id==='O10'&&independentEntry&&stable(f)===stable(independentEntry.projection)))) throw new Error('VENUE_PROVENANCE_PROMOTION');
+  if (features.some(f => PROMOTION_IDS.includes(f.id) && (f.quality === 'KNOWN' || f.quality === 'STALE') && !([independentEntry,independentExit].some(a=>a&&f.id===a.id&&stable(f)===stable(a.projection))))) throw new Error('VENUE_PROVENANCE_PROMOTION');
   if (!bundle.details) {
     if (features.some(f => f.id === 'O08' && (f.quality === 'KNOWN' || f.quality === 'STALE'))) throw new Error('VENUE_PROVENANCE_DETAILS_MISSING');
     return;
@@ -562,7 +563,7 @@ export function validateVenueProvenanceBundle(bundle: LiveBundle): void {
   if (f08?.quality === 'KNOWN' && (!inspection.bindingVerified || f08.value !== true)) throw new Error('VENUE_PROVENANCE_O08_FEATURE');
   for (const id of ['O09', 'O10', 'O11', 'O12', 'O13', 'O14', 'O15', 'O16']) {
     const a = baseline.find(x => x.id === id);
-    if(id==='O10'&&independentEntry&&stable(a)===stable(independentEntry))continue;
+    if([independentEntry,independentExit].some(x=>x&&id===x.id&&stable(a)===stable(x)))continue;
     if (a && (a.quality === 'KNOWN' || a.data !== null)) throw new Error('VENUE_PROVENANCE_PROMOTION');
   }
 }
