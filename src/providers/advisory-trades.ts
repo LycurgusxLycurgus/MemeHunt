@@ -40,7 +40,7 @@ const request=(pool:string):Request=>({method:'getAccountInfo',params:[pool,{enc
 function bytes58(s:unknown):Buffer{if(typeof s!=='string'||s.length>2000||!/^[1-9A-HJ-NP-Za-km-z]+$/.test(s))throw new Error('ADVISORY_TRADE_INSTRUCTION');let n=0n;const a='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';for(const c of s)n=n*58n+BigInt(a.indexOf(c));let hex=n.toString(16);if(hex.length%2)hex='0'+hex;return Buffer.concat([Buffer.alloc(s.match(/^1*/)?.[0].length??0),n===0n?Buffer.alloc(0):Buffer.from(hex,'hex')]);}
 const definitions=pumpAmmJson.instructions.filter(x=>['buy','buy_exact_quote_in','sell'].includes(x.name));
 function side(ix:any,currentAbi=false):'BUY'|'SELL'|null{try{const b=bytes58(ix.data);if(currentAbi){const pinned=decodePinnedWindowInstruction(b);if(pinned)return pinned.side;}const def=definitions.find(d=>Buffer.from(d.discriminator).equals(b.subarray(0,8)));return def?.name==='sell'?'SELL':def?'BUY':null;}catch{return null;}}
-function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false,foreignRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number,a29v2=false,a29Recovery=false,o23CountPurpose=false):DecodedTrade[]{
+function decodeTransaction(value:any,expected:{signature:string;slot:number;at:string|null},poolKey:string,pool:any,stateSlot:number,retrieved:string,windowProof?:WindowTransactionProof,currentAbi=false,feeExclusive=false,recovery=false,retainVirtualQuote=false,foreignRecovery=false,modern=false,quoteProgram?:string,extended=false,quoteDecimals?:number,a29v2=false,a29Recovery=false,pairedClockPurpose:false|'O23_COUNT'|'O29_RESERVE'=false):DecodedTrade[]{
  if(!obj(value)||value.slot!==expected.slot||!integer(value.blockTime)||new Date(value.blockTime*1000).toISOString()!==expected.at||value.blockTime*1000>Date.parse(retrieved)||value.slot>stateSlot||!obj(value.meta)||value.meta.err!==null||value.transaction?.signatures?.[0]!==expected.signature)throw new Error('ADVISORY_TRADE_TRANSACTION_BINDING');
  const message=value.transaction.message,keys=message?.accountKeys;
  if(!Array.isArray(keys)||!Array.isArray(message.instructions)||!Array.isArray(value.meta.innerInstructions)||!Array.isArray(value.meta.logMessages))throw new Error('ADVISORY_TRADE_TRANSACTION_SHAPE');
@@ -55,10 +55,10 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
  const authorized=(key:string,depth:number)=>keys.some((k:any)=>k.pubkey===key&&(k.signer===true||depth>1));
  const tokenProgram=(key:string)=>key===TOKEN_PROGRAM_ID.toBase58()||key===TOKEN_2022_PROGRAM_ID.toBase58();
  const quoteMintKey=pool?.quoteMint?.toBase58?.()??NATIVE_MINT.toBase58(),quoteProgramKey=quoteProgram??TOKEN_PROGRAM_ID.toBase58();
- // O23 alone treats the committed event clock independently of RPC estimated cohort time.
+ // Only the explicit O23 count and O29 financial boundaries select independent program/index clocks.
  // Frozen v35 event clock: for modern receipts the self-attested event timestamp is an independent integer inside the same frozen half-open hour and never after retrieval; it is not forced to equal the RPC blockTime estimate. Legacy (modern=false) keeps the exact strict equality unchanged by version.
  const blockHour=Math.floor((value.blockTime as number)/3600)*3600;
- const clockOk=(ts:unknown):boolean=>{const s=String(ts);if(!modern)return s===String(value.blockTime);if(!/^(0|[1-9]\d{0,18})$/.test(s))return false;const t=Number(s);return Number.isSafeInteger(t)&&(o23CountPurpose||t>=blockHour&&t<blockHour+3600)&&t*1000<=Date.parse(retrieved);};
+ const clockOk=(ts:unknown):boolean=>{const s=String(ts);if(!modern)return s===String(value.blockTime);if(!/^(0|[1-9]\d{0,18})$/.test(s))return false;const t=Number(s);return Number.isSafeInteger(t)&&(pairedClockPurpose||t>=blockHour&&t<blockHour+3600)&&t*1000<=Date.parse(retrieved);};
  if(windowProof)for(const ix of pumpInstructions){
   if(!Array.isArray(ix.accounts)||ix.accounts.some((a:any)=>typeof a!=='string'||!keys.some((k:any)=>k.pubkey===a)))throw new Error('ADVISORY_TRADE_INSTRUCTION_ACCOUNTS');
   const bytes=bytes58(ix.data),definition=pumpAmmJson.instructions.find(d=>Buffer.from(d.discriminator).equals(bytes.subarray(0,8)));
@@ -169,8 +169,8 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   const leg=checkedLeg(hit[0],a[b+1],authority);if(leg.amount!==want||leg.fee!==null&&leg.fee!==tax)witnessFail();return witnessKind(leg.fee);
  };
  // Proof36 ordered route binder: the k-th PumpSwap event of a multi_hop_swap binds to the k-th non-curve hop. Every bound hop checks its pool, user, user/System roles, clock, fee masks, chain link to the previous bound hop and the route endpoints; only selected-pool hops add flow.
- // A29 v2 / O23 count-only provenance comes from the canonical binding point, never from ordinal arithmetic.
- const prov=(frame:Frame,hop:number|null,routeEvent:number|null,payload:string|undefined)=>{if(!a29v2&&!o23CountPurpose)return {};if(typeof payload!=='string')throw new Error('ADVISORY_TRADE_PROVENANCE');return {provenance:{top:frame.ix.top as number,position:frame.ix.position as number,pumpOrdinal:pumpInstructions.indexOf(frame.ix),hop,routeEvent,eventPayload:payload}};};
+ // A29 v2 / explicit paired-clock provenance comes from the canonical binding point, never from ordinal arithmetic.
+ const prov=(frame:Frame,hop:number|null,routeEvent:number|null,payload:string|undefined)=>{if(!a29v2&&!pairedClockPurpose)return {};if(typeof payload!=='string')throw new Error('ADVISORY_TRADE_PROVENANCE');return {provenance:{top:frame.ix.top as number,position:frame.ix.position as number,pumpOrdinal:pumpInstructions.indexOf(frame.ix),hop,routeEvent,eventPayload:payload}};};
  const bindRouteEvent=(frame:Frame,event:any,instructionIndex:number,payload?:string)=>{
   const md=event.data as any,ma=frame.ix.accounts,mh=frame.ix.multiHop,r=frame.route??={k:0,name:event.name,prev:null};
   if(r.k>=mh.poolHops.length)throw new Error('ADVISORY_TRADE_EVENT_DUPLICATE');
@@ -179,7 +179,10 @@ function decodeTransaction(value:any,expected:{signature:string;slot:number;at:s
   if(r.k===0)for(let x=0;x<last;x++)if(buyRoute?ma[16+5*x]!==ma[16+5*(x+1)+1]:ma[16+5*x+1]!==ma[16+5*(x+1)])throw new Error('ADVISORY_TRADE_MULTIHOP_ROUTE');
   const userBase=buyRoute?h===last?ma[2]:SYSTEM_SENTINEL:h===0?ma[1]:SYSTEM_SENTINEL,userQuote=buyRoute?h===0?ma[1]:SYSTEM_SENTINEL:h===last?ma[2]:SYSTEM_SENTINEL;
   if(md.pool?.toBase58()!==ma[b+2]||md.user?.toBase58()!==ma[0]||md.userBaseTokenAccount?.toBase58()!==userBase||md.userQuoteTokenAccount?.toBase58()!==userQuote||!clockOk(md.timestamp))throw new Error('ADVISORY_TRADE_MULTIHOP_EVENT_BINDING');
-  const q=reconcileWindowQuote(buyRoute?'multi_hop_swap':'sell',md,modern,true,{hop:h,hops:mh.hops});
+  const boundQuote=reconcileWindowQuote(buyRoute?'multi_hop_swap':'sell',md,modern,true,{hop:h,hops:mh.hops});
+  // Only the O29 financial boundary adds route context to otherwise frozen v2 accounting objects.
+  if(pairedClockPurpose==='O29_RESERVE'&&boundQuote.route&&(boundQuote.route.hop!==h||boundQuote.route.hops!==mh.hops))throw new Error('ADVISORY_TRADE_PROVENANCE');
+  const q=pairedClockPurpose==='O29_RESERVE'&&!boundQuote.route?{...boundQuote,route:{hop:h,hops:mh.hops}}:boundQuote;
   const tax=BigInt(q.quoteTransferFeeAtomic??'0'),base=BigInt(atomic(buyRoute?md.baseAmountOut:md.baseAmountIn)),out=buyRoute?base:BigInt(q.userQuoteAtomic)-tax;
   if(r.prev&&r.prev.hop===h-1&&(buyRoute?BigInt(q.eventQuoteAtomic):base)!==r.prev.out||h===0&&BigInt(mh.amountIn)!==(buyRoute?BigInt(q.eventQuoteAtomic)+tax:base)||h===last&&BigInt(mh.minOut)>out)throw new Error('ADVISORY_TRADE_MULTIHOP_EVENT_BINDING');
   const signer=keys.some((k:any)=>k.pubkey===ma[0]&&k.signer===true),cpi=frame.ix.depth>1&&keys.some((k:any)=>k.pubkey===ma[0]);
@@ -399,13 +402,32 @@ export function decodePumpSwapSynchronyTransaction(value:unknown,expected:{signa
  // The internal purpose changes only the independent event-clock gate and captures canonical provenance.
  // Native recovery preserves the accepted O28 profile; only compiled companions select A29 execution recovery.
  // All account, event, argument, exact fee/transfer, trace and successful-execution checks remain in the shared binder.
- const trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,true,true,recovery,compiled,foreign,true,quoteProgram,true,quoteDecimals,compiled,compiled,true);
+ const trades=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,true,true,recovery,compiled,foreign,true,quoteProgram,true,quoteDecimals,compiled,compiled,'O23_COUNT');
  return {trades:trades.map(t=>{
   const provenance=t.provenance;if(!provenance)throw new Error('ADVISORY_TRADE_PROVENANCE');
   const event=decodePinnedWindowEvent(provenance.eventPayload,true,true,true),timestamp=String(event?.data.timestamp);
   if(!event||!['buyEvent','sellEvent'].includes(event.name)||!/^(0|[1-9]\d{0,18})$/.test(timestamp)||!Number.isSafeInteger(Number(timestamp))||Number(timestamp)*1000>Date.parse(retrieved))throw new Error('ADVISORY_TRADE_EVENT_BINDING');
   return {signature:t.signature,slot:t.slot,at:t.at,user:t.user,side:t.side,instructionIndex:t.instructionIndex,...(t.instructionName?{instructionName:t.instructionName}:{}),programTimestamp:timestamp,provenance};
  }),foreignSwapLegs:proof.foreignSwapLegs,nonSwapInvocations:proof.nonSwapInvocations,cpiAuthorizedAccounts:proof.cpiAuthorizedAccounts,...(proof.logRecovery?{logRecovery:proof.logRecovery}:{})};
+}
+/** Full financial O29 witness, separate from the count-only O23 DTO and all older financial APIs. */
+export type ReservePathFinancialTrade=DecodedTrade&{programTimestamp:string;virtualQuoteReservesAtomic:string;provenance:TradeProvenance};
+export type ReservePathTransactionProof=Omit<WindowTransactionProof,'trades'>&{trades:ReservePathFinancialTrade[]};
+/** Explicit paired-clock financial purpose. The source owner supplies the earliest native receipt clock;
+ * compiled companions must already be same-signature parity-validated and projected. Index time remains
+ * the cohort clock. No account, argument, fee, transfer, event or execution guard is relaxed. */
+export function decodePumpSwapReservePathTransaction(value:unknown,expected:{signature:string;slot:number;at:string},poolKey:string,pool:ReturnType<typeof PUMP_AMM_SDK.decodePool>,stateSlot:number,retrieved:string,quoteProgram:string,quoteDecimals:number,profile:{logRecovery?:boolean;foreignFlowRecovery?:boolean;compiledRecovery?:boolean}={}):ReservePathTransactionProof{
+ const recovery=profile.logRecovery===true,foreign=profile.foreignFlowRecovery===true,compiled=profile.compiledRecovery===true;
+ if(foreign&&!recovery||compiled&&!(recovery&&foreign))throw new Error('ADVISORY_TRADE_RESERVE_PATH_SCOPE');
+ const proof:WindowTransactionProof={trades:[],foreignSwapLegs:0,nonSwapInvocations:0,cpiAuthorizedAccounts:[],...(recovery?{logRecovery:{truncated:false,unresolvedInvocations:0,emptyForeignSweeps:0,...(foreign?{unresolvedForeignSwaps:0}:{})}}:{}),extendedLegs:0};
+ const decoded=decodeTransaction(value,expected,poolKey,pool,stateSlot,retrieved,proof,true,true,recovery,true,foreign,true,quoteProgram,true,quoteDecimals,compiled,compiled,'O29_RESERVE');
+ const trades=decoded.map((t):ReservePathFinancialTrade=>{
+  const provenance=t.provenance;if(!provenance||!t.quoteAccounting||typeof t.virtualQuoteReservesAtomic!=='string')throw new Error('ADVISORY_TRADE_PROVENANCE');
+  const event=decodePinnedWindowEvent(provenance.eventPayload,true,true,true),timestamp=String(event?.data.timestamp);
+  if(!event||!['buyEvent','sellEvent'].includes(event.name)||!/^(0|[1-9]\d{0,18})$/.test(timestamp)||!Number.isSafeInteger(Number(timestamp))||Number(timestamp)*1000>Date.parse(retrieved))throw new Error('ADVISORY_TRADE_EVENT_BINDING');
+  return {...t,virtualQuoteReservesAtomic:t.virtualQuoteReservesAtomic,programTimestamp:timestamp,provenance};
+ });
+ return {...proof,trades};
 }
 /** One pool-state receipt. Trade reconstruction separately requires the original indexed finalized transaction receipts. */
 export async function collectAdvisoryTrades(token:TokenRef,pool:string|null,rpcUrl:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal):Promise<{rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,Request>}>{

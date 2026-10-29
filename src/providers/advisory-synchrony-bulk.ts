@@ -173,3 +173,10 @@ export function deriveO23BulkSynchrony(receipts:O23BulkReceipts,cutoff:string,ev
  const ordered=[...roles.values()].sort((a,b)=>context.success.get(a.signature)!.order-context.success.get(b.signature)!.order),statistics=computeSynchronyStatistics(ordered,receipts.pool,receipts.range.end,'sponsored-fee-payer-synchrony-v2');
  return{id:'O23',quality:'KNOWN',unit:'fraction-vector',evidenceIds:ids,reasonCode:'SPONSORED_SYNCHRONY_OBSERVED',data:{...scope,...statistics}};
 }
+
+// New consumers reuse source admission only; no count result or monetary interpretation is shared.
+export type O23BulkIndexed=Indexed;
+export type O23BulkCompanion=Companion;
+export type O23BulkSourceContext=SourceContext;
+export type O23BulkSourceVisitor=NonNullable<Parameters<typeof decodeSources>[2]>;
+export {decodeSources as visitO23BulkSources};
