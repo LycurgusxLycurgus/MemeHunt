@@ -233,7 +233,7 @@ function receiptKeys(value:any):Set<string>{
  return new Set(list.map((k:any)=>k.pubkey as string));
 }
 /** Every attempted Token, Token-2022 and associated-account instruction of a receipt's complete runtime trace as a supported form, with the token accounts it acts on and the mint and owner facts its fields establish. */
-function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET',attemptedSuperset=false){
+function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET',attemptedSuperset=false,absenceMint?:string){
  // Absence is certified only over the complete runtime trace: every top-level and inner instruction bound in order to its logged invoke frame and outcome.
  // A dropped, added or reordered instruction, or an incomplete or truncated log, is never read as unrelated activity; parsed forms alone never stand in for the trace.
  let trace:Steps;
@@ -242,6 +242,7 @@ function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET',attemptedSup
  for(const {ix} of trace){
   const ata=ix.programId===ATA_PROGRAM,table=ata?ATA_FORMS:attemptedSuperset?NATIVE_WALLET_TOKEN_FORMS:TOKEN_FORMS,p=ix.parsed;
   if(!ata&&!tokenPrograms.has(ix.programId))continue;
+  if(absenceMint&&object(p)&&typeof p.type==='string'&&ABSENCE_FORMS.has(p.type)){const subjects=absenceForm(value,ix,keys,absenceMint);ixs.push({type:p.type,info:p.info,subjects});continue;}
   if(!object(p)||typeof p.type!=='string'||!object(p.info)||!Object.hasOwn(table,p.type))fail(`CREATOR_${scope}_TOKEN_FORM_UNRESOLVED`);
   const type:string=p.type,info:Record<string,any>=p.info,form=table[type]!,key=(f:string)=>typeof info[f]==='string'&&keys.has(info[f]);
   const multi=form.signer?`multisig${form.signer[0]!.toUpperCase()}${form.signer.slice(1)}`:null,signer=multi&&Object.hasOwn(info,multi)?multi:form.signer;
@@ -260,14 +261,48 @@ function tokenForms(value:any,keys:Set<string>,scope:'ATA'|'WALLET',attemptedSup
  }
  return{ixs,facts};
 }
+// These three closed forms are admitted only by the new54 negative wallet purpose.
+export const CREATOR_ABSENCE_LEGACY_TOKEN_SOURCE_COMMIT='737788ff5bcc3f1f44cfb222f25483187650be76';
+const ABSENCE_FORMS=new Set(['unwrapLamports','harvestWithheldTokensToMint','transferCheckedWithFee']);
+const absenceU64=(v:unknown):v is string=>typeof v==='string'&&/^(0|[1-9][0-9]{0,19})$/.test(v)&&BigInt(v)<=18446744073709551615n;
+function absenceForm(value:any,ix:any,keys:Set<string>,mint:string):string[]{
+ const no=():never=>fail('CREATOR_WALLET_ABSENCE_FORM_UNRESOLVED'),p=ix.parsed,i=p?.info;
+ if(!object(i))return no();
+ const exact=(fields:string[])=>Object.keys(i).length===fields.length&&fields.every(f=>Object.hasOwn(i,f)),key=(v:unknown):v is string=>typeof v==='string'&&keys.has(v);
+ // Each acted-on token account needs an explicit consistent raw mint/owner/decimal witness. Absence is never a zero balance.
+ const bound=(account:string,expectedMint:string,program:string,scale?:number)=>{
+  const list=value.transaction.message.accountKeys,index=list.findIndex((k:any)=>k.pubkey===account),rows:any[]=[];
+  for(const bs of [value.meta?.preTokenBalances,value.meta?.postTokenBalances]){if(!Array.isArray(bs))return no();const found=bs.filter((b:any)=>b?.accountIndex===index);if(found.length>1)return no();rows.push(...found);}
+  if(!rows.length||rows.some(b=>b.mint!==expectedMint||b.programId!==program||!address(b.owner)||!object(b.uiTokenAmount)||!absenceU64(b.uiTokenAmount.amount)||!decimals(b.uiTokenAmount.decimals)||scale!==undefined&&b.uiTokenAmount.decimals!==scale)||new Set(rows.map(b=>b.owner)).size!==1||new Set(rows.map(b=>b.uiTokenAmount.decimals)).size!==1)return no();
+  return rows[0];
+ };
+ if(p.type==='unwrapLamports'){
+  if(mint===WSOL||ix.programId!==LEGACY_TOKEN_PROGRAM||!exact(['source','destination','authority','amount'])||![i.source,i.destination,i.authority].every(key)||!absenceU64(i.amount))return no();
+  const b=bound(i.source,WSOL,LEGACY_TOKEN_PROGRAM,9);if(b.owner!==i.authority)return no();return[i.source];
+ }
+ if(ix.programId!==TOKEN_2022_PROGRAM||!key(i.mint)||i.mint===mint)return no();
+ if(p.type==='harvestWithheldTokensToMint'){
+  if(!exact(['mint','sourceAccounts'])||!Array.isArray(i.sourceAccounts)||!i.sourceAccounts.length||i.sourceAccounts.length>256||!i.sourceAccounts.every(key)||new Set(i.sourceAccounts).size!==i.sourceAccounts.length)return no();
+  for(const a of i.sourceAccounts)bound(a,i.mint,TOKEN_2022_PROGRAM);return [...i.sourceAccounts];
+ }
+ if(p.type==='transferCheckedWithFee'){
+  if(!exact(['source','destination','mint','authority','tokenAmount','feeAmount'])||![i.source,i.destination,i.authority].every(key)||!uiAmount(i.tokenAmount)||!uiAmount(i.feeAmount)||!absenceU64(i.tokenAmount.amount)||!absenceU64(i.feeAmount.amount)||i.tokenAmount.decimals!==i.feeAmount.decimals||BigInt(i.feeAmount.amount)>BigInt(i.tokenAmount.amount))return no();
+  const b=bound(i.source,i.mint,TOKEN_2022_PROGRAM,i.tokenAmount.decimals);bound(i.destination,i.mint,TOKEN_2022_PROGRAM,i.tokenAmount.decimals);if(b.owner!==i.authority)return no();return[i.source,i.destination];
+ }
+ return no();
+}
+export {tokenAccount as creatorInventoryTokenAccount};
 /** Shared native boundary: every critical parsed form and referenced key must be complete before any committed-amount witness is accepted. */
 export function validateNativeCreatorTokenForms(value:any):void{tokenForms(value,receiptKeys(value),'WALLET',true);}
 /** Returns a code when a creator-referencing receipt touches, or cannot exclude touching, another creator-owned target-mint account, including one opened and closed inside it.
  * System instructions are not inspected: only the token program owning a token account can change its amount, owner or lifecycle. */
-export function walletTouch(value:any,role:CreatorRole,account:string,attemptedSuperset=false):string|null{
+export function walletTouch(value:any,role:CreatorRole,account:string,attemptedSuperset=false):string|null{return walletTouchCore(value,role,account,attemptedSuperset);}
+/** New54 only: conservative negative proof, never a committed target-amount witness. */
+export function walletTouchAbsence(value:any,role:CreatorRole,account:string):string|null{return walletTouchCore(value,role,account,true,role.mint);}
+function walletTouchCore(value:any,role:CreatorRole,account:string,attemptedSuperset=false,absenceMint?:string):string|null{
  const keys=receiptKeys(value),list=value.transaction.message.accountKeys;
  if(!keys.has(role.wallet))fail('CREATOR_WALLET_INDEX_INCONSISTENT');
- const {ixs,facts}=tokenForms(value,keys,'WALLET',attemptedSuperset);
+ const {ixs,facts}=tokenForms(value,keys,'WALLET',attemptedSuperset,absenceMint);
  // Raw balances add each listed account's mint and owner; accounts opened and closed inside the receipt resolve only from their parsed initialization.
  for(const rows of [value.meta?.preTokenBalances,value.meta?.postTokenBalances]){
   if(!Array.isArray(rows))fail('CREATOR_INVENTORY_BALANCE_SHAPE');
