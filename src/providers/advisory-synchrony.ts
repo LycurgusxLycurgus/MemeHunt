@@ -15,7 +15,8 @@ type Request={method:string;params:unknown[]};
 type Receipts={rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;requests:Record<string,unknown>};
 type Funding='SELF'|'SPONSORED'|'PROGRAM';
 type Leg={user:string;side:'BUY'|'SELL';funding:Funding};
-type Role={signature:string;slot:number;stratum:number;feePayer:string;legs:Leg[]};
+export type SynchronyRole={signature:string;slot:number;stratum:number;feePayer:string;legs:Leg[]};
+type Role=SynchronyRole;
 type Bin={widthSlots:number;offsetSlots:number};
 export const SYNCHRONY_METHOD='sponsored-fee-payer-synchrony-v1' as const;
 // Declared before observation: one, ten and 150 slots; each wider bin is repeated with a half-width origin shift.
@@ -101,22 +102,12 @@ function draws(seed:string):(n:number)=>number{
  return n=>{const limit=Math.floor(0x1_0000_0000/n)*n;for(;;){const v=word();if(v<limit)return v%n;}};
 }
 
-/** O23 from the same receipts A30 decodes; null keeps the existing missing row when the tape is not eligible. */
-export function deriveO23Synchrony(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[],foreignFlowRecovery=false):AdvisoryMetric|null{
- const history=decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff,false,foreignFlowRecovery);
- if(!history.eligible)return null;
- const ids=[...new Set(evidenceIds)];
- const scope={method:SYNCHRONY_METHOD,tapeMethod:history.method,scope:'VERIFIED_PUMPSWAP_WSOL_POOL',pool:history.pool,range:history.range,anchorSlot:history.anchorSlot,stateSlot:history.stateSlot,tapeComplete:history.complete,
-  identityUnit:'decoded PumpSwap trade user account and transaction fee payer; never merged and not a person',rules:RULES,permutations:SYNCHRONY_PERMUTATIONS,commonControl:null,coordination:null,limitations:LIMITATIONS};
- const missing=(reasonCode:string,denominator:number|null):AdvisoryMetric=>({id:'O23',quality:'MISSING',unit:UNIT,evidenceIds:ids,reasonCode,data:{...scope,denominator,fundingClasses:null,transactions:null,sponsors:null,seed:null,
-  bins:SYNCHRONY_BINS.map(bin=>({...bin,synchronizedTrades:null,fraction:null,null:null}))}});
- if(!history.complete)return missing(history.reasonCode,null);
- let roles:Role[];
- try{roles=feeRoles(history,windowReceipts,{rawArtifacts,retrievedAt,requests},Date.parse(cutoff));}catch(error){return missing(errorCode(error),null);}
- const denominator=history.trades.length;
- if(!denominator)return missing('SYNCHRONY_DENOMINATOR_ZERO',0);
+/** Exact O23 arithmetic over validated complete-tape roles in canonical index order. Strata are relative UTC hours 0..11. */
+export function computeSynchronyStatistics(roles:SynchronyRole[],pool:string,rangeEnd:string,method:'sponsored-fee-payer-synchrony-v1'|'sponsored-fee-payer-synchrony-v2'){
+ const denominator=roles.reduce((n,r)=>n+r.legs.length,0);
+ if(!denominator)fail('SYNCHRONY_DENOMINATOR_ZERO');
  const observed=roles.map(r=>r.slot),strata=Array.from({length:HOURS},(_,h)=>roles.flatMap((r,i)=>r.stratum===h?[i]:[]));
- const seed=createHash('sha256').update(JSON.stringify([SYNCHRONY_METHOD,history.pool,history.range.end,roles.map(r=>r.signature)])).digest('hex');
+ const seed=createHash('sha256').update(JSON.stringify([method,pool,rangeEnd,roles.map(r=>r.signature)])).digest('hex');
  const random=draws(seed),nulls=SYNCHRONY_BINS.map(()=>[] as number[]);
  for(let p=0;p<SYNCHRONY_PERMUTATIONS;p++){
   const slots=[...observed];
@@ -140,7 +131,25 @@ export function deriveO23Synchrony(token:TokenRef,window:AdvisoryWindowHistory,w
   const s=sponsors.get(role.feePayer)??{trades:0,transactions:0,users:new Set<string>()};s.trades+=legs.length;s.transactions++;for(const l of legs)s.users.add(l.user);sponsors.set(role.feePayer,s);
  }
  const top=[...sponsors].map(([feePayer,s])=>({feePayer,sponsoredTrades:s.trades,transactions:s.transactions,distinctUsers:s.users.size})).sort((a,b)=>b.sponsoredTrades-a.sponsoredTrades||a.feePayer.localeCompare(b.feePayer)).slice(0,TOP_SPONSORS);
- return{id:'O23',quality:'KNOWN',unit:UNIT,evidenceIds:ids,reasonCode:'SPONSORED_SYNCHRONY_OBSERVED',data:{...scope,denominator,fundingClasses:classes,
+ return {denominator,fundingClasses:classes,
   transactions:{withTrades:roles.length,sponsored:roles.filter(r=>r.legs.some(l=>l.funding==='SPONSORED')).length,multiLeg:roles.filter(r=>r.legs.length>1).length},
-  sponsors:{accounts:sponsors.size,top},seed,bins}};
+  sponsors:{accounts:sponsors.size,top},seed,bins};
+}
+
+/** O23 from the same receipts A30 decodes; null keeps the existing missing row when the tape is not eligible. */
+export function deriveO23Synchrony(token:TokenRef,window:AdvisoryWindowHistory,windowReceipts:AdvisoryWindowReuse,rawArtifacts:Record<string,string>,retrievedAt:Record<string,string>,requests:Record<string,Request>,cutoff:string,evidenceIds:string[],foreignFlowRecovery=false):AdvisoryMetric|null{
+ const history=decodeAdvisoryDemandWindows(token,window,windowReceipts,rawArtifacts,retrievedAt,requests,cutoff,false,foreignFlowRecovery);
+ if(!history.eligible)return null;
+ const ids=[...new Set(evidenceIds)];
+ const scope={method:SYNCHRONY_METHOD,tapeMethod:history.method,scope:'VERIFIED_PUMPSWAP_WSOL_POOL',pool:history.pool,range:history.range,anchorSlot:history.anchorSlot,stateSlot:history.stateSlot,tapeComplete:history.complete,
+  identityUnit:'decoded PumpSwap trade user account and transaction fee payer; never merged and not a person',rules:RULES,permutations:SYNCHRONY_PERMUTATIONS,commonControl:null,coordination:null,limitations:LIMITATIONS};
+ const missing=(reasonCode:string,denominator:number|null):AdvisoryMetric=>({id:'O23',quality:'MISSING',unit:UNIT,evidenceIds:ids,reasonCode,data:{...scope,denominator,fundingClasses:null,transactions:null,sponsors:null,seed:null,
+  bins:SYNCHRONY_BINS.map(bin=>({...bin,synchronizedTrades:null,fraction:null,null:null}))}});
+ if(!history.complete)return missing(history.reasonCode,null);
+ let roles:Role[];
+ try{roles=feeRoles(history,windowReceipts,{rawArtifacts,retrievedAt,requests},Date.parse(cutoff));}catch(error){return missing(errorCode(error),null);}
+ const denominator=history.trades.length;
+ if(!denominator)return missing('SYNCHRONY_DENOMINATOR_ZERO',0);
+ const statistics=computeSynchronyStatistics(roles,history.pool!,history.range.end,SYNCHRONY_METHOD);
+ return{id:'O23',quality:'KNOWN',unit:UNIT,evidenceIds:ids,reasonCode:'SPONSORED_SYNCHRONY_OBSERVED',data:{...scope,...statistics}};
 }
