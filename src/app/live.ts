@@ -1,3 +1,4 @@
+import {collectRouteCosts,finishRouteCosts,type RouteCostCapture} from '../providers/route-cost.js';
 import {finishRouteImpacts} from '../providers/route-impact.js';
 import {collectSimulationRoute,finishSimulationRoute,type SimulationRouteCapture} from '../providers/simulation-route.js';
 import {finishExitRoute} from '../providers/exit-route.js';
@@ -65,7 +66,7 @@ import { collectExecutableLiquidity, reconstructExecutableLiquidity, execLiqDeri
 import {collectEntryRoute,finishEntryRoute,type EntryRouteCapture} from '../providers/entry-route.js';
 
 
-export type LiveOptions = { wbtcEntry?:boolean; wbtcExit?:boolean; wbtcSimulate?:boolean; wbtcImpacts?:boolean; o28Expanded?:boolean; o28Prior?:{pool:string;end:string;receipts:AdvisoryWindowReuse}; a12CandidateSet?:A12CandidateSet; a24Capture?:string; recordedCallersCapture?:string; recordedIncentivesCapture?:string; creatorRoleOnly?:boolean; semanticExecutor?:SemanticExecutor; a29Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; executableLiquidity?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
+export type LiveOptions = { wbtcEntry?:boolean; wbtcExit?:boolean; wbtcSimulate?:boolean; wbtcImpacts?:boolean; wbtcCosts?:boolean; o28Expanded?:boolean; o28Prior?:{pool:string;end:string;receipts:AdvisoryWindowReuse}; a12CandidateSet?:A12CandidateSet; a24Capture?:string; recordedCallersCapture?:string; recordedIncentivesCapture?:string; creatorRoleOnly?:boolean; semanticExecutor?:SemanticExecutor; a29Capture?:string; profile: Profile; thesis?: Thesis; thesisExpiryMode?:'HORIZON'|'FIXED'|'NONE'; research?: ResearchPacket; origins?:Record<string,string>; rpcUrl?: string; tinyfishKey?: string; geminiKey?: string; solanaTrackerKey?: string; heliusKey?:string; creatorRolePrior?: import('../providers/advisory-creator-role.js').CreatorRoleReceipts; creatorCoveragePrior?: import('../providers/advisory-creator-quote.js').CreatorQuoteReceipts; semanticEnabled: boolean; advisoryEnabled?:boolean; executableLiquidity?:boolean; fetcher?: typeof fetch; now?: () => string; signal?:AbortSignal; runtime?:LiveRuntime };
 const hash = (raw: string) => createHash('sha256').update(raw).digest('hex');
 /** Wrapped admission: ordinary collectors share 150 requests; trader-account, demand-window, historical caller, creator-inventory, creator failed-fee and dense selected-window reads have their own explicit allowances. */
 export function admittedFetchers(base:typeof fetch,deadline:AbortSignal,accountLimit:number,demandLimit=0,callerLimit=0,inventoryLimit=0,failedFeeLimit=0,windowLimit=0){
@@ -90,7 +91,7 @@ export async function collectLiveSolana(token: TokenRef, options: LiveOptions): 
 }
 export async function collectLiveToken(token: TokenRef, options: LiveOptions): Promise<LiveBundle> {
   // Executable liquidity is an independent Solana-only opt-in; a foreign chain fails before any read.
-  if((options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts)&&token.chain!=='solana')throw Error('ENTRY_ROUTE_SOLANA_REQUIRED');
+  if((options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts||options.wbtcCosts)&&token.chain!=='solana')throw Error('ENTRY_ROUTE_SOLANA_REQUIRED');
   if(options.executableLiquidity&&token.chain!=='solana')throw Error('EXEC_LIQ_SOLANA_REQUIRED');
   if(options.o28Expanded&&(!options.advisoryEnabled||token.chain!=='solana')||options.o28Prior&&!options.o28Expanded)throw Error('O28_ADVISORY_REQUIRED');
   if(options.a12CandidateSet){if(!options.advisoryEnabled||token.chain!=='solana')throw Error('A12_ADVISORY_REQUIRED');a12CandidateSetSchema.parse(options.a12CandidateSet);}
@@ -570,18 +571,22 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
     execLiqCapture=await collectExecutableLiquidity({token,fetcher:execLiqFetcher,rpcUrl:options.rpcUrl??PUBLIC_SOLANA_RPC,signal:collectionDeadline,now});
   }
   let entryCapture:EntryRouteCapture|undefined;
-  if(options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts)entryCapture=await collectEntryRoute(token,options.profile,rawArtifacts,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline);
+  if(options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts||options.wbtcCosts)entryCapture=await collectEntryRoute(token,options.profile,rawArtifacts,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline);
   let simulationCapture:SimulationRouteCapture|undefined;
-  if(options.wbtcSimulate)simulationCapture=await collectSimulationRoute(token,options.profile,rawArtifacts,entryCapture,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline);
+  if(options.wbtcSimulate||options.wbtcCosts)simulationCapture=await collectSimulationRoute(token,options.profile,rawArtifacts,entryCapture,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline);
+  let costCapture:RouteCostCapture|undefined;
+  if(options.wbtcCosts){const dependencies={...rawArtifacts,...entryCapture?.rawArtifacts,...simulationCapture?.rawArtifacts},sources=[...evidence,...entryCapture?.records??[],...simulationCapture?.records??[]];costCapture=await collectRouteCosts(token,options.profile,dependencies,sources,options.rpcUrl??PUBLIC_SOLANA_RPC,options.fetcher??fetch,now,collectionDeadline);}
   const cutoff=now(),thesis=materializeThesis(options.profile,cutoff,options.thesis,options.thesisExpiryMode??'FIXED');
   const entry=entryCapture?.records.length?finishEntryRoute(token,options.profile,cutoff,rawArtifacts,entryCapture):undefined;
   if(entry)for(const e of entry.capture.records){evidence.push(e);rawArtifacts[e.id]=entry.capture.rawArtifacts[e.id]!;}
-  const exit=(options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts)?finishExitRoute(token,options.profile,cutoff,rawArtifacts,evidence):undefined;
+  const exit=(options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts||options.wbtcCosts)?finishExitRoute(token,options.profile,cutoff,rawArtifacts,evidence):undefined;
   if(exit){evidence.push(exit.record);rawArtifacts[exit.record.id]=exit.raw;}
   const simulation=simulationCapture?finishSimulationRoute(token,options.profile,cutoff,rawArtifacts,evidence,simulationCapture):undefined;
   if(simulation)for(const e of simulation.capture.records){evidence.push(e);rawArtifacts[e.id]=simulation.capture.rawArtifacts[e.id]!;}
-  const impacts=options.wbtcImpacts?finishRouteImpacts(token,options.profile,cutoff,rawArtifacts,evidence):undefined;
+  const impacts=(options.wbtcImpacts||options.wbtcCosts)?finishRouteImpacts(token,options.profile,cutoff,rawArtifacts,evidence):undefined;
   if(impacts){evidence.push(impacts.record);rawArtifacts[impacts.record.id]=impacts.raw;}
+  const costs=costCapture?finishRouteCosts(token,options.profile,cutoff,rawArtifacts,evidence,costCapture):undefined;
+  if(costs)for(const e of costs.capture.records){evidence.push(e);rawArtifacts[e.id]=costs.capture.rawArtifacts[e.id]!;}
   const social=socialPacket?deriveSocial(socialPacket.read,socialPacket.proposal,socialPacket.review,token,cutoff,socialPacket.evidenceIds):undefined;
   if(socialPacket)addEvidence('social-derivation',JSON.stringify({...socialPacket,token,cutoff}),'social-collector','CALCULATION','LOCAL_DERIVED',{method:'social-source-review-v1'},cutoff);
   if(socialPacket)addEvidence('social-run-diagnostics',JSON.stringify({admittedRequests:run.operations(),requestLimit:admission.limit.shared,admittedAccountHistoryRequests:admission.counts.accounts,accountHistoryRequestLimit:admission.limit.accounts,admittedCallerRequests:admission.counts.callers,callerRequestLimit:admission.limit.callers,callerStatus,deadlineMs:runBudgetMs,elapsedMs:run.elapsed(),attentionElapsedMs,socialElapsedMs,deadlineReached:deadline.aborted}),'social-collector','DIAGNOSTIC','LOCAL_DERIVED',{method:'bounded-social-run-v1'},cutoff);
@@ -591,11 +596,12 @@ export async function collectLiveToken(token: TokenRef, options: LiveOptions): P
       web,
     };
   const baseline=deriveBaseline({sharedMode:sharedEnabled,token,cutoff,profile:options.profile,features,evidence,observations,market:dex.market,collection,semantic,research:options.research,attention,social:social?.assessments,controls:venueRead?.controls??detailRead?.controls,holders:detailRead?.holders,program:detailRead?.program,venue:venueRead?.venue,venueInspection:venueRead?.inspection,venueOutcome,directErrors:detailRead?.errors,thesis,origins:options.origins});
-  if(options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts){const index=baseline.findIndex(a=>a.id==='O08');baseline[index]=expireVenueProvenanceAssessment(baseline[index]!,cutoff);}
+  if(options.wbtcEntry||options.wbtcExit||options.wbtcSimulate||options.wbtcImpacts||options.wbtcCosts){const index=baseline.findIndex(a=>a.id==='O08');baseline[index]=expireVenueProvenanceAssessment(baseline[index]!,cutoff);}
   if(entry?.assessment)baseline[baseline.findIndex(a=>a.id==='O10')]=entry.assessment;
   if(exit?.assessment)baseline[baseline.findIndex(a=>a.id==='O11')]=exit.assessment;
   if(simulation?.assessment)baseline[baseline.findIndex(a=>a.id==='O12')]=simulation.assessment;
   for(const assessment of impacts?.assessments??[])baseline[baseline.findIndex(a=>a.id===assessment.id)]=assessment;
+  for(const assessment of costs?.assessments??[])baseline[baseline.findIndex(a=>a.id===assessment.id)]=assessment;
   for(const assessment of baseline){if(assessment.projection){const index=features.findIndex(f=>f.id===assessment.id);if(index>=0)features[index]=assessment.projection;else features.push(assessment.projection);}if(detailRead?.errors.controls&&['O03','O04','O06','O07'].includes(assessment.id)&&!(venueRead?.controls??detailRead.controls)){assessment.causes.push({category:'EVIDENCE_UNAVAILABLE',code:detailRead.errors.controls,featureId:assessment.id,sourceId:'solana-rpc',evidenceIds:rpcIds,action:'Refresh raw finalized mint state; the control surface could not be inspected.'});assessment.collector='IMPLEMENTED';}}
   // The failed-fee stage is ingested last and kept only when the projected bundle stays under the unchanged 24 MB cap: every retained byte, these archives, and the remaining thesis, derivation and shared artifacts that serialize their metadata. Otherwise every receipt is dropped and S15 stays not collected, never a known zero.
   if(advisoryProof&&failedFeeRead){
