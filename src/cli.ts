@@ -95,7 +95,7 @@ const knownErrorCodes = new Set([
   'TRANSFER_COST_REQUIRES_BUY', 'OVERSELL_TRANSFER', 'TRANSFER_DIRECTION_REQUIRED',
   'ANALYSIS_MODES_CONFLICT', 'MODE_FLAG_ONLY_FOR_LIVE',
   'INVALID_CONFIG','CONFIG_EXISTS','CONFIG_NOT_FOUND','CONFIG_CANCELLED','CHECK_NOT_FOUND','CHAIN_SELECTION_REQUIRED','INVALID_ASSESSMENT_DETAILS','UNQUALIFIED_STAGE_INPUT','UNSUPPORTED_SNAPSHOT_VERSION','RESEARCH_TOKEN_MISMATCH','RESEARCH_DUPLICATE','RESEARCH_CITATION','RESEARCH_TIME_OR_BINDING','RESEARCH_LINEAGE','RESEARCH_WINDOW',
-  'EXIT_ROUTE_PROOF_INVALID','ENTRY_ROUTE_SOLANA_REQUIRED','ENTRY_ROUTE_MODE_REQUIRED','ENTRY_ROUTE_PROOF_INVALID','RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH','ADVISORY_EXECUTOR_MODE_REQUIRED','RECORDED_INCENTIVE_ADVISORY_REQUIRED','RECORDED_INCENTIVE_CAPTURE_INVALID','CREATOR_ROLE_MODE_REQUIRED','RECORDED_CALLER_ADVISORY_REQUIRED','RECORDED_CALLER_CAPTURE_INVALID','A24_ADVISORY_REQUIRED','A24_CAPTURE_INVALID','A29_ADVISORY_REQUIRED','A29_CAPTURE_INVALID','A29_CAPTURE_TOO_LARGE','EXEC_LIQ_SOLANA_REQUIRED','EXEC_LIQ_PROOF_INVALID',
+  'SIMULATION_ROUTE_PROOF_INVALID','EXIT_ROUTE_PROOF_INVALID','ENTRY_ROUTE_SOLANA_REQUIRED','ENTRY_ROUTE_MODE_REQUIRED','ENTRY_ROUTE_PROOF_INVALID','RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH','ADVISORY_EXECUTOR_MODE_REQUIRED','RECORDED_INCENTIVE_ADVISORY_REQUIRED','RECORDED_INCENTIVE_CAPTURE_INVALID','CREATOR_ROLE_MODE_REQUIRED','RECORDED_CALLER_ADVISORY_REQUIRED','RECORDED_CALLER_CAPTURE_INVALID','A24_ADVISORY_REQUIRED','A24_CAPTURE_INVALID','A29_ADVISORY_REQUIRED','A29_CAPTURE_INVALID','A29_CAPTURE_TOO_LARGE','EXEC_LIQ_SOLANA_REQUIRED','EXEC_LIQ_PROOF_INVALID',
 ]);
 const safeCode = (error: unknown) => {
   const raw = error instanceof Error ? error.message : '';
@@ -200,6 +200,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       output({
         usage: 'analyze <CA> [--full | --partial] [--advisory] [--creator-history | --creator-role-only] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
         advisory: 'Opt-in bounded public Solana movement/history, completed market/macro candles, chain DEX activity and paid visibility. Group PASS means complete measurement coverage, not favorable investment quality.',
+        wbtcSimulate: '--wbtc-simulate includes WBTC entry and exit quotes and a read-only unsigned O12 roundtrip simulation using a verified public funded account. No signing/broadcast or full-cost/impact approval.',
         wbtcExit: '--wbtc-exit includes --wbtc-entry and independently quotes O11 for exactly its acquired quantity against the same pre-entry bank. No sequential execution, simulation, impact approval or full-cost proof.',
         wbtcEntry: '--wbtc-entry independently quotes O10 for an already verified canonical WBTC PumpSwap pool at the configured USD size. Ordinary funded WBTC account assumed; no wallet, exit, simulation or external-cost proof.',
         o28Expanded: '--advisory --o28-expanded permits up to 2048 selected-hour transaction reads and 16 MB of stored O28 archives, with a ten-minute minimum run budget. Gaps remain unresolved; other pools and metrics retain their own scope.',
@@ -287,7 +288,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
-      if((hasFlag(argv,'wbtc-entry')||hasFlag(argv,'wbtc-exit'))&&(cmd!=='analyze'||hasBundle))throw new CliError('ENTRY_ROUTE_MODE_REQUIRED','Use --wbtc-entry or --wbtc-exit with live Solana analysis.');
+      if((hasFlag(argv,'wbtc-entry')||hasFlag(argv,'wbtc-exit')||hasFlag(argv,'wbtc-simulate'))&&(cmd!=='analyze'||hasBundle))throw new CliError('ENTRY_ROUTE_MODE_REQUIRED','Use --wbtc-entry, --wbtc-exit or --wbtc-simulate with live Solana analysis.');
       if(hasFlag(argv,'a24-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with a live --advisory analysis of a Solana address.');
       if(hasFlag(argv,'advisory-executor')&&(cmd!=='analyze'||hasBundle))throw new CliError('ADVISORY_EXECUTOR_MODE_REQUIRED','Use --advisory-executor with live --partial --advisory analysis of Solana.');
       if(hasFlag(argv,'creator-role-only')&&(cmd!=='analyze'||hasBundle))throw new CliError('CREATOR_ROLE_MODE_REQUIRED','Creator role collection is a live analyze mode; use --partial --advisory.');
@@ -338,7 +339,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         if(token.chain==='solana')decodeSolanaAddress(token.address);else if(!/^0x[a-f0-9]{40}$/.test(token.address))throw new Error('INVALID_EVM_ADDRESS');
         if(hasFlag(argv,'executable-liquidity')&&token.chain!=='solana')throw new CliError('EXEC_LIQ_SOLANA_REQUIRED','--executable-liquidity supports Solana addresses only.');
         if(hasFlag(argv,'o28-expanded')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('O28_ADVISORY_REQUIRED','Use --o28-expanded with --advisory for a Solana address.');
-        if((hasFlag(argv,'wbtc-entry')||hasFlag(argv,'wbtc-exit'))&&token.chain!=='solana')throw Error('ENTRY_ROUTE_SOLANA_REQUIRED');
+        if((hasFlag(argv,'wbtc-entry')||hasFlag(argv,'wbtc-exit')||hasFlag(argv,'wbtc-simulate'))&&token.chain!=='solana')throw Error('ENTRY_ROUTE_SOLANA_REQUIRED');
         if(hasFlag(argv,'a24-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('A24_ADVISORY_REQUIRED','Use --a24-capture FILE with --advisory for a Solana address.');
         if(hasFlag(argv,'recorded-incentives-capture')&&(!hasFlag(argv,'advisory')||token.chain!=='solana'))throw new CliError('RECORDED_INCENTIVE_ADVISORY_REQUIRED','Use --recorded-incentives-capture FILE with --advisory for Solana.');
         const recordedIncentivesCapture=hasFlag(argv,'recorded-incentives-capture')?readRecordedCapture(flagValue(argv,'recorded-incentives-capture')!,'RECORDED_INCENTIVE_CAPTURE_INVALID'):undefined;
@@ -403,6 +404,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         const live = await collectLiveToken(token, {
           profile,
           advisoryEnabled:hasFlag(argv,'advisory'),
+          ...(hasFlag(argv,'wbtc-simulate')?{wbtcSimulate:true}:{}),
           ...(hasFlag(argv,'wbtc-exit')?{wbtcExit:true}:{}),
           ...(hasFlag(argv,'wbtc-entry')?{wbtcEntry:true}:{}),
           ...(hasFlag(argv,'o28-expanded')?{o28Expanded:true}:{}),
