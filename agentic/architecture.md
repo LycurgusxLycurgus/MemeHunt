@@ -1,3 +1,11 @@
+## A20 current retained-source groups — unchanged proof45 (2026-10-30)
+
+Existing `src/providers/advisory-social.ts` A20 uses independently accepted SOCIAL qualification/lineage from `src/domain/social.ts`; `executor-semantic.ts` reconstructs this independently of ADVISORY semantic review. `src/app/advisory.ts` binds source acquisition/body/capture provenance. A rejected ADVISORY website does not override SOCIAL group authority; it still blocks A22 under its original universal gate.
+
+Current accepted snapshot `b3f51cd5-28f9-42d0-b9d4-22af8811287a`, hash460c52b7ce1a1275140dc75b15f007dadcbfd17ed1880b331e18543fe546c69a, cutoff2026-10-30T18:33:42.580Z: complete retained4source frame with3dated historical POSTs gives A20KNOWN0groups/0communities/[]platforms for [Oct29T18:32:14.997Z,Oct30T18:32:14.997Z). Empty current qualified population needs no invented historical lineage. Seven queryleads accounted; comparison-only CoinGecko timeout remains. Scope is configured retained sample, not globalabsence/organic/people/reach. Original Oct26 frame unchanged; A22stillMISSING.
+
+No code/profile/default/quota/entry changes. Actual92HTTP/100raw/4CLI stages, fullraw/save/idempotence/reopen/OS-network-denied keylessCLI PASS; independent/root445pins exact. Sameinput accepted/current all50facts exact;127JS unchanged since2434PASS regression. Six dated3actualtoken controls exact, including priorParasiteA20KNOWN; not3freshpositives. FirstnativePASS/rootPASS/correctionunused, cycle a20-current-retained-groups-20261030 CLOSED. Handoff `handoffs/a20-current-retained-groups-2026-10-30.md`; private a20-current-groups-20261030/{contract,raw-audit/report,same-input-comparison,review-cycle,root-verification}.json/md. Cross-snapshot unresolved identities22; A22research remainsactive.
+
 ## A30 historical meaningful-buyer windows with exact incoming FX — proof60 (2026-10-30)
 
 Explicit Solana `--partial --advisory --o28-expanded --a30-fx-capture DIRECTORY` / `LiveOptions.a30FxCapture` selects proof60/facts59/policy57. New sources authorize A30 only; all older/default paths remain exact. Inherit51 busy/named-error/A29 decoder-recovery behavior; proof.a29 staysnull because explicit A29 import is incompatible. No dependency/DB/profile/global ordinary quota/entry authority change.
