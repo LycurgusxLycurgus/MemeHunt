@@ -128,6 +128,7 @@ export type SemanticClaim = z.infer<typeof semanticClaimSchema>;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const semanticResultSchema = z.object({
+  nativeAttention:z.object({method:z.literal('native-attention-qualification-v1'),purpose:z.literal('NARRATIVE_GAME_QUALIFICATION'),captureId:z.literal('native-attention-capture')}).strict().optional(),
   status: z.enum(['NOT_REQUESTED', 'KEY_MISSING', 'NO_PUBLIC_CORPUS', 'PROVIDER_UNAVAILABLE', 'INVALID', 'CANDIDATE', 'VALIDATED']),
   claims: z.array(semanticClaimSchema).max(20),
   model: z.string().optional(),

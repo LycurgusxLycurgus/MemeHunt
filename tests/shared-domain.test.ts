@@ -65,6 +65,69 @@ test('complete source-qualified decision coverage produces four known shared res
   assert.deepEqual(sharedAuditSchema.parse(input.audit), input.audit);
 });
 
+test('Shared closes all execution-route output authority while retaining exact witnesses and freshness', () => {
+  const roles = [
+    { ids: ['O10'], receipt: 'entry-route-bank' },
+    { ids: ['O11'], receipt: 'exit-route-derivation' },
+    { ids: ['O12'], receipt: 'simulation-route-result' },
+    { ids: ['O13', 'O14'], receipt: 'impact-route-derivation' },
+    { ids: ['O15', 'O16'], receipt: 'cost-route-derivation' },
+  ];
+  for (const role of roles) {
+    const modes = role.ids.includes('O12') ? ['ENTRY_GROUPS_V1'] as const : [undefined, 'ENTRY_GATES_V1', 'ENTRY_GROUPS_V1'] as const;
+    for (const mode of modes) {
+      for (const state of ['known', 'missing', 'failed-review'] as const) {
+        const input = sharedFixture();
+        input.qualityMode = mode;
+        if (mode === 'ENTRY_GROUPS_V1') input.groups = {
+          method: 'mandatory-entry-groups-v1', token: input.token, cutoff: input.cutoff,
+          groups: (['ADV-01', 'ADV-02', 'ADV-03', 'ADV-04', 'ADV-05'] as const).map((checkId, index) => {
+            const feature = input.features.find(feature => feature.id === ['O19', 'O28', 'A01', 'S02', 'O08'][index])!;
+            return { checkId, status: 'PASS' as const, rationale: 'Constructed current context for mandatory policy.', code: 'CONSTRUCTED_CURRENT_SCREEN', featureIds: [feature.id], evidenceIds: feature.evidenceIds, availableAt: input.cutoff, metrics: {}, limitations: [] };
+          }),
+        };
+        if (state === 'missing') input.features.find(feature => feature.id === 'O01')!.quality = 'MISSING';
+        if (state === 'failed-review') input.audit = null;
+        const original = deriveShared(input);
+        const source = { ...input.evidence[0]!, id: role.receipt };
+        input.evidence.push(source);
+        for (const id of role.ids) {
+          const feature = input.features.find(feature => feature.id === id)!;
+          feature.evidenceIds = [role.receipt];
+          const row = input.baseline.find(row => row.id === id)!;
+          row.evidenceIds = [role.receipt];
+          if (row.projection) row.projection.evidenceIds = [role.receipt];
+        }
+        const result = deriveShared(input);
+        assert.deepEqual(result.facts.values, original.facts.values, `${role.receipt}/${mode}/${state}`);
+        assert.ok(result.facts.witnesses.some(witness => witness.evidenceIds.includes(role.receipt)), role.receipt);
+        assert.ok(result.facts.freshness.some(witness => witness.evidenceIds.includes(role.receipt)), role.receipt);
+        for (const row of result.assessments) {
+          assert.deepEqual(row.evidenceIds, ['shared-derivation'], row.id);
+          assert.deepEqual(row.projection?.evidenceIds, ['shared-derivation'], row.id);
+          for (const cause of row.causes) assert.deepEqual(cause.evidenceIds, ['shared-derivation'], row.id);
+          assert.equal(row.quality, original.assessments.find(item => item.id === row.id)!.quality);
+        }
+      }
+    }
+  }
+});
+
+test('Shared without scoped execution receipts retains the original ordered evidence union', () => {
+  const input = sharedFixture();
+  const result = deriveShared(input);
+  const originalIds = [...new Set([
+    ...result.facts.witnesses.flatMap(witness => witness.evidenceIds),
+    ...input.semanticReceiptIds,
+    ...input.evidence.filter(record => record.id === 'shared-qualified-receipt' || /^shared-(proposal|review)-response$/.test(record.id)).map(record => record.id),
+  ])];
+  for (const row of result.assessments) {
+    assert.deepEqual(row.evidenceIds, originalIds);
+    assert.deepEqual(row.projection?.evidenceIds, originalIds);
+    assert.equal(row.evidenceIds.includes('shared-derivation'), false);
+  }
+});
+
 test('ENTRY_GATES_V1 returns known quality failures without inventing factual conflicts', () => {
   const complete = { ...sharedFixture(), qualityMode: 'ENTRY_GATES_V1' as const };
   const passed = deriveShared(complete);
