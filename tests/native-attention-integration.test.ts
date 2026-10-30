@@ -96,7 +96,7 @@ test('native descriptor, ownership, raw replay, projections and C10 caches rejec
   descriptor:x=>rewrite(x,'advisory-derivation',p=>{p.nativeAttention.purpose='ADVISORY_SEMANTICS';}),
   removedDescriptor:x=>rewrite(x,'advisory-derivation',p=>{delete p.nativeAttention;}),
   downversion:x=>rewrite(x,'advisory-derivation',p=>{p.method='advisory-provenance-v51';delete p.nativeAttention;}),
-  futureVersion:x=>rewrite(x,'advisory-derivation',p=>{p.method='advisory-provenance-v60';}),
+  futureVersion:x=>rewrite(x,'advisory-derivation',p=>{p.method='advisory-provenance-v61';}),
   missingCapture:x=>{delete x.rawArtifacts[NATIVE_ATTENTION_ID];x.evidence=x.evidence.filter(e=>e.id!==NATIVE_ATTENTION_ID);},
   orphanRaw:x=>{x.rawArtifacts['native-attention-orphan']='{}';},
   sourceId:x=>{x.evidence.find(e=>e.id===NATIVE_ATTENTION_ID)!.sourceId='gemini';},

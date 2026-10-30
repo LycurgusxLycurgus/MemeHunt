@@ -81,7 +81,7 @@ test('Service rejects descriptor, source, receipt, cache and authority tampering
     ['v57 downgrade',b=>changeProof(b,p=>p.method='advisory-provenance-v57')],
     ['v51 downgrade stripped',b=>changeProof(b,p=>{p.method='advisory-provenance-v51';delete p.exitCapacity;})],
     ['C10 version',b=>changeProof(b,p=>p.method='advisory-provenance-v59')],
-    ['future version60',b=>changeProof(b,p=>p.method='advisory-provenance-v60')],
+    ['future version61',b=>changeProof(b,p=>p.method='advisory-provenance-v61')],
     ['cached scalar',b=>{(metric(b).data as any).share='1';}],
     ['cached denominator',b=>{(metric(b).data as any).denominatorAtomic='1';}],
     ['cached native',b=>{(metric(b).data as any).candidates[1].capacityAtomic='1';}],

@@ -157,3 +157,6 @@ export function getInventoryReturnExecution(native:any,compiled:any|undefined,co
  else{try{const list=shaped(executedWindowInstructions(native));execution=decorate({list,logged:list.length,truncated:false},native,undefined,context.endpoints,'STRICT_NATIVE');}catch(error){if(!native?.meta?.logMessages?.includes('Log truncated'))throw error;execution=decorate(nativePrefix(native),native,undefined,context.endpoints,'NATIVE_PREFIX');}}
  requireInventoryReturnCriticalExecution(execution,context.endpoints);return execution;
 }
+
+/** Pure explicit-log prefix proof; no O26 source or endpoint authority is exported. */
+export {nativePrefix as inventoryReturnNativePrefix};
