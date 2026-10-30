@@ -14,6 +14,9 @@ import {PublicKey} from '@solana/web3.js';
 import {MintLayout,NATIVE_MINT,TOKEN_PROGRAM_ID,TOKEN_2022_PROGRAM_ID,getAssociatedTokenAddressSync} from '@solana/spl-token';
 import {OFFLINE_PUMP_AMM_PROGRAM as sdk,PUMP_AMM_PROGRAM_ID,PUMP_FEE_PROGRAM_ID,GLOBAL_CONFIG_PDA,PUMP_AMM_FEE_CONFIG_PDA,FEE_CONFIG_SIZE_POST_EXOTIC,poolPda,pumpPoolAuthorityPda,lpMintPda,USDC_MINT} from '@pump-fun/pump-swap-sdk';
 import {a12ProposalPrompt,a12ReviewPrompt,qualifiedA12Candidates,collectExitCapacity,deriveExitCapacity,EXIT_CAPACITY_SCOPE,type A12CandidateSet} from '../src/providers/advisory-exit-capacity-custom.js';
+import {a12WitnessSourceFixture,rebindA12WitnessFixture} from './a12-witness-source-fixtures.js';
+import {a12WitnessSourcesFromAcquisition,type A12ZeroWitnessCapture} from '../src/providers/advisory-exit-capacity-witness.js';
+import {collectA12ZeroWitnessCapacity,deriveA12ZeroWitnessCapacity} from '../src/providers/advisory-exit-capacity-custom.js';
 import {deriveExitCapacity as deriveLegacy} from '../src/providers/advisory-exit-capacity.js';
 const at='2026-10-24T12:00:00.000Z',target={chain:'solana' as const,address:new PublicKey(Buffer.alloc(32,71)).toBase58()},peer={chain:'solana' as const,address:new PublicKey(Buffer.alloc(32,72)).toBase58()};
 function packet(tokens=[target,peer]):A12CandidateSet{
@@ -141,4 +144,122 @@ test('fresh proof34 persists custom passive quote bytes and rejects namespace, r
 test('custom stock/exotic fee schedule and creator holder-reward rate are charged exactly once',async()=>{
  const x=await custom(new PublicKey(Buffer.alloc(32,88)));x.f.map.set(PUMP_AMM_FEE_CONFIG_PDA.toBase58(),account(PUMP_FEE_PROGRAM_ID,await encode('feeConfig',{bump:1,admin:PublicKey.default,flatFees:rates,feeTiers:[{marketCapLamportsThreshold:bn(0),fees:rates}],stableFeeTiers:[],exoticFlatFees:{lpFeeBps:bn(80),protocolFeeBps:bn(40),creatorFeeBps:bn(5)}})));
  const {m}=await metric(x);assert.equal(m.quality,'KNOWN');assert.deepEqual((m.data as any).candidates[0].feesBps,['80','40','25']);
+});
+
+/** Constructed complete three-member catalog: zero target in Q, positive peer in target units,
+ * plus a positive WSOL nuisance term. Membership is fixed before any capacity calculation. */
+async function zeroComparisonFixture(peerQuote=new PublicKey(target.address)){
+ const f=await fixture(),nuisance={chain:'solana' as const,address:new PublicKey(Buffer.alloc(32,73)).toBase58()},tokens=[target,peer,nuisance],p=packet(tokens),quote=new PublicKey(Buffer.alloc(32,88)),quotes=[quote,peerQuote,NATIVE_MINT],routes:Array<{token:typeof target;pool:string;baseVault:string;quoteVault:string}>=[];
+ f.map.set(quote.toBase58(),account(TOKEN_PROGRAM_ID,mint(1000000000000000n,6)));
+ if(!f.map.has(peerQuote.toBase58()))f.map.set(peerQuote.toBase58(),account(TOKEN_PROGRAM_ID,mint(1000000000000000n,6)));
+ const hints:any[]=[];
+ for(const[i,t]of tokens.entries()){
+  const m=new PublicKey(t.address),q=quotes[i]!,creator=pumpPoolAuthorityPda(m),pk=poolPda(0,creator,m,q),bv=getAssociatedTokenAddressSync(m,pk,true),qv=getAssociatedTokenAddressSync(q,pk,true);
+  f.map.set(t.address,account(TOKEN_PROGRAM_ID,mint(1000000000000000n,6)));
+  f.map.set(pk.toBase58(),account(PUMP_AMM_PROGRAM_ID,await encode('pool',{poolBump:1,index:0,creator,baseMint:m,quoteMint:q,lpMint:lpMintPda(pk),poolBaseTokenAccount:bv,poolQuoteTokenAccount:qv,lpSupply:bn(1000),coinCreator:new PublicKey(Buffer.alloc(32,1)),isMayhemMode:false,isCashbackCoin:false,virtualQuoteReserves:bn(100000),creatorFeeBps:bn(i===0?300:0),canEditCreatorFee:false})));
+  f.map.set(bv.toBase58(),account(TOKEN_PROGRAM_ID,vault(m,pk,100000000000000n)));f.map.set(qv.toBase58(),account(TOKEN_PROGRAM_ID,vault(q,pk,BigInt(i+1)*700000000000n)));
+  const source=p.sources[i]!;source.text+=' Canonical pool '+pk.toBase58()+' quote mint '+q.toBase58();p.acquisition.requests[i]!.body=source.text;hints.push({token:t,pool:pk.toBase58(),quoteMint:q.toBase58(),sourceId:source.id,quote:source.text});routes.push({token:t,pool:pk.toBase58(),baseVault:bv.toBase58(),quoteVault:qv.toBase58()});
+ }
+ if(p.method!=='a12-reviewed-candidate-set-v2')throw Error('FIXTURE');p.routeHints=hints;const proposal={claims:[],posts:[],competitors:tokens.map((token,i)=>({id:'candidate'+i,token,sourceId:p.sources[i]!.id,quote:p.sources[i]!.text}))};p.proposal.prompt=a12ProposalPrompt(p);p.proposal.response=JSON.stringify(proposal);p.review.prompt=a12ReviewPrompt(p,proposal);
+ const capture=()=>collectExitCapacity(p,target,'300',499,'https://example.com/rpc',f.fetcher,()=>at);
+ const changePool=async(i:number,change:(p:any)=>void)=>{const a=f.map.get(routes[i]!.pool),pool=sdk.coder.accounts.decode('pool',Buffer.from(a.data[0],'base64'));change(pool);a.data[0]=(await encode('pool',pool)).toString('base64');};
+ return{f,p,routes,quote,capture,changePool};
+}
+
+test('explicit zero-target comparison preserves every native capacity and identifies only the scalar with unvalued denominator',async()=>{
+ const x=await zeroComparisonFixture(),r=await x.capture(),old=deriveExitCapacity(x.p,target,at,'300',r,[]),disabled=deriveExitCapacity(x.p,target,at,'300',r,[],false),got=deriveExitCapacity(x.p,target,at,'300',r,['native'],true),d=got.data as any;
+ assert.deepEqual(old,disabled);assert.equal(old.reasonCode,'EXIT_CAPACITY_MIXED_QUOTE_UNRESOLVED');assert.equal(got.quality,'KNOWN');assert.equal(got.reasonCode,'ZERO_TARGET_CAPACITY_SHARE_POINT_IDENTIFIED');assert.equal(d.method,'impact-bounded-zero-target-capacity-share-v3');assert.equal(d.share,'0');assert.equal(d.denominatorAtomic,null);assert.equal(d.quoteMint,null);assert.equal(d.quoteDecimals,null);assert.equal(d.impactBps,'300');assert.equal(d.level,'QUOTED');
+ assert.equal(d.comparison.method,'zero-target-positive-reference-invariant-v1');assert.equal(d.comparison.denominatorStatus,'POSITIVE_UNVALUED');assert.equal(d.comparison.normalization,'NOT_PERFORMED');assert.equal(d.comparison.valuationClass,'FINITE_NONNEGATIVE_WITH_POSITIVE_TARGET_REFERENCE');assert.equal(d.comparison.reference.pool,x.routes[0]!.pool);assert.equal(d.comparison.reference.baseMint,target.address);assert.equal(d.comparison.reference.quoteMint,x.quote.toBase58());assert.equal(d.comparison.reference.bankSlot,500);assert.ok(BigInt(d.comparison.reference.baseReserveAtomic)>0n&&BigInt(d.comparison.reference.physicalQuoteAtomic)>0n&&BigInt(d.comparison.reference.virtualQuoteAtomic)>=0n);
+ const native=(old.data as any).candidates;assert.deepEqual(d.candidates.map(({share,...c}:any)=>c),native);assert.equal(d.candidates[0].share,'0');assert.ok(d.candidates.slice(1).every((c:any)=>c.status==='KNOWN'&&BigInt(c.capacityAtomic)>0n&&c.share===null));assert.equal(d.comparison.positiveCapacityWitnesses.length,1);assert.equal(d.comparison.positiveCapacityWitnesses[0].quoteMint,target.address);assert.equal(d.candidates[2].quoteMint,NATIVE_MINT.toBase58());assert.equal(d.candidates[2].quoteDecimals,9);assert.deepEqual(d.candidates[0].feesBps,['20','15','300']);
+ // Independent integer checks of the declared class, including a zero-valued SOL nuisance.
+ for(const anchorValue of [1n,100n,1000000000000000000n])for(const nuisanceValue of [0n,1n,999999999999999999n]){const denom=BigInt(d.candidates[1].capacityAtomic)*anchorValue+BigInt(d.candidates[2].capacityAtomic)*nuisanceValue;assert.ok(denom>0n);assert.equal(0n/denom,0n);}
+});
+
+test('same-quote output remains byte-identical with the zero-target option true or omitted',async()=>{
+ const x=await custom(USDC_MINT),r=await collectExitCapacity(x.p,target,'300',499,'https://example.com/rpc',x.f.fetcher,()=>at);assert.deepEqual(deriveExitCapacity(x.p,target,at,'300',r,[],true),deriveExitCapacity(x.p,target,at,'300',r,[]));
+});
+
+test('positive target, all-zero vector and an unanchored positive nuisance cannot manufacture a zero share',async()=>{
+ for(const mode of ['positive-target','all-zero','no-anchor']){
+  const x=await zeroComparisonFixture(mode==='no-anchor'?USDC_MINT:new PublicKey(target.address));if(mode==='positive-target')await x.changePool(0,p=>p.creatorFeeBps=bn(0));if(mode==='all-zero')for(let i=1;i<3;i++)await x.changePool(i,p=>p.creatorFeeBps=bn(300));const r=await x.capture(),m=deriveExitCapacity(x.p,target,at,'300',r,[],true),d=m.data as any;assert.equal(m.quality,'MISSING',mode);assert.equal(m.reasonCode,'EXIT_CAPACITY_MIXED_QUOTE_UNRESOLVED',mode);assert.equal(d.share,null);assert.equal(d.denominatorAtomic,null);assert.ok(d.candidates.every((c:any)=>c.status==='KNOWN'));
+ }
+});
+
+test('target reference and every catalog member remain fully native-admitted before the invariant',async()=>{
+ for(const mode of ['null-peer','mayhem','bad-target-reference','wrong-vault-mint','shared-route']){
+  const x=await zeroComparisonFixture(mode==='shared-route'?new PublicKey(peer.address):new PublicKey(target.address));if(mode==='null-peer')x.f.map.delete(x.routes[1]!.pool);else if(mode==='mayhem')await x.changePool(1,p=>p.isMayhemMode=true);else if(mode==='bad-target-reference'){const a=x.f.map.get(x.routes[0]!.quoteVault),v=Buffer.from(a.data[0],'base64');v.writeBigUInt64LE(0n,64);a.data[0]=v.toString('base64');}else if(mode==='wrong-vault-mint'){const a=x.f.map.get(x.routes[1]!.baseVault),v=Buffer.from(a.data[0],'base64');NATIVE_MINT.toBuffer().copy(v,0);a.data[0]=v.toString('base64');}
+  const r=await x.capture(),m=deriveExitCapacity(x.p,target,at,'300',r,[],true);assert.notEqual(m.quality,'KNOWN',mode);assert.equal((m.data as any).share,null,mode);
+ }
+});
+
+test('an actual capped integer search stays TRUNCATED even with zero target and an otherwise positive nuisance',async()=>{
+ const x=await zeroComparisonFixture();await x.changePool(1,p=>p.virtualQuoteReserves=bn(0));const base=x.f.map.get(x.routes[1]!.baseVault),b=Buffer.from(base.data[0],'base64');b.writeBigUInt64LE(9700n,64);base.data[0]=b.toString('base64');const quote=x.f.map.get(x.routes[1]!.quoteVault),q=Buffer.from(quote.data[0],'base64');q.writeBigUInt64LE(9955n*1000001n,64);quote.data[0]=q.toString('base64');const r=await x.capture(),m=deriveExitCapacity(x.p,target,at,'300',r,[],true),d=m.data as any;assert.equal(m.quality,'TRUNCATED');assert.equal(d.share,null);assert.equal(d.candidates[1].boundary.stop,'INTEGER_INTERVAL_CAP');assert.equal(d.candidates[1].capacityAtomic,null);
+});
+
+test('catalog, raw bank, request and freshness failures cannot borrow an exact-zero native result',async()=>{
+ const x=await zeroComparisonFixture(),r=await x.capture(),rejected=structuredClone(x.p),review=JSON.parse(rejected.review.response);review.candidateSet.complete=false;rejected.review.response=JSON.stringify(review);assert.equal(deriveExitCapacity(rejected,target,at,'300',r,[],true).quality,'MISSING');
+ const changed=structuredClone(x.p);changed.sources[0]!.text+=' altered';assert.throws(()=>deriveExitCapacity(changed,target,at,'300',r,[],true));
+ for(const mode of ['request','bank']){const bad=structuredClone(r);if(mode==='request')(bad.requests.bank!.params[1] as any).minContextSlot++;else{const b=JSON.parse(bad.rawArtifacts.bank!);b.result.value.pop();bad.rawArtifacts.bank=JSON.stringify(b);}assert.notEqual(deriveExitCapacity(x.p,target,at,'300',bad,[],true).quality,'KNOWN',mode);}
+ const stale=deriveExitCapacity(x.p,target,'2026-10-24T12:00:31.000Z','300',r,[],true);assert.equal(stale.reasonCode,'EXIT_CAPACITY_QUOTE_STALE');assert.equal((stale.data as any).share,null);
+});
+
+
+/** Constructed witness protocol over the same explicit native vectors as the catalog tests.
+ * Model transport is constructed; these records never represent genuine model executions. */
+function witnessFromNative(x:Awaited<ReturnType<typeof zeroComparisonFixture>>,rejected=false){
+ const c=a12WitnessSourceFixture(rejected);c.target=target;c.witness=peer;c.createdAt=at;c.acquisition.startedAt=at;
+ for(const e of c.executions){e.startedAt=at;e.finishedAt=at;}
+ const batch=c.acquisition.batches[0]!;batch.availableAt=at;batch.requestedUrls=x.p.sources.map(s=>s.url);batch.raw=JSON.stringify({results:x.p.sources.map(s=>({url:s.url,text:s.text,links:[]})),errors:[]});
+ const rebuilt=a12WitnessSourcesFromAcquisition(c.acquisition);c.sources=rebuilt.sources;c.acquisition.sourceIds=rebuilt.sourceIds;c.acquisition.complete=rebuilt.complete;
+ if(x.p.method!=='a12-reviewed-candidate-set-v2')throw Error('FIXTURE');
+ c.routeHints=x.p.routeHints!.slice(0,2).map((h,i)=>({...h,sourceId:c.sources[i]!.id})) as A12ZeroWitnessCapture['routeHints'];
+ c.diagnostics.knownLeads=[{token:x.routes[2]!.token,sourceIds:[c.sources[2]!.id],status:'NOT_ADJUDICATED',rationale:'Additional narrative lead remains unmeasured by this pair-only native plan.'}];
+ const proposal={claims:[],posts:[],competitors:c.routeHints.map((h,i)=>({id:i===0?'target':'witness',token:h.token,sourceId:h.sourceId,quote:h.quote}))};rebindA12WitnessFixture(c,proposal);return c;
+}
+async function witnessMetric(x:Awaited<ReturnType<typeof zeroComparisonFixture>>,c=witnessFromNative(x)){
+ const raw=JSON.stringify(c),r=await collectA12ZeroWitnessCapacity(raw,target,'300',499,'https://example.com/rpc',x.f.fetcher,()=>at);
+ return {raw,r,m:deriveA12ZeroWitnessCapacity(raw,target,at,'300',r,['witness-native'])};
+}
+
+test('witness native pair preserves catalog native diagnostics, exact two-RPC order, fees and unmeasured leads',async()=>{
+ const x=await zeroComparisonFixture(),catalog=deriveExitCapacity(x.p,target,at,'300',await x.capture(),[],true),before=x.f.requests.length,{raw,r,m}=await witnessMetric(x),d=m.data as any;
+ assert.equal(x.f.requests.length-before,2);assert.equal(m.quality,'KNOWN');assert.equal(m.reasonCode,'ZERO_TARGET_CAPACITY_SHARE_WITNESS_IDENTIFIED');assert.equal(d.method,'impact-bounded-zero-witness-capacity-share-v1');assert.equal(d.share,'0');assert.equal(d.denominatorAtomic,null);assert.equal(d.quoteMint,null);assert.equal(d.quoteDecimals,null);assert.equal(d.membershipComplete,false);assert.equal(d.comparison.membershipComplete,false);assert.equal(d.comparison.denominatorStatus,'POSITIVE_UNVALUED');assert.equal(d.comparison.normalization,'NOT_PERFORMED');assert.equal(d.candidateSourceHash,createHash('sha256').update(raw).digest('hex'));
+ assert.deepEqual(d.candidates.map(({share,...c}:any)=>c),(catalog.data as any).candidates.slice(0,2).map(({share,...c}:any)=>c));assert.deepEqual(d.candidates.map((c:any)=>c.share),['0',null]);assert.deepEqual(d.candidates[0].feesBps,['20','15','300']);assert.equal(d.comparison.reference.bankSlot,500);assert.equal(d.comparison.positiveCapacityWitnesses[0].quoteMint,target.address);
+ assert.equal(d.diagnostics.knownLeads.length,1);assert.equal(d.diagnostics.knownLeads[0].status,'NOT_ADJUDICATED');assert.equal(d.candidates.length,2);assert.ok(!d.candidates.some((c:any)=>c.token.address===x.routes[2]!.token.address));
+ assert.deepEqual(r.requests.discovery,{method:'getMultipleAccounts',params:[[GLOBAL_CONFIG_PDA.toBase58(),PUMP_AMM_FEE_CONFIG_PDA.toBase58(),...x.routes.slice(0,2).map(r=>r.pool)],{encoding:'base64',commitment:'finalized',minContextSlot:499}]});
+ const bank=[GLOBAL_CONFIG_PDA.toBase58(),PUMP_AMM_FEE_CONFIG_PDA.toBase58()];for(const [i,route] of x.routes.slice(0,2).entries())bank.push(route.pool,route.token.address,(x.p as any).routeHints[i].quoteMint,route.baseVault,route.quoteVault);
+ assert.deepEqual(r.requests.bank,{method:'getMultipleAccounts',params:[[...new Set(bank)],{encoding:'base64',commitment:'finalized',minContextSlot:500}]});
+ for(const targetValue of [1n,100n,10n**30n])for(const extraCapacity of [0n,1n,10n**40n]){const denominator=BigInt(d.candidates[1].capacityAtomic)*targetValue+extraCapacity;assert.ok(denominator>0n);assert.equal(0n/denominator,0n);}
+});
+
+test('same-quote witness remains unvalued and never falls through to sampled pair normalization',async()=>{
+ const x=await zeroComparisonFixture(new PublicKey(Buffer.alloc(32,88))),{m}=await witnessMetric(x),d=m.data as any;
+ assert.equal(m.quality,'KNOWN');assert.equal(d.candidates[0].quoteMint,d.candidates[1].quoteMint);assert.equal(d.denominatorAtomic,null);assert.equal(d.quoteMint,null);assert.equal(d.quoteDecimals,null);assert.equal(d.candidates[1].share,null);assert.equal(d.comparison.denominatorStatus,'POSITIVE_UNVALUED');
+});
+
+test('unmeasured additional leads change disclosure but cannot change witness native quantities or target zero',async()=>{
+ const x=await zeroComparisonFixture(),c=witnessFromNative(x),first=await witnessMetric(x,c);c.diagnostics.knownLeads=[];rebindA12WitnessFixture(c);const second=await witnessMetric(x,c);
+ assert.equal(first.m.quality,'KNOWN');assert.equal(second.m.quality,'KNOWN');assert.deepEqual((first.m.data as any).candidates,(second.m.data as any).candidates);assert.equal((second.m.data as any).share,'0');assert.notEqual((first.m.data as any).candidateSourceHash,(second.m.data as any).candidateSourceHash);
+});
+
+test('witness mode rejects positive target, zero witness, unanchored quote and absent native pools without fabricating zeros',async()=>{
+ for(const mode of ['positive-target','all-zero','no-anchor','null-peer','null-target','mayhem','bad-reference','shared-route','vault-mint']){
+  const x=await zeroComparisonFixture(mode==='no-anchor'?USDC_MINT:mode==='shared-route'?new PublicKey(peer.address):new PublicKey(target.address));
+  if(mode==='positive-target')await x.changePool(0,p=>p.creatorFeeBps=bn(0));if(mode==='all-zero')await x.changePool(1,p=>p.creatorFeeBps=bn(300));if(mode==='null-peer')x.f.map.delete(x.routes[1]!.pool);if(mode==='null-target')x.f.map.delete(x.routes[0]!.pool);if(mode==='mayhem')await x.changePool(1,p=>p.isMayhemMode=true);
+  if(mode==='bad-reference'||mode==='vault-mint'){const a=x.f.map.get(mode==='bad-reference'?x.routes[0]!.quoteVault:x.routes[1]!.baseVault),v=Buffer.from(a.data[0],'base64');if(mode==='bad-reference')v.writeBigUInt64LE(0n,64);else NATIVE_MINT.toBuffer().copy(v,0);a.data[0]=v.toString('base64');}
+  const {m}=await witnessMetric(x),d=m.data as any;assert.equal(m.quality,'MISSING',mode);assert.equal(d.share,null,mode);assert.equal(d.denominatorAtomic,null,mode);if(mode==='null-peer'||mode==='null-target'){const c=d.candidates[mode==='null-peer'?1:0];assert.equal(c.capacityAtomic,null);assert.equal(c.inputAtomic,null);assert.equal(c.reasonCode,'EXIT_CAPACITY_CANONICAL_POOL_UNAVAILABLE');}
+ }
+});
+
+test('witness integer interval cap preserves TRUNCATED native boundary rather than a zero witness',async()=>{
+ const x=await zeroComparisonFixture();await x.changePool(1,p=>p.virtualQuoteReserves=bn(0));for(const [key,amount]of [[x.routes[1]!.baseVault,9700n],[x.routes[1]!.quoteVault,9955n*1000001n]] as const){const a=x.f.map.get(key),v=Buffer.from(a.data[0],'base64');v.writeBigUInt64LE(amount,64);a.data[0]=v.toString('base64');}
+ const {m}=await witnessMetric(x),d=m.data as any;assert.equal(m.quality,'TRUNCATED');assert.equal(d.share,null);assert.equal(d.candidates[1].boundary.stop,'INTEGER_INTERVAL_CAP');assert.equal(d.candidates[1].capacityAtomic,null);
+});
+
+test('witness source rejection, profile mismatch, RPC error, tampered requests and causal clocks preserve failures',async()=>{
+ const x=await zeroComparisonFixture(),rejected=JSON.stringify(witnessFromNative(x,true)),before=x.f.requests.length,empty=await collectA12ZeroWitnessCapacity(rejected,target,'300',499,'https://example.com/rpc',x.f.fetcher,()=>at);assert.equal(x.f.requests.length,before);assert.deepEqual(empty,{requests:{},rawArtifacts:{},retrievedAt:{}});assert.equal(deriveA12ZeroWitnessCapacity(rejected,target,at,'300',empty,[]).quality,'MISSING');
+ const {raw,r}=await witnessMetric(x);assert.throws(()=>deriveA12ZeroWitnessCapacity(raw,target,at,'301',r,[]),/ADVISORY_EXIT_CAPACITY_RECEIPT/);await assert.rejects(collectA12ZeroWitnessCapacity(raw,target,undefined,499,'https://example.com/rpc',x.f.fetcher,()=>at),/ADVISORY_EXIT_CAPACITY_RECEIPT/);
+ for(const mode of ['request','bank-error','missing-bank','future-bank','source-after-discovery','stale']){const bad=structuredClone(r);let cutoff=at;if(mode==='request')(bad.requests.bank!.params[1] as any).minContextSlot++;if(mode==='bank-error')bad.rawArtifacts.bank=JSON.stringify({jsonrpc:'2.0',id:1,error:{code:-32000}});if(mode==='missing-bank')for(const v of [bad.requests,bad.rawArtifacts,bad.retrievedAt])delete v.bank;if(mode==='future-bank')bad.retrievedAt.bank='2026-10-24T12:00:01.000Z';if(mode==='source-after-discovery')bad.retrievedAt.discovery='2026-10-24T11:59:59.999Z';if(mode==='stale')cutoff='2026-10-24T12:00:31.000Z';const m=deriveA12ZeroWitnessCapacity(raw,target,cutoff,'300',bad,[]);assert.equal(m.quality,'MISSING',mode);assert.equal((m.data as any).share,null,mode);}
+ const orphan=structuredClone(r);orphan.rawArtifacts.extra='{}';assert.throws(()=>deriveA12ZeroWitnessCapacity(raw,target,at,'300',orphan,[]),/ADVISORY_EXIT_CAPACITY_RECEIPT/);
+ const errorFetcher:typeof fetch=async()=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,error:{code:-32000}})),failed=await collectA12ZeroWitnessCapacity(raw,target,'300',499,'https://example.com/rpc',errorFetcher,()=>at);assert.deepEqual(Object.keys(failed.requests),['discovery']);assert.equal(deriveA12ZeroWitnessCapacity(raw,target,at,'300',failed,[]).quality,'MISSING');
 });

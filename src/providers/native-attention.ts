@@ -116,7 +116,7 @@ function replayRead(read:z.infer<typeof readSchema>,token:TokenRef,proposalStart
  return expected;
 }
 
-function executionResponse(execution:NativeAttentionExecution,prompt:string,wireSchema:z.ZodType):unknown{
+function executionResponse(execution:NativeAttentionExecution,prompt:string,wireSchema:z.ZodType,repairProfile?:'A12_WITNESS_UNADJUDICATED_ORIGIN'):unknown{
  if(execution.canonicalPrompt!==prompt||execution.input.canonicalPromptSha256!==sha(prompt)||execution.input.sha256!==sha(execution.input.text)||execution.response.sha256!==sha(execution.response.raw)||!utf8(prompt)||!utf8(execution.input.text)||!utf8(execution.response.raw)||Buffer.byteLength(execution.response.raw)>400000)fail('EXECUTION_BYTES');
  const schema=execution.input.schemaJson;
  if((schema===null)!==(execution.input.schemaSha256===null)||schema!==null&&(execution.input.schemaSha256!==sha(schema)||!same(JSON.parse(schema),z.toJSONSchema(wireSchema,execution.executor==='CLAUDE_CODE'?{target:'draft-7'}:{}))))fail('EXECUTION_SCHEMA');
@@ -142,8 +142,11 @@ function executionResponse(execution:NativeAttentionExecution,prompt:string,wire
     const first=toolUses[0],prior=structuredClone(first.input),feedback=parsed.flatMap(v=>v.type==='user'&&Array.isArray(v.message?.content)?v.message.content:[]).find((part:any)=>part?.type==='tool_result'&&part.tool_use_id===first.id);
     // One observed formatter repair moves the existing citations field into
     // originRelationship. No decision, rationale or citation may change.
-    if(wireSchema.safeParse(first.input).success||feedback?.is_error!==true||!obj(prior)||!obj(prior.originRelationship)||!Array.isArray(prior.citations)||'citations' in prior.originRelationship)fail('CLAUDE_FORMATTER_REPAIR');
-    prior.originRelationship.citations=prior.citations;delete prior.citations;
+    const firstCheck=wireSchema.safeParse(first.input);
+    if(firstCheck.success||feedback?.is_error!==true||!obj(prior))fail('CLAUDE_FORMATTER_REPAIR');
+    const finalOrigin=result.structured_output?.originRelationship;
+    if(repairProfile==='A12_WITNESS_UNADJUDICATED_ORIGIN'&&!firstCheck.success&&firstCheck.error.issues.length>0&&firstCheck.error.issues.every(issue=>issue.path[0]==='originRelationship')&&typeof prior.originRelationship==='string'&&obj(finalOrigin)&&finalOrigin.status==='UNKNOWN'&&same(finalOrigin.citations,[]))prior.originRelationship=finalOrigin;
+    else {if(!obj(prior.originRelationship)||!Array.isArray(prior.citations)||'citations' in prior.originRelationship)fail('CLAUDE_FORMATTER_REPAIR');prior.originRelationship.citations=prior.citations;delete prior.citations;}
     if(!same(prior,result.structured_output))fail('CLAUDE_FORMATTER_REPAIR');
    }
   }else if(toolUses.length)fail('CLAUDE_FORMATTER');
@@ -178,3 +181,6 @@ export function loadNativeAttentionCapture(file:string,token:TokenRef,cutoff:str
  try{fd=openSync(file,constants.O_RDONLY|constants.O_NOFOLLOW);const st=fstatSync(fd);if(!st.isFile()||st.size>NATIVE_ATTENTION_MAX_BYTES)fail('FILE_BOUND');const bytes=readFileSync(fd);if(bytes.length!==st.size||!Buffer.from(bytes.toString('utf8')).equals(bytes))fail('FILE_UTF8');raw=bytes.toString('utf8');}catch(error){if(error instanceof Error&&error.message.startsWith('NATIVE_ATTENTION_'))throw error;return fail('FILE');}finally{if(fd!==undefined)closeSync(fd);}
  return {raw,decoded:decodeNativeAttentionCapture(raw!,token,cutoff)};
 }
+
+// Pure execution carriers only; callers retain their own source and purpose authority.
+export {nativeSchema as nativeQualificationProposalExecutionSchema,claudeSchema as nativeQualificationReviewExecutionSchema,executionResponse as decodeNativeQualificationResponse};
