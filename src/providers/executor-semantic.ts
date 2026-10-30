@@ -1,3 +1,4 @@
+import { derivePublicSourceIncentives } from './advisory-public-incentives.js';
 import { proveEmptyCurrentPosts } from './advisory-paid-empty.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -334,7 +335,8 @@ export function validateExecutorSemantic(capture:string,token:TokenRef,cutoff:st
 }
 
 /** Descriptive advisory rows only: whitelisted IDs, semantic rows preferred, no social policy facts, entry assessments or A24. */
-export function deriveExecutorSemanticMetrics(capture:string,token:TokenRef,cutoff:string,evidenceIds:string[],paid:PaidVisibility|null,emptyCurrentPosts?:{method:'empty-current-posts-v1';acquisition:unknown}):AdvisoryMetric[]{
+export function deriveExecutorSemanticMetrics(capture:string,token:TokenRef,cutoff:string,evidenceIds:string[],paid:PaidVisibility|null,context?:{method:'empty-current-posts-v1';acquisition:unknown}|{method:'public-source-incentives-v1';acquisition:unknown;bodyContext?:{originalRead:SocialInput;read:SocialInput}}):AdvisoryMetric[]{
+  const emptyCurrentPosts=context;
   const v=replay(capture,token,cutoff),fresh=!v.codes.includes(STALE),rows=new Map<string,AdvisoryMetric>();
   // Stale reads stay MISSING through the unchanged derivers; the semantic classification is withheld rather than restamped.
   const social=deriveSocialAdvisory(v.read,v.proposal,v.review,token,cutoff,evidenceIds,paid) as AdvisoryMetric[];
@@ -353,6 +355,8 @@ export function deriveExecutorSemanticMetrics(capture:string,token:TokenRef,cuto
       rows.set('A22',{...row,quality:'KNOWN',reasonCode:'EMPTY_CURRENT_POST_DISCLOSURES_POINT_IDENTIFIED',data:{...(row.data as object),method:'advisory-empty-current-posts-v1',dex:paid,disclosedPosts:[],hiddenPayments:null,emptyCurrentPosts:proof,underlyingAdvisoryCorpusAccepted}});
     }
   }
+  // Explicit full-source S08 never falls back to the narrower current-POST row.
+  if(context?.method==='public-source-incentives-v1')rows.set('S08',derivePublicSourceIncentives(v.read,fresh&&v.method===EXECUTOR_SEMANTIC_METHOD_V3?v.semantic:null,token,cutoff,evidenceIds,rows.get('S08'),context.acquisition,context.bodyContext));
   const executorClassification={method:v.method,ingress:'LIVE_OPERATOR_EXECUTOR',trust:EXECUTOR_SEMANTIC_TRUST,executionIds:v.executionIds,qualifiedAt:v.read.qualifiedAt??null};
   return QUARANTINE.flatMap(id=>{
     const row=rows.get(id);
