@@ -1,7 +1,8 @@
+import { proveEmptyCurrentPosts } from './advisory-paid-empty.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { tokenRefSchema, type TokenRef } from '../domain/contracts.js';
-import { socialInputSchema, socialNamesAddress, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
+import { deriveSocial, socialInputSchema, socialNamesAddress, type SocialInput, type SocialProposal, type SocialReview } from '../domain/social.js';
 import type { AdvisoryMetric } from '../domain/advisory-contracts.js';
 import { deriveSocialAdvisory, type PaidVisibility } from './advisory-social.js';
 import { advisorySemanticPacketPlan, decodeAdvisorySemanticValues, deriveAdvisorySemantic, type AdvisorySemantic } from './advisory-semantic.js';
@@ -333,13 +334,25 @@ export function validateExecutorSemantic(capture:string,token:TokenRef,cutoff:st
 }
 
 /** Descriptive advisory rows only: whitelisted IDs, semantic rows preferred, no social policy facts, entry assessments or A24. */
-export function deriveExecutorSemanticMetrics(capture:string,token:TokenRef,cutoff:string,evidenceIds:string[],paid:PaidVisibility|null):AdvisoryMetric[]{
+export function deriveExecutorSemanticMetrics(capture:string,token:TokenRef,cutoff:string,evidenceIds:string[],paid:PaidVisibility|null,emptyCurrentPosts?:{method:'empty-current-posts-v1';acquisition:unknown}):AdvisoryMetric[]{
   const v=replay(capture,token,cutoff),fresh=!v.codes.includes(STALE),rows=new Map<string,AdvisoryMetric>();
   // Stale reads stay MISSING through the unchanged derivers; the semantic classification is withheld rather than restamped.
   const social=deriveSocialAdvisory(v.read,v.proposal,v.review,token,cutoff,evidenceIds,paid) as AdvisoryMetric[];
   const semantic=deriveAdvisorySemantic(v.read,v.proposal,v.review,token,cutoff,evidenceIds,fresh?v.semantic:null,paid);
   for(const row of [...social,...semantic])if(QUARANTINE.includes(row.id))rows.set(row.id,row);
   const paidAt=paid?.availableAt?ms(paid.availableAt):NaN,paidFresh=ms(cutoff)>=paidAt&&ms(cutoff)-paidAt<=L.freshnessMs;
+  // This opt-in identifies only the disclosed-post set: every such post belongs to
+  // the acquisition-fixed current POST population, which is positively proven empty.
+  // Rejected advisory classifications remain rejected and cannot identify other rows.
+  if(emptyCurrentPosts?.method==='empty-current-posts-v1'&&v.method===EXECUTOR_SEMANTIC_METHOD_V3&&fresh&&v.proposal&&v.review&&paidFresh&&paid?.quality==='KNOWN'&&paid.token.chain===token.chain&&paid.token.address===token.address){
+    const facts=deriveSocial(v.read,v.proposal,v.review,token,cutoff,evidenceIds).facts;
+    const proof=facts.sampleComplete&&facts.postCorpusObserved&&facts.qualifiedOriginalCount===0?proveEmptyCurrentPosts(emptyCurrentPosts.acquisition,v.read):null;
+    const row=rows.get('A22');
+    if(proof&&row){
+      const underlyingAdvisoryCorpusAccepted=!!v.semantic&&v.semantic.sources.length===v.read.sources.length&&v.semantic.sources.every(source=>source.complete&&source.accepted&&v.read.sources.some(s=>s.id===source.id));
+      rows.set('A22',{...row,quality:'KNOWN',reasonCode:'EMPTY_CURRENT_POST_DISCLOSURES_POINT_IDENTIFIED',data:{...(row.data as object),method:'advisory-empty-current-posts-v1',dex:paid,disclosedPosts:[],hiddenPayments:null,emptyCurrentPosts:proof,underlyingAdvisoryCorpusAccepted}});
+    }
+  }
   const executorClassification={method:v.method,ingress:'LIVE_OPERATOR_EXECUTOR',trust:EXECUTOR_SEMANTIC_TRUST,executionIds:v.executionIds,qualifiedAt:v.read.qualifiedAt??null};
   return QUARANTINE.flatMap(id=>{
     const row=rows.get(id);
