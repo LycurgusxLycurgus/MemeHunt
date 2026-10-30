@@ -114,9 +114,9 @@ test('A29 v2 is admitted only under proof39||40||46||47 with facts38||39||45||46
   for (const kind of ['EXECUTOR', 'CALLERS'] as const) {
     const { b } = await live(kind), p = proofOf(b), facts = b.details.advisory;
     assert.equal(a29VerifiedV2Id(b.token, b.cutoff, b.evidence, b.rawArtifacts), A29_CAPTURE_ID, `${kind} valid v47`);
-    const unregistered = structuredClone(b); unregistered.rawArtifacts['advisory-derivation'] = JSON.stringify({ ...p, method: 'advisory-provenance-v57' });
-    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v57' }), Error, 'unregistered proof57 rejects');
-    assert.equal(a29VerifiedV2Id(unregistered.token, unregistered.cutoff, unregistered.evidence, unregistered.rawArtifacts), null, 'unregistered proof57 cannot earn a v2 budget');
+    const unregistered = structuredClone(b); unregistered.rawArtifacts['advisory-derivation'] = JSON.stringify({ ...p, method: 'advisory-provenance-v58' });
+    assert.throws(rebuild(b, { ...p, method: 'advisory-provenance-v58' }), Error, 'unregistered proof58 rejects');
+    assert.equal(a29VerifiedV2Id(unregistered.token, unregistered.cutoff, unregistered.evidence, unregistered.rawArtifacts), null, 'unregistered proof58 cannot earn a v2 budget');
     for (const v of [41, 42, 43, 44, 45]) {
       const q = { ...p, method: `advisory-provenance-v${v}` }, x = structuredClone(b);
       assert.throws(rebuild(b, q), PROOF, `${kind} proof${v}`);
