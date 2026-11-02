@@ -102,7 +102,7 @@ const safeCode = (error: unknown) => {
   if (knownErrorCodes.has(raw)) return raw;
   if (/^(?:RPC|DEX|WEB_SEARCH|WEB_FETCH|GEMINI)_HTTP_\d{3}$/.test(raw)) return raw;
   if (/^EXEC_LIQ_PROOF_INVALID:[A-Z][A-Z0-9_]{0,63}$/.test(raw)) return raw;
-  if (/^C12_(?:BRIDGE|NATIVE)_[A-Z0-9_]{1,100}$/.test(raw)) return raw;
+  if (/^C12_(?:BRIDGE|NATIVE)_[A-Z0-9_]{1,100}$/.test(raw)||raw==='C09_MARKET_CONTEXT_MODE_REQUIRED') return raw;
   if (/SQLITE|database|EACCES|ENOENT/i.test(raw)) return 'STORAGE_ERROR';
   return 'COMMAND_FAILED';
 };
@@ -209,6 +209,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         historicalTopicReuse: '--partial --advisory --advisory-executor --recorded-callers-capture FILE --historical-topic-reuse permits topic-only evidence reuse for an identical historical post under the same rubric. The fixed historical sample and current-corpus rejections stay explicit. Requires ordinary window mode and complete matching evidence.',
         o30RegistryAbsence: '--advisory --o28-expanded --o30-registry-absence enables fixed Jupiter legacy DCA registry absence over a complete verified WBTC pool-hour. WBTC registered calls stay unresolved; unregistered automation is unmeasured. Existing native v3/v4 windows retain the original flash-fill attribution, which may be positive; unsupported window versions remain unresolved.',
         a12ZeroWitnessCapture:'--partial --advisory --o28-expanded --a12-zero-witness-capture FILE identifies only target share zero from a qualified positive peer and a fresh common native bank; no complete catalog or measured total is claimed.',
+        c09MarketContext:'--partial --advisory --c12-bridge-capture FILE --c09-market-context composes descriptive C11/C12/C15/C16 with separate coverage; no regime label.',
         c12BridgeCapture:'--partial --advisory --c12-bridge-capture FILE imports a complete all-asset Solana/Ethereum covered bridge census for C12 only.',
         a30FxCapture:'--partial --advisory --o28-expanded --a30-fx-capture DIRECTORY imports complete historical native demand and incoming FX sources for A30 only.',
         nativeAttentionCapture:'--partial --advisory --o28-expanded --native-attention-capture FILE imports a fresh native Codex/Claude qualification for A01/A02 only; source receipts and both executions are independently replayed.',
@@ -309,6 +310,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const partialRequested = hasFlag(argv, 'partial');
       if(hasFlag(argv,'o28-rpc-errors')&&(cmd!=='analyze'||hasBundle))throw new CliError('O28_RPC_ERRORS_REQUIRED','Use --o28-rpc-errors with live Solana --advisory --o28-expanded.');
       if(hasFlag(argv,'a12-zero-witness-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A12_ZERO_WITNESS_REQUIRED','Use --a12-zero-witness-capture FILE with live Solana --partial --advisory --o28-expanded.');
+      if(hasFlag(argv,'c09-market-context')&&(cmd!=='analyze'||hasBundle||!hasFlag(argv,'c12-bridge-capture')))throw new CliError('C09_MARKET_CONTEXT_MODE_REQUIRED','Use --c09-market-context with live Solana --partial --advisory --c12-bridge-capture FILE.');
       if(hasFlag(argv,'c12-bridge-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('C12_BRIDGE_MODE_REQUIRED','Use --c12-bridge-capture FILE with live Solana --partial --advisory.');
       if(hasFlag(argv,'a30-fx-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('A30_FX_MODE_REQUIRED','Use --a30-fx-capture DIRECTORY with live Solana --partial --advisory --o28-expanded.');
       if(hasFlag(argv,'native-attention-capture')&&(cmd!=='analyze'||hasBundle))throw new CliError('NATIVE_ATTENTION_MODE_REQUIRED','Use --native-attention-capture FILE with live Solana --partial --advisory --o28-expanded.');
@@ -461,6 +463,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
           ...(hasFlag(argv,'wbtc-exit')?{wbtcExit:true}:{}),
           ...(hasFlag(argv,'wbtc-entry')?{wbtcEntry:true}:{}),
           ...(hasFlag(argv,'a12-zero-witness-capture')?{a12ZeroWitnessCapture:flagValue(argv,'a12-zero-witness-capture')!}:{}),
+          ...(hasFlag(argv,'c09-market-context')?{c09MarketContext:true}:{}),
           ...(hasFlag(argv,'c12-bridge-capture')?{c12BridgeCapture:flagValue(argv,'c12-bridge-capture')!}:{}),
           ...(hasFlag(argv,'s08-public-incentives')?{s08PublicIncentives:true}:{}),
           ...(hasFlag(argv,'a22-empty-current-posts')?{a22EmptyCurrentPosts:true}:{}),
