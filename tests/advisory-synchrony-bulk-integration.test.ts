@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,writeFileSync,readFileSync,symlinkSync} from 'node:fs';
@@ -62,7 +63,7 @@ test('proof52 persists, reopens, replays offline and CLI propagates the import p
   let s=new Service(file);try{saved=s.analyzeLive(b);assert.equal(s.analyzeLive(b).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}
   s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}
   const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v49');}finally{db.close();}
-  let out='',error='',network=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>error+=x}),0,error);assert.equal(network,0);assert.deepEqual(JSON.parse(out),saved);
+  let out='',error='',network=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>error+=x}),0,error);assert.equal(network,0);assertEntryCliSnapshot(JSON.parse(out),saved);
   out='';error='';assert.equal(await runCli(['analyze',f.token.address,'--chain','solana','--partial','--advisory','--o28-expanded','--o23-bulk-capture',f.directory,'--db',join(dir,'cli.sqlite'),'--config',join(dir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:f.fetcher,now:()=>f.cutoff,stdout:x=>out+=x,stderr:x=>error+=x}),0,error);const cli=JSON.parse(out);assert.equal(cli.details.advisory.method,'advisory-measurements-v51');assert.equal(cli.details.advisory.metrics.find((m:any)=>m.id==='O23').quality,'KNOWN');
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

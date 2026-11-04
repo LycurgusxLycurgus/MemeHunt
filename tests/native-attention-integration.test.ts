@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 /** CONSTRUCTED model receipts/corpus and mocked live providers. Actual native/CLI acceptance is separate. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -67,7 +68,7 @@ test('native capture save/idempotence/reopen and offline CLI replay preserve ful
   const db=new DatabaseSync(file);try{const semantic=JSON.parse((db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id) as {semantic:string}).semantic);assert.equal(semantic.policyVersion,'research-screen-advisory-v56');}finally{db.close();}
   service=new Service(file);try{assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}
   let out='',err='',network=0,models=0;const code=await runCli(['replay',saved.id,'--db',file,'--config',join(dir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('OFFLINE_NETWORK_DENIED');},semanticExecutor:async()=>{models++;throw Error('OFFLINE_MODEL_DENIED');},stdout:s=>out+=s,stderr:s=>err+=s});
-  assert.equal(code,0,err);assert.deepEqual(JSON.parse(out),saved);assert.deepEqual([network,models],[0,0]);assert.equal(b.rawArtifacts[NATIVE_ATTENTION_ID],raw);
+  assert.equal(code,0,err);assertEntryCliSnapshot(JSON.parse(out),saved);assert.deepEqual([network,models],[0,0]);assert.equal(b.rawArtifacts[NATIVE_ATTENTION_ID],raw);
  });
 });
 

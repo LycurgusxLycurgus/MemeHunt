@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync,writeFileSync,symlinkSync} from 'node:fs';
@@ -43,7 +44,7 @@ test('proof55 persists idempotently and reopens/replays through network-denied C
   let service=new Service(file);try{saved=service.analyzeLive(b);assert.equal(service.analyzeLive(b).id,saved.id);assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}
   service=new Service(file);try{assert.deepEqual(service.show(saved.id),saved);assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}
   const db=new DatabaseSync(file);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v52');}finally{db.close();}
-  let out='',error='',reads=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{reads++;throw Error('NETWORK_DENIED');},stdout:s=>out+=s,stderr:s=>error+=s}),0,error);assert.equal(reads,0);assert.deepEqual(JSON.parse(out),saved);
+  let out='',error='',reads=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{reads++;throw Error('NETWORK_DENIED');},stdout:s=>out+=s,stderr:s=>error+=s}),0,error);assert.equal(reads,0);assertEntryCliSnapshot(JSON.parse(out),saved);
   out='';error='';assert.equal(await runCli(['analyze',f.token.address,'--chain','solana','--partial','--advisory','--o28-expanded','--o25-lifetime-capture',f.directory,'--db',join(dir,'cli.sqlite'),'--config',join(dir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:f.fetcher,now:()=>f.cutoff,stdout:s=>out+=s,stderr:s=>error+=s}),0,error);const cli=JSON.parse(out);assert.equal(cli.details.advisory.method,'advisory-measurements-v54');assert.equal(cli.details.advisory.metrics.find((m:any)=>m.id==='O25').quality,'KNOWN');
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

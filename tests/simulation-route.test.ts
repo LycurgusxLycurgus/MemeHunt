@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -75,7 +76,7 @@ test('actual O12 wire matches official pinned SDK construction and runtime token
 
 test('O12 actual Service save/idempotence/reopen and CLI replay retain the same result with zero network',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'simulation-route-')),file=join(dir,'live.sqlite');try{let service=new Service(file),saved;try{saved=service.analyzeLive(copy());assert.equal(service.analyzeLive(copy()).id,saved.id);assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}service=new Service(file);try{assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}
- let out='',errors='',calls=0;const code=await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>errors+=x});assert.equal(code,0,errors);assert.deepEqual(JSON.parse(out),saved);assert.equal(calls,0);
+ let out='',errors='',calls=0;const code=await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>errors+=x});assert.equal(code,0,errors);assertEntryCliSnapshot(JSON.parse(out),saved);assert.equal(calls,0);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 

@@ -1075,6 +1075,59 @@ test('public-support timeout gaps require successful original attempts and a sel
   assert.equal(qualified.comparisonComplete, false, 'alternate acquisition does not claim original comparison completion');
   assert.equal(qualified.comparisonAcquisition?.originalComplete, false);
 
+  const explicit429 = structuredClone(qualified);
+  explicit429.comparisonRecovery!.accessGapMethod = 'own-acquired-alternates-v2';
+  for (const id of ['attention-fetch-1', 'attention-fetch-1-retry-1']) {
+    const packet = JSON.parse(explicit429.rawArtifacts[id]!) as { results: Array<{ url: string }>; errors: Array<Record<string, unknown>> };
+    packet.errors = packet.errors.filter(error => error.url !== targetUrl);
+    packet.errors.push({ url: targetUrl, error: 'target_http_error', status: 429 });
+    assert.equal(packet.results.some(result => result.url === targetUrl), false);
+    explicit429.rawArtifacts[id] = JSON.stringify(packet);
+  }
+  explicit429.rawArtifacts['attention-entry-first-acquisition'] = JSON.stringify(explicit429.comparisonRecovery);
+  const explicit429Scope = entryEvidenceScope(explicit429, token, cutoff);
+  assert.equal(explicit429Scope.complete, true, JSON.stringify(explicit429Scope));
+  assert.deepEqual(explicit429Scope.gaps, [{ url: targetUrl, code: 'TARGET_ACCESS_GAP', cause: 'ATT_FETCH_HTTP_429',
+    originalAttemptIds: ['attention-fetch-1', 'attention-fetch-1-retry-1'], parentLeadId: parent.id,
+    queryIds: [recoveryQueryId], alternativeSourceIds: sourceIds }],
+  'v2 records only the repeated original-target 429 as an access gap with its own acquired alternate');
+  assert.ok(explicit429Scope.sourceIds.every(id => !explicit429.sources.find(source => source.id === id)?.url.endsWith('/river-lantern-market')),
+    'the failed original body remains absent from the retained source catalog');
+
+  const legacy429 = structuredClone(explicit429);
+  legacy429.comparisonRecovery!.accessGapMethod = 'own-acquired-alternates-v1';
+  legacy429.rawArtifacts['attention-entry-first-acquisition'] = JSON.stringify(legacy429.comparisonRecovery);
+  const legacy429Scope = entryEvidenceScope(legacy429, token, cutoff);
+  assert.equal(legacy429Scope.complete, false, 'v1 does not promote target-local 429 into a completed access gap');
+  assert.equal(legacy429Scope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false);
+
+  for (const [status, artifactId] of [[429, 'attention-fetch-1-retry-1'], [503, 'attention-fetch-1']] as const) {
+    const globalFailure = structuredClone(explicit429);
+    const http = JSON.parse(globalFailure.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+    http.outcomes.find(row => row.artifactId === artifactId)!.status = status;
+    globalFailure.rawArtifacts['attention-http-outcomes'] = JSON.stringify(http);
+    const scope = entryEvidenceScope(globalFailure, token, cutoff);
+    assert.equal(scope.complete, false, `TinyFish HTTP ${status} is a global request failure, not a target access gap`);
+    assert.equal(scope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false);
+  }
+
+  const one429Attempt = structuredClone(explicit429);
+  delete one429Attempt.rawArtifacts['attention-fetch-1-retry-1'];
+  const oneAttemptHttp = JSON.parse(one429Attempt.rawArtifacts['attention-http-outcomes']!) as { outcomes: Array<{ artifactId: string }> };
+  oneAttemptHttp.outcomes = oneAttemptHttp.outcomes.filter(row => row.artifactId !== 'attention-fetch-1-retry-1');
+  one429Attempt.rawArtifacts['attention-http-outcomes'] = JSON.stringify(oneAttemptHttp);
+  const oneAttemptScope = entryEvidenceScope(one429Attempt, token, cutoff);
+  assert.equal(oneAttemptScope.complete, false, 'one explicit target 429 attempt cannot close the original acquisition gap');
+  assert.equal(oneAttemptScope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false);
+
+  const changedOriginalUrl = structuredClone(explicit429);
+  const originalEnvelope = JSON.parse(changedOriginalUrl.rawArtifacts['attention-fetch-1']!) as { errors: Array<Record<string, unknown>> };
+  originalEnvelope.errors.find(error => error.url === targetUrl)!.url = 'https://elsewhere.example/wrong-market-record';
+  changedOriginalUrl.rawArtifacts['attention-fetch-1'] = JSON.stringify(originalEnvelope);
+  const changedOriginalScope = entryEvidenceScope(changedOriginalUrl, token, cutoff);
+  assert.equal(changedOriginalScope.complete, false, 'two errors must name the exact same requested original URL');
+  assert.equal(changedOriginalScope.gaps.some(gap => gap.code === 'TARGET_ACCESS_GAP'), false);
+
   const blocked = (name: string, mutate: (candidate: AttentionRead) => void, expected?: string) => {
     const candidate = structuredClone(qualified);
     mutate(candidate);
@@ -1835,6 +1888,274 @@ test('public-support scope requires an effective Fetch outcome for each actual s
   assert.deepEqual(boundedReceipt.selectedUrls, [selectedUrl]);
   assert.equal(boundedReceipt.selection.find(item => item.url === unselectedUrl)?.selected, false,
     'unselected bounded hits do not become required Fetch outcomes');
+});
+
+test('fresh redirect-body marker admits only the exact safe final body in its owning recovery attempt', () => {
+  const cutoff = '2026-10-20T12:00:00.000Z';
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const leadUrl = 'https://index.example/river-lantern-market';
+  const requestedUrl = 'https://independent.example/river-lantern-market-record';
+  const finalUrl = 'https://independent.example/us/river-lantern-market-record';
+  const originText = `River Lantern origin evidence identifies ${token.address}.`;
+  const recoveredText = 'An independent public page describes the River Lantern market record.';
+  const lead = {
+    id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: leadUrl,
+    title: 'River Lantern market', snippet: 'Indexed market listing.', metadataEvidenceId: 'lead-1-metadata',
+    sourceIds: [], acquisitionStatus: 'FAILED' as const, acquisitionCodes: ['ATT_LEAD_FAILED'],
+    recoveryQueryIds: ['attention-recovery-search-1'], recoverySourceIds: ['attention-recovery-page-1'],
+  };
+  const query = '"River Lantern market" crypto token';
+  const makeRead = (): AttentionRead => {
+    const recoverySelection = comparisonRecoverySelection(
+      [{ searchArtifactId: 'attention-search-1', resultIndex: 0, url: requestedUrl }],
+      [{ leadId: lead.id, originalUrl: lead.url }], [originUrl, leadUrl], 8,
+    );
+    return {
+      claimDecisionMethod: 'independent-grounded-claims-v1',
+      redirectBodyMethod: 'requested-final-body-v1',
+      entryExecutionMethod: 'entry-first-v2', entryEvidenceMethod: 'public-support-v2',
+      sources: [
+        { id: 'attention-page-1', url: originUrl, text: originText, publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' },
+        { id: 'attention-recovery-page-1', url: finalUrl, text: recoveredText, publishedAt: null, authorId: null, availableAt: cutoff, kind: 'PAGE' },
+      ],
+      rawArtifacts: {
+        'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+        'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+        'attention-search-3': JSON.stringify({ results: [{ url: leadUrl, title: lead.title, snippet: lead.snippet }], errors: [] }),
+        'attention-fetch-1': JSON.stringify({ results: [{ url: originUrl, final_url: originUrl, text: originText }], errors: [
+          { url: leadUrl, status: 404, error: 'target_http_error' },
+        ] }),
+        'attention-http-outcomes': JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+          { artifactId: 'attention-fetch-1', status: 200 },
+        ] }),
+        'attention-recovery-search-1': JSON.stringify({ results: [{ url: requestedUrl, title: 'Independent listing', snippet: 'A public market record.' }], errors: [] }),
+        'attention-recovery-selection-scope': JSON.stringify({
+          ...recoverySelection,
+          selection: recoverySelection.selection.map(row => ({
+            ...row, collectorQueryId: row.queryId, queryId: row.queryId.replace('attention-', 'attention-recovery-'),
+          })),
+        }),
+        'attention-recovery-fetch-1': JSON.stringify({ results: [{ url: requestedUrl, final_url: finalUrl, text: recoveredText }], errors: [] }),
+        'attention-recovery-http-outcomes': JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: [
+          { artifactId: 'attention-search-1', status: 200 }, { artifactId: 'attention-fetch-1', status: 200 },
+        ] }),
+      },
+      queries: ['exact origin', 'exact token account', 'River Lantern market'], complete: false, codes: [],
+      start: '2026-10-20T11:00:00.000Z', end: cutoff, discoveryUrls: [originUrl], comparisonSourceIds: [], comparisonComplete: false,
+      comparisonAcquisition: { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [lead] },
+      comparisonRecovery: { method: 'comparison-acquisition-v1', accessGapMethod: 'own-acquired-alternates-v4',
+        selectedLeadIds: [lead.id], recoveryQueries: [{ queryId: 'attention-recovery-search-1', parentLeadId: lead.id,
+          query, state: 'OBSERVED', descriptorComplete: true, resultCount: 1, availableAt: cutoff }],
+        recoveryCapped: false, sourceLineage: [{ leadId: lead.id, queryIds: ['attention-recovery-search-1'], sourceIds: lead.recoverySourceIds }] },
+    };
+  };
+
+  const complete = entryEvidenceScope(makeRead(), token, cutoff);
+  assert.equal(complete.complete, true, JSON.stringify(complete));
+  assert.equal(complete.comparisonParents?.[0]?.outcomes[0]?.state, 'ACQUIRED');
+  assert.equal(complete.comparisonParents?.[0]?.outcomes[0]?.url, requestedUrl);
+  assert.equal(complete.comparisonParents?.[0]?.outcomes[0]?.finalUrl, finalUrl,
+    'a safe redirect is recorded as transport attribution while the selected requested URL remains the owned outcome');
+
+  const legacy = makeRead();
+  delete legacy.redirectBodyMethod;
+  const legacyScope = entryEvidenceScope(legacy, token, cutoff);
+  assert.equal(legacyScope.complete, false, 'the claim marker alone does not reinterpret captures made before the redirect-body method');
+  assert.ok(legacyScope.blockers.includes('ATT_ENTRY_RECOVERY_TARGET_ACCESS_INCOMPLETE'));
+
+  const wrongBody = makeRead();
+  const wrongPacket = JSON.parse(wrongBody.rawArtifacts['attention-recovery-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+  wrongPacket.results[0]!.text = recoveredText + ' Changed after capture.';
+  wrongBody.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify(wrongPacket);
+  assert.equal(entryEvidenceScope(wrongBody, token, cutoff).complete, false, 'a redirect body must exactly match its retained source body');
+
+  const missingRow = makeRead();
+  missingRow.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify({ results: [], errors: [] });
+  assert.equal(entryEvidenceScope(missingRow, token, cutoff).complete, false, 'a redirect cannot excuse a missing row for the requested URL');
+
+  const unsafeFinal = makeRead();
+  const unsafePacket = JSON.parse(unsafeFinal.rawArtifacts['attention-recovery-fetch-1']!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+  unsafePacket.results[0]!.final_url = 'http://127.0.0.1/redirect-target';
+  unsafeFinal.rawArtifacts['attention-recovery-fetch-1'] = JSON.stringify(unsafePacket);
+  assert.equal(entryEvidenceScope(unsafeFinal, token, cutoff).complete, false, 'private or non-HTTPS redirect targets remain unsafe');
+});
+
+test('v3 closes only a same-parent intermediate 429 chain with a terminal leaf and an owned body', async () => {
+  const cutoff = '2026-10-20T12:00:00.000Z';
+  const originUrl = 'https://public.example/river-lantern-origin';
+  const leadUrl = 'https://index.example/river-lantern-market';
+  const selectedA = 'https://initial-a.example/first';
+  const selectedB = 'https://initial-b.example/second';
+  const intermediateA = 'https://middle-a.example/unavailable';
+  const intermediateB = 'https://middle-b.example/unavailable';
+  const terminalA = 'https://terminal-a.example/page-not-found';
+  const acquiredSibling = 'https://sibling.example/actual-market-body';
+  const query = 'Find same-parent public sources for the River Lantern market listing';
+  const initialRecoveryBodies = Array.from({ length: 6 }, (_, index) =>
+    `https://seed-${index + 1}.example/market-body-${index + 1}`);
+  const hits = [selectedA, selectedB, ...initialRecoveryBodies, intermediateA, intermediateB, terminalA, acquiredSibling];
+  const sourceBody = (url: string) => `Retained public source body for ${url}; River Lantern ${token.address}.`;
+  // Keep the retained initial fixture within the fresh collector's 40-source
+  // cap while exercising its eight-URL recovery batch.
+  const initialSources: AttentionRead['sources'] = Array.from({ length: 38 }, (_, index) => {
+    const url = index === 0 ? originUrl : `https://initial-${index + 1}.example/retained-${index + 1}`;
+    return { id: `attention-page-${index + 1}`, url, text: sourceBody(url), kind: 'PAGE' as const,
+      publishedAt: null, authorId: null, availableAt: cutoff };
+  });
+  const responseBodies = [
+    { results: initialRecoveryBodies.map(url => ({ url, final_url: url, text: sourceBody(url) })),
+      errors: [selectedA, selectedB].map(url => ({ url, status: 404, error: 'not_found' })) },
+    { results: [], errors: [{ url: intermediateA, error: 'timeout' }, { url: intermediateB, status: 404, error: 'not_found' }] },
+    { results: [], errors: [{ url: intermediateA, error: 'target_http_error', status: 429 }] },
+    { results: [{ url: acquiredSibling, final_url: acquiredSibling, text: sourceBody(acquiredSibling) }],
+      errors: [{ url: terminalA, status: 410, error: 'page_not_found' }] },
+  ];
+  const requestedBatches: string[][] = [];
+  let responseIndex = 0;
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      return json({ results: hits.map((hit, resultIndex) => ({ url: hit, title: `Indexed result ${resultIndex + 1}`,
+        snippet: 'A public River Lantern market source.' })), errors: [] });
+    }
+    requestedBatches.push((JSON.parse(String(init?.body)) as { urls: string[] }).urls);
+    return json(responseBodies[responseIndex++] ?? { results: [], errors: [] });
+  };
+  const recovery = await recoverComparisonSources(token, KEY, [query], [originUrl, leadUrl], 8,
+    fetcher, () => cutoff, [{ leadId: 'lead-1', originalUrl: leadUrl }], true, 'public-support-v2', 'observed-hosts-v1');
+  assert.deepEqual(requestedBatches, [
+    [selectedA, selectedB, ...initialRecoveryBodies], [intermediateA, intermediateB], [intermediateA], [terminalA, acquiredSibling],
+  ], 'the producer retains the two exact bounded fallback rounds and the same selected parent');
+
+  const rawArtifacts: Record<string, string> = {
+    'attention-search-1': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+    'attention-search-2': JSON.stringify({ results: [{ url: originUrl }], errors: [] }),
+    'attention-search-3': JSON.stringify({ results: [{ url: leadUrl, title: 'River Lantern market', snippet: 'Indexed market listing.' }], errors: [] }),
+  };
+  for (let offset = 0; offset < initialSources.length; offset += 10) {
+    const batch = Math.floor(offset / 10) + 1;
+    const sources = initialSources.slice(offset, offset + 10);
+    rawArtifacts[`attention-fetch-${batch}`] = JSON.stringify({
+      results: sources.map(source => ({ url: source.url, final_url: source.url, text: source.text })),
+      errors: batch === 1 ? [{ url: leadUrl, status: 404, error: 'not_found' }] : [],
+    });
+  }
+  rawArtifacts['attention-http-outcomes'] = JSON.stringify({ method: 'fetch-http-outcomes-v1', outcomes: Array.from({ length: Math.ceil(initialSources.length / 10) }, (_, index) => index + 1).map(batch => ({
+    artifactId: `attention-fetch-${batch}`, status: 200,
+  })) });
+  for (const [id, raw] of Object.entries(recovery.rawArtifacts)) {
+    if (id === 'attention-selection-scope') {
+      const selection = JSON.parse(raw) as { selection: Array<Record<string, unknown> & { queryId: string }> };
+      rawArtifacts['attention-recovery-selection-scope'] = JSON.stringify({
+        ...selection,
+        selection: selection.selection.map(row => ({ ...row, collectorQueryId: row.queryId,
+          queryId: row.queryId.replace('attention-', 'attention-recovery-') })),
+      });
+    } else if (id.startsWith('attention-')) rawArtifacts[id.replace(/^attention-/, 'attention-recovery-')] = raw;
+  }
+  const retainedRecoverySources = recovery.sources.map(source => ({ ...source, id: source.id.replace(/^attention-/, 'attention-recovery-') }));
+  const read: AttentionRead = {
+    entryEvidenceMethod: 'public-support-v2', entryExecutionMethod: 'entry-first-v2',
+    outcomeBasisMethod: 'entry-outcome-basis-v1', collectionMethod: 'project-context-v2',
+    sources: [...initialSources, ...retainedRecoverySources], rawArtifacts,
+    queries: ['exact origin', 'exact account', 'named comparison'], complete: false, codes: ['ATT_FETCH_URL_ERROR'],
+    start: '2026-10-20T11:00:00.000Z', end: cutoff, discoveryUrls: [originUrl], comparisonSourceIds: [], comparisonComplete: false,
+    comparisonAcquisition: { originalComplete: false, searchSucceeded: true, descriptorComplete: true, leadCount: 1, leads: [{
+      id: 'lead-1', searchArtifactId: 'attention-search-3', resultIndex: 0, url: leadUrl, title: 'River Lantern market',
+      snippet: 'Indexed market listing.', metadataEvidenceId: 'lead-1-metadata', sourceIds: [], acquisitionStatus: 'FAILED',
+      acquisitionCodes: ['ATT_LEAD_FAILED'], recoveryQueryIds: [], recoverySourceIds: [],
+    }] },
+    comparisonRecovery: { method: 'comparison-acquisition-v1', accessGapMethod: 'own-acquired-alternates-v3',
+      fallbackSelectionMethod: 'observed-hosts-v1', selectedLeadIds: ['lead-1'], recoveryQueries: [{
+        queryId: 'attention-recovery-search-1', parentLeadId: 'lead-1', query, state: 'OBSERVED',
+        descriptorComplete: true, resultCount: hits.length, availableAt: cutoff,
+      }], recoveryCapped: false, sourceLineage: [{ leadId: 'lead-1', queryIds: ['attention-recovery-search-1'], sourceIds: [] }] },
+  };
+
+  const scope = entryEvidenceScope(read, token, cutoff);
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  const terminalGap = scope.gaps.find(gap => gap.code === 'RECOVERY_TERMINAL_ACCESS_GAP');
+  assert.deepEqual(terminalGap, {
+    url: intermediateA, code: 'RECOVERY_TERMINAL_ACCESS_GAP', cause: 'ATT_FETCH_HTTP_429', parentLeadId: 'lead-1',
+    queryIds: ['attention-recovery-search-1'],
+    originalAttemptIds: ['attention-recovery-fetch-2', 'attention-recovery-fetch-2-retry-1'],
+    terminalUrl: terminalA, terminalArtifactId: 'attention-recovery-fetch-3', terminalStatus: 410,
+    alternativeSourceIds: retainedRecoverySources.map(source => source.id),
+  }, 'v3 keeps the intermediate URL unread and separately attributes the same-parent terminal leaf and actual body');
+  assert.equal(scope.gaps.some(gap => gap.url === terminalA && gap.code === 'TARGET_BLOCKED'), true,
+    'the terminal leaf remains its own bounded target gap');
+  assert.equal(read.sources.some(source => source.url === intermediateA || source.url === terminalA), false,
+    'neither the failed intermediate URL nor terminal URL gains an invented body');
+
+  const stillBlockedV2 = structuredClone(read);
+  stillBlockedV2.comparisonRecovery!.accessGapMethod = 'own-acquired-alternates-v2';
+  const v2Scope = entryEvidenceScope(stillBlockedV2, token, cutoff);
+  assert.equal(v2Scope.complete, false, 'the new terminal-chain rule requires the fresh v3 marker');
+
+  const hostile = (label: string, mutate: (candidate: AttentionRead) => void) => {
+    const candidate = structuredClone(read);
+    mutate(candidate);
+    const result = entryEvidenceScope(candidate, token, cutoff);
+    assert.equal(result.complete, false, `${label}: ${JSON.stringify(result)}`);
+  };
+  hostile('a whole recovery API request failed', candidate => {
+    const outcomes = JSON.parse(candidate.rawArtifacts['attention-recovery-http-outcomes']!) as { outcomes: Array<{ artifactId: string; status: number }> };
+    outcomes.outcomes.find(row => row.artifactId === 'attention-fetch-2-retry-1')!.status = 429;
+    candidate.rawArtifacts['attention-recovery-http-outcomes'] = JSON.stringify(outcomes);
+  });
+  hostile('a missing actual retry HTTP receipt remains unknown', candidate => {
+    const outcomes = JSON.parse(candidate.rawArtifacts['attention-recovery-http-outcomes']!) as { outcomes: Array<{ artifactId: string }> };
+    outcomes.outcomes = outcomes.outcomes.filter(row => row.artifactId !== 'attention-fetch-2-retry-1');
+    candidate.rawArtifacts['attention-recovery-http-outcomes'] = JSON.stringify(outcomes);
+  });
+  hostile('a rehashed terminal row moved outside its selected Fetch batch stays unknown', candidate => {
+    const batchId = 'attention-recovery-fetch-3';
+    const batch = JSON.parse(candidate.rawArtifacts[batchId]!) as { results: unknown[]; errors: unknown[] };
+    const terminal = batch.errors.find((row: any) => row.url === terminalA);
+    batch.errors = batch.errors.filter((row: any) => row.url !== terminalA);
+    candidate.rawArtifacts[batchId] = JSON.stringify(batch);
+    candidate.rawArtifacts['attention-recovery-fetch-99'] = JSON.stringify({ results: [], errors: [terminal] });
+  });
+  hostile('the v3 terminal chain cannot borrow a body from a different parent', candidate => {
+    candidate.comparisonRecovery!.recoveryQueries[0]!.parentLeadId = 'foreign-parent';
+  });
+  hostile('same-parent bodies omitted from their selected batches do not close the gap', candidate => {
+    const firstBatchId = 'attention-recovery-fetch-1';
+    const firstBatch = JSON.parse(candidate.rawArtifacts[firstBatchId]!) as { results: Array<{ url: string }>; errors: unknown[] };
+    firstBatch.results = firstBatch.results.filter(row => !initialRecoveryBodies.includes(row.url));
+    firstBatch.errors.push(...initialRecoveryBodies.map(url => ({ url, error: 'timeout' })));
+    candidate.rawArtifacts[firstBatchId] = JSON.stringify(firstBatch);
+    const terminalBatchId = 'attention-recovery-fetch-3';
+    const terminalBatch = JSON.parse(candidate.rawArtifacts[terminalBatchId]!) as { results: Array<{ url: string }>; errors: unknown[] };
+    terminalBatch.results = terminalBatch.results.filter(row => row.url !== acquiredSibling);
+    terminalBatch.errors.push({ url: acquiredSibling, error: 'timeout' });
+    candidate.rawArtifacts[terminalBatchId] = JSON.stringify(terminalBatch);
+    const missingUrls = new Set([...initialRecoveryBodies, acquiredSibling]);
+    candidate.sources = candidate.sources.filter(source => !missingUrls.has(source.url));
+  });
+  hostile('an unqualified transient intermediate retry cannot be treated as target-local evidence', candidate => {
+    const retryId = 'attention-recovery-fetch-2-retry-1';
+    const retry = JSON.parse(candidate.rawArtifacts[retryId]!) as { errors: Array<{ url: string }> };
+    retry.errors[0]!.url = 'https://other-parent.example/forged';
+    candidate.rawArtifacts[retryId] = JSON.stringify(retry);
+  });
+  hostile('a non-terminal 403 leaf does not close the selected chain', candidate => {
+    const batchId = 'attention-recovery-fetch-3';
+    const batch = JSON.parse(candidate.rawArtifacts[batchId]!) as { errors: Array<{ url: string; status: number }> };
+    batch.errors.find(row => row.url === terminalA)!.status = 403;
+    candidate.rawArtifacts[batchId] = JSON.stringify(batch);
+  });
+  hostile('an earlier body from the same host cannot replace the body selected in this fallback batch', candidate => {
+    const selectedBatch = 'attention-recovery-fetch-3';
+    const batch = JSON.parse(candidate.rawArtifacts[selectedBatch]!) as { results: Array<{ url: string }> };
+    batch.results = batch.results.filter(row => row.url !== acquiredSibling);
+    candidate.rawArtifacts[selectedBatch] = JSON.stringify(batch);
+    const alternate = candidate.sources.find(source => source.url === acquiredSibling)!;
+    const earlierId = 'attention-recovery-fetch-1';
+    const earlier = JSON.parse(candidate.rawArtifacts[earlierId]!) as { results: Array<Record<string, unknown>>; errors: unknown[] };
+    earlier.results.push({ url: acquiredSibling, final_url: acquiredSibling, text: alternate.text });
+    candidate.rawArtifacts[earlierId] = JSON.stringify(earlier);
+  });
 });
 
 test('safe discovery seeds lead the fetch queue and only approved one-level links are followed', async () => {
@@ -2971,5 +3292,139 @@ test('malformed provider response shapes and unsafe final URLs are retained as i
     assert.equal(read.sources.length, 0);
     assert.ok(read.codes.includes('ATT_FETCH_BINDING'));
     assert.ok(read.codes.includes('ATT_FETCH_INCOMPLETE'));
+  });
+});
+
+test('requested-page-bodies-v1 retains every acquired PAGE body while preserving legacy and POST identity', async t => {
+  const cutoff = '2026-10-23T12:00:00.000Z';
+  const finalUrl = 'https://market.example/token/river-lantern';
+  const run = async (
+    requestedUrls: string[],
+    bodies: Map<string, string>,
+    pageBodyRetentionMethod?: 'requested-page-bodies-v1',
+    resolvedFinalUrl = finalUrl,
+  ) => {
+    const fetchBatches: string[][] = [];
+    let fetchAttempt = 0;
+    const mock = mockFetch((url, init) => {
+      if (url.includes('api.search.tinyfish.ai')) {
+        return json({ results: requestedUrls.map((item, index) => ({
+          url: item, title: 'River Lantern market source ' + (index + 1), snippet: 'Indexed public market source.',
+        })), errors: [] });
+      }
+      const urls = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+      fetchBatches.push(urls);
+      if (fetchAttempt++ === 0) {
+        return json({ results: [], errors: urls.map(item => ({ url: item, error: 'timeout' })) });
+      }
+      return json({ results: urls.map(item => ({
+        ...fetchResult(item, bodies.get(item)!), final_url: resolvedFinalUrl,
+      })), errors: [] });
+    });
+    const read = await recoverComparisonSources(
+      token, KEY, ['inspect the exact River Lantern market subject'], [], 8, mock.fetcher, () => cutoff,
+      [{ leadId: 'owner-lead', originalUrl: 'https://index.example/river-lantern' }], true,
+      'public-support-v2', 'observed-hosts-v1', pageBodyRetentionMethod,
+    );
+    return { read, fetchBatches };
+  };
+
+  await t.test('different bodies from same-final-URL retries retain separate IDs and close the bounded acquisition', async () => {
+    const routes = ['https://market-a.example/quote', 'https://market-b.example/quote'];
+    const bodies = new Map([
+      [routes[0]!, 'Current pair liquidity and market listing, capture one.'],
+      [routes[1]!, 'Different current pair layout and market values, capture two.'],
+    ]);
+    const { read, fetchBatches } = await run(routes, bodies, 'requested-page-bodies-v1');
+    assert.equal(read.pageBodyRetentionMethod, 'requested-page-bodies-v1');
+    assert.deepEqual(fetchBatches, [routes, routes], 'both requested routes are retried once in their original selected batch');
+    assert.deepEqual(read.sources.map(source => [source.url, source.text]), [
+      [finalUrl, bodies.get(routes[0]!)],
+      [finalUrl, bodies.get(routes[1]!)],
+    ], 'both actual response bodies survive even though their final URL is identical');
+    assert.deepEqual(read.comparisonAcquisition?.leads.map(lead => [lead.acquisitionStatus, lead.sourceIds]), [
+      ['ACQUIRED', ['attention-page-1']],
+      ['ACQUIRED', ['attention-page-2']],
+    ], 'each requested route owns its exact retained body');
+    assert.equal(read.comparisonComplete, true, JSON.stringify(read));
+    assert.equal(read.complete, true);
+    assert.equal(read.codes.includes('ATT_FETCH_SOURCE_CONFLICT'), false,
+      'different PAGE layouts are both presented for semantic review without being discarded as a conflict');
+    const fallback = JSON.parse(read.rawArtifacts['attention-fallback-scope']!) as {
+      method: string; rounds: unknown[];
+    };
+    assert.equal(fallback.method, 'same-parent-alternates-v2');
+    assert.deepEqual(fallback.rounds, [], 'successful retries do not create a phantom fallback batch');
+    const http = JSON.parse(read.rawArtifacts['attention-http-outcomes']!) as {
+      outcomes: Array<{ artifactId: string; status: number }>;
+    };
+    assert.equal(http.outcomes.find(row => row.artifactId === 'attention-fetch-1')?.status, 200);
+    assert.equal(http.outcomes.find(row => row.artifactId === 'attention-fetch-1-retry-1')?.status, 200);
+  });
+
+  await t.test('exact PAGE duplicates share one retained source ID', async () => {
+    const routes = ['https://market-a.example/quote', 'https://market-b.example/quote'];
+    const body = 'The same exact market source body returned for both requested routes.';
+    const { read } = await run(routes, new Map(routes.map(route => [route, body])), 'requested-page-bodies-v1');
+    assert.equal(read.sources.length, 1);
+    assert.equal(read.sources[0]?.text, body);
+    assert.deepEqual(read.comparisonAcquisition?.leads.map(lead => lead.sourceIds), [
+      ['attention-page-1'], ['attention-page-1'],
+    ]);
+    assert.equal(read.comparisonComplete, true);
+    assert.equal(read.codes.includes('ATT_FETCH_SOURCE_CONFLICT'), false);
+  });
+
+  await t.test('prefix-related PAGE bodies are retained independently', async () => {
+    const routes = ['https://market-a.example/quote', 'https://market-b.example/quote'];
+    const first = 'A short retained market response';
+    const second = first + ' with additional independently acquired text';
+    const { read } = await run(routes, new Map([[routes[0]!, first], [routes[1]!, second]]), 'requested-page-bodies-v1');
+    assert.deepEqual(read.sources.map(source => source.text), [first, second]);
+    assert.deepEqual(read.comparisonAcquisition?.leads.map(lead => lead.sourceIds), [
+      ['attention-page-1'], ['attention-page-2'],
+    ]);
+    assert.equal(read.comparisonComplete, true);
+  });
+
+  await t.test('POST URL aliases still resolve to one canonical publication', async () => {
+    const routes = [
+      'https://x.com/RiverUser/status/123',
+      'https://twitter.com/riveruser/status/123/photo/1',
+    ];
+    const body = 'RiverUser original post with a dated token announcement.';
+    const canonicalPostUrl = 'https://x.com/riveruser/status/123';
+    const { read, fetchBatches } = await run(routes, new Map([[canonicalPostUrl, body]]),
+      'requested-page-bodies-v1', canonicalPostUrl);
+    assert.equal(read.comparisonAcquisition?.leadCount, 2, 'both raw indexed route descriptors remain visible');
+    assert.equal(fetchBatches[0]?.length, 1, 'publication aliases do not consume two Fetch slots');
+    assert.equal(read.sources.length, 1);
+    assert.deepEqual(read.postSampleSourceIds, ['attention-page-1']);
+    assert.deepEqual(read.comparisonAcquisition?.leads.map(lead => lead.sourceIds), [
+      ['attention-page-1'], ['attention-page-1'],
+    ]);
+    assert.equal(read.sources[0]?.kind, 'POST');
+  });
+
+  await t.test('absent marker preserves the historical longest-body PAGE deduplication', async () => {
+    const routes = ['https://market-a.example/quote', 'https://market-b.example/quote'];
+    const first = 'An earlier, shorter market response.';
+    const second = 'A later longer response with a different body layout and updated values.';
+    const { read } = await run(routes, new Map([[routes[0]!, first], [routes[1]!, second]]));
+    assert.equal(read.pageBodyRetentionMethod, undefined);
+    assert.equal(read.sources.length, 1);
+    assert.equal(read.sources[0]?.text, second);
+    assert.ok(read.codes.includes('ATT_FETCH_SOURCE_CONFLICT'));
+    assert.equal(read.comparisonComplete, false);
+  });
+
+  await t.test('each retained PAGE variant consumes the shared comparison character budget', async () => {
+    const routes = Array.from({ length: 6 }, (_, index) => 'https://market-' + (index + 1) + '.example/quote');
+    const bodies = new Map(routes.map((route, index) => [route, String.fromCharCode(65 + index).repeat(90000)]));
+    const { read } = await run(routes, bodies, 'requested-page-bodies-v1');
+    assert.equal(read.sources.length, 6);
+    assert.equal(read.sources.reduce((total, source) => total + source.text.length, 0), 512000);
+    assert.ok(read.codes.includes('ATT_TEXT_CAP'));
+    assert.equal(read.comparisonComplete, false);
   });
 });

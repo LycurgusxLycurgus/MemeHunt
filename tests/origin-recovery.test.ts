@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { originSourceScope } from '../src/domain/attention.js';
 import type { AttentionRead, AttentionSource } from '../src/providers/attention.js';
-import { entryEvidenceScope, reconstructOriginAcquisition } from '../src/providers/attention.js';
-import { geckoPoolApiUrl, geckoPoolBinding, originRecoveryQuery, qualifyOriginExclusions, recoverOriginPages, verifiedOriginExclusion, verifyOriginAlias, type OriginAlias } from '../src/providers/origin-recovery.js';
+import { entryEvidenceScope, originSupplementMethod, reconstructOriginAcquisition } from '../src/providers/attention.js';
+import { exactOriginalSubjectForCidMirror, geckoPoolApiUrl, geckoPoolBinding, originRecoveryCandidates, originRecoveryQuery, qualifyOriginExclusions, recoverOriginPages, verifiedOriginExclusion, verifyOriginAlias, type OriginAlias } from '../src/providers/origin-recovery.js';
 
 const TOKEN = { chain: 'base', address: '0x1111111111111111111111111111111111111111' } as const;
 const CUTOFF = '2026-10-01T12:00:00.000Z';
@@ -524,6 +524,121 @@ test('raw CID recovery binds the retained gateway body to the original origin an
     'the recovery marker is required to bind the gateway page to the original CID URL');
 });
 
+test('fresh same-subject mirror timeout stays optional after a complete own-origin search and fetch', async () => {
+  const originalText = JSON.stringify({ mint: TOKEN.address, name: 'River_Lantern' });
+  const originUrl = ipfsUrl(originalText);
+  const pinata = gatewayUrl(originUrl);
+  assert.equal(exactOriginalSubjectForCidMirror([originUrl], pinata), originUrl);
+  assert.equal(exactOriginalSubjectForCidMirror([originUrl], gatewayUrl(ipfsUrl(originalText + ' '))), null,
+    'a different CID cannot inherit the original subject');
+  assert.equal(exactOriginalSubjectForCidMirror([originUrl], 'https://other-gateway.example/ipfs/' + new URL(originUrl).pathname.split('/')[2]), null,
+    'a different gateway is not the bounded mirror');
+  assert.equal(exactOriginalSubjectForCidMirror([pinata], pinata), null,
+    'the mirror itself cannot be promoted into the required original URL');
+
+  const read = originRead([originUrl]);
+  read.originSupplementMethod = originSupplementMethod;
+  for (const id of SEARCHES) {
+    read.rawArtifacts[id] = JSON.stringify({ results: [{
+      url: originUrl, title: 'River Lantern project metadata', snippet: `Project context for ${TOKEN.address}.`,
+    }], errors: [] });
+  }
+  const originalFetch = read.rawArtifacts['attention-fetch-1'];
+  const codes = [...read.codes];
+  const role = originRoleMock();
+  const fetcher: typeof fetch = async (input, init) => {
+    if (String(input) === 'https://api.fetch.tinyfish.ai/') {
+      const request = JSON.parse(String(init?.body)) as { urls: string[] };
+      if (request.urls.includes(pinata)) return tinyfishResponse([], [{ url: pinata, error: 'timeout' }]);
+    }
+    return role.fetcher(input, init);
+  };
+
+  const mirrorAttempt = await recoverOriginPages(read, TOKEN, KEY, fetcher, () => CUTOFF);
+  assert.equal(mirrorAttempt.rawArtifacts['attention-fetch-1'], originalFetch,
+    'the original blocked response remains immutable');
+  assert.deepEqual(mirrorAttempt.codes, codes, 'the optional mirror attempt does not replace or erase the original failure');
+  assert.deepEqual(mirrorAttempt.sources, read.sources, 'a failed mirror contributes no acquired body');
+  assert.deepEqual(mirrorAttempt.originRecovery?.aliases, [], 'a timeout cannot create a CID alias');
+  assert.equal(reconstructOriginAcquisition(mirrorAttempt, TOKEN).urls[0]?.state, 'UNAVAILABLE');
+  assert.equal(originSourceScope(mirrorAttempt, TOKEN).complete, false,
+    'the optional mirror does not turn missing original content into acquired origin evidence');
+
+  const reviewed = await qualifyOriginExclusions(mirrorAttempt, TOKEN, KEY, KEY, fetcher, () => CUTOFF);
+  assert.equal(reviewed.originExclusions?.length, 1,
+    'the independent own-subject Search, different-host Fetch, and review pair can still close the bounded investigation');
+  assert.equal(reconstructOriginAcquisition(reviewed, TOKEN).urls[0]?.state, 'EXCLUDED_REVIEWED');
+  assert.equal(originSourceScope(reviewed, TOKEN).complete, false,
+    'reviewed market-only role exclusion is not original content or origin support');
+  assert.equal(role.calls.filter(call => call.url.startsWith('https://api.search.tinyfish.ai/')).length, 1);
+  assert.equal(role.calls.filter(call => call.url === 'https://api.fetch.tinyfish.ai/').length, 1);
+
+  const publicRead = publicEntryScopeRead(reviewed, ['origin-role-page-1-1']);
+  publicRead.originSupplementMethod = originSupplementMethod;
+  const scope = entryEvidenceScope(publicRead, TOKEN, CUTOFF) as ReturnType<typeof entryEvidenceScope> & {
+    optionalMirrorFailures?: Array<{ artifactId: string; requestedUrl: string; subjectUrl: string; code: string }>;
+  };
+  assert.equal(scope.complete, true, JSON.stringify(scope));
+  assert.deepEqual(scope.optionalMirrorFailures, [{
+    artifactId: 'attention-origin-fetch-1', requestedUrl: pinata, subjectUrl: originUrl, code: 'ATT_FETCH_TIMEOUT',
+  }]);
+
+  const tamperedMirror = structuredClone(publicRead);
+  const response = JSON.parse(tamperedMirror.rawArtifacts['attention-origin-fetch-1']!) as { errors: Array<{ url: string }> };
+  response.errors[0]!.url = 'https://elsewhere.example/unrelated';
+  tamperedMirror.rawArtifacts['attention-origin-fetch-1'] = JSON.stringify(response);
+  const rejected = entryEvidenceScope(tamperedMirror, TOKEN, CUTOFF) as typeof scope;
+  assert.equal(rejected.complete, false, 'an unrelated failed Fetch is still a blocker');
+  assert.deepEqual(rejected.optionalMirrorFailures, [], 'the optional classification is tied to the exact requested same-CID gateway');
+});
+
+test('an optional same-subject mirror failure does not waive missing own-origin search or Fetch proof', async t => {
+  const originalText = JSON.stringify({ mint: TOKEN.address, name: 'River_Lantern' });
+  const originUrl = ipfsUrl(originalText);
+  const pinata = gatewayUrl(originUrl);
+  const makeRead = () => {
+    const read = originRead([originUrl]);
+    read.originSupplementMethod = originSupplementMethod;
+    for (const id of SEARCHES) read.rawArtifacts[id] = JSON.stringify({ results: [{
+      url: originUrl, title: 'River Lantern project metadata', snippet: `Project context for ${TOKEN.address}.`,
+    }], errors: [] });
+    return read;
+  };
+
+  await t.test('own Search failure remains unavailable', async () => {
+    const role = originRoleMock({ searchStatus: 503 });
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input) === 'https://api.fetch.tinyfish.ai/'
+          && (JSON.parse(String(init?.body)) as { urls: string[] }).urls.includes(pinata)) {
+        return tinyfishResponse([], [{ url: pinata, error: 'timeout' }]);
+      }
+      return role.fetcher(input, init);
+    };
+    const mirror = await recoverOriginPages(makeRead(), TOKEN, KEY, fetcher, () => CUTOFF);
+    const reviewed = await qualifyOriginExclusions(mirror, TOKEN, KEY, KEY, fetcher, () => CUTOFF);
+    assert.equal(reviewed.originExclusions?.length, 0);
+    assert.equal(reconstructOriginAcquisition(reviewed, TOKEN).urls[0]?.state, 'UNAVAILABLE');
+    assert.equal(originSourceScope(reviewed, TOKEN).complete, false);
+  });
+
+  await t.test('own Fetch response with no selected body remains unavailable', async () => {
+    const role = originRoleMock();
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input) === 'https://api.fetch.tinyfish.ai/') {
+        const urls = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+        if (urls.includes(pinata)) return tinyfishResponse([], [{ url: pinata, error: 'timeout' }]);
+        return tinyfishResponse([], [{ url: urls[0], error: 'timeout' }]);
+      }
+      return role.fetcher(input, init);
+    };
+    const mirror = await recoverOriginPages(makeRead(), TOKEN, KEY, fetcher, () => CUTOFF);
+    const reviewed = await qualifyOriginExclusions(mirror, TOKEN, KEY, KEY, fetcher, () => CUTOFF);
+    assert.equal(reviewed.originExclusions?.length, 0);
+    assert.equal(reconstructOriginAcquisition(reviewed, TOKEN).urls[0]?.state, 'UNAVAILABLE');
+    assert.equal(originSourceScope(reviewed, TOKEN).complete, false);
+  });
+});
+
 test('origin aliases reject redirects, different gateways, unsupported CID forms, and content that no longer hashes to the CID', async () => {
   const originalText = JSON.stringify({ mint: TOKEN.address, name: 'River_Lantern' });
   const originUrl = ipfsUrl(originalText);
@@ -555,6 +670,74 @@ test('origin aliases reject redirects, different gateways, unsupported CID forms
   ]));
   assert.equal(verifyOriginAlias({ ...alias, originUrl: `https://ipfs.io/ipfs/${dagPbCid}` }, recovered.sources, recovered.rawArtifacts), null,
     'a different CIDv1 codec does not receive a raw-content alias');
+});
+
+test('mint-bound CIDv0 metadata URI gets bounded own-role recovery without a fake CID alias or exclusion', async () => {
+  const metadataUri = 'https://ipfs.io/ipfs/QmVZNXitUQEFNZT2ByYEcBxN4tuUAHePB65bVot8AcSUfC';
+  const alternateUrls = ['https://market-a.example/river-lantern', 'https://market-b.example/river-lantern'];
+  const read = originRead([metadataUri]);
+  read.entryEvidenceMethod = 'public-support-v2';
+  read.metadataLinks = true;
+  read.metadataUri = metadataUri;
+  read.metadataLinkMethod = 'onchain-metadata-v1';
+  read.originRecoveryCandidateMethod = 'mint-metadata-subject-v1';
+  read.discoveryUrls = [metadataUri];
+  assert.deepEqual(originRecoveryCandidates(read).map(item => item.url), [metadataUri],
+    'the exact mint-owned URI can be selected even when no referring page or indexed description exists');
+  assert.equal(originRecoveryCandidates({ ...read, originRecoveryCandidateMethod: undefined }).length, 0,
+    'unmarked legacy reads keep the original referrer requirement');
+  assert.equal(originRecoveryCandidates({ ...read, metadataUri: 'https://ipfs.io/ipfs/QmOther' }).length, 0,
+    'the marker does not nominate a different URI');
+
+  const directCalls: string[] = [];
+  const direct = await recoverOriginPages(read, TOKEN, KEY, async input => {
+    directCalls.push(String(input));
+    return tinyfishResponse([]);
+  }, () => CUTOFF);
+  assert.deepEqual(directCalls, [], 'CIDv0 does not receive a made-up Pinata alias or raw-byte digest claim');
+  assert.equal(direct.originRecovery, undefined);
+
+  const calls: Array<{ url: string; requested?: string[]; body?: string }> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      calls.push({ url });
+      return tinyfishResponse(alternateUrls.map((resultUrl, index) => ({
+        url: resultUrl, title: `River Lantern public market ${index + 1}`, snippet: `A public market listing for ${TOKEN.address}.`,
+      })));
+    }
+    if (url === 'https://api.fetch.tinyfish.ai/') {
+      const requested = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+      calls.push({ url, requested });
+      return tinyfishResponse(requested.map((resultUrl, index) => fetchResult(resultUrl,
+        `A public trading listing for River Lantern token ${TOKEN.address}; this retained body provides market context ${index + 1}.`)));
+    }
+    calls.push({ url, body: String(init?.body) });
+    throw new Error('unexpected model request for a subject without original role context');
+  };
+  const recovered = await qualifyOriginExclusions(read, TOKEN, KEY, KEY, fetcher, () => CUTOFF);
+
+  assert.deepEqual(calls.map(call => { const url = new URL(call.url); return url.origin + url.pathname; }),
+    ['https://api.search.tinyfish.ai/', 'https://api.fetch.tinyfish.ai/'],
+    'the marked subject gets one bounded Search and one Fetch, with no structurally unsupported role-model pair');
+  assert.deepEqual(calls[1]?.requested, alternateUrls);
+  assert.equal(recovered.rawArtifacts['attention-origin-role-1-search-query'],
+    originRecoveryQuery(read, TOKEN, metadataUri), 'the query is derived from the mint-bound URI and token');
+  assert.equal(new URL(calls[0]!.url).searchParams.get('query'), recovered.rawArtifacts['attention-origin-role-1-search-query']);
+  assert.equal(recovered.rawArtifacts['attention-origin-role-1-search-query']?.includes(metadataUri), false,
+    'the private metadata URI itself is not copied into the public Search query');
+  assert.deepEqual(recovered.sources.slice(1).map(source => [source.url, source.text]), alternateUrls.map((url, index) => [
+    url, `A public trading listing for River Lantern token ${TOKEN.address}; this retained body provides market context ${index + 1}.`,
+  ]), 'actual full alternate bodies stay available to the independent entry review');
+  assert.equal(recovered.originExclusions?.length, 0, 'empty original context cannot justify MARKET_ONLY or UNRELATED');
+  assert.equal(recovered.rawArtifacts['attention-origin-role-1-proposal-prompt'], undefined);
+  assert.equal(recovered.originRecovery?.aliases.length ?? 0, 0, 'the unread CIDv0 page remains unread');
+  assert.equal(reconstructOriginAcquisition(recovered, TOKEN).urls.find(item => item.url === metadataUri)?.state, 'UNAVAILABLE');
+
+  const wrongDiscovery = structuredClone(read);
+  wrongDiscovery.discoveryUrls = ['https://ipfs.io/ipfs/QmDifferent'];
+  assert.equal(originRecoveryCandidates(wrongDiscovery).length, 0,
+    'a mint marker cannot be detached from the exact URI in the discovery manifest');
 });
 
 test('an unverified alias cannot turn an unrelated retained source into acquired original evidence', () => {

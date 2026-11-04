@@ -245,7 +245,12 @@ test('social canonicals equal the qualifySocial saved prompts and normalize iden
   for (const stage of ['proposal', 'review']) assert.deepEqual(canonicalOf(r.calls, SOCIAL, stage), JSON.parse(legacy.rawArtifacts[`social-${stage}-prompt`]!), stage);
   const validated = validateExecutorSemantic(r.out.capture, TOKEN, r.cutoff);
   assert.deepEqual(validated.proposal, legacy.proposal);
-  assert.deepEqual(validated.review, legacy.review);
+  // Hosted review has an optional acquisition field; executor v1-v3 retain their frozen shape.
+  assert.ok(validated.review);
+  assert.equal(Object.hasOwn(validated.review, 'acquisitionInspection'), false);
+  const { acquisitionInspection, ...hostedLegacyReview } = legacy.review;
+  assert.equal(acquisitionInspection, undefined, 'this unmarked fixture has no acquisition review');
+  assert.deepEqual(validated.review, hostedLegacyReview);
 });
 
 test('sources without origin and community links keep lineage measures missing while timing stays known', async () => {

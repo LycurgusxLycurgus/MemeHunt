@@ -105,7 +105,9 @@ test('only demand index pages use the longer timeout, preserving transaction and
   const x = await run([rows]);
   assert.equal(x.decode().complete, true);
   assert.deepEqual(x.calls.map(call => call.method), ['getSignaturesForAddress', 'getTransaction', 'getAccountInfo']);
-  assert.deepEqual(bounds, [DEMAND_PAGE_TIMEOUT_MS, 8000, 8000]);
+  // The finalized pool-state read has an overall context catch-up deadline as
+  // well as its unchanged 8s per-attempt HTTP budget.
+  assert.deepEqual(bounds, [DEMAND_PAGE_TIMEOUT_MS, 8000, 30_000, 8000]);
 });
 
 test('a page timeout during response reading retains a sanitized receipt and leaves A30 unresolved', async t => {

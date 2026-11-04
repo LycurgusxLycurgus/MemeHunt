@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { completeFixtureEntryFeatures, fixtureBundle, illustrativeFixtureThesis, illustrativeUncalibratedProfile } from '../examples/fixtures.js';
 import { decisionHash, Service } from '../src/app/service.js';
-import { deriveAttention, narrativeSourceBound, originSourceScope, validateLeadershipPositive, type NarrativePublicSupport } from '../src/domain/attention.js';
+import { deriveAttention, narrativeSourceBound, originSourceScope, qualifiedAttentionEntrySupport, validateLeadershipPositive, type NarrativePublicSupport } from '../src/domain/attention.js';
 import { deriveBaseline, type BaselineAssessment } from '../src/domain/baseline.js';
 import type { FeatureResult, LiveBundle, Profile, TokenRef } from '../src/domain/contracts.js';
 import { evaluateEntry } from '../src/domain/policy.js';
@@ -131,6 +131,18 @@ function makeV2Fixture(originStatus: OriginStatus = 'UNKNOWN', includeComparativ
   ];
   return fixture;
 }
+
+test('fresh attention-derived facts carry the basis marker while historical reads stay unmarked', () => {
+  const fresh = makeFixture();
+  fresh.read.outcomeBasisMethod = 'entry-outcome-basis-v1';
+  const freshRows = assessment(fresh);
+  assert.ok(freshRows.every(item => (item.data as { outcomeBasisMethod?: string }).outcomeBasisMethod === 'entry-outcome-basis-v1'),
+    'the explicit marker is retained in every derived attention fact for canonical report qualification');
+
+  const legacyRows = assessment(makeFixture());
+  assert.ok(legacyRows.every(item => !Object.hasOwn(item.data as object, 'outcomeBasisMethod')),
+    'absent-marker attention facts preserve their historical serialization');
+});
 
 type ComparisonPattern = 'TARGET_LEADS' | 'TIED' | 'RIVAL_LEADS' | 'NINE_QUALIFIED';
 
@@ -279,6 +291,24 @@ test('project-context attention counts accepted source posts while retaining rej
     assert.equal(feature(legacyRows, 'A18').value, null);
   });
 
+  await t.test('the fresh support marker labels an undated growth disposition without rewriting legacy output', () => {
+    const undatedFixture = () => {
+      const value = projectContextPostFixture();
+      value.read.sources.find(source => source.id === 'post-source-4')!.publishedAt = null;
+      return value;
+    };
+    const legacy = undatedFixture();
+    const legacyGrowth = row(fixedGrowthAssessment(legacy), 'A18').data as { dispositions: Array<{ id: string; bin: string }> };
+    assert.equal(legacyGrowth.dispositions.find(item => item.id === 'post-source-4')?.bin, 'CURRENT',
+      'the marker-absent historical serialization keeps its prior fallback label');
+
+    const fresh = undatedFixture();
+    fresh.read.entrySupportMethod = 'reviewed-sample-growth-v1';
+    const freshGrowth = row(fixedGrowthAssessment(fresh), 'A18').data as { dispositions: Array<{ id: string; bin: string }> };
+    assert.equal(freshGrowth.dispositions.find(item => item.id === 'post-source-4')?.bin, 'UNRESOLVED',
+      'a fresh app-wall or undated record cannot be assigned to either comparable growth bin');
+  });
+
   const blockers: Array<{ name: string; change: (value: Fixture) => void }> = [
     { name: 'missing independent post review', change: value => {
       (value.review as { decisions: Array<{ id: string }> }).decisions = (value.review as { decisions: Array<{ id: string }> }).decisions.filter(item => item.id !== 'post-label-4');
@@ -300,6 +330,26 @@ test('project-context attention counts accepted source posts while retaining rej
       assert.equal(feature(blockedRows, id).value, null, id);
     }
   });
+});
+
+test('qualified support cannot replace already measured attention facts', () => {
+  const fixture = makeFixture();
+  const rows = fixedGrowthAssessment(fixture);
+  const source = fixture.read.sources.find(item => item.kind === 'POST')!;
+  const judgments = Object.fromEntries((['attentionContext', 'qualifiedSample', 'growth'] as const).map(criterion => [criterion, {
+    verdict: 'INADEQUATE', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE',
+    rationale: `The complete support scope finds ${criterion} inadequate.`,
+    citations: [{ sourceId: source.id, quote: source.text }],
+  }]));
+  for (const id of ['A15', 'A18']) {
+    const assessment = row(rows, id);
+    assessment.data = { ...(assessment.data as Record<string, unknown>), entrySupport: {
+      method: 'reviewed-sample-growth-v1', scope: { complete: true, sourceIds: [source.id] }, judgments,
+    } };
+  }
+  assert.equal(qualifiedAttentionEntrySupport(rows, 'attentionContext'), null);
+  assert.equal(qualifiedAttentionEntrySupport(rows, 'qualifiedSample'), null);
+  assert.equal(qualifiedAttentionEntrySupport(rows, 'growth'), null);
 });
 
 test('linked narrative references bind one hop for A01 while A03 stays literal-contract-only', () => {

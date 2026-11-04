@@ -19,7 +19,9 @@ export async function nativeAttentionFixture(options:{post?:boolean;seed?:boolea
   const request=JSON.parse(String(init?.body)),results=request.urls.filter((v:string)=>!options.gap||v!==seed).map((v:string)=>({url:v,final_url:v,text:v===seed?'Our local community project.':text,published_date:options.post?'2026-10-01T10:00:00Z':undefined,links:v===seed?[url]:[]}));
   return new Response(JSON.stringify({results,errors:options.gap&&request.urls.includes(seed)?[{url:seed,status:404,error:'page_not_found'}]:[]}),{status:200});
  }) as typeof fetch;
- const read=await collectAttentionSources(token,'constructed-no-network',fetcher,()=>at(0),undefined,options.seed?[seed]:[],undefined,'public-support-v2');
+ // Native capture v1 freezes the original base-collector contract. New hosted
+ // comparison caches are not part of that imported protocol or its prompt.
+ const {comparisonAcquisition:_acquisition,comparisonRankingSourceIds:_ranking,postSampleSourceIds:_sample,...read}=await collectAttentionSources(token,'constructed-no-network',fetcher,()=>at(0),undefined,options.seed?[seed]:[],undefined,'public-support-v2');
  const program=createSubmittedAttentionProgram(read,token,true),source=read.sources.find(s=>s.url===url)!,span=sourceSpans(source.id,source.text).find(s=>s.text.includes(token.address))!;
  const wire={claims:[{id:'narrative',feature:'A01',value:true,summary:'Neighbors share a community lantern story.',citations:[{sourceId:source.id,spanId:span.id}]},{id:'game',feature:'A02',value:true,summary:'A community game based on neighbors sharing the lantern story.',citations:[{sourceId:source.id,spanId:span.id}]}],posts:Object.fromEntries(read.sources.filter(s=>s.kind==='POST').map(s=>[s.id,{spanId:sourceSpans(s.id,s.text)[0]!.id,role:'NEWS'}])),competitors:[]};
  const proposal=program.normalizeProposal(wire),reviewProgram=program.buildReview(proposal)!;

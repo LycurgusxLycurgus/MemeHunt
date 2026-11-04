@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,rmSync} from 'node:fs';
@@ -26,7 +27,7 @@ test('O11 exact acquired-quantity exit matches independent integer oracle agains
 });
 
 test('O11 persists, reopens and CLI replays identically without network',async()=>{
- const dir=mkdtempSync(join(tmpdir(),'exit-route-')),file=join(dir,'live.sqlite');try{let s=new Service(file),saved;try{saved=s.analyzeLive(positive());assert.equal(s.analyzeLive(positive()).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}let out='',err='',calls=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.deepEqual(JSON.parse(out),saved);assert.equal(calls,0);}finally{rmSync(dir,{recursive:true,force:true});}
+ const dir=mkdtempSync(join(tmpdir(),'exit-route-')),file=join(dir,'live.sqlite');try{let s=new Service(file),saved;try{saved=s.analyzeLive(positive());assert.equal(s.analyzeLive(positive()).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}let out='',err='',calls=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assertEntryCliSnapshot(JSON.parse(out),saved);assert.equal(calls,0);}finally{rmSync(dir,{recursive:true,force:true});}
 });
 
 test('O11 source ownership, exact amount, dependency binding and all other promotion guards reject rehashed tampering',()=>{

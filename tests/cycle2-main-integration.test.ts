@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
@@ -99,7 +100,7 @@ for (const kind of ['EXECUTOR', 'CALLERS'] as const) test(`${kind} + synthetic A
     const exit = await runCli(['replay', saved.id, '--db', file, '--config', join(dir, 'config.json'), '--json'], { env: {}, isInteractive: false,
       fetcher: async () => { network++; throw Error('OFFLINE_NETWORK_DENIED'); }, semanticExecutor: async () => { calls++; throw Error('OFFLINE_EXECUTOR_DENIED'); },
       stdout: t => { out += t; }, stderr: t => { err += t; } });
-    assert.equal(exit, 0, err); assert.deepEqual(JSON.parse(out), saved); assert.deepEqual([network, calls], [0, 0]);
+    assert.equal(exit, 0, err); assertEntryCliSnapshot(JSON.parse(out),saved); assert.deepEqual([network, calls], [0, 0]);
   });
 });
 

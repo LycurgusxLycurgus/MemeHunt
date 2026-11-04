@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 // Integration tests for opt-in executable liquidity across Live collection, Service persistence, CLI and report.
 // Labelling: every transport envelope, request id, run clock and USD reference row below is CONSTRUCTED conformance data.
 // The retained account and program-account bytes in the maintained fixture are genuine public data; nothing here is a live or simulated certification.
@@ -252,7 +253,8 @@ test('Service persists idempotently, survives reopen and replays offline through
     for (const cmd of ['show', 'replay']) {
       const r = await cli([cmd, saved.id, '--db', db, '--config', config, '--json']);
       assert.equal(r.exit, 0, r.err);
-      assert.equal(JSON.stringify(JSON.parse(r.out)), payload, `${cmd} payload is byte-equivalent`);
+      const frozenCli=assertEntryCliSnapshot(JSON.parse(r.out),saved,`${cmd} current report and frozen snapshot`);
+      assert.equal(JSON.stringify(frozenCli),payload,`${cmd} frozen snapshot payload is byte-equivalent`);
       assert.deepEqual(r.spies, { network: 0, executor: 0 });
       // Replay keeps the original cutoff and expiry; it never renews freshness.
       assert.deepEqual(JSON.parse(r.out).details.executableLiquidity.freshness, x.b.details.executableLiquidity.freshness);

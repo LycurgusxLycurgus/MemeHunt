@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
@@ -53,7 +54,7 @@ test('witness proof saves idempotently, reopens, reconstructs raw bytes and uses
   service=new Service(dbfile);try{assert.deepEqual(service.show(saved.id),saved);assert.deepEqual(service.replay(saved.id),saved);}finally{service.close();}
   const db=new DatabaseSync(dbfile);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v55');}finally{db.close();}
   let out='',err='',reads=0;const denied:typeof fetch=async()=>{reads++;throw Error('NETWORK_DENIED');};
-  assert.equal(await runCli(['replay',saved.id,'--db',dbfile,'--json'],{env:{},isInteractive:false,fetcher:denied,stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.equal(reads,0);assert.deepEqual(JSON.parse(out),saved);
+  assert.equal(await runCli(['replay',saved.id,'--db',dbfile,'--json'],{env:{},isInteractive:false,fetcher:denied,stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.equal(reads,0);assertEntryCliSnapshot(JSON.parse(out),saved);
   out='';err='';assert.equal(await runCli(['analyze',f.token.address,'--chain','solana','--partial','--advisory','--o28-expanded','--a12-zero-witness-capture',file,'--db',join(dir,'cli.sqlite'),'--config',join(dir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:f.fetcher,now:()=>f.cutoff,stdout:x=>out+=x,stderr:x=>err+=x}),0,err);const cli=JSON.parse(out);assert.equal(cli.details.advisory.metrics.find((m:any)=>m.id==='A12').data.share,'0');assert.deepEqual(cli.features,b.features);assert.deepEqual(cli.details.advisory.metrics.filter((m:any)=>m.id!=='A12'),other(b));
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

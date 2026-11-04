@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import {createServer} from 'node:http';
 import assert from 'node:assert/strict';
@@ -38,7 +39,7 @@ test('independent entry witness is the exact sole O10 override; old binding-only
 
 test('real Service save/reopen/idempotence and actual CLI replay are byte-identical with zero network',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'entry-route-')),file=join(dir,'live.sqlite');try{let saved;let s=new Service(file);try{saved=s.analyzeLive(copy());assert.equal(s.analyzeLive(copy()).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}
- let output='',errors='',network=0;const code=await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('NETWORK_DENIED');},stdout:x=>output+=x,stderr:x=>errors+=x});assert.equal(code,0,errors);assert.deepEqual(JSON.parse(output),saved);assert.equal(network,0);
+ let output='',errors='',network=0;const code=await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('NETWORK_DENIED');},stdout:x=>output+=x,stderr:x=>errors+=x});assert.equal(code,0,errors);assertEntryCliSnapshot(JSON.parse(output),saved);assert.equal(network,0);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 

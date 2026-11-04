@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
@@ -36,7 +37,7 @@ test('proof60 saves, reconstructs and reopens idempotently; CLI replay needs no 
   try{saved=s.analyzeLive(b);assert.equal(s.analyzeLive(b).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}
   s=new Service(dbfile);try{assert.deepEqual(s.show(saved.id),saved);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}
   const db=new DatabaseSync(dbfile);try{assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved.id)!.semantic as string).policyVersion,'research-screen-advisory-v57');}finally{db.close();}
-  let out='',err='',reads=0;assert.equal(await runCli(['replay',saved.id,'--db',dbfile,'--json'],{env:{},isInteractive:false,fetcher:async()=>{reads++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.equal(reads,0);assert.deepEqual(JSON.parse(out),saved);
+  let out='',err='',reads=0;assert.equal(await runCli(['replay',saved.id,'--db',dbfile,'--json'],{env:{},isInteractive:false,fetcher:async()=>{reads++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.equal(reads,0);assertEntryCliSnapshot(JSON.parse(out),saved);
   // The import directory is exact: remove databases before using it as a CLI input.
   rmSync(dbfile);rmSync(dbfile+'-wal',{force:true});rmSync(dbfile+'-shm',{force:true});rmSync(join(dir,'artifacts'),{recursive:true,force:true});out='';err='';
   const outputDir=mkdtempSync(join(tmpdir(),'a30-cli-output-'));try{assert.equal(await runCli(['analyze',f.source.token.address,'--chain','solana','--partial','--advisory','--o28-expanded','--a30-fx-capture',dir,'--db',join(outputDir,'cli.sqlite'),'--config',join(outputDir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:f.c5.fetcher,now:()=>f.cutoff,stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.equal(JSON.parse(out).details.advisory.metrics.find((m:any)=>m.id==='A30').quality,'KNOWN');}finally{rmSync(outputDir,{recursive:true,force:true});}

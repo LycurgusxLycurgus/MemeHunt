@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import { decodeExecutorSocialBodies, EXECUTOR_SOCIAL_BODIES_METHOD } from '../src/providers/executor-social-bodies.js';
 import { DatabaseSync } from 'node:sqlite';
 import { reconstructAdvisory } from '../src/app/advisory.js';
@@ -188,7 +189,7 @@ test('production CLI replay is offline and returns the same immutable executor s
  const {bundle}=await live(),dir=mkdtempSync(join(tmpdir(),'executor-offline-cli-')),file=join(dir,'live.sqlite');
  try{const service=new Service(file);let snapshot;try{snapshot=service.analyzeLive(bundle);}finally{service.close();}
  let output='',errors='',network=0,executions=0;const exit=await runCli(['replay',snapshot.id,'--db',file,'--config',join(dir,'config.json'),'--json'],{env:{},isInteractive:false,fetcher:async()=>{network++;throw Error('OFFLINE_NETWORK_DENIED');},semanticExecutor:async()=>{executions++;throw Error('OFFLINE_EXECUTOR_DENIED');},stdout:s=>{output+=s},stderr:s=>{errors+=s}});
- assert.equal(exit,0,errors);assert.deepEqual(JSON.parse(output),snapshot);assert.deepEqual([network,executions],[0,0]);
+ assert.equal(exit,0,errors);assertEntryCliSnapshot(JSON.parse(output),snapshot);assert.deepEqual([network,executions],[0,0]);
  }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -284,7 +285,7 @@ for (const mode of ['EMPTY_200', 'FORBIDDEN_403'] as const) test(`v3 ${mode} una
     const exit = await runCli(['replay', saved.id, '--db', file, '--config', join(dir, 'config.json'), '--json'], { env: {}, isInteractive: false,
       fetcher: async () => { network++; throw Error('OFFLINE_NETWORK_DENIED'); }, semanticExecutor: async () => { calls++; throw Error('OFFLINE_EXECUTOR_DENIED'); },
       stdout: t => { out += t; }, stderr: t => { err += t; } });
-    assert.equal(exit, 0, err); assert.deepEqual(JSON.parse(out), saved); assert.deepEqual([network, calls], [0, 0]);
+    assert.equal(exit, 0, err); assertEntryCliSnapshot(JSON.parse(out),saved); assert.deepEqual([network, calls], [0, 0]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

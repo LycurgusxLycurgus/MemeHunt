@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
@@ -58,7 +59,7 @@ test('proof48 persists over1000ownedwindowrecords, retains exact replay and reje
     } finally { service.close(); }
     service = new Service(file); try { assert.deepEqual(service.replay(saved!.id), saved!); } finally { service.close(); }
     const db = new DatabaseSync(file); try { assert.equal(JSON.parse(db.prepare('SELECT semantic FROM snapshots WHERE id=?').get(saved!.id)!.semantic as string).policyVersion, 'research-screen-advisory-v45'); } finally { db.close(); }
-    let output = '', error = '', network = 0; const code = await runCli(['replay', saved!.id, '--db', file, '--json'], { env: {}, isInteractive: false, fetcher: async () => { network++; throw Error('NETWORK_DENIED'); }, stdout: s => { output += s; }, stderr: s => { error += s; } }); assert.equal(code, 0, error); assert.deepEqual(JSON.parse(output), saved!); assert.equal(network, 0);
+    let output = '', error = '', network = 0; const code = await runCli(['replay', saved!.id, '--db', file, '--json'], { env: {}, isInteractive: false, fetcher: async () => { network++; throw Error('NETWORK_DENIED'); }, stdout: s => { output += s; }, stderr: s => { error += s; } }); assert.equal(code, 0, error); assertEntryCliSnapshot(JSON.parse(output),saved!); assert.equal(network, 0);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

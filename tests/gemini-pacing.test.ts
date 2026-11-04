@@ -184,6 +184,100 @@ test('one run shares rolling admissions across model stages and key-scoped pacer
   assert.notStrictEqual(geminiPacerForKey(singletonKey), geminiPacerForKey(`${singletonKey}-other`));
 });
 
+test('concurrent source requests keep their starting route and settle every model-keyed admission', async () => {
+  const pacer = new GeminiPacer({ inputTokensPerMinute: 200_000, requestsPerMinute: 12, now: () => 0 });
+  const routing = { fallbackActive: false, pacing: pacer };
+  const countRequests: Array<{ model: string; packet: string }> = [];
+  const generationRequests: Array<{ id: 'A' | 'B'; model: string; packet: string; body: string }> = [];
+  const retained: string[] = [];
+  const admittedModels: string[] = [];
+  const settledModels: string[] = [];
+  const originalAdmit = pacer.admit.bind(pacer);
+  const originalSettle = pacer.settle.bind(pacer);
+  pacer.admit = async (model, tokens, countMethod, wait, signal) => {
+    const admission = await originalAdmit(model, tokens, countMethod, wait, signal);
+    admittedModels.push(admission.model);
+    return admission;
+  };
+  pacer.settle = (admission, raw) => {
+    settledModels.push(admission.model);
+    originalSettle(admission, raw);
+  };
+
+  const bBackoffStarted = deferred<number>();
+  const releaseBBackoff = deferred<void>();
+  const attemptByRequest = new Map<'A' | 'B', number>();
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = String(init?.body);
+    const payload = JSON.parse(body) as {
+      contents: Array<{ parts: Array<{ text: string }> }>;
+      generateContentRequest?: { model: string; contents: Array<{ parts: Array<{ text: string }> }> };
+    };
+    if (url.endsWith(':countTokens')) {
+      const counted = payload.generateContentRequest!;
+      countRequests.push({
+        model: counted.model.replace(/^models\//, ''),
+        packet: counted.contents[0]!.parts[0]!.text,
+      });
+      return jsonResponse({ totalTokens: 100 });
+    }
+
+    const packet = payload.contents[0]!.parts[0]!.text;
+    const id = packet === 'B packet' ? 'B' : 'A';
+    const attempt = (attemptByRequest.get(id) ?? 0) + 1;
+    attemptByRequest.set(id, attempt);
+    const model = url.includes(`/models/${geminiSettings.fallbackModel}:`)
+      ? geminiSettings.fallbackModel : geminiSettings.model;
+    generationRequests.push({ id, model, packet, body });
+    if ((id === 'B' && attempt === 1) || (id === 'A' && attempt <= 2)) {
+      return new Response(`temporary ${id} failure ${attempt}`, { status: 503 });
+    }
+    return sourceEnvelope({ accepted: true, rationale: `${id} response` }, 100);
+  };
+  const schema = z.object({ accepted: z.boolean(), rationale: z.string() }).strict();
+  const requestB = requestSourceJson('B packet', schema, KEY, fetcher, raw => { retained.push(raw); }, async ms => {
+    bBackoffStarted.resolve(ms);
+    await releaseBBackoff.promise;
+  }, undefined, 'ATT_MODEL', routing);
+
+  assert.equal(await bBackoffStarted.promise, 30_000);
+  const requestA = await requestSourceJson('A packet', schema, KEY, fetcher, raw => { retained.push(raw); }, async () => {},
+    undefined, 'ATT_MODEL', routing);
+  assert.deepEqual(requestA.value, { accepted: true, rationale: 'A response' });
+  assert.equal(routing.fallbackActive, true, 'A selects fallback for later stages only after valid parsing');
+
+  releaseBBackoff.resolve();
+  const resultB = await requestB;
+  assert.deepEqual(resultB.value, { accepted: true, rationale: 'B response' });
+  assert.equal(routing.fallbackActive, false, 'B records its successful primary selection');
+
+  assert.deepEqual(generationRequests.map(({ id, model }) => [id, model]), [
+    ['B', geminiSettings.model], ['A', geminiSettings.model], ['A', geminiSettings.model],
+    ['A', geminiSettings.fallbackModel], ['B', geminiSettings.model],
+  ], 'B keeps the primary route captured before A changes the shared run preference');
+  assert.equal(generationRequests[0]!.body, generationRequests[4]!.body, 'B retries the exact serialized request');
+  assert.equal(generationRequests[1]!.body, generationRequests[2]!.body);
+  assert.equal(generationRequests[2]!.body, generationRequests[3]!.body);
+  assert.deepEqual(countRequests.map(({ model, packet }) => [packet, model]), [
+    ['B packet', geminiSettings.model], ['A packet', geminiSettings.model], ['A packet', geminiSettings.fallbackModel],
+  ], 'token counting is reused per logical request and model');
+  assert.deepEqual(admittedModels, [geminiSettings.model, geminiSettings.model, geminiSettings.model,
+    geminiSettings.fallbackModel, geminiSettings.model]);
+  assert.deepEqual(settledModels, admittedModels, 'every dispatched model attempt settles exactly one real pacer reservation');
+
+  const receipts = retained.filter(raw => raw.startsWith('{"kind":"LOCAL_MODEL_TRANSPORT"')).map(raw => JSON.parse(raw) as {
+    model: string; pacing?: { inputTokens: number; countMethod: string };
+  });
+  assert.deepEqual(receipts.map(({ model, pacing }) => [model, pacing?.inputTokens, pacing?.countMethod]), [
+    [geminiSettings.model, 100, 'COUNT_TOKENS'],
+    [geminiSettings.model, 100, 'COUNT_TOKENS'],
+    [geminiSettings.model, 100, 'COUNT_TOKENS'],
+    [geminiSettings.fallbackModel, 100, 'COUNT_TOKENS'],
+    [geminiSettings.model, 100, 'COUNT_TOKENS'],
+  ]);
+});
+
 test('full-source packets above the legacy cap require authoritative token admission', async t => {
   const packet = JSON.stringify({ retainedFullSourceCatalog: 'x'.repeat(300_100) });
   const schema = z.object({ accepted: z.boolean() }).strict();

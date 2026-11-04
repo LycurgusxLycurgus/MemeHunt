@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { collectSocialSources } from '../src/providers/social.js';
+import { buildSocialAcquisitionScope, collectSocialSources } from '../src/providers/social.js';
+import { buildAttentionAcquisitionScope, collectAttentionSources, entryEvidenceScope } from '../src/providers/attention.js';
+import { acquisitionEvidenceMethod } from '../src/providers/acquisition-evidence.js';
 import { deriveSocial } from '../src/domain/social.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import { explainChecks, renderSnapshot } from '../src/app/report.js';
@@ -48,6 +50,133 @@ function socialReport(read: Awaited<ReturnType<typeof collectSocialSources>>) {
   };
   return { social, result, snapshot, rows: explainChecks(snapshot), rendered: renderSnapshot(snapshot) };
 }
+
+test('social collection carries the fresh outcome marker into its canonical read and acquisition receipt', async () => {
+  const freshAttention = attention([POST], {
+    outcomeBasisMethod: 'entry-outcome-basis-v1', discoveryUrls: [], postSampleSourceIds: [POST.id],
+  });
+  const fetcher: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) return response({ results: [], errors: [] });
+    if (url === 'https://api.fetch.tinyfish.ai/') {
+      const urls = (JSON.parse(String(init?.body)) as { urls: string[] }).urls;
+      return response({ results: urls.map(item => ({ url: item, final_url: item, text: `Public account record for ${SOCIAL_TOKEN.address}.` })), errors: [] });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  const read = await collectSocialSources(SOCIAL_TOKEN, freshAttention, 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  const receipt = JSON.parse(read.rawArtifacts['social-acquisition-scope']!) as { read: { outcomeBasisMethod?: string } };
+  assert.equal(read.outcomeBasisMethod, 'entry-outcome-basis-v1');
+  assert.equal(receipt.read.outcomeBasisMethod, 'entry-outcome-basis-v1',
+    'the self-contained acquisition receipt carries the marker needed to validate the next model stage');
+
+  const legacy = await collectSocialSources(SOCIAL_TOKEN, attention([POST], {
+    discoveryUrls: [], postSampleSourceIds: [POST.id],
+  }), 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE);
+  assert.equal(legacy.outcomeBasisMethod, undefined);
+  const legacyReceipt = JSON.parse(legacy.rawArtifacts['social-acquisition-scope']!) as { read: { outcomeBasisMethod?: string } };
+  assert.equal(legacyReceipt.read.outcomeBasisMethod, undefined, 'unmarked historical attention reads stay unmarked through the producer');
+});
+
+test('fresh empty discovery retains successful Attention and Social searches as separate receipt-only evidence', async t => {
+  const calls: string[] = [];
+  const fetcher: typeof fetch = async input => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      calls.push(new URL(url).searchParams.get('query') ?? '');
+      return response({ results: [], errors: [] });
+    }
+    throw new Error(`A zero-result discovery must not fetch an invented page: ${url}`);
+  };
+  const collectedAttention = await collectAttentionSources(
+    SOCIAL_TOKEN, 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE,
+    undefined, [], undefined, 'public-support-v2', undefined, acquisitionEvidenceMethod,
+  );
+  collectedAttention.acquisitionDiscovery = { metadataState: 'NOT_APPLICABLE', dexArtifactId: 'dex-discovery' };
+  collectedAttention.rawArtifacts['dex-discovery'] = JSON.stringify([]);
+  collectedAttention.acquisitionScope = buildAttentionAcquisitionScope(collectedAttention, SOCIAL_TOKEN, SOCIAL_CUTOFF);
+  for (const receipt of collectedAttention.acquisitionScope.evidence) collectedAttention.rawArtifacts[receipt.id] = receipt.text;
+  assert.equal(collectedAttention.sources.length, 0);
+  assert.equal(collectedAttention.acquisitionScope.complete, true,
+    `a completed zero-result exact-token/social search is a complete acquisition scope: ${collectedAttention.acquisitionScope.blockers.join(', ')}`);
+  assert.equal(entryEvidenceScope(collectedAttention, SOCIAL_TOKEN, SOCIAL_CUTOFF).complete, true,
+    'the marked public scope uses the canonical receipt facade to clear only its empty-source and inapplicable-comparison gates');
+
+  const collectedSocial = await collectSocialSources(
+    SOCIAL_TOKEN, collectedAttention, 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE,
+  );
+  collectedSocial.acquisitionScope = buildSocialAcquisitionScope(
+    collectedAttention, collectedSocial, collectedSocial.rawArtifacts, SOCIAL_TOKEN, SOCIAL_CUTOFF,
+  );
+  for (const receipt of collectedSocial.acquisitionScope.evidence) collectedSocial.rawArtifacts[receipt.id] = receipt.text;
+
+  assert.equal(calls.length, 3, 'two exact Attention searches and one required Social search ran');
+  assert.equal(collectedSocial.sources.length, 0, 'no PAGE or POST is fabricated from a receipt');
+  assert.equal(collectedSocial.acquisitionScope.complete, true,
+    `the required Social search and source accounting complete honestly: ${collectedSocial.acquisitionScope.blockers.join(', ')}`);
+  assert.equal(collectedSocial.acquisitionScope.sourceIds.length, 0);
+  assert.deepEqual(collectedSocial.acquisitionScope.requiredEvidenceIds, ['acquisition-social-scope']);
+  assert.ok(collectedSocial.acquisitionScope.evidence[0]!.artifactIds.includes('social-acquisition-social-search-1-response'));
+  assert.equal(collectedSocial.acquisitionScope.evidence[0]!.availableAt, SOCIAL_AVAILABLE,
+    'receipt time is the actual retained ledger end and stays stable when rebuilt at a later review cutoff');
+
+  const later = buildSocialAcquisitionScope(
+    collectedAttention, collectedSocial, collectedSocial.rawArtifacts, SOCIAL_TOKEN, SOCIAL_CUTOFF,
+  );
+  assert.deepEqual(later.evidence, collectedSocial.acquisitionScope.evidence,
+    'canonical receipt contents do not refresh merely because a later qualification cutoff is used');
+
+  const forged = { ...collectedSocial.rawArtifacts };
+  const requestId = 'social-acquisition-social-search-1-request';
+  const request = JSON.parse(forged[requestId]!) as Record<string, unknown>;
+  request.query = 'unrelated query';
+  forged[requestId] = JSON.stringify(request);
+  const rejected = buildSocialAcquisitionScope(collectedAttention, collectedSocial, forged, SOCIAL_TOKEN, SOCIAL_CUTOFF);
+  assert.equal(rejected.complete, false, 'a rehashed descriptor cannot substitute a different actual query');
+  assert.ok(rejected.blockers.includes('ACQUISITION_QUERY_BINDING_INVALID'));
+
+  const unavailableSearch: typeof fetch = async input => {
+    const query = new URL(String(input)).searchParams.get('query') ?? '';
+    return query.includes('narrative origin catalyst')
+      ? response({ error: 'unavailable' }, 503)
+      : response({ results: [], errors: [] });
+  };
+  const interruptedAttention = await collectAttentionSources(
+    SOCIAL_TOKEN, 'synthetic-provider-key', unavailableSearch, () => SOCIAL_AVAILABLE,
+    undefined, [], undefined, 'public-support-v2', undefined, acquisitionEvidenceMethod,
+  );
+  interruptedAttention.acquisitionDiscovery = { metadataState: 'NOT_APPLICABLE', dexArtifactId: 'dex-discovery' };
+  interruptedAttention.rawArtifacts['dex-discovery'] = JSON.stringify([]);
+  interruptedAttention.acquisitionScope = buildAttentionAcquisitionScope(interruptedAttention, SOCIAL_TOKEN, SOCIAL_CUTOFF);
+  assert.equal(entryEvidenceScope(interruptedAttention, SOCIAL_TOKEN, SOCIAL_CUTOFF).complete, false,
+    'one failed required exact-token query remains a public-entry blocker despite a successful zero-result sibling');
+  assert.ok(entryEvidenceScope(interruptedAttention, SOCIAL_TOKEN, SOCIAL_CUTOFF).blockers.some(code => /503|INCOMPLETE/.test(code)));
+
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(SOCIAL_AVAILABLE) });
+  let failedSearchAttempts = 0;
+  const failedFetcher: typeof fetch = async input => {
+    const url = String(input);
+    if (url.startsWith('https://api.search.tinyfish.ai/')) {
+      failedSearchAttempts++;
+      throw new TypeError(`private transport failure ${PRIVATE_ERROR_MARKER}`);
+    }
+    throw new Error(`Unexpected provider: ${url}`);
+  };
+  const pending = collectSocialSources(
+    SOCIAL_TOKEN, collectedAttention, 'synthetic-provider-key', failedFetcher, () => SOCIAL_AVAILABLE,
+  );
+  const failedSocial = await exhaustThreeReadAttempts(t, pending);
+  assert.equal(failedSearchAttempts, 3, 'the existing bounded Social retry handles one required failed query');
+  const failedLedger = JSON.parse(failedSocial.rawArtifacts['social-acquisition-ledger']!) as { searches: Array<{ id: string; status: number }> };
+  assert.equal(failedLedger.searches.some(row => row.id === 'social-search-1'), false,
+    'a statusless failure never creates a Search result row');
+  assert.ok(failedSocial.rawArtifacts['social-acquisition-social-search-1-attempt'],
+    'the actual failed request, safe code and time remain linked outside the status-bearing ledger');
+  const interrupted = buildSocialAcquisitionScope(collectedAttention, failedSocial, failedSocial.rawArtifacts, SOCIAL_TOKEN, SOCIAL_CUTOFF);
+  assert.equal(interrupted.complete, false);
+  assert.ok(interrupted.blockers.includes('ACQUISITION_SOCIAL_COLLECTION_INCOMPLETE'));
+  assert.doesNotMatch(JSON.stringify(failedSocial.rawArtifacts), new RegExp(PRIVATE_ERROR_MARKER));
+});
 
 function assertUnknownIdentity(read: Awaited<ReturnType<typeof collectSocialSources>>, expectedCode: string, expectedKind?: 'INFRA') {
   const { result, rows, rendered, snapshot } = socialReport(read);
@@ -269,7 +398,7 @@ test('fresh source-bound social collection emits the literal-association marker 
   }), 'synthetic-provider-key', completedSearch, () => SOCIAL_AVAILABLE);
 
   assert.equal(fresh.associationCitationMethod, 'literal-associations-v1');
-  assert.equal(fresh.inspectionRecoveryMethod, 'historical-post-inspection-v1');
+  assert.equal(fresh.inspectionRecoveryMethod, 'retained-source-inspection-v2');
   assert.equal(legacy.associationCitationMethod, undefined, 'legacy collection without the fresh source-bound marker retains its old wire');
   assert.equal(legacy.inspectionRecoveryMethod, undefined);
 });
@@ -304,7 +433,7 @@ test('a retained required HTTP 404 or 410 is a bounded identity gap only after s
   for (const status of [404, 410] as const) {
     const { read, scope } = await run(status, true);
     const code = status === 404 ? 'HTTP_404' : 'HTTP_410';
-    assert.equal(read.screeningConstraintMethod, 'frozen-positive-guards-v1');
+    assert.equal(read.screeningConstraintMethod, 'frozen-positive-guards-v2');
     assert.equal(read.identityComplete, true, 'a terminal public-source gap does not turn the collection into a transport outage');
     assert.deepEqual(read.identityUnavailableSources, [{ url: requiredUrl, code }]);
     assert.equal(read.sources.some(source => source.url === requiredUrl), false, 'the unavailable URL does not become fabricated source text');

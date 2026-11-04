@@ -1,3 +1,4 @@
+import {assertEntryCliSnapshot} from './entry-cli-snapshot.js';
 /** Constructed conformance over retained public source bytes; actual three-token acceptance is separate. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -71,7 +72,7 @@ test('original quote expiry produces stale impacts without restamping; expired p
 });
 
 test('actual Service persistence/reopen/idempotence and CLI replay preserve derived impact facts with zero reads',async()=>{
- const dir=mkdtempSync(join(tmpdir(),'impact-persist-')),file=join(dir,'live.sqlite');try{let s=new Service(file),saved;try{saved=s.analyzeLive(positive());assert.equal(s.analyzeLive(positive()).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}let out='',err='',calls=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assert.deepEqual(JSON.parse(out),saved);assert.equal(calls,0);}finally{rmSync(dir,{recursive:true,force:true});}
+ const dir=mkdtempSync(join(tmpdir(),'impact-persist-')),file=join(dir,'live.sqlite');try{let s=new Service(file),saved;try{saved=s.analyzeLive(positive());assert.equal(s.analyzeLive(positive()).id,saved.id);assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}s=new Service(file);try{assert.deepEqual(s.replay(saved.id),saved);}finally{s.close();}let out='',err='',calls=0;assert.equal(await runCli(['replay',saved.id,'--db',file,'--json'],{env:{},isInteractive:false,fetcher:async()=>{calls++;throw Error('NETWORK_DENIED');},stdout:x=>out+=x,stderr:x=>err+=x}),0,err);assertEntryCliSnapshot(JSON.parse(out),saved);assert.equal(calls,0);}finally{rmSync(dir,{recursive:true,force:true});}
 });
 
 
