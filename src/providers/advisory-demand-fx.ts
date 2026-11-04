@@ -95,8 +95,8 @@ export function deriveA30FxDemandFromHistory(history:ReservePathHistory,programA
  }};
 }
 
-/** Only native receipt reconstruction enters the production A30 path. */
-export function deriveA30FxDemandWindows(receipts:A30SourceReceipts,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
+/** Source-bound composite native context; numeric histories confer no external source or metric authority. */
+export function decodeA30CoherentFinancialContext(receipts:A30SourceReceipts,cutoff:string){
  const reference=buildA30FxReference(receipts,cutoff),fx=reference.sourceContext?.bodyHashes??new Map<string,A30NativeBodyDigest>(),union=new Map<string,A30NativeBodyDigest>(),c5Seen=new Set<string>(),overlap=new Set<string>();
  let coherenceReason:string|null=null;
  const conflict=(code:string)=>{coherenceReason??='A30_FX_'+code;};
@@ -112,6 +112,12 @@ export function deriveA30FxDemandWindows(receipts:A30SourceReceipts,cutoff:strin
  for(let i=1;i<ordered.length;i++){const before=ordered[i-1]!,after=ordered[i]!;if(after.slot===before.slot&&after.blockTime!==before.blockTime||after.blockTime<before.blockTime)conflict('UNION_BLOCK_TIME_ORDER');}
  const expectedOverlap=financial.history.transactions.filter(t=>fx.has(t.signature)).length;if(expectedOverlap!==overlap.size)conflict('C5_OVERLAP_BIJECTION');
  const coherence:Coherence={overlappingTransactions:overlap.size,unionTransactions:ordered.length,nativeOrderAndBlockTime:'VERIFIED_OBSERVED_UNION',manifestHash:hash(ordered.map(v=>[v.signature,v.slot,v.transactionIndex,v.blockTime,v.hash]))};
- const metric=deriveA30FxDemandFromHistory(coherenceReason?{...financial.history,complete:false,reasonCode:coherenceReason}:financial.history,financial.programAccounts,reference,evidenceIds);
+ return{financial,reference,coherence,coherenceReason,history:coherenceReason?{...financial.history,complete:false,reasonCode:coherenceReason}:financial.history};
+}
+
+/** Only native receipt reconstruction enters the production A30 path. */
+export function deriveA30FxDemandWindows(receipts:A30SourceReceipts,cutoff:string,evidenceIds:string[]):AdvisoryMetric{
+ const{financial,reference,coherence,coherenceReason,history}=decodeA30CoherentFinancialContext(receipts,cutoff);
+ const metric=deriveA30FxDemandFromHistory(history,financial.programAccounts,reference,evidenceIds);
  return{...metric,data:{...(metric.data as object),sourceTrust:'RETAINED_PROVIDER_RPC_IMPORT',sourceAuthentication:'Hashes bind retained bytes, not provider authentication or independent onchain attestation.',financialPurpose:'A30_DEMAND_WINDOWS_ONLY',sourceCoverage:{...financial.sourceCoverage,a30SourceBytes:reference.sourceContext?.sourceBytes??null,a30StoredBytes:reference.sourceContext?.storedBytes??null},pairedClocks:financial.pairedClocks,crossSourceCoherence:{...coherence,complete:!coherenceReason,reasonCode:coherenceReason}}};
 }
