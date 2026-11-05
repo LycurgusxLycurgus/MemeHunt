@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Service } from '../src/app/service.js';
+import type { ManagementResult } from '../src/domain/contracts.js';
 import {
   completeFixtureEntryFeatures, fixtureBundle, fixturePosition, fixturePositionEvent,
   fixtureProvenance, fixtureStageObservations, illustrativeFixtureThesis,
@@ -50,7 +51,7 @@ test('passing entry activates a frozen thesis and reassessment preserves the bas
   }
 });
 
-test('new entry and management snapshots carry their v2 policy versions and replay unchanged', () => {
+test('new entry v2 and management v7 snapshots replay unchanged', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dd-attention-policy-versions-'));
   const path = join(directory, 'snapshots.sqlite');
   const service = new Service(path);
@@ -66,7 +67,7 @@ test('new entry and management snapshots carry their v2 policy versions and repl
       const rows = db.prepare('SELECT kind,semantic FROM snapshots WHERE id IN (?,?) ORDER BY kind').all(entry.id, management.id) as Array<{ kind: string; semantic: string }>;
       const byKind = new Map(rows.map(row => [row.kind, JSON.parse(row.semantic) as { policyVersion: string }]));
       assert.equal(byKind.get('ENTRY')?.policyVersion, 'research-screen-v2');
-      assert.equal(byKind.get('MANAGEMENT')?.policyVersion, 'thesis-management-v2');
+      assert.equal(byKind.get('MANAGEMENT')?.policyVersion, 'thesis-management-v7');
     } finally {
       db.close();
     }
@@ -153,6 +154,9 @@ test('a position recorded after the reassessment cutoff cannot produce a histori
   }
 });
 
+/** The sale size management asks an exact exit quote for (v7 proposes it only once that quote proves it). */
+const candidateQuantity = (s: { result: ManagementResult }) => s.result.exitQuotes?.find(q => q.request.purpose === 'CANDIDATE_LEG')?.request.quantityAtomic;
+
 test('historical reassessment excludes later sales and corrections while preserving earlier snapshots', () => {
   const service = new Service(':memory:');
   try {
@@ -161,13 +165,13 @@ test('historical reassessment excludes later sales and corrections while preserv
     service.recordPosition(position);
     const bundle = { ...fixtureBundle(completeFixtureEntryFeatures()), cutoff: '2026-01-01T00:10:00.000Z' };
     const before = service.reassess(entry.caseId, bundle);
-    assert.equal(before.result.proposal, 'DCA_OUT_PROPOSED');
-    assert.equal(before.result.proposedQuantityAtomic, '400');
+    assert.equal(before.result.proposal, 'REASSESS_REQUIRED');
+    assert.equal(candidateQuantity(before), '400');
 
     const sale = fixturePositionEvent({ id: 'historical-sale', idempotencyKey: 'historical-sale-key', quantityAtomic: '100', quoteAmount: '20', effectiveAt: '2026-01-01T00:05:00.000Z', recordedAt: '2026-01-01T00:05:00.000Z' });
     service.appendPositionEvent(position.id, sale);
     const afterSale = service.reassess(entry.caseId, bundle);
-    assert.equal(afterSale.result.proposedQuantityAtomic, '300');
+    assert.equal(candidateQuantity(afterSale), '300');
 
     const laterSale = fixturePositionEvent({ id: 'later-sale', idempotencyKey: 'later-sale-key', quantityAtomic: '50', quoteAmount: '10', effectiveAt: '2026-01-01T00:07:00.000Z', recordedAt: '2026-01-01T00:15:00.000Z' });
     service.appendPositionEvent(position.id, laterSale);
@@ -178,10 +182,10 @@ test('historical reassessment excludes later sales and corrections while preserv
     assert.equal(service.reassess(entry.caseId, bundle).id, afterSale.id);
     const replayed = service.replay(afterSale.id);
     assert.equal(replayed.checklistKind, 'MANAGEMENT');
-    if (replayed.checklistKind === 'MANAGEMENT') assert.equal(replayed.result.proposedQuantityAtomic, '300');
+    if (replayed.checklistKind === 'MANAGEMENT') assert.equal(candidateQuantity(replayed), '300');
 
     const later = service.reassess(entry.caseId, { ...bundle, cutoff: '2026-01-01T00:30:00.000Z' });
-    assert.equal(later.result.proposedQuantityAtomic, '150');
+    assert.equal(candidateQuantity(later), '150');
   } finally {
     service.close();
   }

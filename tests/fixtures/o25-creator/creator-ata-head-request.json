@@ -1,0 +1,1 @@
+{"request": {"method": "getAccountInfo", "params": ["Km6Zx9bT9MgWTTdaRZaXQhLEnUaPaBbTpB3B6aoJE2v", {"encoding": "jsonParsed", "commitment": "finalized", "minContextSlot": 455909330}]}, "retrievedAt": "2026-10-12T04:25:34.023145+00:00", "http": 200}

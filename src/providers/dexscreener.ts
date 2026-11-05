@@ -137,7 +137,7 @@ export async function fetchDexPairs(chain: string, address: string, fetcher: typ
     return {status:selected.market.retainedPairCount?selected.market.truncated?'TRUNCATED':'OBSERVED':'NO_RESULTS',raw:selected.text,market:selected.market,retrievedAt:receipt.retrievedAt,recovery:receipt};
   } catch(error) {
     receipt.code=error instanceof Error && /^DEX_FETCH_/.test(error.message)?error.message:error instanceof Error&&error.message==='PROVIDER_RESPONSE_LIMIT'?'DEX_FETCH_RESPONSE_LIMIT':error instanceof Error&&['TimeoutError','AbortError'].includes(error.name)?'DEX_FETCH_TIMEOUT':'DEX_FETCH_TRANSPORT';
-    return {...primary,status:receipt.code==='DEX_FETCH_TIMEOUT'||receipt.code==='DEX_FETCH_TRANSPORT'||receipt.code.startsWith('DEX_FETCH_HTTP_')?'UNAVAILABLE':'INVALID',code:receipt.code,recovery:receipt};
+    return {...primary,market:undefined,status:receipt.code==='DEX_FETCH_TIMEOUT'||receipt.code==='DEX_FETCH_TRANSPORT'||receipt.code.startsWith('DEX_FETCH_HTTP_')?'UNAVAILABLE':'INVALID',code:receipt.code,recovery:receipt};
   }
 }
 

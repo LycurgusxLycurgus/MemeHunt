@@ -30,6 +30,13 @@ export function comparisonEntryGrade(baseline:BaselineAssessment[]):boolean|unde
 }
 /** Negative entry evidence grades retain unknown factual counts and growth. */
 export function attentionEntryGates(baseline:BaselineAssessment[],entryGroups=false):EntryEvidenceGates|undefined{
+ if(entryGroups&&resolveOriginEntryCriterion(baseline))return qualifiedEntryGates(baseline,entryGroups);
+ const gates:EntryEvidenceGates={};
+ for(const [id,criterion,key]of [['A15','ATT-01','sample'],['A18','ATT-02','growth']] as const){const a=baseline.find(a=>a.id===id&&a.quality!=='STALE'),d=a?.data as {method?:string;entryCriterion?:string;verdict?:string;postSampleScope?:{complete:boolean}}|null|undefined;if(d?.method==='entry-evidence-gate-v1'&&d.entryCriterion===criterion&&d.verdict==='FAIL'&&d.postSampleScope?.complete===true)gates[key]=false;}
+ if(entryGroups){const a=baseline.find(a=>a.id==='A03'&&a.quality==='KNOWN'&&a.projection?.quality==='KNOWN'),d=a?.data as {method?:string;entryCriterion?:string;entryDecisionMethod?:string;decision?:{verdict?:string;citations?:unknown[]}}|null|undefined;if(d?.method==='binary-public-support-v4'&&d.entryDecisionMethod===d.method&&d.entryCriterion==='NAR-02'&&['PASS','FAIL'].includes(d.decision?.verdict??'')&&d.decision?.citations?.length&&a?.projection?.value===(d.decision.verdict==='PASS'))gates.originTraceability=d.decision.verdict==='PASS';}
+ return Object.keys(gates).length?gates:undefined;
+}
+function qualifiedEntryGates(baseline:BaselineAssessment[],entryGroups=false):EntryEvidenceGates|undefined{
  const gates:EntryEvidenceGates={};
  if(qualifiedAttentionEntrySupport(baseline,'qualifiedSample'))gates.sample=false;
  if(qualifiedAttentionEntrySupport(baseline,'growth'))gates.growth=false;
@@ -38,7 +45,7 @@ export function attentionEntryGates(baseline:BaselineAssessment[],entryGroups=fa
  for(const [criterion,key]of [['qualifiedSample','sample'],['growth','growth']] as const){const resolution=resolveAttentionEntryCriterion(baseline,criterion);if(resolution){(gates.resolutions??={})[key]=resolution;if(resolution.status!=='UNKNOWN')gates[key]=resolution.status==='PASS';else delete gates[key];}else{const bound=qualifiedAttentionEntryBound(baseline,criterion);if(bound)gates[key]=bound.status==='PASS';}}
  return Object.keys(gates).length?gates:undefined;
 }
-export function entryEvidenceGates(baseline:BaselineAssessment[],entryGroups=false,profile?:Profile,cutoff?:string):EntryEvidenceGates|undefined{const attention=attentionEntryGates(baseline,entryGroups),venue=profile&&cutoff?resolveEmptyVenueEntries(baseline,profile,cutoff):undefined;return venue?{...attention,venueResolutions:venue}:attention;}
+export function entryEvidenceGates(baseline:BaselineAssessment[],entryGroups=false,profile?:Profile,cutoff?:string):EntryEvidenceGates|undefined{const attention=qualifiedEntryGates(baseline,entryGroups),venue=profile&&cutoff?resolveEmptyVenueEntries(baseline,profile,cutoff):undefined;return venue?{...attention,venueResolutions:venue}:attention;}
 /** Reuse the actual entry evaluator. Remove inputs only when the same decision survives. */
 export function sharedWitnesses(features:FeatureResult[],profile:Profile,cutoff:string,social?:SocialPolicyFacts,entryComparison?:boolean,entryGates?:EntryEvidenceGates,groups?:EntryGroupFacts,baseline?:BaselineAssessment[]){
   const mode=social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2';
@@ -148,7 +155,7 @@ export function deriveShared(input:SharedInputs){
   if(audit?.success&&audit.data.claims.some(c=>supportMethod?c.support===undefined:c.support!==undefined))throw Error('SHARED_SUPPORT_METHOD_INVALID');
   if(input.qualityMode==='ENTRY_GROUPS_V1'&&!input.groups)throw Error('SHARED_GROUPS_REQUIRED');
   const gates=input.qualityMode==='ENTRY_GATES_V1'||input.qualityMode==='ENTRY_GROUPS_V1';
-  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,gates?comparisonEntryGrade(input.baseline):undefined,gates?entryEvidenceGates(input.baseline,!!input.groups,input.profile,input.cutoff):undefined,input.groups,input.baseline),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
+  const witnesses=sharedWitnesses(input.features,input.profile,input.cutoff,input.social,gates?comparisonEntryGrade(input.baseline):undefined,gates?(input.groups?.contextDecisionMethod==='necessary-public-support-witness-v1'||input.completionMethod==='reviewed-audit-completion-v1'||input.decisionMethod==='source-support-and-conflict-v2'||!!resolveEmptyVenueEntries(input.baseline,input.profile,input.cutoff)?entryEvidenceGates(input.baseline,!!input.groups,input.profile,input.cutoff):attentionEntryGates(input.baseline,!!input.groups)):undefined,input.groups,input.baseline),unresolved=witnesses.filter(w=>w.status==='UNKNOWN').map(w=>w.checkId);
   const selected=new Set(witnesses.filter(w=>w.status!=='UNKNOWN'&&w.route!=='qualified-context').flatMap(w=>w.featureIds));
   const freshness=[...selected].map(id=>{
     const f=input.features.find(f=>f.id===id)!,a=input.baseline.find(a=>a.id===id),data=a?.data as {window?:{end?:string};end?:string;screening?:{availableAt?:string}}|undefined;
@@ -194,7 +201,11 @@ export function deriveShared(input:SharedInputs){
   const semanticSupport=semanticQualified&&(!supportMethod||supportQualified);
   const values=gates?{C03:complete&&fresh,C04:complete,C05:semanticSupport,C06:complete&&auditQualified&&conflicts.length===0}:{C03:complete&&fresh?true:null,C04:complete?true:null,C05:semanticSupport?true:null,C06:complete&&auditQualified?conflicts.length===0:null};
   const facts=sharedPolicyFactsSchema.parse({method:'shared-evidence-v1',...(decisionMethod?{decisionMethod}:{}),...(supportMethod?{supportCompleted,supportQualified,claimSupport}:{}),...(input.completionMethod?{completionMethod:input.completionMethod,auditCompleted}:{}),...(gates?{qualityMode:input.qualityMode}:{}),token:input.token,cutoff:input.cutoff,witnesses,freshness,unresolved,semanticQualified,auditQualified,conflicts,values});
-  const evidenceIds=[...new Set([...witnesses.flatMap(w=>w.evidenceIds),...input.semanticReceiptIds,...input.evidence.filter(e=>e.id==='shared-qualified-receipt'||/^shared-(proposal|review)-response$/.test(e.id)).map(e=>e.id)])];
+  const dependencies=[...new Set([...witnesses.flatMap(w=>w.evidenceIds),...input.semanticReceiptIds,...input.evidence.filter(e=>e.id==='shared-qualified-receipt'||/^shared-(proposal|review)-response$/.test(e.id)).map(e=>e.id)])];
+  // Route receipts authorize their own execution features. Shared's retained
+  // derivation binds the complete witnesses and freshness without promoting
+  // those scoped receipts into C03–C06 authority.
+  const evidenceIds=dependencies.some(id=>/^(entry|exit|simulation|impact|cost)-route-/.test(id))?['shared-derivation']:dependencies;
   const auditCode=input.evidence.find(e=>e.id==='shared-audit-status')?.scope.code;
   const assessments:BaselineAssessment[]=Object.entries(values).map(([id,value])=>({id,version:'baseline-v1',evaluator:'IMPLEMENTED',collector:'IMPLEMENTED',quality:value===null?'MISSING':'KNOWN',unit:'bool',data:{method:'shared-evidence-v1',...(decisionMethod?{decisionMethod}:{}),...(input.completionMethod?{completionMethod:input.completionMethod,auditCompleted}:{}),...(gates?{qualityMode:input.qualityMode,meaning:'Entry data-quality standard; a failed or incomplete review is not a false token fact or detected conflict.',...(id==='C06'?{conflictAssessment:auditQualified?'COMPLETED':input.completionMethod&&auditCompleted?'COMPLETED_INSUFFICIENT':'INCOMPLETE_REVIEW'}:{})}:{}),unresolved,...(id==='C03'?{freshness}:{}),...(id==='C06'?{conflicts}:{})},observationIds:[],evidenceIds,limitations:['Required decision scope; no guarantee of real-world token truth or exhaustive coverage'],causes:value===null||gates&&value===false?[{category:'EVIDENCE_UNAVAILABLE',code:gates&&id==='C06'&&conflicts.length?'SHARED_CONFLICT_DETECTED':unresolved.length?'SHARED_REQUIRED_SCOPE_INCOMPLETE':id==='C03'?'SHARED_EVIDENCE_STALE':id==='C05'?'SHARED_SEMANTIC_UNQUALIFIED':(typeof auditCode==='string'&&auditCode!=='SHARED_AUDIT_RECEIVED'?auditCode:'SHARED_CONFLICT_AUDIT_INCOMPLETE'),featureId:id,evidenceIds,action:'Refresh the named required decision scope and its source qualification.'}]:[],projection:{id,value,unit:'bool',quality:value===null?'MISSING':'KNOWN',availableAt:input.cutoff,evidenceIds,applicability:'APPLICABLE'}}));
   return {facts,assessments};

@@ -39,10 +39,14 @@ export type SolanaRead = {
   mint?: SolanaMint;
 };
 
-export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void,onContextError?:(attempt:number,raw:string)=>void): Promise<{raw: string; value: unknown}> {
-  const reads = new Set(['getGenesisHash','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
-  // Fee readers already own a proof-bound min-context retry; keep one owner.
-  const contextRead=method!=='getFeeForMessage'&&reads.has(method)&&params.some(p=>object(p)&&p.commitment==='finalized'&&Number.isSafeInteger(p.minContextSlot)&&Number(p.minContextSlot)>=0);
+export async function solanaRpc(url: string, method: string, params: unknown[], fetcher: typeof fetch, maxBytes=350_000, signal?:AbortSignal,onResponse?:(raw:string)=>void, readTimeoutOrContextError?:number|((attempt:number,raw:string)=>void)): Promise<{raw: string; value: unknown}> {
+  // Preserve the historical numeric timeout and the source-qualified context observer at the same optional call boundary.
+  const readTimeoutMs=typeof readTimeoutOrContextError==='function'?undefined:readTimeoutOrContextError;
+  const onContextError=typeof readTimeoutOrContextError==='function'?readTimeoutOrContextError:undefined;
+  if(readTimeoutMs!==undefined&&(!Number.isSafeInteger(readTimeoutMs)||readTimeoutMs<8000||readTimeoutMs>20_000))throw new RangeError('RPC_TIMEOUT_CONFIG');
+  const reads = new Set(['getGenesisHash','getSignaturesForAddress','getTransaction','getAccountInfo','getProgramAccounts','getTokenLargestAccounts','getMultipleAccounts','getLatestBlockhash','getFeeForMessage','getMinimumBalanceForRentExemption','simulateTransaction']);
+  // Fee readers own proof-bound retries; historical index/transaction reads retain their established recovery rather than gaining a second context-retry owner.
+  const contextRead=!['getFeeForMessage','getSignaturesForAddress','getTransaction'].includes(method)&&reads.has(method)&&params.some(p=>object(p)&&p.commitment==='finalized'&&Number.isSafeInteger(p.minContextSlot)&&Number(p.minContextSlot)>=0);
   // The same bank floor must survive catch-up. One deadline bounds HTTP and
   // JSON-RPC retries together; ordinary no-floor requests retain their recovery.
   const contextSignal=contextRead?AbortSignal.timeout(30_000):undefined;
@@ -56,7 +60,7 @@ export async function solanaRpc(url: string, method: string, params: unknown[], 
   for(let attempt=1;;attempt++){
     requestSignal?.throwIfAborted();
     const response = reads.has(method)
-      ? await fetchReadResponse(url, init, fetcher, method==='getProgramAccounts'?15_000:8000, !contextRead)
+      ? await fetchReadResponse(url, init, fetcher, readTimeoutMs??(method==='getProgramAccounts'?15_000:8000), !contextRead)
       : await fetcher(url,{...init,signal:signal?AbortSignal.any([signal,AbortSignal.timeout(8000)]):AbortSignal.timeout(8000)});
     if (!response.ok) throw new Error(`RPC_HTTP_${response.status}`);
     const raw = await readLimitedText(response, maxBytes);
@@ -150,13 +154,13 @@ export function decodeHolderPopulation(result:unknown,address:string,programId:s
   const accounts=result.value.map(item=>{
     if(!object(item)||typeof item.pubkey!=='string'||seen.has(item.pubkey))throw new Error('RPC_SHAPE');decodeSolanaAddress(item.pubkey);seen.add(item.pubkey);
     const a=rawAccount({context:result.context,value:item.account});
-    if(a.owner!==programId||a.executable||a.bytes.length!==165||!a.bytes.subarray(0,32).equals(mintBytes)||![1,2].includes(a.bytes[108]))throw new Error('RPC_SHAPE');
+    if(a.owner!==programId||a.executable||(a.bytes.length!==165&&(programId!==TOKEN_2022_PROGRAM||a.bytes.length<166||a.bytes.length===355||a.bytes[165]!==2))||!a.bytes.subarray(0,32).equals(mintBytes)||![1,2].includes(a.bytes[108]))throw new Error('RPC_SHAPE');
     return {address:item.pubkey,owner:encodeAddress(a.bytes.subarray(32,64)),amount:a.bytes.readBigUInt64LE(64).toString()};
   });
   const sum=accounts.reduce((s,a)=>s+BigInt(a.amount),0n);if(sum!==BigInt(supplyAtomic))throw new Error('HOLDER_SUPPLY_UNRECONCILED');
   return {supplyAtomic,accounts,complete:true,slot:Number(result.context.slot),evidenceIds:['rpc-genesis','rpc-holder-population','rpc-mint-raw']};
 }
-export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,signal?:AbortSignal,now?:()=>string):Promise<SolanaDetails> {
+export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PUBLIC_SOLANA_RPC,fetcher:typeof fetch=fetch,signal?:AbortSignal,now?:()=>string,holderPopulationLimit:20_000_000|64_000_000=64_000_000):Promise<SolanaDetails> {
   let contextAttempt=0;
   const rpc=(endpoint:string,method:string,params:unknown[],request:typeof fetch,maxBytes=350_000)=>solanaRpc(endpoint,method,params,request,maxBytes,signal,undefined,method==='getProgramAccounts'?(_attempt,raw)=>{const id='rpc-holder-context-attempt-'+(++contextAttempt);result.rawArtifacts[id]=raw;if(now)result.retrievedAt![id]=now();}:undefined);
   const result:SolanaDetails={rawArtifacts:{},errors:{},...(now?{retrievedAt:{}}:{})};
@@ -166,7 +170,7 @@ export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PU
   catch(error){result.errors.controls=safeCode(error);}
   if(result.controls?.complete&&result.controls.currentFeeBps==='0'&&result.controls.feeImmutable)try {
     holderSlot=rawAccount(JSON.parse(result.rawArtifacts['rpc-mint-raw']).result).slot;
-    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:holderSlot,withContext:true,dataSlice:{offset:0,length:165},filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,64_000_000);
+    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:holderSlot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,holderPopulationLimit);
     result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,holderSlot);
   }catch(error){result.errors.holderPopulation=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED'?error.message:safeCode(error);}
   // A separately indexed population can lag the mint bank. Recapture once;
@@ -182,7 +186,7 @@ export async function inspectSolanaDetails(mint:SolanaMint,address:string,url=PU
     if(!controls.complete||controls.currentFeeBps!=='0'||!controls.feeImmutable)throw Error('HOLDER_SUPPLY_UNRECONCILED');
     result.rawArtifacts['rpc-mint-raw']=refreshed.raw;if(now)result.retrievedAt!['rpc-mint-raw']=result.retrievedAt!['rpc-mint-reconciliation-response'];result.controls=controls;
     holderSupply=raw.bytes.readBigUInt64LE(36).toString();
-    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:raw.slot,withContext:true,dataSlice:{offset:0,length:165},filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,64_000_000);
+    const population=await rpc(url,'getProgramAccounts',[mint.programId,{encoding:'base64',commitment:'finalized',minContextSlot:raw.slot,withContext:true,...(mint.programId===LEGACY_TOKEN_PROGRAM?{dataSlice:{offset:0,length:165}}:{}),filters:[{memcmp:{offset:0,bytes:address}},...(mint.programId===LEGACY_TOKEN_PROGRAM?[{dataSize:165}]:[])]}],fetcher,holderPopulationLimit);
     result.rawArtifacts['rpc-holder-population']=population.raw;if(now)result.retrievedAt!['rpc-holder-population']=now();
     result.holders=decodeHolderPopulation(population.value,address,mint.programId,holderSupply,raw.slot);delete result.errors.holderPopulation;
   }catch(error){result.errors.holderPopulation=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED'?error.message:safeCode(error);}

@@ -1,0 +1,1 @@
+{"request": {"method": "getTokenAccountsByOwner", "params": ["8RXNzg9QEheV1SZyTLisckJRwziVoZFzGWA3tajj1yJg", {"mint": "3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump"}, {"encoding": "jsonParsed", "commitment": "finalized", "minContextSlot": 455913999}]}, "retrievedAt": "2026-10-12T04:25:35.464676+00:00", "http": 200}

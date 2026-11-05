@@ -1,7 +1,51 @@
+import {validateA28DecayBundle} from './a28-decay.js';
+import {A28_SOURCE_ID} from '../providers/advisory-a28-decay-source.js';
+import {validateC07LifecycleBundle} from './c07-lifecycle.js';
+import {C07_SOURCE_ID} from '../providers/advisory-c07-lifecycle-source.js';
+import {validateS18ObservabilityBundle} from './s18-observability.js';
+import {S18_SOURCE_ID} from '../providers/advisory-s18-observability-source.js';
+import {validateS20StructuralBundle} from './s20-structural.js';
+import {S20_SOURCE_ID} from '../providers/advisory-s20-structural.js';
+import {validateS19SingletonBundle} from './s19-singleton.js';
+import {S19_SOURCE_ID} from '../providers/advisory-s19-singleton-source.js';
+import {validateS16CopyBundle} from './s16-copy.js';
+import {S16_SOURCE_ID,S16_NATIVE_STORED_BYTES} from '../providers/advisory-copy-source-adapter.js';
+import {validateS17InventoryBundle} from './s17-inventory.js';
+import {S17_SOURCE_ID,S17_NATIVE_STORED_BYTES} from '../providers/advisory-creator-call-inventory-source.js';
+import {validateS14EntryBundle} from './s14-entry.js';
+import {S14_SOURCE_ID} from '../providers/advisory-actor-entry-source.js';
+import {validateA27MarginalBundle} from './a27-marginal.js';
+import {A27_SOURCE_ID,A27_NATIVE_STORED_BYTES} from '../providers/advisory-marginal-attention-source.js';
+import {validateA26BuyerPostBundle} from './a26-buyer-post.js';
+import {A26_SOURCE_ID,A26_NATIVE_STORED_BYTES} from '../providers/advisory-buyer-post-import.js';
+import {validateA25LeadLagBundle} from './a25-lead-lag.js';
+import {A25_SOURCE_ID} from '../providers/advisory-lead-lag-import.js';
+import {validateS15ReferenceBundle} from './s15-reference.js';
+import {S15_REFERENCE_SOURCE_ID,S15_REFERENCE_STORED_BYTES} from '../providers/advisory-creator-reference-import.js';
+import {validateC12BridgeBundle} from './c12-bridge.js';
+import {validateA13ParticipationBundle} from './a13-participation.js';
+import {A13_SOURCE_ID} from '../providers/advisory-participation-import.js';
+import {validateA30FxBundle} from './a30-demand-fx.js';
+import {A30_SOURCE_STORED_BYTES} from '../providers/advisory-demand-fx-source.js';
+import {validateA12WitnessBundle} from './a12-zero-witness.js';
+import {validateNativeAttentionBundle} from './native-attention.js';
+import {HOLDER_AGE_SOURCE_ID,HOLDER_AGE_PREFIX,HOLDER_AGE_ADAPTER,HOLDER_AGE_STORED_BYTES,validateHolderAgeStorage} from '../providers/advisory-holder-age-source.js';
+import {INVENTORY_RETURNS_SOURCE_ID,INVENTORY_RETURNS_PREFIX,INVENTORY_RETURNS_ADAPTER,INVENTORY_RETURNS_STORED_BYTES,validateInventoryReturnStorage} from '../providers/advisory-inventory-returns-source.js';
+import {O25_BANK_SOURCE_ID,O25_BANK_PREFIX,O25_BANK_ADAPTER,O25_BANK_BYTES} from '../providers/advisory-creator-lifetime-import.js';
+import {hasRouteCosts} from '../providers/route-cost.js';
+import {hasRouteImpacts} from '../providers/route-impact.js';
+import {hasSimulationRoute} from '../providers/simulation-route.js';
+import {hasExitRoute} from '../providers/exit-route.js';
+import {hasEntryRoute} from '../providers/entry-route.js';
+import { WINDOW_BUSY_REQUEST_CAP, WINDOW_ARCHIVE_ADAPTER } from '../providers/advisory-window.js';
+import { EXECUTOR_SEMANTIC_METHOD } from '../providers/executor-semantic.js';
+import { RECORDED_INCENTIVE_METHOD } from '../providers/advisory-recorded-incentives.js';
+import { RECORDED_CALLER_METHOD } from '../providers/advisory-recorded-callers.js';
 import { acquisitionEvidenceMethod, acquisitionEvidenceSchema } from '../providers/acquisition-evidence.js';
 import { buildSocialAcquisitionScope } from '../providers/social.js';
 import { validatePumpRecoveryBundle } from '../providers/pumpswap.js';
 import { verifyOriginAlias, verifiedOriginExclusion } from '../providers/origin-recovery.js';
+import {CREATOR_COVERAGE_REQUEST_CAP,EPISODE_COVERAGE_REQUEST_CAP} from '../providers/advisory-creator-coverage.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { entryGroupsForBundle } from '../providers/entry-groups.js';
@@ -9,9 +53,9 @@ import { VersionedMessage } from '@solana/web3.js';
 import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSchema, profileSchema, thesisSchema, entryContextDecisionMethod, type FeatureResult, type AssessmentDetails, type Bundle, type LiveBundle, type EntrySnapshot, type ManagementSnapshot, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
+import { bundleSchema, liveBundleSchema, positionEventSchema, positionRecordSchema, profileSchema, thesisSchema, entryContextDecisionMethod, type FeatureResult, type AssessmentDetails, type Bundle, type LiveBundle, type EntrySnapshot, type ManagementSnapshot, type PlanBasisDeclaration, type PositionEvent, type PositionRecord, type Thesis, type ThesisEpisode, type TokenRef } from '../domain/contracts.js';
 import { baselineIds, deriveBaseline, deriveHolderBounds, validateResearch } from '../domain/baseline.js';
-import { evaluateEntry, evaluateManagement, evaluatePredicate, type StageInputs } from '../domain/policy.js';
+import { evaluateEntry, evaluateManagement, evaluatePredicate, type ExecutionInputs, type StageInputs } from '../domain/policy.js';
 import { reduceLedger } from '../domain/ledger.js';
 import { deriveSocial, socialInputSchema, socialProposalSchema, socialReviewSchema, canonicalSocialUrl, type SocialInput } from '../domain/social.js';
 import { deriveAttention,selectGroundedAttentionProposal,noSourceAttentionContext,attentionProposalSchema,originSourceScope,normalizeComparisonRefs,comparisonScopeV2Schema,buildNarrativeContentScope } from '../domain/attention.js';
@@ -22,11 +66,39 @@ import { validateSocialRepair,validateSocialWire } from '../providers/social-mod
 import { parseSourceResponse,sourceSpans,sourceModelEvidenceAllowed } from '../providers/source-model.js';
 import { validateDammBundle } from '../providers/meteora-damm-v2.js';
 import { validateCurveBundle } from '../providers/pumpcurve.js';
+import { validateVenueProvenanceBundle } from '../providers/venue-provenance.js';
 import { decodeHolderPopulation } from '../providers/solana.js';
 import { decodeTokenMetadataUri } from '../providers/token-discovery.js';
 import { decodeSharedAuditProof } from '../providers/shared-model.js';
-import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,entryEvidenceGates,type SharedInputs } from '../domain/shared.js';
+import { deriveShared,expireSharedWitnesses,sharedClaims,comparisonEntryGrade,attentionEntryGates,entryEvidenceGates,type SharedInputs } from '../domain/shared.js';
+import {resolveEmptyVenueEntries} from '../domain/venue-entry.js';
+import { decodeSharedAudit,validSharedReassessment,sharedTemporalScopeSchema } from '../providers/shared-model.js';
 import { dexArtifacts, dexFetchBody, dexPairsUrl, parseDexFetch, parseDexPairs, type DexRecoveryReceipt } from '../providers/dexscreener.js';
+import { evaluateManagementAs, MANAGEMENT_POLICY_VERSION } from '../domain/management-trace.js';
+import { evaluateManagement as evaluateLegacyManagement } from '../domain/legacy-policy.js';
+import { A29_CAPTURE_ADAPTER,A29_SOURCE_ID,A29_V2_CAPTURE_ADAPTER,A29_V2_SOURCE_BYTES,a29VerifiedV2Id,reconstructAdvisory } from './advisory.js';
+import { HOLDER_ARCHIVE_ADAPTER, unpackHolderPopulation } from '../providers/advisory-topology.js';
+import { validateExecutableLiquidity } from '../providers/executable-liquidity.js';
+
+/** Every advisory entry policy label; saved snapshots replay their stored facts under the recorded label. */
+import { O24_BULK_SOURCE_ID,O24_BULK_PREFIX,O24_BULK_ADAPTER,O24_BULK_STORED_BYTES,validateO24BulkStorage } from '../providers/advisory-creator-inventory-bulk.js';
+import { validateO23BulkStorage, O23_BULK_SOURCE_ID, O23_BULK_PREFIX, O23_BULK_ADAPTER, O23_BULK_STORED_BYTES } from '../providers/advisory-synchrony-bulk.js';
+
+const ADVISORY_SCREENS=[...Array.from({length:37},(_,i)=>`research-screen-advisory-v${i+1}`),'research-screen-advisory-v38','research-screen-advisory-v39','research-screen-advisory-v40','research-screen-advisory-v41','research-screen-advisory-v42','research-screen-advisory-v43','research-screen-advisory-v44','research-screen-advisory-v45','research-screen-advisory-v46','research-screen-advisory-v47','research-screen-advisory-v48','research-screen-advisory-v49','research-screen-advisory-v50','research-screen-advisory-v51','research-screen-advisory-v52','research-screen-advisory-v53','research-screen-advisory-v54','research-screen-advisory-v55','research-screen-advisory-v56','research-screen-advisory-v57','research-screen-advisory-v58','research-screen-advisory-v59','research-screen-advisory-v60','research-screen-advisory-v61','research-screen-advisory-v62','research-screen-advisory-v63','research-screen-advisory-v64','research-screen-advisory-v65','research-screen-advisory-v66','research-screen-advisory-v67','research-screen-advisory-v68','research-screen-advisory-v69','research-screen-advisory-v70','research-screen-advisory-v71','research-screen-advisory-v72','research-screen-advisory-v73','research-screen-advisory-v74'];
+
+/** Advisory fallback metadata must also agree with its exact canonical DEX receipt. */
+function validateAdvisoryDexBaseline(b:LiveBundle){
+  const record=b.evidence.find(e=>e.id==='dex-pairs');let market:LiveBundle['market']=null;
+  if(record){
+    if(!(record.sourceId==='dexscreener'&&record.accessMode==='PUBLIC_API'||record.sourceId==='tinyfish-fetch'&&record.accessMode==='FREE_ACCOUNT'&&record.scope.method==='tinyfish-live-dex-json-v1'))throw new Error('ADVISORY_PROOF_INVALID');
+    try{market=parseDexPairs(JSON.parse(b.rawArtifacts[record.id]!),b.token.chain,b.token.address);}catch{if(b.market!==null)throw new Error('ADVISORY_PROOF_INVALID');}
+  }
+  if(decisionHash(market)!==decisionHash(b.market))throw new Error('ADVISORY_PROOF_INVALID');
+  const expected=deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:b.features,evidence:b.evidence,observations:b.observations,market:market??undefined,sharedMode:!!b.details?.shared}).find(a=>a.id==='O28');
+  const claimed=b.details?.baseline.find(a=>a.id==='O28');
+  if(!expected||!claimed)throw new Error('ADVISORY_PROOF_INVALID');
+  for(const field of ['data','quality','unit','evidenceIds'] as const)if(decisionHash(expected?.[field])!==decisionHash(claimed?.[field]))throw new Error('ADVISORY_PROOF_INVALID');
+}
 
 /** Fresh execution receipts separate discovery, semantic work and final state acquisition. */
 function validateLiveExecution(b:LiveBundle){
@@ -252,10 +324,10 @@ function validateHolderReconciliation(b:LiveBundle){
  if(!ids.some(id=>b.rawArtifacts[id]))return;
  try{
   for(const id of [...ids,'rpc-mint-raw','rpc-holder-population'])if(!b.evidence.some(e=>e.id===id&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'))throw Error('proof');
-  const initialMint=JSON.parse(b.rawArtifacts[ids[0]]).result,initialPopulation=JSON.parse(b.rawArtifacts[ids[1]]).result,currentMint=JSON.parse(b.rawArtifacts['rpc-mint-raw']).result,currentPopulation=JSON.parse(b.rawArtifacts['rpc-holder-population']).result;
+  const initialMint=JSON.parse(b.rawArtifacts[ids[0]]).result,initialPopulation=JSON.parse(b.rawArtifacts[ids[1]]).result,currentMint=JSON.parse(b.rawArtifacts['rpc-mint-raw']).result,currentPopulationRaw=b.evidence.find(e=>e.id==='rpc-holder-population')?.adapterVersion===HOLDER_ARCHIVE_ADAPTER?unpackHolderPopulation(b.rawArtifacts['rpc-holder-population']):b.rawArtifacts['rpc-holder-population'],currentPopulation=JSON.parse(currentPopulationRaw).result;
   const supply=(mint:any)=>{if(mint.value.data[1]!=='base64')throw Error('shape');const bytes=Buffer.from(mint.value.data[0],'base64');if(bytes.length<82)throw Error('shape');return bytes.readBigUInt64LE(36).toString();};
   let mismatch=false;try{decodeHolderPopulation(initialPopulation,b.token.address,initialMint.value.owner,supply(initialMint),initialMint.context.slot);}catch(error){mismatch=error instanceof Error&&error.message==='HOLDER_SUPPLY_UNRECONCILED';}if(!mismatch)throw Error('trigger');
-  const mintChanged=b.rawArtifacts['rpc-mint-raw']!==b.rawArtifacts[ids[0]],populationChanged=b.rawArtifacts['rpc-holder-population']!==b.rawArtifacts[ids[1]];
+  const mintChanged=b.rawArtifacts['rpc-mint-raw']!==b.rawArtifacts[ids[0]],populationChanged=currentPopulationRaw!==b.rawArtifacts[ids[1]];
   if(mintChanged&&(currentMint.context.slot<initialPopulation.context.slot||currentMint.value.owner!==initialMint.value.owner)||populationChanged&&Number.isSafeInteger(currentPopulation?.context?.slot)&&(!mintChanged||currentPopulation.context.slot<currentMint.context.slot))throw Error('floor');
   if(b.details?.baseline.some(a=>['O17','O18'].includes(a.id)&&a.quality==='KNOWN')){
    if(!mintChanged||!populationChanged)throw Error('capture');
@@ -390,24 +462,68 @@ export class Service {
   close() { this.db.close(); }
   private validateBundle(input: Bundle | LiveBundle, trustedLive = false): Bundle | LiveBundle {
     const parsed = trustedLive ? liveBundleSchema.parse(input) : bundleSchema.parse(input);
-    const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE') };
-    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
-    if (b.evidence.length > 1000 || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
+    const b = { ...parsed, token: normalizeToken(parsed.token, parsed.analysisKind === 'FIXTURE'), ...(parsed.exitProofs ? { exitProofs: parsed.exitProofs.map(p => ({...p,token:normalizeToken(p.token,parsed.analysisKind==='FIXTURE')})) } : {}) };
+    validateC12BridgeBundle(b,trustedLive);
+    validateA13ParticipationBundle(b,trustedLive);
+    const s15ReferenceExempt=validateS15ReferenceBundle(b,trustedLive);
+    validateA25LeadLagBundle(b,trustedLive);
+    const a26BuyerPostExempt=validateA26BuyerPostBundle(b,trustedLive);
+    const s16CopyExempt=validateS16CopyBundle(b,trustedLive);
+    const s17InventoryExempt=validateS17InventoryBundle(b,trustedLive);
+    validateA28DecayBundle(b,trustedLive);
+    validateC07LifecycleBundle(b,trustedLive);
+    validateS18ObservabilityBundle(b,trustedLive);
+    validateS20StructuralBundle(b,trustedLive);
+    validateS19SingletonBundle(b,trustedLive);
+    validateS14EntryBundle(b,trustedLive);
+    const a27MarginalExempt=validateA27MarginalBundle(b,trustedLive);
+    validateNativeAttentionBundle(b,trustedLive);
+    validateA12WitnessBundle(b,trustedLive);
+    const a30FxExempt=validateA30FxBundle(b,trustedLive);
+    if(b.analysisKind!=='LIVE'&&(hasEntryRoute(b)||hasExitRoute(b)||hasSimulationRoute(b)||hasRouteImpacts(b)||hasRouteCosts(b)))throw Error('ENTRY_ROUTE_PROOF_INVALID');
+    if (b.analysisKind === 'MANUAL_EMPTY' && (b.evidence.length || b.features.length || b.observations.length || b.exitProofs?.length)) throw new Error('MANUAL_EMPTY_MUST_BE_EMPTY');
+    const nativeCoverage=(()=>{try{const proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v30','advisory-provenance-v31','advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46','advisory-provenance-v47','advisory-provenance-v48','advisory-provenance-v49','advisory-provenance-v50','advisory-provenance-v51','advisory-provenance-v52','advisory-provenance-v53','advisory-provenance-v54','advisory-provenance-v55','advisory-provenance-v56','advisory-provenance-v57','advisory-provenance-v58','advisory-provenance-v59','advisory-provenance-v60'].includes(proof?.method)&&!!proof.creatorCoverage;}catch{return false;}})();
+    const busyWindow=(()=>{try{return trustedLive&&b.analysisKind==='LIVE'&&['advisory-provenance-v48','advisory-provenance-v49','advisory-provenance-v51','advisory-provenance-v52','advisory-provenance-v53','advisory-provenance-v54','advisory-provenance-v55','advisory-provenance-v56','advisory-provenance-v57','advisory-provenance-v58','advisory-provenance-v59','advisory-provenance-v60'].includes(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method);}catch{return false;}})();
+    const busyWindowReceipts=busyWindow?b.evidence.filter(e=>e.sourceId==='advisory-window'||e.id.startsWith('advisory-window-')||e.adapterVersion===WINDOW_ARCHIVE_ADAPTER).length:0;
+    const nativeReceipts=nativeCoverage?b.evidence.filter(e=>e.sourceId==='advisory-creatorCoverage'||e.id.startsWith('advisory-creatorCoverage-')).length:0;
+    if (b.evidence.length-nativeReceipts-busyWindowReceipts > 1000 || busyWindowReceipts>WINDOW_BUSY_REQUEST_CAP || nativeReceipts>(['advisory-provenance-v32','advisory-provenance-v33','advisory-provenance-v34','advisory-provenance-v35','advisory-provenance-v36','advisory-provenance-v37','advisory-provenance-v38','advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46','advisory-provenance-v47','advisory-provenance-v48','advisory-provenance-v49','advisory-provenance-v50','advisory-provenance-v51','advisory-provenance-v52','advisory-provenance-v53','advisory-provenance-v54','advisory-provenance-v55','advisory-provenance-v56','advisory-provenance-v57','advisory-provenance-v58','advisory-provenance-v59','advisory-provenance-v60'].includes(JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null')?.method)?EPISODE_COVERAGE_REQUEST_CAP:CREATOR_COVERAGE_REQUEST_CAP) || b.features.length > 1000 || b.observations.length > 1000) throw new Error('BUNDLE_LIMIT');
     const ids = new Set(b.evidence.map(e => e.id));
     if (ids.size !== b.evidence.length || new Set(b.features.map(f => f.id)).size !== b.features.length) throw new Error('DUPLICATE_BUNDLE_ID');
     for (const e of b.evidence) if (Date.parse(e.availableAt) > Date.parse(b.cutoff) || Date.parse(e.retrievedAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EVIDENCE');
     if (b.rawArtifacts && Object.keys(b.rawArtifacts).some(id => !ids.has(id))) throw new Error('UNREFERENCED_ARTIFACT');
     if ((b.analysisKind === 'USER_IMPORT' || b.analysisKind === 'LIVE') && b.evidence.some(e => b.rawArtifacts?.[e.id] === undefined)) throw new Error('RAW_ARTIFACT_REQUIRED');
-    let artifactBytes = 0,populationBytes=0;
+    // Only the one fully validated, owned A29 v2 record gets the separate 128 MB bound outside the default sum; descriptor presence or labels alone change nothing.
+    const a29Exempt=trustedLive&&b.analysisKind==='LIVE'?a29VerifiedV2Id(b.token,b.cutoff,b.evidence,b.rawArtifacts??{}):null;
+    // A retained O23 import has a separate measured bound only after exact source ownership/reconstruction.
+    const o23Exempt=(()=>{const owned=b.evidence.some(e=>e.sourceId===O23_BULK_SOURCE_ID||e.id.startsWith(O23_BULK_PREFIX)||e.adapterVersion===O23_BULK_ADAPTER);let proof:any;try{proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');}catch{if(owned)throw Error('ADVISORY_PROOF_INVALID');return new Set<string>();}if(!owned&&!proof?.synchronyBulk)return new Set<string>();if(!trustedLive||b.analysisKind!=='LIVE'||!['advisory-provenance-v52','advisory-provenance-v53'].includes(proof?.method)||!proof.synchronyBulk||proof.synchronyBulk.token?.chain!==b.token.chain||proof.synchronyBulk.token?.address!==b.token.address||proof.synchronyBulk.pool!==proof.pool)throw Error('ADVISORY_PROOF_INVALID');return validateO23BulkStorage(proof.synchronyBulk,b.rawArtifacts??{},b.evidence,b.cutoff);})();
+    const o24Exempt=(()=>{const owned=b.evidence.some(e=>e.sourceId===O24_BULK_SOURCE_ID||e.id.startsWith(O24_BULK_PREFIX)||e.adapterVersion===O24_BULK_ADAPTER);let proof:any;try{proof=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');}catch{if(owned)throw Error('ADVISORY_PROOF_INVALID');return new Set<string>();}if(!owned&&!proof?.creatorInventoryBulk)return new Set<string>();if(!trustedLive||b.analysisKind!=='LIVE'||!['advisory-provenance-v54','advisory-provenance-v55'].includes(proof?.method)||!proof.creatorInventoryBulk||proof.creatorInventoryBulk.token?.chain!==b.token.chain||proof.creatorInventoryBulk.token?.address!==b.token.address)throw Error('ADVISORY_PROOF_INVALID');return validateO24BulkStorage(proof.creatorInventoryBulk,b.rawArtifacts??{},b.evidence,b.cutoff);})();
+    const holderAgeExempt=(()=>{const owned=b.evidence.some(e=>e.sourceId===HOLDER_AGE_SOURCE_ID||e.id.startsWith(HOLDER_AGE_PREFIX)||e.adapterVersion===HOLDER_AGE_ADAPTER);let p:any;try{p=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');}catch{if(owned)throw Error('ADVISORY_PROOF_INVALID');return new Set<string>();}if(!owned&&!p?.holderAge)return new Set<string>();if(!trustedLive||b.analysisKind!=='LIVE'||p?.method!=='advisory-provenance-v57'||!p.holderAge)throw Error('ADVISORY_PROOF_INVALID');return validateHolderAgeStorage({token:b.token,evidence:b.evidence,rawArtifacts:b.rawArtifacts??{}},p.holderAge,b.cutoff);})();
+    const inventoryReturnExempt=(()=>{const owned=b.evidence.some(e=>e.sourceId===INVENTORY_RETURNS_SOURCE_ID||e.id.startsWith(INVENTORY_RETURNS_PREFIX)||e.adapterVersion===INVENTORY_RETURNS_ADAPTER);let p:any;try{p=JSON.parse(b.rawArtifacts?.['advisory-derivation']??'null');}catch{if(owned)throw Error('ADVISORY_PROOF_INVALID');return new Set<string>();}if(!owned&&!p?.inventoryReturns)return new Set<string>();if(!trustedLive||b.analysisKind!=='LIVE'||p?.method!=='advisory-provenance-v56'||!p.inventoryReturns)throw Error('ADVISORY_PROOF_INVALID');return validateInventoryReturnStorage({token:b.token,evidence:b.evidence,rawArtifacts:b.rawArtifacts??{}},p.inventoryReturns,b.cutoff);})();
+    let artifactBytes = 0,populationBytes=0,a26NativeBytes=0,s16NativeBytes=0,s17NativeBytes=0,a27NativeBytes=0;
     for (const e of b.evidence) if (b.rawArtifacts?.[e.id] !== undefined) {
-      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw); artifactBytes += bytes;
-      if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
-      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? 24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
+      const raw = b.rawArtifacts[e.id],bytes=Buffer.byteLength(raw);
+      if(e.id===a29Exempt&&e.adapterVersion===A29_V2_CAPTURE_ADAPTER){if(bytes>A29_V2_SOURCE_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw new Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(s16CopyExempt.has(e.id)){s16NativeBytes+=bytes;if(s16NativeBytes>S16_NATIVE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(s17InventoryExempt.has(e.id)){s17NativeBytes+=bytes;if(s17NativeBytes>S17_NATIVE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(a27MarginalExempt.has(e.id)){a27NativeBytes+=bytes;if(a27NativeBytes>A27_NATIVE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(a26BuyerPostExempt.has(e.id)){a26NativeBytes+=bytes;if(a26NativeBytes>A26_NATIVE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(s15ReferenceExempt.has(e.id)){if(bytes>S15_REFERENCE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(a30FxExempt.has(e.id)){if(bytes>A30_SOURCE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(holderAgeExempt.has(e.id)){if(bytes>HOLDER_AGE_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(inventoryReturnExempt.has(e.id)){if(bytes>INVENTORY_RETURNS_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(o24Exempt.has(e.id)){if(bytes>O24_BULK_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if(o23Exempt.has(e.id)){if(bytes>O23_BULK_STORED_BYTES||createHash('sha256').update(raw).digest('hex')!==e.contentHash)throw Error('ARTIFACT_HASH_OR_SIZE');continue;}
+      if((e.sourceId===O25_BANK_SOURCE_ID||e.id.startsWith(O25_BANK_PREFIX)||e.adapterVersion===O25_BANK_ADAPTER)&&bytes>O25_BANK_BYTES)throw Error('ARTIFACT_HASH_OR_SIZE');
+      artifactBytes += bytes;
+      if(b.analysisKind==='LIVE'&&['rpc-holder-population','rpc-holder-population-reconciliation-attempt-1'].includes(e.id)&&e.sourceId==='solana-rpc'&&e.sourceType==='JSON_RPC'&&e.accessMode==='PUBLIC_API'&&e.adapterVersion==='live-v1'){if(bytes>64_000_000)throw Error('ARTIFACT_HASH_OR_SIZE');populationBytes+=bytes;}
+      if (artifactBytes-populationBytes > (b.analysisKind === 'LIVE' ? nativeCoverage?64_000_000:24_000_000 : 2_000_000) || createHash('sha256').update(raw).digest('hex') !== e.contentHash) throw new Error('ARTIFACT_HASH_OR_SIZE');
     }
     for (const e of b.evidence) {
       if (b.analysisKind === 'LIVE') {
-        const sources: Record<string,string> = { 'solana-rpc': 'PUBLIC_API', 'solana-rpc-preflight':'PUBLIC_API', 'venue-discovery-rpc':'PUBLIC_API', 'solana-rpc-diagnostics':'LOCAL_DERIVED', 'meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED','pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT',nvidia:'FREE_ACCOUNT',openrouter:'FREE_ACCOUNT','source-model':'LOCAL_DERIVED','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT' };
-        if (sources[e.sourceId] !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
+        const sources: Record<string,string> = { [A28_SOURCE_ID]:'USER_IMPORT',[C07_SOURCE_ID]:'USER_IMPORT',[S18_SOURCE_ID]:'USER_IMPORT',[S20_SOURCE_ID]:'USER_IMPORT',[S19_SOURCE_ID]:'USER_IMPORT',[S16_SOURCE_ID]:'USER_IMPORT',[S17_SOURCE_ID]:'USER_IMPORT',[S14_SOURCE_ID]:'USER_IMPORT', 'cost-route-rpc':'PUBLIC_API','cost-route-market':'PUBLIC_API','cost-route-derived':'LOCAL_DERIVED','impact-route-derived':'LOCAL_DERIVED','simulation-route-rpc':'PUBLIC_API','simulation-route-derived':'LOCAL_DERIVED','exit-route-derived':'LOCAL_DERIVED','entry-route-rpc':'PUBLIC_API','entry-route-market':'PUBLIC_API','entry-route-derived':'LOCAL_DERIVED','solana-rpc': 'PUBLIC_API','solana-rpc-preflight':'PUBLIC_API','venue-discovery-rpc':'PUBLIC_API','meteora-damm-direct':'PUBLIC_API','meteora-damm-derived':'LOCAL_DERIVED', 'solana-rpc-diagnostics':'LOCAL_DERIVED','pump-curve-direct':'PUBLIC_API','pump-curve-derived':'LOCAL_DERIVED','token-metadata-discovery':'PUBLIC_API', 'pumpswap-direct':'PUBLIC_API','pumpswap-derived':'LOCAL_DERIVED', dexscreener: 'PUBLIC_API', 'tinyfish-search': 'FREE_ACCOUNT', 'tinyfish-fetch': 'FREE_ACCOUNT', gemini: 'FREE_ACCOUNT',nvidia:'FREE_ACCOUNT',openrouter:'FREE_ACCOUNT','source-model':'LOCAL_DERIVED','local-config':'LOCAL_DERIVED','attention-collector':'LOCAL_DERIVED','social-collector':'LOCAL_DERIVED','shared-collector':'LOCAL_DERIVED','curated-research':'USER_IMPORT','advisory-chain':'PUBLIC_API','advisory-market':'PUBLIC_API','advisory-paid':'PUBLIC_API','advisory-collector':'LOCAL_DERIVED','advisory-trades':'PUBLIC_API','advisory-context':'PUBLIC_API','advisory-wallets':'PUBLIC_API','advisory-window':'PUBLIC_API','advisory-accounts':'PUBLIC_API','advisory-automation':'PUBLIC_API','advisory-topology':'PUBLIC_API','advisory-demand':'PUBLIC_API','advisory-synchrony-bulk':'USER_IMPORT','advisory-creator-inventory-bulk':'USER_IMPORT','advisory-creator-lifetime':'USER_IMPORT','advisory-inventory-returns':'USER_IMPORT','advisory-holder-age':'USER_IMPORT','advisory-a30-fx':'USER_IMPORT','advisory-c12-bridge':'USER_IMPORT',[A13_SOURCE_ID]:'USER_IMPORT',[S15_REFERENCE_SOURCE_ID]:'USER_IMPORT',[A25_SOURCE_ID]:'USER_IMPORT',[A26_SOURCE_ID]:'USER_IMPORT',[A27_SOURCE_ID]:'USER_IMPORT','advisory-callers':'PUBLIC_API','advisory-creator-role':'PUBLIC_API','advisory-creator-inventory':'PUBLIC_API','advisory-creator-failed-fees':'PUBLIC_API','advisory-creatorAccounting':'PUBLIC_API','advisory-creatorCoverage':'PUBLIC_API','advisory-creatorRoutes':'FREE_ACCOUNT','advisory-creatorEpisode':'PUBLIC_API','launchpad-collector':'LOCAL_DERIVED','advisory-exitCapacity':'PUBLIC_API','a12-zero-witness-executor':'USER_IMPORT','a12-reviewed-candidate-set':'USER_IMPORT','advisory-saturation':'USER_IMPORT','advisory-a29':'USER_IMPORT','advisory-recorded-callers':'USER_IMPORT','advisory-recorded-incentives':'USER_IMPORT','native-attention-executor':'USER_IMPORT','advisory-executor':'USER_IMPORT','advisory-executor-input':'FREE_ACCOUNT','advisory-executor-body-input':'USER_IMPORT','execliq-solana-rpc':'PUBLIC_API','execliq-dexscreener':'PUBLIC_API','execliq-collector':'LOCAL_DERIVED' };
+        // Launchpad access is per receipt: only the keyed Lighthouse read is a free account; the Llama summaries are public.
+        const access = e.sourceId==='advisory-creatorEpisode' ? (e.id==='advisory-creatorEpisode-helius'?'FREE_ACCOUNT':'PUBLIC_API') : e.sourceId === 'advisory-launchpad' ? (e.id === 'advisory-launchpad-lighthouse' ? 'FREE_ACCOUNT' : 'PUBLIC_API') : sources[e.sourceId];
+        if (access !== e.accessMode) throw new Error('LIVE_PROVENANCE_INVALID');
         if ((e.sourceType === 'MODEL_INPUT' || e.sourceType === 'MODEL_RESPONSE') && !sourceModelEvidenceAllowed(e,b.rawArtifacts??{})) throw new Error('LIVE_PROVENANCE_INVALID');
       } else if (e.accessMode !== 'USER_IMPORT' && b.analysisKind !== 'FIXTURE') throw new Error('IMPORT_PROVENANCE_FORGED');
     }
@@ -419,14 +535,29 @@ export class Service {
       if (tokenKey(o.subject) !== tokenKey(b.token) || o.evidenceIds.some(id => !ids.has(id))) throw new Error('INVALID_OBSERVATION_REF');
       if (Date.parse(o.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_OBSERVATION');
     }
+    const proofs = b.exitProofs ?? [];
+    if (new Set(proofs.map(p => p.id)).size !== proofs.length) throw new Error('DUPLICATE_BUNDLE_ID');
+    for (const p of proofs) {
+      if ([...p.evidenceIds, ...(p.outcome === 'FILLABLE' ? p.fees.flatMap(f => f.conversionEvidenceIds) : [])].some(id => !ids.has(id))) throw new Error('UNKNOWN_EVIDENCE_REF');
+      if (Date.parse(p.asOf) > Date.parse(b.cutoff) || Date.parse(p.availableAt) > Date.parse(b.cutoff)) throw new Error('FUTURE_EXIT_PROOF');
+    }
+    if (b.analysisKind !== 'LIVE') {
+      // Outside LIVE only the validator view is normalized, so an owned execliq orphan in a fixture or import envelope is rejected; the bundle itself is unchanged.
+      const r=validateExecutableLiquidity({token:b.token,cutoff:b.cutoff,evidence:b.evidence,rawArtifacts:b.rawArtifacts??{},features:b.features,observations:b.observations,semantic:{status:'NOT_REQUESTED',claims:[]},...(b.exitProofs?{exitProofs:b.exitProofs}:{})});
+      if(!r.ok)throw new Error(`EXEC_LIQ_PROOF_INVALID:${r.code}`);
+      if(r.claim!=='ABSENT')throw new Error('EXEC_LIQ_PROOF_INVALID');
+    }
     if (b.analysisKind === 'LIVE') {
       validateLiveExecution(b);
       validatePumpRecoveryBundle(b);
       validateCurveBundle(b);
       validateDammBundle(b);
+      validateVenueProvenanceBundle(b);
       validateDexRecovery(b);
       validateFeeRecovery(b);
       validateHolderReconciliation(b);
+      // The result stays in scope for the details bound: only a field this validator reconstructed as PRESENT may sit outside the ordinary details cap.
+      const execLiq=validateExecutableLiquidity(b);if(!execLiq.ok)throw new Error(`EXEC_LIQ_PROOF_INVALID:${execLiq.code}`);
       let captureGroupMethod:unknown,captureContextMethod:unknown;
       if(b.rawArtifacts['live-state-capture'])try{const capture=JSON.parse(b.rawArtifacts['live-state-capture']);captureGroupMethod=capture.entryGroupMethod;captureContextMethod=capture.contextDecisionMethod;}catch{throw Error('ENTRY_GROUP_PROOF_INVALID');}
       const groupProofRecord=b.evidence.find(e=>e.id==='entry-groups-derivation');
@@ -443,9 +574,53 @@ export class Service {
         if(decisionHash(derivedGroups)!==decisionHash(b.details.groups))throw Error('ENTRY_GROUP_PROOF_INVALID');
       }
       for (const claim of b.semantic.claims) if (!ids.has(claim.evidenceId)) throw new Error('UNKNOWN_SEMANTIC_REF');
+      // An imported A29 capture is cited only by the advisory A29 metric; no feature, observation, claim, exit proof, assessment, entry group or shared/social fact consumes it.
+      const a29Ids=new Set(b.evidence.filter(e=>e.sourceId===A29_SOURCE_ID||e.adapterVersion===A29_CAPTURE_ADAPTER||e.adapterVersion===A29_V2_CAPTURE_ADAPTER||e.id.startsWith('advisory-a29-')).map(e=>e.id)),citesA29=(refs:string[])=>refs.some(id=>a29Ids.has(id));
+      if(a29Ids.size&&(b.features.some(f=>citesA29(f.evidenceIds))||b.observations.some(o=>citesA29(o.evidenceIds))||b.semantic.claims.some(c=>a29Ids.has(c.evidenceId))||(b.exitProofs??[]).some(p=>citesA29(p.evidenceIds))||!!b.details?.baseline.some(a=>citesA29(a.evidenceIds))||!!b.details?.groups?.groups.some(g=>citesA29(g.evidenceIds))||!!b.details?.shared?.witnesses.some(w=>citesA29(w.evidenceIds))||!!b.details?.shared?.freshness.some(f=>citesA29(f.evidenceIds))||citesA29(b.details?.social?.evidenceIds??[])))throw new Error('ADVISORY_PROOF_INVALID');
+      // Recorded caller imports may supply only four historical advisory metrics. Their nested source ids never become live entry sources.
+      const recordedIds=new Set(b.evidence.filter(e=>e.sourceId==='advisory-recorded-callers'||e.adapterVersion===RECORDED_CALLER_METHOD||e.id.startsWith('advisory-recorded-callers-')).map(e=>e.id));
+      const citesRecorded=(value:unknown):boolean=>typeof value==='string'?recordedIds.has(value):Array.isArray(value)?value.some(citesRecorded):!!value&&typeof value==='object'?Object.values(value).some(citesRecorded):false;
+      if(recordedIds.size&&(citesRecorded(b.features)||citesRecorded(b.observations)||citesRecorded(b.semantic)||citesRecorded(b.exitProofs)||citesRecorded(b.details?.baseline)||citesRecorded(b.details?.groups)||citesRecorded(b.details?.shared)||citesRecorded(b.details?.social)||b.details?.advisory?.metrics.some(m=>!['S07','S09','A21','A23'].includes(m.id)&&citesRecorded(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const incentiveIds=new Set(b.evidence.filter(e=>e.sourceId==='advisory-recorded-incentives'||e.adapterVersion===RECORDED_INCENTIVE_METHOD||e.id.startsWith('advisory-recorded-incentives-')).map(e=>e.id));
+      const citesIncentives=(value:unknown):boolean=>typeof value==='string'?incentiveIds.has(value):Array.isArray(value)?value.some(citesIncentives):!!value&&typeof value==='object'?Object.values(value).some(citesIncentives):false;
+      if(incentiveIds.size&&(citesIncentives(b.features)||citesIncentives(b.observations)||citesIncentives(b.semantic)||citesIncentives(b.exitProofs)||citesIncentives(b.details?.baseline)||citesIncentives(b.details?.groups)||citesIncentives(b.details?.shared)||citesIncentives(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='S08'&&citesIncentives(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const executorIds=new Set(b.evidence.filter(e=>['advisory-executor','advisory-executor-input','advisory-executor-body-input'].includes(e.sourceId)||e.adapterVersion===EXECUTOR_SEMANTIC_METHOD||e.id.startsWith('advisory-executor-')).map(e=>e.id));
+      const citesExecutor=(value:unknown):boolean=>typeof value==='string'?executorIds.has(value):Array.isArray(value)?value.some(citesExecutor):!!value&&typeof value==='object'?Object.values(value).some(citesExecutor):false;
+      if(executorIds.size&&(citesExecutor(b.features)||citesExecutor(b.observations)||citesExecutor(b.semantic)||citesExecutor(b.exitProofs)||citesExecutor(b.details?.baseline)||citesExecutor(b.details?.groups)||citesExecutor(b.details?.shared)||citesExecutor(b.details?.social)||b.details?.advisory?.metrics.some(m=>!['A06','A07','A08','A19','A20','A21','A22','A23','S07','S08','S09','S11','S12'].includes(m.id)&&citesExecutor(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const holderAgeIds=new Set(b.evidence.filter(e=>e.sourceId===HOLDER_AGE_SOURCE_ID||e.id.startsWith(HOLDER_AGE_PREFIX)||e.adapterVersion===HOLDER_AGE_ADAPTER).map(e=>e.id));
+      const citesHolderAge=(value:unknown):boolean=>typeof value==='string'?holderAgeIds.has(value):Array.isArray(value)?value.some(citesHolderAge):!!value&&typeof value==='object'?Object.values(value).some(citesHolderAge):false;
+      if(holderAgeIds.size&&(citesHolderAge(b.features)||citesHolderAge(b.observations)||citesHolderAge(b.semantic)||citesHolderAge(b.exitProofs)||citesHolderAge(b.details?.baseline)||citesHolderAge(b.details?.groups)||citesHolderAge(b.details?.shared)||citesHolderAge(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='O22'&&citesHolderAge(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const inventoryReturnIds=new Set(b.evidence.filter(e=>e.sourceId===INVENTORY_RETURNS_SOURCE_ID||e.id.startsWith(INVENTORY_RETURNS_PREFIX)||e.adapterVersion===INVENTORY_RETURNS_ADAPTER).map(e=>e.id));
+      const citesInventoryReturns=(value:unknown):boolean=>typeof value==='string'?inventoryReturnIds.has(value):Array.isArray(value)?value.some(citesInventoryReturns):!!value&&typeof value==='object'?Object.values(value).some(citesInventoryReturns):false;
+      if(inventoryReturnIds.size&&(citesInventoryReturns(b.features)||citesInventoryReturns(b.observations)||citesInventoryReturns(b.semantic)||citesInventoryReturns(b.exitProofs)||citesInventoryReturns(b.details?.baseline)||citesInventoryReturns(b.details?.groups)||citesInventoryReturns(b.details?.shared)||citesInventoryReturns(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='O26'&&citesInventoryReturns(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const inventoryBulkIds=new Set(b.evidence.filter(e=>e.sourceId===O24_BULK_SOURCE_ID||e.id.startsWith(O24_BULK_PREFIX)||e.adapterVersion===O24_BULK_ADAPTER).map(e=>e.id));
+      const citesInventoryBulk=(value:unknown):boolean=>typeof value==='string'?inventoryBulkIds.has(value):Array.isArray(value)?value.some(citesInventoryBulk):!!value&&typeof value==='object'?Object.values(value).some(citesInventoryBulk):false;
+      if(inventoryBulkIds.size&&(citesInventoryBulk(b.features)||citesInventoryBulk(b.observations)||citesInventoryBulk(b.semantic)||citesInventoryBulk(b.exitProofs)||citesInventoryBulk(b.details?.baseline)||citesInventoryBulk(b.details?.groups)||citesInventoryBulk(b.details?.shared)||citesInventoryBulk(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='O24'&&!(m.id==='O25'&&JSON.parse(b.rawArtifacts['advisory-derivation']??'null')?.method==='advisory-provenance-v55')&&citesInventoryBulk(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const lifetimeIds=new Set(b.evidence.filter(e=>e.sourceId===O25_BANK_SOURCE_ID||e.id.startsWith(O25_BANK_PREFIX)||e.adapterVersion===O25_BANK_ADAPTER).map(e=>e.id));
+      const citesLifetime=(value:unknown):boolean=>typeof value==='string'?lifetimeIds.has(value):Array.isArray(value)?value.some(citesLifetime):!!value&&typeof value==='object'?Object.values(value).some(citesLifetime):false;
+      if(lifetimeIds.size&&(citesLifetime(b.features)||citesLifetime(b.observations)||citesLifetime(b.semantic)||citesLifetime(b.exitProofs)||citesLifetime(b.details?.baseline)||citesLifetime(b.details?.groups)||citesLifetime(b.details?.shared)||citesLifetime(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='O25'&&citesLifetime(m))))throw Error('ADVISORY_PROOF_INVALID');
+      const synchronyIds=new Set(b.evidence.filter(e=>e.sourceId===O23_BULK_SOURCE_ID||e.id.startsWith(O23_BULK_PREFIX)||e.adapterVersion===O23_BULK_ADAPTER).map(e=>e.id));
+      const citesSynchrony=(value:unknown):boolean=>typeof value==='string'?synchronyIds.has(value):Array.isArray(value)?value.some(citesSynchrony):!!value&&typeof value==='object'?Object.values(value).some(citesSynchrony):false;
+      if(synchronyIds.size&&(citesSynchrony(b.features)||citesSynchrony(b.observations)||citesSynchrony(b.semantic)||citesSynchrony(b.exitProofs)||citesSynchrony(b.details?.baseline)||citesSynchrony(b.details?.groups)||citesSynchrony(b.details?.shared)||citesSynchrony(b.details?.social)||b.details?.advisory?.metrics.some(m=>m.id!=='O23'&&!(m.id==='O29'&&JSON.parse(b.rawArtifacts['advisory-derivation']??'null')?.method==='advisory-provenance-v53')&&citesSynchrony(m))))throw Error('ADVISORY_PROOF_INVALID');
+      // The proof-v22 holder archive keeps its canonical solana-rpc source, so its adapter alone also demands the advisory proof that binds it.
+      const hasAdvisoryEvidence=b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')||e.adapterVersion===HOLDER_ARCHIVE_ADAPTER);
+      if(hasAdvisoryEvidence&&!b.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+      if(hasAdvisoryEvidence)validateAdvisoryDexBaseline(b);
       if(b.details){
         const details=b.details;
-        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify(details).length>2_000_000)throw new Error('INVALID_ASSESSMENT_DETAILS');
+        if(details.version!==1||decisionHash(profileSchema.parse(details.profile))!==decisionHash(b.profile)||decisionHash(details.thesis)!==decisionHash(b.thesis??null)||!Array.isArray(details.baseline)||details.baseline.length!==baselineIds.length||new Set(details.baseline.map(a=>a.id)).size!==baselineIds.length||details.baseline.some(a=>!baselineIds.some(id=>id===a.id)||a.evaluator!=='IMPLEMENTED'||a.evidenceIds.some(id=>!ids.has(id)))||JSON.stringify((({executableLiquidity:_owned,...ordinary})=>ordinary)(details)).length>(nativeCoverage||busyWindow?8_000_000:2_000_000)||(details.executableLiquidity!==undefined&&(execLiq.claim!=='PRESENT'||JSON.stringify(details.executableLiquidity).length>24_000_000)))throw new Error('INVALID_ASSESSMENT_DETAILS');
+        if(details.advisory){
+          const record=b.evidence.find(e=>e.id==='advisory-derivation'&&e.sourceId==='advisory-collector'&&e.accessMode==='LOCAL_DERIVED');
+          if(!record||record.availableAt!==b.cutoff)throw new Error('ADVISORY_PROOF_REQUIRED');
+          try{
+            const proof=JSON.parse(b.rawArtifacts[record.id]);
+            // Fresh persistence accepts main v39/v40 and the explicitly versioned cycle2 opt-ins; saved snapshots replay recorded facts.
+            if(!['advisory-provenance-v39','advisory-provenance-v40','advisory-provenance-v41','advisory-provenance-v42','advisory-provenance-v43','advisory-provenance-v44','advisory-provenance-v45','advisory-provenance-v46','advisory-provenance-v47','advisory-provenance-v48','advisory-provenance-v49','advisory-provenance-v50','advisory-provenance-v51','advisory-provenance-v52','advisory-provenance-v53','advisory-provenance-v54','advisory-provenance-v55','advisory-provenance-v56','advisory-provenance-v57','advisory-provenance-v58','advisory-provenance-v59','advisory-provenance-v60','advisory-provenance-v61','advisory-provenance-v62','advisory-provenance-v63','advisory-provenance-v64','advisory-provenance-v65','advisory-provenance-v66','advisory-provenance-v67','advisory-provenance-v68','advisory-provenance-v69','advisory-provenance-v70','advisory-provenance-v71','advisory-provenance-v72','advisory-provenance-v73','advisory-provenance-v74','advisory-provenance-v75','advisory-provenance-v76','advisory-provenance-v77'].includes(proof.method)||proof.exitCapacity&&proof.exitCapacity.impactBps!==(b.profile.risk.maxExitImpactBps??null))throw new Error('ADVISORY_PROOF_INVALID');
+            if(proof.socialDerivationId!==(details.social?'social-derivation':null))throw new Error('ADVISORY_SOCIAL_PROOF_REQUIRED');
+            const recomputed=reconstructAdvisory(b.token,b.cutoff,details.baseline,b.evidence,b.rawArtifacts,proof,b.thesis??null,b.features);
+            if(decisionHash(recomputed)!==decisionHash(details.advisory))throw new Error('ADVISORY_PROOF_INVALID');
+          }catch{throw new Error('ADVISORY_PROOF_INVALID');}
+        }else if(b.evidence.some(e=>e.id==='advisory-derivation'||e.sourceId.startsWith('advisory-')))throw new Error('ADVISORY_PROOF_INVALID');
         if(details.social){
           const record=b.evidence.find(e=>e.id==='social-derivation'&&e.sourceId==='social-collector'&&e.accessMode==='LOCAL_DERIVED');
           if(!record)throw new Error('SOCIAL_PROOF_REQUIRED');
@@ -872,12 +1047,41 @@ export class Service {
             const e=b.evidence.find(e=>e.id==='shared-qualified-receipt'&&e.sourceId==='shared-collector'&&e.accessMode==='LOCAL_DERIVED');if(!e)throw new Error('SHARED_PROOF_REQUIRED');
             const receipt=JSON.parse(b.rawArtifacts[e.id]);
             if(receipt.acquisitionEvidenceMethod!==packet.acquisitionEvidenceMethod||receipt.completionMethod!==packet.completionMethod||receipt.sourceInspectionMethod!==packet.sourceInspectionMethod||receipt.decisionMethod!==packet.decisionMethod||packet.audit.decisionMethod!==packet.decisionMethod||tokenKey(receipt.token)!==tokenKey(b.token)||decisionHash(receipt.claims)!==decisionHash(packet.claims)||decisionHash(receipt.sources)!==decisionHash(packet.sources)||decisionHash(receipt.audit)!==decisionHash(packet.audit)||!['shared-proposal-response','shared-review-response'].every(id=>b.evidence.some(e=>e.id===id&&sourceModelEvidenceAllowed(e,b.rawArtifacts??{}))))throw new Error('SHARED_PROOF_INVALID');
+            const modernSharedWire=packet.completionMethod!==undefined||packet.sourceInspectionMethod!==undefined||packet.decisionMethod!==undefined;
+            const sharedPrompts=b.evidence.filter(e=>e.id.startsWith('shared-')&&e.sourceType==='MODEL_INPUT').map(e=>JSON.parse(b.rawArtifacts[e.id]));
+            const promptScopes=sharedPrompts.map(prompt=>prompt.temporalScope);
+            if(!modernSharedWire&&(sharedPrompts.some(prompt=>prompt.citationWire==='INDEX')&&receipt.wireMethod!=='shared-audit-wire-v3'||receipt.wireMethod==='shared-audit-wire-v3'&&(sharedPrompts.length===0||sharedPrompts.some(prompt=>prompt.citationWire!=='INDEX'))))throw new Error('SHARED_PROOF_INVALID');
+            if(receipt.wireMethod===undefined){
+              let rawProposal:unknown;
+              try{rawProposal=parseSourceResponse(b.rawArtifacts['shared-proposal-response'],'SHARED_MODEL');}catch{/* Preserve historical unmarked receipt validation. */}
+              const hasIndex=(value:unknown):boolean=>!!value&&typeof value==='object'&&(Object.hasOwn(value,'spanIndex')||Object.values(value).some(hasIndex));
+              if(hasIndex(rawProposal))throw new Error('SHARED_PROOF_INVALID');
+            }
+            if(receipt.temporalScope===undefined){
+              if(promptScopes.some(scope=>scope!==undefined))throw new Error('SHARED_PROOF_INVALID');
+            }else{
+              const parsed=sharedTemporalScopeSchema.safeParse(receipt.temporalScope);
+              if(!parsed.success)throw new Error('SHARED_PROOF_INVALID');
+              const scope=parsed.data;
+              if(scope.socialFacts&&decisionHash(scope.socialFacts)!==decisionHash(packet.social??null))throw new Error('SHARED_PROOF_INVALID');
+              // Semantic review precedes the final mechanical capture; its own
+              // cutoff must cover its sources and retain the exact social window.
+              if(Date.parse(scope.cutoff)>Date.parse(b.cutoff)||packet.sources.some(source=>Date.parse(source.availableAt)>Date.parse(scope.cutoff))||decisionHash(scope.socialWindow??null)!==decisionHash(packet.social?{start:packet.social.start,end:packet.social.end}:null)||promptScopes.length===0||promptScopes.some(value=>value===undefined||decisionHash(value)!==decisionHash(scope)))throw new Error('SHARED_PROOF_INVALID');
+            }
             const expectedWireMethod=packet.decisionMethod==='source-support-and-conflict-v2'?'shared-audit-wire-v5':packet.decisionMethod?'shared-audit-wire-v4':packet.sourceInspectionMethod?'shared-audit-wire-v3':'shared-audit-wire-v2';
-            if((packet.sourceInspectionMethod||packet.decisionMethod)&&receipt.wireMethod!==expectedWireMethod)throw new Error('SHARED_PROOF_INVALID');
+            if(modernSharedWire&&receipt.wireMethod!==expectedWireMethod)throw new Error('SHARED_PROOF_INVALID');
             if(receipt.wireMethod===undefined&&b.evidence.some(e=>e.id.startsWith('shared-repair-')))throw new Error('SHARED_PROOF_INVALID');
             const repair=receipt.wireMethod!==undefined&&receipt.proposalResponseId==='shared-repair-proposal-response';
             if(receipt.wireMethod!==undefined){
-              if(receipt.wireMethod!==expectedWireMethod||receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response'))throw new Error('SHARED_PROOF_INVALID');
+              if(modernSharedWire?receipt.wireMethod!==expectedWireMethod:!['shared-audit-wire-v2','shared-audit-wire-v3'].includes(receipt.wireMethod))throw new Error('SHARED_PROOF_INVALID');
+              const citationWire=receipt.wireMethod==='shared-audit-wire-v3'?'INDEX':'PAIR';
+              const repair=receipt.proposalResponseId==='shared-repair-proposal-response';
+              if(receipt.proposalResponseId!==(repair?'shared-repair-proposal-response':'shared-proposal-response')||receipt.reviewResponseId!==(repair?'shared-repair-review-response':'shared-review-response')||![receipt.proposalResponseId,receipt.reviewResponseId].every(id=>b.evidence.some(e=>e.id===id&&sourceModelEvidenceAllowed(e,b.rawArtifacts??{}))))throw new Error('SHARED_PROOF_INVALID');
+              if(!modernSharedWire)try{
+                const initial=decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts['shared-proposal-response'],b.rawArtifacts['shared-review-response'],citationWire);
+                const selected=repair?decodeSharedAudit(packet.claims,packet.sources,b.rawArtifacts[receipt.proposalResponseId],b.rawArtifacts[receipt.reviewResponseId],citationWire):initial;
+                if(decisionHash(selected)!==decisionHash(receipt.audit)||repair&&!validSharedReassessment(initial,selected))throw new Error('SHARED_PROOF_INVALID');
+              }catch{throw new Error('SHARED_PROOF_INVALID');}
             }
             const stages=['proposal','review',...(repair?['repair-proposal','repair-review']:[])];
             if(stages.some(stage=>['prompt','response'].some(suffix=>!b.evidence.some(e=>e.id==='shared-'+stage+'-'+suffix&&sourceModelEvidenceAllowed(e,b.rawArtifacts??{})))))throw new Error('SHARED_PROOF_REQUIRED');
@@ -918,13 +1122,15 @@ export class Service {
     return {version:1,profile:b.profile,thesis,origins:{profile:'FROZEN_INPUT'},stageInputs:stageInputs(b),baseline:deriveBaseline({token:b.token,cutoff:b.cutoff,profile:b.profile,features:policyFeatures(b),evidence:b.evidence,observations:b.observations,thesis:thesis??undefined,research:b.analysisKind==='USER_IMPORT'?importedResearch(b):undefined})};
   }
   private analyzeCore(b: Bundle | LiveBundle): EntrySnapshot {
+    if (b.exitProofs?.length) throw new Error('EXIT_PROOFS_REQUIRE_REASSESSMENT');
     this.persistArtifacts(b); const liveDetails=b.analysisKind==='LIVE'?b.details:undefined,social=liveDetails?.social,groups=liveDetails?.groups;
     const entryMode=['ENTRY_GATES_V1','ENTRY_GROUPS_V1'].includes(liveDetails?.shared?.qualityMode??'');
-    const entryComparison=entryMode?comparisonEntryGrade(liveDetails!.baseline):undefined,entryGates=entryMode?entryEvidenceGates(liveDetails!.baseline,!!liveDetails!.groups,b.profile,b.cutoff):undefined;
-    const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,entryComparison,entryGates,groups);
+    const sourceQualifiedEntry=liveDetails?.groups?.contextDecisionMethod===entryContextDecisionMethod||liveDetails?.shared?.decisionMethod==='source-support-and-conflict-v2'||liveDetails?.shared?.completionMethod==='reviewed-audit-completion-v1'||!!(liveDetails&&resolveEmptyVenueEntries(liveDetails.baseline,b.profile,b.cutoff));
+    const entryComparison=entryMode?comparisonEntryGrade(liveDetails!.baseline):undefined,entryGates=entryMode?(sourceQualifiedEntry?entryEvidenceGates(liveDetails!.baseline,!!liveDetails!.groups,b.profile,b.cutoff):attentionEntryGates(liveDetails!.baseline,!!liveDetails!.groups)):undefined;
+    const result = evaluateEntry(policyFeatures(b), b.profile, b.cutoff,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social,b.analysisKind==='LIVE'&&!!b.details?.shared,liveDetails?.advisory,entryComparison,entryGates,groups);
     if (result.binary === 'PASS' && !b.thesis) throw new Error('PASS_REQUIRES_FROZEN_THESIS');
     const details=this.assessmentDetails(b);
-    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
+    const semantic = { schemaVersion: 2, policyVersion: groups?'research-screen-shared-v4':b.analysisKind==='LIVE'&&b.details?.advisory?(b.details.advisory.method==='advisory-measurements-v76'?'research-screen-advisory-v74':b.details.advisory.method==='advisory-measurements-v75'?'research-screen-advisory-v73':b.details.advisory.method==='advisory-measurements-v74'?'research-screen-advisory-v72':b.details.advisory.method==='advisory-measurements-v73'?'research-screen-advisory-v71':b.details.advisory.method==='advisory-measurements-v72'?'research-screen-advisory-v70':b.details.advisory.method==='advisory-measurements-v71'?'research-screen-advisory-v69':b.details.advisory.method==='advisory-measurements-v70'?'research-screen-advisory-v68':b.details.advisory.method==='advisory-measurements-v69'?'research-screen-advisory-v67':b.details.advisory.method==='advisory-measurements-v68'?'research-screen-advisory-v66':b.details.advisory.method==='advisory-measurements-v67'?'research-screen-advisory-v65':b.details.advisory.method==='advisory-measurements-v66'?'research-screen-advisory-v64':b.details.advisory.method==='advisory-measurements-v65'?'research-screen-advisory-v63':b.details.advisory.method==='advisory-measurements-v64'?'research-screen-advisory-v62':b.details.advisory.method==='advisory-measurements-v63'?'research-screen-advisory-v61':b.details.advisory.method==='advisory-measurements-v62'?'research-screen-advisory-v60':b.details.advisory.method==='advisory-measurements-v61'?'research-screen-advisory-v59':b.details.advisory.method==='advisory-measurements-v60'?'research-screen-advisory-v58':b.details.advisory.method==='advisory-measurements-v59'?'research-screen-advisory-v57':b.details.advisory.method==='advisory-measurements-v58'?'research-screen-advisory-v56':b.details.advisory.method==='advisory-measurements-v57'?'research-screen-advisory-v55':b.details.advisory.method==='advisory-measurements-v56'?'research-screen-advisory-v54':b.details.advisory.method==='advisory-measurements-v55'?'research-screen-advisory-v53':b.details.advisory.method==='advisory-measurements-v54'?'research-screen-advisory-v52':b.details.advisory.method==='advisory-measurements-v53'?'research-screen-advisory-v51':b.details.advisory.method==='advisory-measurements-v52'?'research-screen-advisory-v50':b.details.advisory.method==='advisory-measurements-v51'?'research-screen-advisory-v49':b.details.advisory.method==='advisory-measurements-v50'?'research-screen-advisory-v48':b.details.advisory.method==='advisory-measurements-v49'?'research-screen-advisory-v47':b.details.advisory.method==='advisory-measurements-v48'?'research-screen-advisory-v46':b.details.advisory.method==='advisory-measurements-v47'?'research-screen-advisory-v45':b.details.advisory.method==='advisory-measurements-v46'?'research-screen-advisory-v44':b.details.advisory.method==='advisory-measurements-v45'?'research-screen-advisory-v43':b.details.advisory.method==='advisory-measurements-v44'?'research-screen-advisory-v42':b.details.advisory.method==='advisory-measurements-v43'?'research-screen-advisory-v41':b.details.advisory.method==='advisory-measurements-v42'?'research-screen-advisory-v40':b.details.advisory.method==='advisory-measurements-v41'?'research-screen-advisory-v39':b.details.advisory.method==='advisory-measurements-v40'?'research-screen-advisory-v38':b.details.advisory.method==='advisory-measurements-v39'?'research-screen-advisory-v37':'research-screen-advisory-v36'):b.analysisKind==='LIVE'&&b.details?.shared?(entryGates?'research-screen-shared-v3':entryComparison!==undefined?'research-screen-shared-v2':'research-screen-shared-v1'):social?.identityReview||social?.integrityReview?'research-screen-v4':social?'research-screen-v3':'research-screen-v2', ...(entryComparison!==undefined?{entryComparison}:{}),...(entryGates?{entryGates}:{}), featureVersion: social?2:1, token: b.token, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, thesis: b.thesis ?? null, result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'ENTRY');
@@ -958,9 +1164,11 @@ export class Service {
     const position = savedPosition && Date.parse(savedPosition.entryAt) <= Date.parse(b.cutoff) && Date.parse(savedPosition.recordedAt) <= Date.parse(b.cutoff) ? savedPosition : null;
     const events = position && pRow ? this.db.prepare('SELECT payload FROM position_events WHERE position_id=?').all(String(pRow.id)).map(x => readJson<PositionEvent>(x.payload)).filter(e => Date.parse(e.recordedAt) <= Date.parse(b.cutoff)) : [];
     const social=b.analysisKind==='LIVE'?b.details?.social:undefined;
-    const result = evaluateManagement(episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b),social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social);
+    const execution:ExecutionInputs={token:b.token,evidence:b.evidence,exitProofs:b.exitProofs??[]};
+    const policyVersion=b.analysisKind==='LIVE'?'thesis-management-v8':MANAGEMENT_POLICY_VERSION;
+    const result = evaluateManagementAs(policyVersion,episode, policyFeatures(b), position, events, b.profile, b.cutoff,stageInputs(b),execution,social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2',social);
     const details=this.assessmentDetails(b,episode.thesis);
-    const semantic = { schemaVersion: 2, policyVersion: social?.identityReview||social?.integrityReview?'thesis-management-v4':social?'thesis-management-v3':'thesis-management-v2', ...(social?{featureVersion:2}:{}), episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result,details,
+    const semantic = { schemaVersion: 2, policyVersion, token:b.token, exitProofs:execution.exitProofs, attentionPolicy:social?.identityReview||social?.integrityReview?'QUALIFIED_V4':social?'QUALIFIED_V3':'QUALIFIED_V2', ...(social?{featureVersion:2}:{}), episode, cutoff: b.cutoff, analysisKind: b.analysisKind, features: b.features, policyFeatures:policyFeatures(b), evidence: b.evidence, profile: b.profile, position, events, stageInputs: stageInputs(b), result,details,
       ...(b.analysisKind === 'LIVE' ? { observations: b.observations, collection: b.collection, semantic: b.semantic, market: b.market } : {}) };
     const hash = decisionHash(semantic);
     const existing = this.db.prepare('SELECT payload FROM snapshots WHERE hash=? AND kind=?').get(hash, 'MANAGEMENT');
@@ -993,7 +1201,12 @@ export class Service {
     if (!selected) throw new Error('NO_THESIS_AT_CUTOFF');
     return selected;
   }
-  successor(caseId: string, thesisInput: Thesis, at: string): ThesisEpisode {
+  /**
+   * Saves a successor thesis. The caller must declare how its sell plan relates to earlier sales: CONTINUE keeps the predecessor's base and
+   * counts sales by leg ID; FRESH_START rebases shares to the inventory held at `at` and counts only later sales. Saved episodes are never rewritten.
+   */
+  successor(caseId: string, thesisInput: Thesis, at: string, basis: PlanBasisDeclaration['mode']): ThesisEpisode {
+    if (basis !== 'CONTINUE' && basis !== 'FRESH_START') throw new Error('SUCCESSOR_PLAN_BASIS_REQUIRED');
     const thesis = thesisSchema.parse(thesisInput);
     if (!Number.isFinite(Date.parse(at))) throw new Error('INVALID_SUCCESSOR_TIME');
     for (const p of [...thesis.support,...thesis.invalidation,...[thesis.catalyst,thesis.onchainTraction,thesis.externalTraction,thesis.warning].filter(x => x !== null),...thesis.legs.map(l => l.trigger)]) evaluatePredicate(p,[],at);
@@ -1007,7 +1220,8 @@ export class Service {
       const old = readJson<ThesisEpisode>(head.payload);
       this.episodeAt(caseId, headId, old.createdAt);
       if (Date.parse(at) <= Date.parse(old.createdAt)) throw new Error('SUCCESSOR_TIME_NOT_AFTER_PREDECESSOR');
-      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id };
+      const planBasis: PlanBasisDeclaration = { mode: basis, anchorAt: basis === 'FRESH_START' ? at : old.planBasis?.anchorAt ?? null };
+      const episode: ThesisEpisode = { id: randomUUID(), caseId, baselineSnapshotId: old.baselineSnapshotId, thesis, createdAt: at, supersedesEpisodeId: old.id, planBasis };
       this.db.prepare('INSERT INTO episodes VALUES(?,?,?)').run(episode.id,caseId,JSON.stringify(episode));
       this.db.prepare('UPDATE cases SET episode_id=? WHERE id=?').run(episode.id,caseId);
       return episode;
@@ -1026,7 +1240,14 @@ export class Service {
     const replayBundle = { analysisKind: semantic.analysisKind, features: semantic.features, evidence:semantic.evidence??[] } as Bundle | LiveBundle;
     const effective=semantic.schemaVersion===1?legacyPolicyFeatures(replayBundle):semantic.policyFeatures;
     if(!Array.isArray(effective))throw new Error('UNSUPPORTED_SNAPSHOT_VERSION');
-    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):semantic.policyVersion==='research-screen-v4'?'QUALIFIED_V4':semantic.policyVersion==='research-screen-v3'?'QUALIFIED_V3':semantic.policyVersion==='research-screen-v2'?'QUALIFIED_V2':semantic.policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion),['research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryComparison:undefined,['research-screen-shared-v3','research-screen-shared-v4'].includes(semantic.policyVersion)?semantic.entryGates:undefined,semantic.policyVersion==='research-screen-shared-v4'?semantic.details?.groups:undefined) : evaluateManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,semantic.policyVersion==='thesis-management-v4'?'QUALIFIED_V4':semantic.policyVersion==='thesis-management-v3'?'QUALIFIED_V3':semantic.policyVersion==='thesis-management-v2'?'QUALIFIED_V2':semantic.policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
+    const execution:ExecutionInputs={token:semantic.token??null,evidence:semantic.evidence??[],exitProofs:semantic.exitProofs??[]};
+    const policyVersion=semantic.policyVersion??(semantic.schemaVersion===1?(row.kind==='ENTRY'?'research-screen-v0':'thesis-management-v0'):undefined);
+    const modern=['thesis-management-v5','thesis-management-v6','thesis-management-v7','thesis-management-v8'].includes(policyVersion);
+    const historical=['thesis-management-v0','thesis-management-v1','thesis-management-v2','thesis-management-v3','thesis-management-v4'].includes(policyVersion);
+    const entryVersions=['research-screen-v0','research-screen-v1','research-screen-v2','research-screen-v3','research-screen-v4','research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4',...ADVISORY_SCREENS];
+    if(row.kind==='ENTRY'?!entryVersions.includes(policyVersion):!modern&&!historical)throw new Error(row.kind==='ENTRY'?'UNSUPPORTED_SNAPSHOT_VERSION':'UNSUPPORTED_POLICY_VERSION');
+    if(ADVISORY_SCREENS.includes(policyVersion)&&!semantic.details?.advisory)throw new Error('ADVISORY_PROOF_REQUIRED');
+    const recomputed = row.kind === 'ENTRY' ? evaluateEntry(effective,semantic.profile,semantic.cutoff,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4',...ADVISORY_SCREENS].includes(policyVersion)?(semantic.details?.social?.identityReview||semantic.details?.social?.integrityReview?'QUALIFIED_V4':semantic.details?.social?'QUALIFIED_V3':'QUALIFIED_V2'):policyVersion==='research-screen-v4'?'QUALIFIED_V4':policyVersion==='research-screen-v3'?'QUALIFIED_V3':policyVersion==='research-screen-v2'?'QUALIFIED_V2':policyVersion==='research-screen-v1'?'QUALIFIED':'LEGACY',semantic.details?.social,['research-screen-shared-v1','research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)||ADVISORY_SCREENS.includes(policyVersion)&&!!semantic.details?.shared,ADVISORY_SCREENS.includes(policyVersion)?semantic.details?.advisory:undefined,(['research-screen-shared-v2','research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)||ADVISORY_SCREENS.includes(policyVersion))?semantic.entryComparison:undefined,['research-screen-shared-v3','research-screen-shared-v4'].includes(policyVersion)?semantic.entryGates:undefined,policyVersion==='research-screen-shared-v4'?semantic.details?.groups:undefined) : modern ? evaluateManagementAs(policyVersion,semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,execution,semantic.attentionPolicy,semantic.details?.social) : evaluateLegacyManagement(semantic.episode,effective,semantic.position,semantic.events,semantic.profile,semantic.cutoff,semantic.stageInputs,policyVersion==='thesis-management-v4'?'QUALIFIED_V4':policyVersion==='thesis-management-v3'?'QUALIFIED_V3':policyVersion==='thesis-management-v2'?'QUALIFIED_V2':policyVersion==='thesis-management-v1'?'QUALIFIED':'LEGACY',semantic.details?.social);
     if (decisionHash(recomputed) !== decisionHash(semantic.result)) throw new Error('REPLAY_RESULT_MISMATCH');
     return readJson<EntrySnapshot | ManagementSnapshot>(row.payload);
   }

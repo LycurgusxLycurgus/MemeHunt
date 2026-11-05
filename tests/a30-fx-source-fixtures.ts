@@ -1,0 +1,27 @@
+import {readFileSync,writeFileSync,mkdtempSync,rmSync,copyFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {deflateRawSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+import {createO29BulkCapture} from './reserve-bulk-fixtures.js';
+import {A29_FX_POOLS,A29_WSOL_MINT} from '../src/providers/a29-fx-whirlpool.js';
+import {O23_BULK_QUOTE,O23_BULK_ARCHIVE_METHOD} from '../src/providers/advisory-synchrony-bulk.js';
+import {A30_SOURCE_METHOD,A30_SOURCE_PURPOSE,A30_SOURCE_PREFIX,A30_SOURCE_ID,A30_SOURCE_ADAPTER,type A30SourceReceipts,type A30SourceDescriptor} from '../src/providers/advisory-demand-fx-source.js';
+import type {EvidenceRecord} from '../src/domain/contracts.js';
+export const a30Sha=(v:string|Buffer)=>createHash('sha256').update(v).digest('hex');
+export const a30Archive=(raw:string)=>JSON.stringify({method:O23_BULK_ARCHIVE_METHOD,encoding:'DEFLATE_RAW_BASE64',sourceBytes:Buffer.byteLength(raw),sourceHash:a30Sha(raw),data:deflateRawSync(Buffer.from(raw)).toString('base64')});
+export function a30SourceNativeFixture():any{return JSON.parse(readFileSync(new URL('../../tests/fixtures/advisory-a30-fx-source-native.json',import.meta.url),'utf8'));}
+/** CONSTRUCTED small complete census over exact native preimages; never whole-history acceptance. */
+export function createA30SourceCapture(directory:string){
+ const c5dir=mkdtempSync(join(tmpdir(),'a30-c5-subset-'));let c5:ReturnType<typeof createO29BulkCapture>;try{c5=createO29BulkCapture(c5dir);for(const x of c5.manifest.receipts)copyFileSync(join(c5dir,x.file),join(directory,'c5-'+x.file));}finally{rmSync(c5dir,{recursive:true,force:true});}
+ const native=a30SourceNativeFixture(),tx=JSON.parse(native.nativeTransactionRaw),fxPool=A29_FX_POOLS[O23_BULK_QUOTE]!;
+ const source:A30SourceReceipts={method:A30_SOURCE_METHOD,purpose:A30_SOURCE_PURPOSE,token:c5.source.token,pool:c5.source.pool,range:c5.source.range,anchorSlot:c5.source.anchorSlot,fx:{pool:fxPool,mintA:A29_WSOL_MINT,mintB:O23_BULK_QUOTE,decimalsA:9,decimalsB:8},thresholdReference:'POOL_MARGINAL_PREVIOUS_COMMITTED_TRANSACTION',netFlowUnit:'NATIVE_CORE_WBTC_ATOMIC',requests:{},rawArtifacts:{},retrievedAt:{}};
+ const receipts:any[]=c5.manifest.receipts.map((v:any)=>({...v,id:'c5-'+v.id,file:'c5-'+v.file}));for(const key of Object.keys(c5.source.requests)){source.requests['c5-'+key]=c5.source.requests[key]!;source.rawArtifacts['c5-'+key]=c5.source.rawArtifacts[key]!;source.retrievedAt['c5-'+key]=c5.source.retrievedAt[key]!;}
+ const add=(id:string,request:any,raw:string,retrievedAt:string,archive:boolean)=>{const bytes=Buffer.from(raw),packed=archive?deflateRawSync(bytes):bytes,file=id+(archive?'.deflate':'.json');writeFileSync(join(directory,file),packed);receipts.push({id,request,retrievedAt,file,encoding:archive?'DEFLATE_RAW_BINARY':'PLAIN',sourceBytes:bytes.length,sourceHash:a30Sha(bytes),...(archive?{archiveBytes:packed.length,archiveHash:a30Sha(packed)}:{})});source.requests[id]=request;source.retrievedAt[id]=retrievedAt;source.rawArtifacts[id]=archive?a30Archive(raw):raw;};
+ const start=Date.parse(source.range.start)/1000,end=Date.parse(source.range.end)/1000,base={commitment:'finalized',minContextSlot:source.anchorSlot,sortOrder:'desc',filters:{blockTime:{gte:start,lt:end},status:'any',tokenAccounts:'none'}},row={signature:tx.transaction.signatures[0],slot:tx.slot,transactionIndex:tx.transactionIndex,blockTime:tx.blockTime,err:null,confirmationStatus:'finalized'};
+ const index=JSON.stringify({jsonrpc:'2.0',id:1,result:{data:[row],paginationToken:null}}),indexReq={method:'getTransactionsForAddress',params:[fxPool,{transactionDetails:'signatures',...base,limit:1000}]};add('fx-index-0',indexReq,index,'2026-10-30T15:11:26.047Z',true);add('fx-index-head',indexReq,index,'2026-10-30T15:11:47.418Z',true);
+ const body='{"jsonrpc":"2.0","id":1,"result":{"data":['+native.nativeTransactionRaw+'],"paginationToken":null}}',bodyReq={method:'getTransactionsForAddress',params:[fxPool,{transactionDetails:'full',encoding:'jsonParsed',maxSupportedTransactionVersion:1,...base,limit:500,filters:{...base.filters,status:'succeeded'}}]};add('fx-body-0',bodyReq,body,native.nativeSource.retrievedAt,true);add('fx-head',bodyReq,body,'2026-10-30T16:14:42.000Z',true);
+ add('fx-compiled-0',native.compiledReceipt.request,native.compiledRaw,native.compiledReceipt.retrievedAt,false);add('fx-identity-bank',native.identityReceipt.request,native.identityRaw,native.identityReceipt.retrievedAt,false);
+ const {requests,rawArtifacts,retrievedAt,...header}=source,manifest={...header,receipts};writeFileSync(join(directory,'capture.json'),JSON.stringify(manifest));return{source,manifest,cutoff:'2026-10-30T18:00:00.000Z',native,c5};
+}
+export function a30SourceBundle(source:A30SourceReceipts){const{rawArtifacts,retrievedAt,...header}=source;const descriptor:A30SourceDescriptor={...header,artifactIds:Object.fromEntries(Object.keys(source.requests).map(key=>[key,A30_SOURCE_PREFIX+key]))},raw:Record<string,string>={},evidence:EvidenceRecord[]=[];for(const key of Object.keys(source.requests)){const id=A30_SOURCE_PREFIX+key;raw[id]=rawArtifacts[key]!;evidence.push({id,sourceId:A30_SOURCE_ID,sourceType:'HISTORICAL_RECEIPT',accessMode:'USER_IMPORT',retrievedAt:retrievedAt[key]!,availableAt:retrievedAt[key]!,contentHash:a30Sha(raw[id]!),adapterVersion:A30_SOURCE_ADAPTER,scope:{request:source.requests[key]}} as EvidenceRecord);}return{descriptor,rawArtifacts:raw,evidence};}

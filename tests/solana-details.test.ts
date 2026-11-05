@@ -343,7 +343,7 @@ test('Solana detail collection uses exact bounded methods and validates sampled 
   assert.deepEqual(populations.map(request => (request.params[1] as { minContextSlot: number }).minContextSlot), [102, 106]);
   assert.deepEqual(populations[0]?.params, [TOKEN_2022_PROGRAM, {
     encoding: 'base64', commitment: 'finalized', minContextSlot: 102, withContext: true,
-    dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
+    filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
   const rawRead = requestLog.find(request => request.method === 'getAccountInfo' && request.params[0] === MINT);
   assert.deepEqual(rawRead?.params[1], { encoding: 'base64', commitment: 'finalized', minContextSlot: SLOT });
@@ -405,7 +405,7 @@ test('complete holder scan is attempted before the top-account fallback and reco
   const population = requestLog.find(request => request.method === 'getProgramAccounts');
   assert.deepEqual(population?.params, [TOKEN_2022_PROGRAM, {
     encoding: 'base64', commitment: 'finalized', minContextSlot: 102, withContext: true,
-    dataSlice: { offset: 0, length: 165 }, filters: [{ memcmp: { offset: 0, bytes: MINT } }],
+    filters: [{ memcmp: { offset: 0, bytes: MINT } }],
   }]);
 });
 
@@ -645,4 +645,20 @@ test('sampled holder mismatch and empty lists remain unknown instead of manufact
     assert.equal(details.errors.holders, 'HOLDER_SUPPLY_UNRECONCILED');
     assert.equal(multipleCalls, 0);
   });
+});
+
+test('advisory holder acquisition stays within its replay archive ceiling while ordinary entry accepts main capacity', async () => {
+  const fetcher:typeof fetch=async(_url,init)=>{
+    const request=JSON.parse(String(init?.body));
+    if(request.method==='getAccountInfo'&&request.params[0]===MINT)return rpcResponse(accountResult(token2022Mint(),TOKEN_2022_PROGRAM,SLOT));
+    if(request.method==='getProgramAccounts'){const body=JSON.stringify({result:{context:{slot:SLOT},value:[{pubkey:TOKEN_ACCOUNT,account:{owner:TOKEN_2022_PROGRAM,executable:false,data:[rawTokenAccount(100n).toString('base64'),'base64']}}]}});return new Response(body+' '.repeat(21_000_000-body.length));}
+    if(request.method==='getTokenLargestAccounts')return rpcResponse({context:{slot:SLOT},value:[]});
+    throw new Error('UNAVAILABLE_TEST_RPC');
+  };
+  const ordinary=await inspectSolanaDetails(mintDescriptor(),MINT,'https://rpc.example',fetcher);
+  assert.equal(ordinary.holders?.complete,true);
+  const advisory=await inspectSolanaDetails(mintDescriptor(),MINT,'https://rpc.example',fetcher,undefined,undefined,20_000_000);
+  assert.equal(advisory.holders,undefined);
+  assert.ok(advisory.errors.holderPopulation);
+  assert.equal(advisory.rawArtifacts['rpc-holder-population'],undefined,'an unarchivable body is never retained for advisory replay');
 });
