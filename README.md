@@ -41,6 +41,8 @@ Add `--advisory` to a live Solana run for bounded public historical collection, 
 npm run cli -- analyze 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump --chain solana --full --advisory --entry
 ```
 
+For C07's fixed historical lifecycle study, use `--partial --advisory --c07-lifecycle-capture FILE` with an uncompressed portable JSON file. The seven-token study identifies CLAWD as INACTIVE under a selected-venue demand rule; six controls remain MISSING. The finite post sample does not establish platform-wide quiet. See [the C07 scope and validation](handoffs/c07-fixed-cohort-lifecycle-2026-11-05.md).
+
 For S18's retained selected-BUY study, use `--partial --advisory --s18-observability-capture FILE`. FILE is an uncompressed portable capture, not a directory or gzip archive. It measures the retained provider tracking count, one observed quote delay and bounded native venue flow. Only the frozen CLAWD study is supported; other tokens remain MISSING. This does not measure global watchers or causal following. See [the S18 scope and validation](handoffs/s18-selected-buy-observability-2026-11-04.md).
 
 For the creator position measurement without Gemini, use `--partial --advisory --creator-history` with `TINYFISH_API_KEY`. This explicitly permits the bounded TinyFish creator-page lookup plus public history reads. Follow [the S15 contract-address testing guide](handoffs/s15-contract-address-testing.md) for exact commands, prerequisite states and replay checks.
