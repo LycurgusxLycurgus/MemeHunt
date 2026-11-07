@@ -6,8 +6,8 @@ import { geminiSettings } from '../src/providers/gemini.js';
 import { sourceSpans, requestSourceJson, parseSourceResponse } from '../src/providers/source-model.js';
 import { normalizeSocialProposal, qualifySocial, validateSocialWire } from '../src/providers/social-model.js';
 import { acquisitionEvidenceMethod, buildAcquisitionScope } from '../src/providers/acquisition-evidence.js';
+import { projectAcquisition, renderPurposeReceipt } from '../src/domain/acquisition-purpose.js';
 import { deriveSocial } from '../src/domain/social.js';
-import type { TokenRef } from '../src/domain/contracts.js';
 import type { SocialInput } from '../src/domain/social.js';
 import { SOCIAL_AVAILABLE, SOCIAL_CUTOFF, SOCIAL_END, SOCIAL_START, SOCIAL_TOKEN } from './social-fixtures.js';
 
@@ -157,7 +157,7 @@ function proposalWire(packet: ModelPacket, citationMode: CitationMode = 'valid',
 function reviewWire(packet: ModelPacket, pairMode: PairMode = 'valid', sourceComplete = true) {
   const proposal = packet.proposal;
   assert.ok(proposal);
-  const sourceReviews = packet.sources.map(source => ({ complete: sourceComplete, rationale: sourceComplete
+  const sourceReviews = packet.sources.map(_source => ({ complete: sourceComplete, rationale: sourceComplete
     ? 'The full synthetic source was inspected for omitted assertions.'
     : 'The source could not be completely inspected.' }));
   const boundedAcquisition = packet.acquisitionEvidenceMethod === acquisitionEvidenceMethod
@@ -343,6 +343,73 @@ test('completed empty acquisition supports independently reviewed insufficiency 
     'an uninspected receipt leaves Social criteria unresolved');
 });
 
+test('marked Social receipt purpose uses one typed selector repair and downgrades only the ineligible assessment to unresolved', async () => {
+  const socialInput = emptyAcquisitionInput(input(1).sources);
+  const projection = projectAcquisition({
+    group: 'SOCIAL_ENTRY', token: SOCIAL_TOKEN, availableAt: SOCIAL_AVAILABLE,
+    searches: [{ id: 'social-search-1', required: true, outcome: 'NO_RESULTS', artifactId: 'social-search-1-response' }],
+    targets: [],
+    samples: [{ id: 'social-post-sample', searchIds: ['social-search-1'], candidateUrls: [], dropped: false }],
+    fresh: true, aborted: false,
+  });
+  assert.equal(projection.accounted, true);
+  assert.equal(projection.samples[0]?.sampleComplete, true);
+  socialInput.acquisitionPurposeMethod = 'acquisition-purpose-v1';
+  socialInput.purposeProjection = projection;
+  socialInput.purposeReceipt = renderPurposeReceipt(projection);
+
+  const invalidPurposeProposal = (packet: ModelPacket) => {
+    const proposal = proposalWire(packet);
+    const receipt = packet.acquisitionEvidence?.find(source => source.id === 'acquisition-social-scope');
+    const completeSample = receipt?.spans.find(span => span.text.includes('social-post-sample'));
+    assert.ok(completeSample, 'the marked prompt offers the exact complete-sample receipt fact');
+    proposal.identityAssessment = {
+      verdict: 'CONTRADICTED', negativeBasis: 'PUBLIC_SUPPORT_INADEQUATE',
+      rationale: 'The complete post sample does not establish the requested identity evidence.',
+      citations: [{ sourceId: receipt!.id, spanId: completeSample.id }],
+    } as typeof proposal.identityAssessment;
+    return proposal;
+  };
+  const mock = mockModel({ responder: (packet, call) => call === 1 || call === 2
+    ? invalidPurposeProposal(packet)
+    : keyedReviewWire(packet) });
+  const result = await qualifySocial(socialInput, SOCIAL_TOKEN, KEY, mock.fetcher, async () => {}, undefined, { screeningRepair: true });
+
+  assert.equal(result.code, undefined);
+  assert.equal(mock.calls.length, 3, 'one purpose-invalid proposal, its existing typed selector repair, then independent review');
+  assert.ok(result.proposal && result.review);
+  const repair = mock.calls[1]!.packet as ModelPacket & { issues?: Array<{ path: string; code: string }>; invalidProposal?: unknown };
+  assert.ok(repair.issues?.some(issue => issue.path === 'identityAssessment.citations.0'
+    && issue.code === 'SOC_RECEIPT_PURPOSE_INELIGIBLE'), 'the repair packet identifies the code-reproduced purpose mismatch');
+  assert.deepEqual(repair.invalidProposal, mock.responses[0], 'repair binds to the exact retained initial response');
+  assert.ok(result.rawArtifacts['social-selector-repair-prompt']);
+  assert.ok(result.rawArtifacts['social-review-prompt'], 'a bounded local downgrade still reaches the real independent review');
+
+  assert.equal(result.proposal.identityAssessment?.verdict, 'UNRESOLVED');
+  assert.equal(result.proposal.identityAssessment?.negativeBasis, undefined,
+    'a completed-sample receipt cannot be turned into a negative assessment when its purpose is only bounded measurement');
+  assert.equal(result.proposal.integrityAssessment?.verdict, 'UNRESOLVED');
+  assert.equal(result.proposal.integrityAssessment?.citations[0]?.sourceId, 'post-alice-1',
+    'the valid sibling assessment remains grounded in its original body citation');
+  const reviewPacket = JSON.parse(result.rawArtifacts['social-review-prompt']!) as {
+    proposal: { identityAssessment: { verdict: string; negativeBasis?: string }; integrityAssessment: { citations: Array<{ sourceId: string }> } };
+  };
+  assert.equal(reviewPacket.proposal.identityAssessment.verdict, 'UNRESOLVED');
+  assert.equal(reviewPacket.proposal.identityAssessment.negativeBasis, undefined);
+  assert.deepEqual(reviewPacket.proposal.integrityAssessment, result.proposal.integrityAssessment,
+    'independent review receives the exact unaffected sibling decision');
+
+  const issues = JSON.parse(result.rawArtifacts['social-proposal-issues']!) as {
+    initial: Array<{ path: string; code: string }>;
+    remaining: Array<{ path: string; code: string }>;
+  };
+  assert.deepEqual(issues.initial.map(issue => [issue.path, issue.code]), [
+    ['identityAssessment.citations.0', 'SOC_RECEIPT_PURPOSE_INELIGIBLE'],
+  ]);
+  assert.deepEqual(issues.remaining, issues.initial, 'the attempted selector repair is retained and local normalization stays conservative');
+  validateSocialWire(result.rawArtifacts, socialInput, SOCIAL_TOKEN, result.proposal, result.review);
+});
+
 test('bounded Social review normalizes separate exact body and receipt maps and rejects catalog crossover', async t => {
   const socialInput = emptyAcquisitionInput(input(1).sources, false);
   const bodyIds = socialInput.sources.map(source => source.id);
@@ -480,7 +547,7 @@ test('bounded social draft repair accepts one reproducible validation failure an
     assert.equal(result.rawArtifacts['social-review-prompt'], undefined);
   });
 
-  await t.test('strict schema failures retain the original draft and require cited corrected content plus independent review', async t => {
+  await t.test('strict schema failures retain the original draft and require cited corrected content plus independent review', async _t => {
     const variants = [
       {
         name: 'empty identity citation array',
@@ -632,7 +699,7 @@ test('fresh identity citation closure only carries an existing assessment edge i
     return { sourceId, spanId: span.id };
   };
   const bindingProposal = (packet: ModelPacket, primarySourceId: string) => {
-    const profile = sourceCitation(packet, 'profile-alice', text => text.includes(SOCIAL_TOKEN.address) && text.includes('@alice'));
+    sourceCitation(packet, 'profile-alice', text => text.includes(SOCIAL_TOKEN.address) && text.includes('@alice'));
     const primary = sourceCitation(packet, primarySourceId, text => text.includes('@') && text.includes(SOCIAL_TOKEN.address));
     return {
       ...proposalWire(packet),
@@ -763,7 +830,7 @@ test('fresh identity citation closure only carries an existing assessment edge i
   });
 });
 
-test('fresh post-body identity closure requires the matching complete author post and keeps independent review authoritative', async t => {
+test('fresh post-body identity closure requires the matching complete author post and keeps independent review authoritative', async _t => {
   const makeInput = (primaryBinding: boolean): SocialInput => {
     const value = input();
     value.entryDecisionMethod = 'public-support-v2';
@@ -2731,6 +2798,34 @@ test('long source spans stay exact and an unspanned required post stops before t
   const tooShort = await qualifySocial(shortInput, SOCIAL_TOKEN, KEY, async () => { calls++; return envelope({}); }, async () => {});
   assert.equal(tooShort.code, 'SOC_TEXT_CAP');
   assert.equal(calls, 0);
+});
+
+test('Social text and packet caps mark the producer scope incomplete before transport', async () => {
+  const overTextCap = input(1);
+  overTextCap.sources[1]!.text = 'x'.repeat(120000);
+  let textCapCalls = 0;
+  const textCap = await qualifySocial(overTextCap, SOCIAL_TOKEN, KEY, async () => {
+    textCapCalls++;
+    return envelope({});
+  }, async () => {});
+  assert.equal(textCap.code, 'SOC_TEXT_CAP');
+  assert.equal(textCap.read.sampleComplete, false);
+  assert.equal(textCap.read.identityComplete, false);
+  assert.ok(textCap.read.codes.includes('SOC_TEXT_CAP'));
+  assert.equal(textCapCalls, 0);
+
+  const packetOverCap = input();
+  packetOverCap.sources[0]!.text = '\n'.repeat(40000);
+  let packetCalls = 0;
+  const packetCap = await qualifySocial(packetOverCap, SOCIAL_TOKEN, KEY, async () => {
+    packetCalls++;
+    return envelope({});
+  }, async () => {});
+  assert.equal(packetCap.code, 'SOC_MODEL_PACKET_LIMIT');
+  assert.equal(packetCap.read.sampleComplete, false);
+  assert.equal(packetCap.read.identityComplete, false);
+  assert.ok(packetCap.read.codes.includes('SOC_MODEL_PACKET_LIMIT'));
+  assert.equal(packetCalls, 0);
 });
 
 test('packet transport errors use SOC_MODEL prefix without changing retry or payload contracts', async () => {

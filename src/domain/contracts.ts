@@ -1,3 +1,5 @@
+import { fastSingleGenerationSchema } from './criterion-schema.js';
+import { criterionReceiptSchema } from './criterion-schema.js';
 import { z } from 'zod';
 
 export const qualityStateSchema = z.enum(['KNOWN', 'MISSING', 'STALE', 'CONFLICT', 'UNSUPPORTED', 'TRUNCATED', 'INVALID']);
@@ -182,18 +184,19 @@ export const sharedPolicyFactsSchema=z.object({
   method:z.literal('shared-evidence-v1'),completionMethod:z.literal('reviewed-audit-completion-v1').optional(),auditCompleted:z.boolean().optional(),qualityMode:z.enum(['ENTRY_GATES_V1','ENTRY_GROUPS_V1']).optional(),token:tokenRefSchema,cutoff:z.iso.datetime({offset:true}),
   witnesses:z.array(z.object({checkId:z.string(),status:z.enum(['PASS','FAIL','UNKNOWN']),featureIds:z.array(z.string()),evidenceIds:z.array(z.string()),route:z.string()}).strict()).max(40),
   freshness:z.array(z.object({featureId:z.string(),ttlSeconds:z.number().int().positive(),eventAt:z.string().nullable(),fresh:z.boolean(),evidenceIds:z.array(z.string())}).strict()).max(61),
-  unresolved:z.array(z.string()),semanticQualified:z.boolean(),auditQualified:z.boolean(),
+  unresolved:z.array(z.string()),semanticQualified:z.boolean(),auditQualified:z.boolean(),auditedScope:z.array(z.string()).optional(),omittedScope:z.array(z.string()).optional(),
   conflicts:z.array(z.object({field:z.string(),evidenceIds:z.array(z.string()),rationale:z.string()}).strict()).max(100),
   values:z.object({C03:z.boolean().nullable(),C04:z.boolean().nullable(),C05:z.boolean().nullable(),C06:z.boolean().nullable()}).strict(),
 }).strict();
 export type SharedPolicyFacts=z.infer<typeof sharedPolicyFactsSchema>;
-export type AssessmentDetails = { version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts;groups?:EntryGroupFacts };
+export type AssessmentDetails = { acquisitionPurposeMethod?:'acquisition-purpose-v1';version: 1; profile: Profile; thesis: Thesis | null; baseline: import('./baseline.js').BaselineAssessment[]; origins: Record<string,string>; stageInputs: {circulatingMarketCapUsd:string|null;tokenCreatedAt:string|null}; social?:SocialPolicyFacts;shared?:SharedPolicyFacts;groups?:EntryGroupFacts;criteria?:import('./criterion-schema.js').CriterionReceipt;fast?:import('./fast-checklist.js').FastChecklistResult;fastGeneration?:import('./criterion-schema.js').FastSingleGeneration };
 const baselineAssessmentSchema=z.object({
   id:z.string(),version:z.literal('baseline-v1'),evaluator:z.literal('IMPLEMENTED'),collector:z.enum(['IMPLEMENTED','UNIMPLEMENTED','NOT_REQUIRED']),quality:qualityStateSchema,unit:z.string(),data:z.unknown(),
   observationIds:z.array(z.string()),evidenceIds:z.array(z.string()),limitations:z.array(z.string()),
   causes:z.array(z.object({category:z.enum(['USER_INPUT_MISSING','EVIDENCE_UNAVAILABLE','COLLECTION_UNIMPLEMENTED','CLAIM_UNVALIDATED']),code:z.string(),featureId:z.string(),sourceId:z.string().optional(),field:z.string().optional(),evidenceIds:z.array(z.string()),action:z.string()}).strict()),projection:featureResultSchema.optional(),
 }).strict();
-export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional(),groups:entryGroupFactsSchema.optional()}).strict();
+const fastResultSchema=z.object({policyId:z.literal('research-fast-v3'),classification:z.enum(['FAST_REJECTED','FAST_SHORTLIST','FAST_UNAVAILABLE']),binary:z.literal('FAIL'),coverage:z.object({known:z.number().int().min(0).max(20),total:z.literal(20)}).strict(),requiredCheckIds:z.array(z.string()),rows:z.array(z.object({checkId:z.string(),outcome:z.enum(['SUPPORTED','CONTRADICTED','INSUFFICIENT','UNKNOWN'])}).strict())}).strict();
+export const assessmentDetailsSchema:z.ZodType<AssessmentDetails>=z.object({acquisitionPurposeMethod:z.literal('acquisition-purpose-v1').optional(),version:z.literal(1),profile:profileSchema,thesis:thesisSchema.nullable(),baseline:z.array(baselineAssessmentSchema).max(61),origins:z.record(z.string(),z.string()),stageInputs:z.object({circulatingMarketCapUsd:z.string().regex(/^(0|[1-9]\d*)(\.\d+)?$/).nullable(),tokenCreatedAt:z.iso.datetime({offset:true}).nullable()}).strict(),social:socialPolicyFactsSchema.optional(),shared:sharedPolicyFactsSchema.optional(),groups:entryGroupFactsSchema.optional(),criteria:criterionReceiptSchema.optional(),fast:fastResultSchema.optional(),fastGeneration:fastSingleGenerationSchema.optional()}).strict() as z.ZodType<AssessmentDetails>;
 export const bundleSchema = z.object({ token: tokenRefSchema, cutoff: z.iso.datetime({ offset: true }), analysisKind: z.enum(['FIXTURE', 'USER_IMPORT', 'MANUAL_EMPTY']), evidence: z.array(evidenceRecordSchema), rawArtifacts: z.record(z.string(), z.string()).optional(), observations: z.array(observationSchema).default([]), features: z.array(featureResultSchema), profile: profileSchema, thesis: thesisSchema.optional() }).strict();
 export type Bundle = z.infer<typeof bundleSchema>;
 

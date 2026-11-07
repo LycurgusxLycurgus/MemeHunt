@@ -1042,7 +1042,7 @@ test('counterfeit pool owner, mint orientation, and vault mint or authority cann
   }
 });
 
-test('LP mint authority and outstanding supply bound removable fraction; unsupported pool execution modes stay explicit', async t => {
+test('LP mint authority and outstanding supply bound removable fraction; unsupported pool execution modes stay explicit', async _t => {
   const fraction = await fixture({ lpSupply: 250n, poolLpSupply: 1000n });
   const read = await inspectPumpSwap(TOKEN, starterProfile(), controls, undefined, SLOT, 'https://rpc.example', fraction.fetcher, () => AT);
   assert.equal(read.inspection.removableLiquidityFraction, '0.25');

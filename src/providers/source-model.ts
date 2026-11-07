@@ -31,6 +31,9 @@ export function parseSourceResponse(raw:string,prefix='ATT_MODEL'):unknown{
   if(parts?.length!==1||typeof parts[0].text!=='string')throw new Error(`${prefix}_CONTENT`);
   return JSON.parse(parts[0].text);
 }
+export function extractModelUsage(raw:string):{inputTokens:number|null;outputTokens:number|null}{
+ try{const p=JSON.parse(raw),u=p.usageMetadata??p.usage??{},input=u.promptTokenCount??u.prompt_tokens,output=u.candidatesTokenCount??u.completion_tokens;return {inputTokens:Number.isInteger(input)&&input>=0?input:null,outputTokens:Number.isInteger(output)&&output>=0?output:null};}catch{return {inputTokens:null,outputTokens:null};}
+}
 const responseHash=(raw:string)=>createHash('sha256').update(raw).digest('hex');
 function responseReceipts(id:string,rawArtifacts:Record<string,string>){
   const match=id.match(/^(.*)-response(?:-attempt-(\d+))?$/);
@@ -98,7 +101,7 @@ export function sourceSpans(sourceId:string,text:string,prefix='ATT_MODEL'):Sour
   return spans;
 }
 
-export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL',routing?:SourceModelRouting):Promise<{raw:string;value:z.output<S>}>{
+export async function requestSourceJson<S extends z.ZodType>(packet:string,schema:S,key:string,fetcher:typeof fetch,retain:(raw:string,retrying?:boolean,transportAttempt?:number,responseAttempt?:number)=>void,wait:(ms:number)=>Promise<void>,signal?:AbortSignal,prefix='ATT_MODEL',routing?:SourceModelRouting,decodeResponse?:(value:unknown)=>z.output<S>,bindResponses=false):Promise<{raw:string;value:z.output<S>}>{
   // Larger full-source packets require real token admission; unpaced legacy calls keep their prior cap.
   if(packet.length>(routing?.pacing?1000000:300000))throw new Error(`${prefix}_PACKET_LIMIT`);
   const body={...buildGeminiSemanticRequest('attention-source-review'),contents:[{role:'user',parts:[{text:packet}]}]};
@@ -130,19 +133,21 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
     const nvidia=nvidiaMode&&selectedFallback;
     const openrouter=openrouterMode&&selectedFallback,native=nvidia||openrouter;
     const model=openrouter?openRouterSettings.model:nvidia?nvidiaSettings.model:selectedFallback?geminiSettings.fallbackModel:geminiSettings.model;
-    const nativeAdmission=openrouter?await openRouterPacerForKey(routing!.openrouterKey!).admit(wait,signal):nvidia?await nvidiaPacerForKey(routing!.nvidiaKey!).admit(wait,signal):undefined;
+    let nativeAdmission:Awaited<ReturnType<ReturnType<typeof openRouterPacerForKey>['admit']>>|undefined;
+    try{nativeAdmission=openrouter?await openRouterPacerForKey(routing!.openrouterKey!).admit(wait,signal):nvidia?await nvidiaPacerForKey(routing!.nvidiaKey!).admit(wait,signal):undefined;}
+    catch(error){checkRun();if(bindResponses){const code=`${prefix}_INPUT_ADMISSION_FAILED`;retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase:'INPUT_ADMISSION',elapsedMs:0,budgetMs:90000,model,...(native?{provider:openrouter?'openrouter':'nvidia',...(openrouter?{requestProfile:openRouterSettings.requestProfile}:{})}:{}),responseBindingMethod:'retained-body-sha256-v1',code,willRetry:false}),false,attempt+1);throw new Error(code);}throw error;}
     let admission:GeminiAdmission|undefined;
     if(routing?.pacing&&!native){
       let count=counts.get(model);
-      if(!count){try{count=await countGeminiInput(model,payload,key,fetcher,signal);}catch(error){checkRun();throw error;}counts.set(model,count);}
+      if(!count){try{count=await countGeminiInput(model,payload,key,fetcher,signal);}catch(error){checkRun();if(bindResponses){const code=`${prefix}_INPUT_ADMISSION_FAILED`;retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase:'INPUT_ADMISSION',elapsedMs:0,budgetMs:90000,model,responseBindingMethod:'retained-body-sha256-v1',code,willRetry:false}),false,attempt+1);throw new Error(code);}throw error;}counts.set(model,count);}
       checkRun();
-      if(packet.length>300000&&count.method!=='COUNT_TOKENS')throw new Error(`${prefix}_TOKEN_COUNT_UNAVAILABLE`);
-      try{admission=await routing.pacing.admit(model,count.tokens,count.method,wait,signal);}catch(error){checkRun();if(error instanceof Error&&error.message==='GEMINI_INPUT_BUDGET')throw new Error(`${prefix}_INPUT_TOKEN_LIMIT`);throw error;}
+      if(packet.length>300000&&count.method!=='COUNT_TOKENS'){const code=`${prefix}_TOKEN_COUNT_UNAVAILABLE`;if(bindResponses)retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase:'INPUT_ADMISSION',elapsedMs:0,budgetMs:90000,model,responseBindingMethod:'retained-body-sha256-v1',code,willRetry:false}),false,attempt+1);throw new Error(code);}
+      try{admission=await routing.pacing.admit(model,count.tokens,count.method,wait,signal);}catch(error){checkRun();if(error instanceof Error&&error.message==='GEMINI_INPUT_BUDGET'){const code=`${prefix}_INPUT_TOKEN_LIMIT`;if(bindResponses)retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase:'INPUT_ADMISSION',elapsedMs:0,budgetMs:90000,model,responseBindingMethod:'retained-body-sha256-v1',code,willRetry:false}),false,attempt+1);throw new Error(code);}throw error;}
     }
     const budgetMs=openrouter?openRouterSettings.requestTimeoutMs:nvidia?nvidiaSettings.requestTimeoutMs:90000;
     const local=AbortSignal.timeout(budgetMs),started=Date.now();
     let phase:'RESPONSE_HEADERS'|'RESPONSE_BODY'='RESPONSE_HEADERS',retrying=false,handoff=false,quotaDelay:number|null=null,attemptRaw:string|undefined,retainedBody:string|undefined;
-    const receipt=(code:string)=>retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase,elapsedMs:Math.max(0,Date.now()-started),budgetMs,model,...(native?{provider:openrouter?'openrouter':'nvidia',pacing:nativeAdmission,...(openrouter?{requestProfile:openRouterSettings.requestProfile}:{})}:{}),...(nativeMode?{responseBindingMethod:'retained-body-sha256-v1',...(retainedBody!==undefined?{responseHash:responseHash(retainedBody)}:{})}:{}),code,willRetry:retrying,...(admission?{pacing:{inputTokens:admission.inputTokens,countMethod:admission.countMethod,waitedMs:admission.waitedMs,inputTokensPerMinute:routing!.pacing!.inputTokensPerMinute,requestsPerMinute:routing!.pacing!.requestsPerMinute}}:{})}),false,attempt+1);
+    const receipt=(code:string)=>retain(JSON.stringify({kind:'LOCAL_MODEL_TRANSPORT',attempt:attempt+1,phase,elapsedMs:Math.max(0,Date.now()-started),budgetMs,model,...(native?{provider:openrouter?'openrouter':'nvidia',pacing:nativeAdmission,...(openrouter?{requestProfile:openRouterSettings.requestProfile}:{})}:{}),...(nativeMode||bindResponses?{responseBindingMethod:'retained-body-sha256-v1',...(retainedBody!==undefined?{responseHash:responseHash(retainedBody)}:{})}:{}),code,willRetry:retrying,...(admission?{pacing:{inputTokens:admission.inputTokens,countMethod:admission.countMethod,waitedMs:admission.waitedMs,inputTokensPerMinute:routing!.pacing!.inputTokensPerMinute,requestsPerMinute:routing!.pacing!.requestsPerMinute}}:{})}),false,attempt+1);
     try{
       checkRun();
       response=await fetcher(openrouter?openRouterSettings.url:nvidia?nvidiaSettings.url:`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',headers:native?{Authorization:'Bearer '+(openrouter?routing!.openrouterKey!:routing!.nvidiaKey!),'content-type':'application/json',accept:'application/json'}:{'x-goog-api-key':key,'content-type':'application/json'},body:openrouter?JSON.stringify(buildOpenRouterSourceRequest(packet,z.toJSONSchema(schema))):nvidia?JSON.stringify(buildNvidiaSourceRequest(packet,z.toJSONSchema(schema))):payload,signal:signal?AbortSignal.any([local,signal]):local});
@@ -161,6 +166,7 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
     }catch(error){
       if(signal?.aborted){receipt(signal.reason?.name==='TimeoutError'?`${prefix}_RUN_TIMEOUT`:`${prefix}_RUN_ABORTED`);checkRun();}
       const timeout=local.aborted||error instanceof Error&&error.name==='TimeoutError';
+      if(bindResponses&&error instanceof Error&&(error as Error&{code?:string}).code==='LIVE_OPERATION_LIMIT'){receipt(`${prefix}_OPERATION_LIMIT`);throw new Error(`${prefix}_OPERATION_LIMIT`);}
       retrying=timeout&&attempt<2;
       receipt(timeout?`${prefix}_TIMEOUT`:error instanceof Error&&error.name==='AbortError'?`${prefix}_ABORTED`:`${prefix}_TRANSPORT`);
       if(!retrying){if(timeout)throw new Error(`${prefix}_TIMEOUT`);throw error;}
@@ -172,7 +178,8 @@ export async function requestSourceJson<S extends z.ZodType>(packet:string,schem
     checkRun();
   }
   if(!response.ok)throw new Error(`${prefix}_HTTP_${response.status}`);
-  const value=schema.parse(parseSourceResponse(raw,prefix));
+  const decoded=parseSourceResponse(raw,prefix);
+  const value=decodeResponse?decodeResponse(decoded):schema.parse(decoded);
   if(routing)routing.fallbackActive=selectedFallback;
   return {raw,value};
 }

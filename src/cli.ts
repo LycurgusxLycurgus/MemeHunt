@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { collectLiveToken } from './app/live.js';
-import { guideConfig, guideThesis, loadConfig, materializeThesis, presetDescription, saveConfig, starterConfig, validateConfig, validateThesis, type Ask } from './app/config.js';
+import { guideConfig, guideThesis, loadConfig, presetDescription, saveConfig, starterConfig, validateConfig, validateThesis, type Ask } from './app/config.js';
 import { buildEntryReport, renderSnapshot } from './app/report.js';
 import { validateResearch } from './domain/baseline.js';
 import { Service, decisionHash as ServiceHash } from './app/service.js';
@@ -16,7 +16,6 @@ import {
   type Bundle,
   type PositionEvent,
   type PositionRecord,
-  type Profile,
   type TokenRef,
 } from './domain/contracts.js';
 import { probeDexScreener } from './providers/dexscreener.js';
@@ -67,7 +66,7 @@ const knownErrorCodes = new Set([
   'DUPLICATE_EVENT_ID', 'DUPLICATE_EVENT', 'INVALID_EVENT_TIME', 'INVALID_CORRECTION_REFERENCE',
   'CORRECTION_BEFORE_ORIGINAL', 'EVENT_BEFORE_ENTRY', 'ZERO_BUY', 'OVERSELL', 'OVERSELL_FEE',
   'TRANSFER_COST_REQUIRES_BUY', 'OVERSELL_TRANSFER', 'TRANSFER_DIRECTION_REQUIRED',
-  'ANALYSIS_MODES_CONFLICT', 'MODE_FLAG_ONLY_FOR_LIVE',
+  'ANALYSIS_MODES_CONFLICT', 'MODE_FLAG_ONLY_FOR_LIVE', 'FAST_MODE_CONFLICT', 'FAST_MODE_INVALID', 'FAST_SINGLE_PROOF_REQUIRED', 'FAST_SINGLE_PROOF_INVALID',
   'INVALID_CONFIG','CONFIG_EXISTS','CONFIG_NOT_FOUND','CONFIG_CANCELLED','CHECK_NOT_FOUND','CHAIN_SELECTION_REQUIRED','INVALID_ASSESSMENT_DETAILS','UNQUALIFIED_STAGE_INPUT','UNSUPPORTED_SNAPSHOT_VERSION','RESEARCH_TOKEN_MISMATCH','RESEARCH_DUPLICATE','RESEARCH_CITATION','RESEARCH_TIME_OR_BINDING','RESEARCH_LINEAGE','RESEARCH_WINDOW',
   'RESEARCH_EXISTS','RESEARCH_HASH_MISMATCH',
 ]);
@@ -113,7 +112,6 @@ const readBundle = (path: string | undefined): Bundle => {
   }
   return bundleSchema.parse(input);
 };
-const unconfiguredLiveProfile: Profile = { id: 'unconfigured-live', risk: {}, stage: { ageBands: [] } };
 const rpcRecovery = (code: string): string => {
   const local:Record<string,string>={LIVE_PHASE_DEADLINE:'The final acquisition phase reached its deadline.',LIVE_HARD_DEADLINE:'The analysis reached its whole-run deadline.',LIVE_OPERATION_LIMIT:'The analysis exhausted its reserved request capacity.',LIVE_CALLER_CANCELLED:'The caller cancelled this analysis.',LIVE_DEPENDENCY_SKIPPED:'A required acquisition dependency did not complete.'};
   if(local[code])return `${code}: ${local[code]} This is an analysis execution limit; it does not establish an RPC endpoint outage or an adverse token fact. Inspect the saved stage receipt and rerun after resolving the named cause.\n`;
@@ -139,7 +137,10 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       if(selected==='entry'&&snapshot.checklistKind==='MANAGEMENT'&&service)snapshot=service.show(snapshot.baselineSnapshotId);
       stdout(renderSnapshot(snapshot,{details:snapshot.details??service?.frozenDetails(snapshot.id),checklist:hasFlag(argv,'checklist'),check:flagValue(argv,'check'),evidence:hasFlag(argv,'evidence')}));
     }
-    else {const snapshot=value as ReturnType<Service['show']>;stdout(`${JSON.stringify(snapshot&&snapshot.checklistKind==='ENTRY'?{...snapshot,report:buildEntryReport(snapshot,snapshot.details??service?.frozenDetails(snapshot.id))}:value)}\n`);}
+    else {const snapshot=value as ReturnType<Service['show']>;if(snapshot&&snapshot.checklistKind==='ENTRY'){
+      const report=buildEntryReport(snapshot,snapshot.details??service?.frozenDetails(snapshot.id)),fast=snapshot.details?.fast;
+      stdout(`${JSON.stringify({...snapshot,report:fast?{...fast,checks:fast.rows.map(row=>{const judgment=report.checks.find(check=>check.checkId===row.checkId)?.criterionJudgment;return {...row,...(judgment?{criterionJudgment:judgment}:{})};})}:report})}\n`);
+    }else stdout(`${JSON.stringify(value)}\n`);}
   };
   const cmd = argv[0];
   const configPath=flagValue(argv,'config')??join(dirname(flagValue(argv,'db')??'.data/dd.sqlite'),'config.json');
@@ -162,9 +163,10 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
     }
     if (cmd === 'help' || argv.includes('--help')) {
       output({
-        usage: 'analyze <CA> [--full | --partial] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
+        usage: 'analyze <CA> [--full | --partial | --fast] [--json]; bare <CA> is an alias. Solana is inferred only from a valid key; EVM needs --chain or saved defaultChain.',
         full: 'Runs bounded TinyFish Search/Fetch and Gemini extraction; requires both TINYFISH_API_KEY and GEMINI_API_KEY from the environment or local .env. --full is explicit approval for this run.',
         partial: 'Runs Solana RPC and DEX collection only; use --partial to request it explicitly.',
+        fast: 'Runs hosted acquisition, one semantic call and chain checks for the 20-check research screen; a shortlist is not an entry or trade permission.',
         interactive: 'Without a mode flag, an interactive run asks for y/yes before hosted providers; any other answer cancels without saving.',
         other: 'Use --bundle for offline fixture/import analysis; reassess requires --bundle.',
         networkCheck: 'doctor --network makes one bounded mainnet RPC check; no database, account lookup, or hosted providers. Plain doctor stays offline.',
@@ -213,6 +215,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         ...(rpc ? { rpcNetwork: { state: rpc.status, ...(rpc.code ? { code: rpc.code } : {}) } } : {}),
         networkCheck: 'Use doctor --network for one mainnet RPC connectivity check; no snapshot or hosted calls.',
         tinyfishKeyPresent: !!env.TINYFISH_API_KEY,
+        firecrawlKeyPresent: !!env.FIRECRAWL_API_KEY,
         geminiKeyPresent: !!env.GEMINI_API_KEY,
         nvidiaKeyPresent: !!env.NVIDIA_API_KEY,
         nvidiaFallbackConfigured: false,
@@ -241,8 +244,9 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
       const hasProfile = hasFlag(argv, 'profile');
       const fullRequested = hasFlag(argv, 'full');
       const partialRequested = hasFlag(argv, 'partial');
-      if (fullRequested && partialRequested) throw new Error('ANALYSIS_MODES_CONFLICT');
-      if ((fullRequested || partialRequested) && (cmd === 'reassess' || hasBundle)) throw new Error('MODE_FLAG_ONLY_FOR_LIVE');
+      const fastRequested = hasFlag(argv, 'fast');
+      if ([fullRequested,partialRequested,fastRequested].filter(Boolean).length>1) throw new Error('ANALYSIS_MODES_CONFLICT');
+      if ((fullRequested || partialRequested || fastRequested) && (cmd === 'reassess' || hasBundle)) throw new Error('MODE_FLAG_ONLY_FOR_LIVE');
       if (hasProfile && (cmd === 'reassess' || hasBundle)) throw new Error('PROFILE_ONLY_FOR_LIVE');
 
       let result: unknown;
@@ -292,8 +296,8 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         let researchInput=researchPath?fileJson(researchPath):undefined;
         if(!researchPath&&existsSync(storedResearchPath)){const stored=fileJson(storedResearchPath) as {hash:string;packet:unknown};if(ServiceHash(stored.packet)!==stored.hash)throw new Error('RESEARCH_HASH_MISMATCH');researchInput=stored.packet;}
         const research=researchInput?validateResearch(researchInput,token,(runtime.now??(()=>new Date().toISOString()))()):undefined;
-        let fullApproved = fullRequested;
-        if (fullRequested || (!partialRequested && interactive)) {
+        let fullApproved = fullRequested||fastRequested;
+        if (fullRequested || fastRequested || (!partialRequested && interactive)) {
           const missing = missingFullPassKeys(env);
           if (missing.length) {
             throw new CliError('FULL_PASS_KEYS_MISSING', [
@@ -302,7 +306,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
               'After verifying provider access and Gemini quota, rerun with --full; use --partial for RPC+DEX only.',
             ].join('\n'));
           }
-          if (!fullRequested) {
+          if (!fullRequested&&!fastRequested) {
             stderr('FULL_AVAILABLE_SOURCE_PASS: TinyFish Search/Fetch and Gemini will receive bounded public evidence. Both provider keys are present; approval is required for this run.\n');
             const confirmed = await (runtime.confirmFull ?? confirmFullPass)(fullPassApprovalPrompt);
             if (!confirmed) {
@@ -319,6 +323,7 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         }
         if (partialRequested) stderr('PARTIAL_MODE: collecting RPC and DEX evidence only; TinyFish and Gemini are skipped.\n');
         if (fullRequested) stderr('FULL_MODE: --full explicitly approves TinyFish Search/Fetch and Gemini with the configured free OpenRouter fallback for this analysis.\n');
+        if (fastRequested) stderr('FAST_MODE: --fast approves hosted acquisition, one semantic call and chain checks.\n');
         if(!saved&&!hasProfile){
           let initial=starterConfig();
           if(interactive){stderr(presetDescription+'\n');const guided=await guideConfig(runtime.ask??askInput,initial);if(!guided)throw new Error('CONFIG_CANCELLED');initial=guided;}
@@ -327,24 +332,25 @@ export async function runCli(argv: string[], runtime: CliRuntime = {}): Promise<
         }
         service=new Service(flagValue(argv,'db'));
         const prior=service.caseFor(token);
-        const active=prior?.status==='THESIS_TRACKED'&&prior.episodeId&&!hasFlag(argv,'entry')?service.episode(prior.episodeId):undefined;
+        const active=!fastRequested&&prior?.status==='THESIS_TRACKED'&&prior.episodeId&&!hasFlag(argv,'entry')?service.episode(prior.episodeId):undefined;
         if(active&&explicitThesis)stderr('FROZEN_THESIS: management uses the saved episode. Use thesis successor to change it explicitly.\n');
         const live = await collectLiveToken(token, {
           profile,
           ...(active?{thesis:active.thesis}:explicitThesis?{thesis:explicitThesis}:saved?.thesisTemplate?{thesis:saved.thesisTemplate,thesisExpiryMode:saved.thesisExpiryMode}:{}),
           ...(research?{research}:{}),origins:{profile:hasProfile?'ARGUMENT':saved?'SAVED_DEFAULT':'USER_REQUESTED_PRESET'},
           ...(env.SOLANA_RPC_URL ? { rpcUrl: env.SOLANA_RPC_URL } : {}),
-          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY!, ...(env.OPENROUTER_API_KEY?{openrouterKey:env.OPENROUTER_API_KEY}:{}) } : {}),
+          ...(fullApproved ? { tinyfishKey: env.TINYFISH_API_KEY!, geminiKey: env.GEMINI_API_KEY!, ...(env.FIRECRAWL_API_KEY?{firecrawlKey:env.FIRECRAWL_API_KEY}:{}), ...(env.OPENROUTER_API_KEY?{openrouterKey:env.OPENROUTER_API_KEY}:{}) } : {}),
           semanticEnabled: fullApproved,
+          ...(fastRequested?{fast:true as const}:{}),
           fetcher: runtime.fetcher ?? fetch,
           ...(runtime.now ? { now: runtime.now } : {}),
         });
         if (live.collection.rpc.state === 'UNAVAILABLE') stderr(token.chain==='solana'?rpcRecovery(live.collection.rpc.code ?? 'RPC_TRANSPORT'):'EVM_READER_UNIMPLEMENTED: market and reviewed evidence are collected, but direct chain controls remain unknown.\n');
-        const snapshot = prior?.status === 'THESIS_TRACKED' && !hasFlag(argv, 'entry')
+        const snapshot = !fastRequested&&prior?.status === 'THESIS_TRACKED' && !hasFlag(argv, 'entry')
           ? service.reassessLive(prior.id, live)
           : service.analyzeLive(live);
         result = snapshot;
-        if (snapshot.checklistKind === 'ENTRY' && snapshot.result.classification === 'INSUFFICIENT_DATA') {
+        if (snapshot.checklistKind === 'ENTRY' && snapshot.result.classification === 'INSUFFICIENT_DATA'&&!snapshot.details?.fast) {
           const coverage=buildEntryReport(snapshot).coverage;
           stderr(`INSUFFICIENT_DATA: unresolved analysis (legacy classification code); ${coverage.known}/${coverage.total} required decisions are resolved. Observations, pairs, pages and semantic candidate claims do not complete the remaining evaluations. Inspect report.checks and run profile options for missing user choices. This is an unresolved evaluation, not a completed INSUFFICIENT judgment or a detected-rug verdict.\n`);
         }

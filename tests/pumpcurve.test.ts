@@ -7,7 +7,7 @@ import test from 'node:test';
 import BN from 'bn.js';
 import { MintLayout, NATIVE_MINT, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
-import { getPumpProgram, PUMP_FEE_CONFIG_PDA, PUMP_PROGRAM_ID, PUMP_SDK, GLOBAL_PDA, bondingCurvePda, pumpIdl } from '@pump-fun/pump-sdk';
+import { getPumpProgram, PUMP_PROGRAM_ID, PUMP_SDK, bondingCurvePda, pumpIdl } from '@pump-fun/pump-sdk';
 import { PUMP_FEE_PROGRAM_ID } from '@pump-fun/pump-swap-sdk';
 import { Service } from '../src/app/service.js';
 import { deriveBaseline, type VenueFacts, type VenueInspection } from '../src/domain/baseline.js';

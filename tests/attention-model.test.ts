@@ -8,7 +8,7 @@ import { evaluateEntry } from '../src/domain/policy.js';
 import { buildAttentionAcquisitionScope, collectAttentionSources, entryEvidenceScope, indexedComparisonQuery, narrativeContentMethod, reconstructOriginAcquisition, semanticPremiseMethod, type AttentionRead } from '../src/providers/attention.js';
 import { acquisitionEvidenceMethod } from '../src/providers/acquisition-evidence.js';
 import { geminiSettings } from '../src/providers/gemini.js';
-import { binaryEntryDecisionProgram, buildAttentionClaimReviewView, buildAttentionReviewPacket, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonReferenceRepairDetails, comparisonRequiredRecoveryPlan, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, leadershipOptions, qualifyAttention, qualifySubmittedAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
+import { binaryEntryDecisionProgram, comparisonAccountingWireFor, comparisonLeadArraySchema, comparisonLeadIsQualified, comparisonLeadReviewArraySchema, comparisonLeadTaskProgram, comparisonRequiredRecoveryPlan, comparisonSourceLineage, compactComparisonLeadScope, decodeBinaryEntryDecisions, decodeComparisonLeadArray, decodeComparisonLeadTasks, decodeNarrativePublicSupport, decodeSubmittedAttention, leadershipOptions, qualifyAttention, qualifySubmittedAttention, resolvePublicEntryDecision } from '../src/providers/attention-model.js';
 import { geckoPoolBinding, originRecoveryQuery } from '../src/providers/origin-recovery.js';
 import { sourceSpans } from '../src/providers/source-model.js';
 import { attentionBoundsFixture } from './attention-bounds-fixtures.js';
@@ -484,9 +484,7 @@ function mockModel(responder: (packet: Record<string, unknown>, call: number) =>
   return { requests, responses, fetcher };
 }
 
-function compactLeadDecisions(decisions: Record<string, unknown>) {
-  return Object.entries(decisions).map(([leadId, decision]) => ({ leadId, ...(decision as Record<string, unknown>) }));
-}
+
 
 test('A18 derives from the qualified fixed sample without adding a model request', async () => {
   const read = sourceRead();
@@ -3476,7 +3474,7 @@ test('fresh task-v2 keeps multi-source span schemas compact and rejects invalid 
 
   const makeProposal = (badSpan = false) => ({ decisions: Object.fromEntries(leads.map(lead => {
     const descriptorSpan = sourceSpans(lead.metadataEvidenceId, `${lead.title}\n${lead.snippet}`)[0]!;
-    const ownBodySpan = sourceSpans(lead.sourceIds[0]!, read.sources.find(source => source.id === lead.sourceIds[0])!.text.slice(0, 6000))[0]!;
+
     return [lead.id, {
       accounting: { status: 'UNRESOLVED', basis: 'NONE', role: 'UNRESOLVED', rationale: 'The retained original body does not identify this indexed item with enough confidence.',
         descriptorRefs: [{ sourceId: lead.metadataEvidenceId, spanId: descriptorSpan.id }], corroboratingRefs: [] },
@@ -4995,7 +4993,7 @@ test('incomplete, rejected, invalid, and overflowed comparison batches cannot pr
     const read = makeRead(2);
     read.sources[1]!.text = `Duplicate-source marker. ${read.sources[1]!.text}`;
     const mock = mockModel(completeComparisonResponder({
-      candidates: packet => [
+      candidates: _packet => [
         { ...specs[0]!, sourceMatch: 'Target representation' },
         { ...specs[1]!, id: 'rival-primary' },
         { ...specs[1]!, id: 'rival-duplicate', sourceMatch: 'Duplicate-source marker' },
@@ -5072,7 +5070,7 @@ test('a later comparison batch timeout preserves attempts and the independently 
   const bodies: string[] = [];
   const waits: number[] = [];
   const responder = completeComparisonResponder({
-    candidates: packet => [
+    candidates: _packet => [
       { id: 'target-fulltext', token: TOKEN, sourceMatch: 'Target representation' },
       { id: 'rival-fulltext', token: { chain: 'base', address: '0x2222222222222222222222222222222222222222' }, sourceMatch: 'Rival representation' },
     ],
@@ -5366,7 +5364,7 @@ test('missing-representation IDs are code-owned and invalid selection cannot for
       ],
       supportedBaseOrigin: true,
     });
-    const mock = mockModel((packet, call) => {
+    const mock = mockModel((packet, _call) => {
       const response = baseResponder(packet) as Record<string, unknown>;
       const scope = packet.scope as { batch?: number } | undefined;
       if (scope?.batch === 1 && packet.proposal && packet.repair !== true) return {
@@ -5406,7 +5404,7 @@ test('a contract-like URL path cannot authorize a missing representation repair'
   read.sources[0]!.url = `https://public.example/contracts/${rival.address}`;
   const mock = mockModel(completeComparisonResponder({
     candidates: () => [{ id: 'target-fulltext', token: TOKEN, sourceMatch: 'Target representation' }],
-    missingRepresentations: packet => [{
+    missingRepresentations: _packet => [{
       observationId: 'observation-999999',
       rationale: 'The supplied result path appears to identify another contract representation.',
     }],
@@ -6700,28 +6698,7 @@ test('fresh hosted cited-entry schema stays compact while strict local selectors
       inspectionComplete: true,
     };
   };
-  const runDraft = (read: AttentionRead, mutate: (wire: Record<string, any>, packet: Record<string, unknown>) => void,
-    expectedHosted: boolean) => {
-    const artifacts: Record<string, string> = {};
-    const program = makeProgram(read);
-    const first = program.next();
-    assert.equal(first.done, false);
-    assert.equal(first.value.id, 'attention-leadership-proposal');
-    const packet = JSON.parse(first.value.prompt) as Record<string, unknown>;
-    const wire = makeNegativeWire(packet) as Record<string, any>;
-    mutate(wire, packet);
-    assert.equal(first.value.schema.safeParse(wire).success, expectedHosted,
-      'the hosted schema retains only selectors appropriate to the claim kind and decision basis');
-    if (expectedHosted) {
-      const review = program.next(wire);
-      assert.equal(review.done, false, 'a hosted-valid response reaches the existing independent review call');
-      assert.equal(review.value.id, 'attention-leadership-review');
-      return;
-    }
-    assert.throws(() => program.next(wire), (error: unknown) => error instanceof Error && error.name === 'ZodError',
-      'strict local source/span and basis checks reject the response before it reaches independent review');
-    assert.equal(artifacts['attention-leadership-review-prompt'], undefined);
-  };
+
 
   const large = await makeRead(true);
   const small = await makeRead(false);
@@ -7886,7 +7863,7 @@ test('invalid and cross-source span selections fail before independent review', 
     { name: 'span belongs to another source even when the text is identical', read: sourceRead(`Token ${TOKEN.address}. Identical retained text for both records.` , `Token ${TOKEN.address}. Identical retained text for both records.`), proposal: packet => ({ ...proposalWire(packet), claims: [{ id: 'claim-1', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'post-1') }] }] }) },
     { name: 'an exact span from an unbound context source cannot support a claim', read: unboundRead, proposal: packet => ({ ...proposalWire(packet), claims: [{ id: 'claim-1', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'context-only', spanId: spanId(packet, 'context-only', 'lantern art mechanism') }] }] }) },
     { name: 'selected source does not contain the target token', read: sourceRead('An unrelated neighborhood project source text.'), proposal: packet => ({ ...proposalWire(packet), claims: [{ id: 'claim-1', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1', 'unrelated') }] }] }) },
-    { name: 'required post is omitted', proposal: packet => ({ claims: [], posts: {}, competitors: [] }) },
+    { name: 'required post is omitted', proposal: _packet => ({ claims: [], posts: {}, competitors: [] }) },
     { name: 'undeclared post key is rejected', proposal: packet => ({ ...proposalWire(packet), posts: { ...proposalWire(packet).posts, extra: { spanId: spanId(packet, 'post-1'), role: 'OTHER' } } }) },
     { name: 'free-quote citation fields are rejected', proposal: packet => ({ ...proposalWire(packet), claims: [{ id: 'claim-1', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1'), quote: NARRATIVE }] }] }) },
     { name: 'model-authored offsets are rejected', proposal: packet => ({ ...proposalWire(packet), claims: [{ id: 'claim-1', feature: 'A01', value: true, summary: 'A neighborhood project narrative.', citations: [{ sourceId: 'page-1', spanId: spanId(packet, 'page-1'), start: 0, end: 20 }] }] }) },
@@ -8046,7 +8023,7 @@ test('the model cannot cite retained source tails or exceed the serialized packe
   });
 });
 
-test('uncitable posts skip hosted calls while short pages remain retained context', async t => {
+test('uncitable posts skip hosted calls while short pages remain retained context', async _t => {
   const read = sourceRead();
   read.sources[1]!.text = 'short';
   let calls = 0;
@@ -8057,7 +8034,7 @@ test('uncitable posts skip hosted calls while short pages remain retained contex
 
   const pageOnly = sourceRead('tiny');
   pageOnly.sources = pageOnly.sources.filter(source => source.kind === 'PAGE');
-  const mock = mockModel(packet => ({ claims: [], posts: {}, competitors: [] }));
+  const mock = mockModel(_packet => ({ claims: [], posts: {}, competitors: [] }));
   const pageResult = await qualifyAttention(pageOnly, TOKEN, KEY, mock.fetcher);
   assert.equal(pageResult.code, undefined);
   assert.equal(mock.requests.length, 1, 'empty proposal skips the independent review call');

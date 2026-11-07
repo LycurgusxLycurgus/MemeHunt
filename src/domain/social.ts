@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
-import { tokenRefSchema, socialJudgmentSchema, socialPolicyFactsSchema, type TokenRef, type SocialPolicyFacts } from './contracts.js';
+import { socialJudgmentSchema, socialPolicyFactsSchema, type TokenRef, type SocialPolicyFacts } from './contracts.js';
 import type { BaselineAssessment } from './baseline.js';
 import { acquisitionEvidenceMethod, acquisitionScopeSchema, acquisitionCitationAllowed } from '../providers/acquisition-evidence.js';
+import { receiptEligible,socialPurpose,acquisitionProjectionSchema,purposeReceiptSchema,renderPurposeReceipt } from './acquisition-purpose.js';
 export { socialPolicyFactsSchema } from './contracts.js';
 export type { SocialPolicyFacts } from './contracts.js';
 
@@ -12,10 +13,10 @@ const field=z.object({text:z.string().min(1).max(200),citation}).strict();
 const association=z.object({key:z.string().min(1).max(300),citation}).strict();
 export const socialSourceSchema=z.object({id:z.string().min(1),url:z.string().url(),text:z.string().max(120000),publishedAt:timestamp.nullable(),authorId:z.string().nullable(),availableAt:timestamp,kind:z.enum(['POST','PAGE']),discoveredFrom:z.string().optional()}).strict();
 export const socialInputSchema=z.object({
-  schemaVersion:z.literal(1),acquisitionEvidenceMethod:z.literal(acquisitionEvidenceMethod).optional(),acquisitionScope:acquisitionScopeSchema.optional(),outcomeBasisMethod:z.literal('entry-outcome-basis-v1').optional(),identityUnavailableSources:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(8).optional(),screeningConstraintMethod:z.enum(['frozen-positive-guards-v1','frozen-positive-guards-v2']).optional(),associationCitationMethod:z.literal('literal-associations-v1').optional(),inspectionRecoveryMethod:z.enum(['historical-post-inspection-v1','retained-source-inspection-v2']).optional(),postSampleScope:z.object({method:z.literal('terminal-post-gap-v1'),complete:z.boolean(),sourceIds:z.array(z.string()).max(64),gaps:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(128),blockers:z.array(z.string()).max(200)}).strict().optional(),reviewCriterionMethod:z.enum(['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4']).optional(),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(64),start:timestamp,end:timestamp,
+  schemaVersion:z.literal(1),acquisitionPurposeMethod:z.literal('acquisition-purpose-v1').optional(),purposeProjection:acquisitionProjectionSchema.optional(),purposeReceipt:purposeReceiptSchema.optional(),acquisitionEvidenceMethod:z.literal(acquisitionEvidenceMethod).optional(),acquisitionScope:acquisitionScopeSchema.optional(),outcomeBasisMethod:z.literal('entry-outcome-basis-v1').optional(),identityUnavailableSources:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(8).optional(),screeningConstraintMethod:z.enum(['frozen-positive-guards-v1','frozen-positive-guards-v2']).optional(),associationCitationMethod:z.literal('literal-associations-v1').optional(),inspectionRecoveryMethod:z.enum(['historical-post-inspection-v1','retained-source-inspection-v2']).optional(),postSampleScope:z.object({method:z.literal('terminal-post-gap-v1'),complete:z.boolean(),sourceIds:z.array(z.string()).max(64),gaps:z.array(z.object({url:z.string().url(),code:z.enum(['HTTP_404','HTTP_410'])}).strict()).max(128),blockers:z.array(z.string()).max(200)}).strict().optional(),reviewCriterionMethod:z.enum(['verdict-aware-v1','verdict-aware-v2','verdict-aware-v3','verdict-aware-v4']).optional(),entryDecisionMethod:z.enum(['public-support-v2','public-support-v3']).optional(),sources:z.array(socialSourceSchema).max(64),start:timestamp,end:timestamp,
   targetPostIds:z.array(z.string()).max(64),identitySourceIds:z.array(z.string()).max(64),sampleComplete:z.boolean(),identityComplete:z.boolean(),
   previousComparable:z.boolean(),codes:z.array(z.string()).max(200),queries:z.array(z.string()).max(20),qualifiedAt:timestamp.optional(),
-}).strict();
+}).strict().superRefine((input,ctx)=>{if(input.acquisitionPurposeMethod==='acquisition-purpose-v1'){if(!input.purposeProjection||input.purposeProjection.group!=='SOCIAL_ENTRY'||!input.purposeReceipt||JSON.stringify(renderPurposeReceipt(input.purposeProjection))!==JSON.stringify(input.purposeReceipt))ctx.addIssue({code:'custom',message:'Invalid purpose projection or receipt'});}else if(input.purposeProjection||input.purposeReceipt)ctx.addIssue({code:'custom',message:'Purpose marker required'});});
 export const socialProposalSchema=z.object({
   identityAssessment:socialJudgmentSchema.optional(),integrityAssessment:socialJudgmentSchema.optional(),participationAssessment:socialJudgmentSchema.optional(),communityBreadthAssessment:socialJudgmentSchema.optional(),
   posts:z.array(z.object({sourceId:z.string(),body:citation.extend({quote:z.string().min(8).max(120000)}),bodyComplete:z.boolean().optional(),role:z.enum(['ORIGINAL','REPOST','COMMENTARY','EXCLUDED','UNCLEAR']),binding:z.enum(['EXACT_CONTRACT','PROVEN_ACCOUNT','UNRELATED','UNCLEAR']),bindingProof:z.array(citation).max(5),
@@ -64,7 +65,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
   const acquisitionScope=scopeResult?.success?scopeResult.data:undefined;
   const sameToken=(a:TokenRef,b:TokenRef)=>a.chain===b.chain&&(a.chain==='solana'?a.address===b.address:a.address.toLowerCase()===b.address.toLowerCase());
   const freshAcquisition=read.acquisitionEvidenceMethod===acquisitionEvidenceMethod&&!!acquisitionScope&&acquisitionScope.method===acquisitionEvidenceMethod&&acquisitionScope.group==='SOCIAL_ENTRY'&&sameToken(acquisitionScope.token,token)&&JSON.stringify(acquisitionScope.sourceIds)===JSON.stringify(read.sources.map(source=>source.id))&&acquisitionScope.requiredEvidenceIds.length===1&&acquisitionScope.requiredEvidenceIds[0]==='acquisition-social-scope'&&acquisitionScope.evidence.length===1&&acquisitionScope.evidence[0]?.id==='acquisition-social-scope'&&sameToken(acquisitionScope.evidence[0].token,token);
-  const acquisitionFresh=()=>freshAcquisition&&acquisitionScope!.complete&&acquisitionScope!.blockers.length===0&&acquisitionScope!.evidence.every(record=>{
+  const acquisitionFresh=()=>freshAcquisition&&(read.acquisitionPurposeMethod==='acquisition-purpose-v1'?read.purposeProjection?.accounted===true:acquisitionScope!.complete&&acquisitionScope!.blockers.length===0)&&acquisitionScope!.evidence.every(record=>{
     const age=at-Date.parse(record.availableAt);return Number.isFinite(age)&&age>=0&&age<=900000;
   });
   const availableAt=new Date(Math.max(Date.parse(read.qualifiedAt??read.end),Date.parse(read.end),...read.sources.map(s=>Date.parse(s.availableAt)))).toISOString();
@@ -86,7 +87,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     p=socialProposalSchema.parse(proposalInput);r=socialReviewSchema.parse(reviewInput);
     const acquisitionInspectionComplete=()=>{
       const required=acquisitionScope?.requiredEvidenceIds??[],inspection=r.acquisitionInspection??[];
-      return acquisitionFresh()&&required.length>0&&inspection.length===required.length&&new Set(inspection.map(item=>item.sourceId)).size===inspection.length&&required.every(id=>inspection.some(item=>item.sourceId===id&&item.complete));
+      return (read.acquisitionPurposeMethod==='acquisition-purpose-v1'?freshAcquisition&&!!read.purposeProjection&&Number.isFinite(at-Date.parse(read.purposeProjection.availableAt))&&at-Date.parse(read.purposeProjection.availableAt)>=0&&at-Date.parse(read.purposeProjection.availableAt)<=900000:acquisitionFresh())&&required.length>0&&inspection.length===required.length&&new Set(inspection.map(item=>item.sourceId)).size===inspection.length&&required.every(id=>inspection.some(item=>item.sourceId===id&&item.complete));
     };
     if(freshAcquisition){
       const required=acquisitionScope!.requiredEvidenceIds,inspection=r.acquisitionInspection??[];
@@ -98,7 +99,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     const assessmentCitation=(judgment:z.infer<typeof socialJudgmentSchema>,c:z.infer<typeof citation>)=>{
       const source=byId.get(c.sourceId);if(source){if(!source.text.includes(c.quote))throw new Error('SOC_CITATION_INVALID');return source;}
       const receiptAllowed=judgment.verdict==='UNRESOLVED'||judgment.verdict==='CONTRADICTED'&&judgment.negativeBasis==='PUBLIC_SUPPORT_INADEQUATE';
-      if(!receiptAllowed||!freshAcquisition||!acquisitionInspectionComplete()||!acquisitionCitationAllowed(acquisitionScope,c,token,cutoff)||!r.acquisitionInspection?.some(item=>item.sourceId===c.sourceId&&item.complete))throw new Error('SOC_CITATION_INVALID');
+      if(read.acquisitionPurposeMethod==='acquisition-purpose-v1'){if(!read.purposeProjection||!receiptEligible(read.purposeProjection,c,socialPurpose(judgment.verdict,judgment.negativeBasis),token,cutoff)||!acquisitionInspectionComplete()||!r.acquisitionInspection?.some(item=>item.sourceId===c.sourceId&&item.complete))throw Error('SOC_RECEIPT_PURPOSE_INELIGIBLE');}else if(!receiptAllowed||!freshAcquisition||!acquisitionInspectionComplete()||!acquisitionCitationAllowed(acquisitionScope,c,token,cutoff)||!r.acquisitionInspection?.some(item=>item.sourceId===c.sourceId&&item.complete))throw new Error('SOC_CITATION_INVALID');
       return null;
     };
     const unique=(values:string[])=>{if(new Set(values).size!==values.length)throw new Error('SOC_REVIEW_INVALID');};
@@ -207,7 +208,7 @@ export function deriveSocial(input:SocialInput,proposalInput:SocialProposal|null
     const terminalNegative=!!read.reviewCriterionMethod&&judgment.verdict==='CONTRADICTED'&&read.postSampleScope?.complete===true;
     const scopeQualified=name==='identity'?identityComplete:(read.sampleComplete||terminalNegative)&&(!!read.entryDecisionMethod||facts.sampleComplete&&facts.postCorpusObserved)&&read.sources.length>0&&read.sources.every(source=>reviewed(source.id));
     const acquisitionNegative=acquisitionInspected&&read.sources.every(source=>reviewed(source.id))&&accepted(`assessment:${name}`)&&judgment.verdict==='CONTRADICTED'&&judgment.negativeBasis==='PUBLIC_SUPPORT_INADEQUATE'&&judgment.citations.length>0&&judgment.citations.every(c=>{
-      const source=byId.get(c.sourceId);return source?reviewed(source.id):!!acquisitionScope&&acquisitionCitationAllowed(acquisitionScope,c,token,cutoff)&&acquisitionInspection.some(item=>item.sourceId===c.sourceId&&item.complete);
+      const source=byId.get(c.sourceId);return source?reviewed(source.id):!!acquisitionScope&&(read.acquisitionPurposeMethod==='acquisition-purpose-v1'?!!read.purposeProjection&&receiptEligible(read.purposeProjection,c,'BOUNDED_SUPPORT',token,cutoff):acquisitionCitationAllowed(acquisitionScope,c,token,cutoff))&&acquisitionInspection.some(item=>item.sourceId===c.sourceId&&item.complete);
     });
     const sourceQualified=scopeQualified&&accepted(`assessment:${name}`)&&judgment.citations.every(c=>reviewed(c.sourceId))||acquisitionNegative;
     const invalidMetric=posts.some(post=>Object.entries(post.metrics).some(([metricName,value])=>value!==null&&metric(value,metricName)===null));

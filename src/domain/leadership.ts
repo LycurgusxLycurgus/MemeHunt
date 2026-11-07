@@ -2,6 +2,7 @@ import type { TokenRef } from './contracts.js';
 import { originSeedLinks, normalizeAttentionSearchUrl, reconstructOriginAcquisition, type AttentionRead } from '../providers/attention.js';
 import { sourceSpans } from '../providers/source-model.js';
 import { verifyOriginAlias } from '../providers/origin-recovery.js';
+import { criterionFirecrawlProjection } from '../providers/criterion-firecrawl.js';
 
 export type LeadershipRoutes = {
   originRelationship?: {status?:string};
@@ -26,6 +27,10 @@ export function primaryLeadershipOptions(read:AttentionRead,token:TokenRef,cutof
       if(url&&final)fetched.push({url,final,text:r.text,links:Array.isArray(r.links)?r.links.filter((s:unknown)=>typeof s==='string'):[]});
     }
   }catch{/* Missing acquisition never supplies ownership. */}
+  for(const page of criterionFirecrawlProjection(read).pages){
+    const url=canonical(page.requestedUrl),final=canonical(page.finalUrl);
+    if(url&&final)fetched.push({url,final,text:page.text,links:[...page.text.matchAll(/https:\/\/[^\s"'<>()[\]]+/g)].map(match=>match[0])});
+  }
   const actual=(s:AttentionRead['sources'][number],requested:string)=>fetched.find(r=>r.url===canonical(requested)&&r.final===canonical(s.url)&&r.text===s.text);
   const roots=new Map<string,string>();
   for(const seed of read.discoveryUrls??[]){

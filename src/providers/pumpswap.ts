@@ -10,7 +10,7 @@ import { dexArtifacts, fetchDexPairs, parseDexPairs, type DexArtifact, type DexR
 import { solanaRpc, safeRpcCode, PUBLIC_SOLANA_RPC, decodeProgramHeader, resolveProgramData, decodeRawMintControls } from './solana.js';
 
 export type PumpSwapRead={inspection:VenueInspection;controls?:ControlFacts;venue?:VenueFacts;rawArtifacts:Record<string,string>;retrievedAt:Record<string,string>;marketEvidence?:Record<string,DexArtifact>};
-const USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const obj=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
 function account(value:unknown):AccountInfo<Buffer>{
   if(!obj(value)||typeof value.owner!=='string'||!Array.isArray(value.data)||value.data[1]!=='base64'||typeof value.data[0]!=='string'||typeof value.executable!=='boolean'||!Number.isSafeInteger(value.lamports)||Number(value.lamports)<0)throw new Error('RPC_SHAPE');
@@ -133,13 +133,14 @@ function verifyPumpBudgetQuote(raw:Record<string,string>,token:TokenRef,profile:
 /** Recovery provenance is admitted independently from the ordinary venue receipt. */
 export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
  const raw=bundle.rawArtifacts,marker=raw['pump-slippage-refresh'],request=raw['pump-simulation-request'];
- const nativeDecision=bundle.details?.baseline.some(a=>['O15','O16'].includes(a.id)&&(a.data as {setupMethod?:string}|null)?.setupMethod==='existing-wsol-roundtrip-v1');
+ const baseline=bundle.details?.baseline,features=bundle.features;
+ const nativeDecision=baseline?.some(a=>['O15','O16'].includes(a.id)&&(a.data as {setupMethod?:string}|null)?.setupMethod==='existing-wsol-roundtrip-v1');
  if(nativeDecision&&(!request||!raw['pump-quote-calculation']||!raw['pump-roundtrip-simulation']))throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
- const negative=bundle.features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===false)||bundle.details?.baseline.some(a=>['O12','O16'].includes(a.id)&&(a.data as {method?:string}|null)?.method==='pump-budget-rejection-v1');
+ const negative=features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===false)||baseline?.some(a=>['O12','O16'].includes(a.id)&&(a.data as {method?:string}|null)?.method==='pump-budget-rejection-v1');
  if(!marker&&!request&&!raw['pump-quote-calculation']&&!negative)return;
  const calc=raw['pump-quote-calculation']?JSON.parse(raw['pump-quote-calculation']):null;
  const existing=calc?.simulationProof?.existingWsol;
- const costsClaimed=bundle.features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===true)||bundle.details?.baseline.some(a=>['O15','O16'].includes(a.id)&&a.quality==='KNOWN'&&(a.data as {costsReconciled?:boolean}|null)?.costsReconciled===true);
+ const costsClaimed=features.some(f=>f.id==='O16'&&f.quality==='KNOWN'&&f.value===true)||baseline?.some(a=>['O15','O16'].includes(a.id)&&a.quality==='KNOWN'&&(a.data as {costsReconciled?:boolean}|null)?.costsReconciled===true);
  const successfulSimulation=raw['pump-roundtrip-simulation']&&JSON.parse(raw['pump-roundtrip-simulation']).result?.value?.err===null;
  if((nativeDecision||costsClaimed&&successfulSimulation&&request&&JSON.parse(request).existingWsol)&&!existing)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
  if(existing){
@@ -151,7 +152,7 @@ export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
   if(!nativeUsd||!bundle.profile.sizeUsd)throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');
   const total=new Decimal(bundle.profile.sizeUsd).add(fee('entry').add(verified.setup).div(1e9).mul(nativeUsd));
   const exit=new Decimal(calc.exitAtomic).add(new Decimal(calc.quoteAtomic).sub(calc.actualEntryAtomic)).div(1e9).mul(nativeUsd).sub(fee('exit').div(1e9).mul(nativeUsd));
-  for(const id of ['O15','O16']){const a=bundle.details?.baseline.find(a=>a.id===id),d=a?.data as {costsReconciled?:boolean;totalEntryCostUsd?:string;netExitUsd?:string}|undefined;if(!a||a.quality!=='KNOWN'||!d?.costsReconciled||d.totalEntryCostUsd!==total.toFixed()||d.netExitUsd!==exit.toFixed())throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');}
+  for(const id of ['O15','O16']){const a=baseline?.find(a=>a.id===id),d=a?.data as {costsReconciled?:boolean;totalEntryCostUsd?:string;netExitUsd?:string}|undefined;if(!a||a.quality!=='KNOWN'||!d?.costsReconciled||d.totalEntryCostUsd!==total.toFixed()||d.netExitUsd!==exit.toFixed())throw Error('PUMP_EXISTING_WSOL_PROOF_INVALID');}
  }
  if(!marker&&!request&&!calc?.executionFailure&&!negative)return;
  const evidence=(id:string)=>{const e=bundle.evidence.find(e=>e.id===id);if(!e||!Number.isFinite(Date.parse(e.retrievedAt))||Date.parse(e.retrievedAt)>Date.parse(bundle.cutoff))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');return e;};
@@ -171,8 +172,8 @@ export function validatePumpRecoveryBundle(bundle:LiveBundle):void{
   verifyPumpBudgetQuote(raw,bundle.token,bundle.profile);
   const bank=evidence('pump-mints-vaults'),price=evidence('pump-sol-usd'),end=Date.parse(bundle.cutoff),expiry=Math.min(Date.parse(bank.retrievedAt),Date.parse(price.retrievedAt))+30000;
   if(end>expiry)throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
-  for(const id of ['O12','O16']){const feature=bundle.features.find(f=>f.id===id),assessment=bundle.details?.baseline.find(a=>a.id===id);if(!feature||feature.value!==false||feature.quality!=='KNOWN'||feature.unit!=='bool'||!assessment||assessment.quality!=='KNOWN'||JSON.stringify(assessment.data)!==JSON.stringify({method:'pump-budget-rejection-v1',code:'PUMP_SIMULATION_SLIPPAGE',meaning:'The simulated buy exceeded its exact quoted spending limit; execution cost verification failed. Monetary costs and sellability are not established.'}))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
-  if(bundle.features.find(f=>f.id==='O15')?.quality==='KNOWN')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
+  for(const id of ['O12','O16']){const feature=features.find(f=>f.id===id),assessment=baseline?.find(a=>a.id===id);if(!feature||feature.value!==false||feature.quality!=='KNOWN'||feature.unit!=='bool'||!assessment||assessment.quality!=='KNOWN'||JSON.stringify(assessment.data)!==JSON.stringify({method:'pump-budget-rejection-v1',code:'PUMP_SIMULATION_SLIPPAGE',meaning:'The simulated buy exceeded its exact quoted spending limit; execution cost verification failed. Monetary costs and sellability are not established.'}))throw Error('PUMP_SLIPPAGE_PROOF_INVALID');}
+  if(features.find(f=>f.id==='O15')?.quality==='KNOWN')throw Error('PUMP_SLIPPAGE_PROOF_INVALID');
  }
  if(!marker)return;
  const receipt=JSON.parse(marker),record=derived('pump-slippage-refresh');

@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { CpAmm, CP_AMM_PROGRAM_ID, derivePoolAuthority, deriveTokenVaultAddress, getPriceFromSqrtPrice, type PoolState } from '@meteora-ag/cp-amm-sdk';
 import BN from 'bn.js';
 import { Decimal } from 'decimal.js';
-import { Connection, PublicKey, TransactionMessage, VersionedMessage, VersionedTransaction, ComputeBudgetProgram, SystemProgram, TransactionInstruction, type AccountInfo } from '@solana/web3.js';
+import { Connection, PublicKey, TransactionMessage, VersionedTransaction, ComputeBudgetProgram, SystemProgram, TransactionInstruction, type AccountInfo } from '@solana/web3.js';
 import { AccountLayout, MintLayout, NATIVE_MINT, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction, createSyncNativeInstruction, createCloseAccountInstruction } from '@solana/spl-token';
 import { solanaRpc, safeRpcCode, PUBLIC_SOLANA_RPC, decodeRawMintControls, decodeProgramHeader, resolveProgramData } from './solana.js';
 import { fetchDexPairs, dexArtifacts, parseDexPairs, type DexRecoveryOptions } from './dexscreener.js';
@@ -22,7 +22,8 @@ const account=(v:unknown):AccountInfo<Buffer>=>{
 };
 const owned=(a:AccountInfo<Buffer>,owner:PublicKey)=>{if(a.executable||!a.owner.equals(owner))throw Error('DAMM_ACCOUNT_BINDING');};
 const decodePool=(a:AccountInfo<Buffer>):PoolState=>{owned(a,CP_AMM_PROGRAM_ID);if(a.data.length!==1112)throw Error('DAMM_LAYOUT_UNSUPPORTED');return sdk._program.coder.accounts.decode('pool',a.data);};
-function vault(a:AccountInfo<Buffer>,mint:PublicKey){owned(a,TOKEN_PROGRAM_ID);if(a.data.length!==165)throw Error('DAMM_ACCOUNT_BINDING');const v=AccountLayout.decode(a.data);if(!v.mint.equals(mint)||!v.owner.equals(derivePoolAuthority())||v.state!==1||v.delegateOption||v.closeAuthorityOption)throw Error('DAMM_ACCOUNT_BINDING');return v;}
+function tokenAccount(a:AccountInfo<Buffer>,program:PublicKey){owned(a,program);if(a.data.length!==165&&!(program.equals(TOKEN_2022_PROGRAM_ID)&&a.data.length===170&&a.data[165]===2&&a.data.readUInt16LE(166)===7&&a.data.readUInt16LE(168)===0))throw Error('DAMM_ACCOUNT_BINDING');return AccountLayout.decode(a.data);}
+function vault(a:AccountInfo<Buffer>,mint:PublicKey,program=TOKEN_PROGRAM_ID){const v=tokenAccount(a,program);if(!v.mint.equals(mint)||!v.owner.equals(derivePoolAuthority())||v.state!==1||v.delegateOption||v.closeAuthorityOption)throw Error('DAMM_ACCOUNT_BINDING');return v;}
 function staticMint(info:AccountInfo<Buffer>,mint:PublicKey){
  const program=info.owner;if(!program.equals(TOKEN_PROGRAM_ID)&&!program.equals(TOKEN_2022_PROGRAM_ID))throw Error('DAMM_TOKEN_MODE_UNSUPPORTED');owned(info,program);
  if(info.data.length<82)throw Error('DAMM_TOKEN_MODE_UNSUPPORTED');const decoded=MintLayout.decode(info.data);if(!decoded.isInitialized)throw Error('DAMM_ACCOUNT_BINDING');
@@ -51,7 +52,7 @@ export function decodeDammState(raw:string,token:TokenRef,poolKey:PublicKey,minS
  if(token.chain!=='solana'||!pool.tokenAMint.equals(mint)||!pool.tokenBMint.equals(NATIVE_MINT)||!pool.tokenAVault.equals(deriveTokenVaultAddress(mint,poolKey))||!pool.tokenBVault.equals(deriveTokenVaultAddress(NATIVE_MINT,poolKey)))throw Error('DAMM_ACCOUNT_BINDING');
  owned(base,TOKEN_PROGRAM_ID);owned(quote,TOKEN_PROGRAM_ID);if(base.data.length!==82||quote.data.length!==82)throw Error('DAMM_TOKEN_MODE_UNSUPPORTED');
  const a=MintLayout.decode(base.data),b=MintLayout.decode(quote.data);if(!a.isInitialized||!b.isInitialized||b.decimals!==9)throw Error('DAMM_ACCOUNT_BINDING');
- const av=vault(va,mint),bv=vault(vb,NATIVE_MINT);
+ const av=vault(va,mint,base.owner),bv=vault(vb,NATIVE_MINT);
  if(pool.layoutVersion!==1||pool.feeVersion!==1||pool.collectFeeMode!==1||pool.tokenAFlag!==0||pool.tokenBFlag!==0||pool.poolFees.baseFee.baseFeeInfo.data[8]!==0||pool.poolFees.compoundingFeeBps!==0||pool.liquidity.lte(new BN(0))||pool.permanentLockLiquidity.isNeg()||pool.permanentLockLiquidity.gt(pool.liquidity))throw Error('DAMM_MODE_UNSUPPORTED');
  const controls=decodeRawMintControls({context:r.context,value:r.value[1]},['rpc-genesis','damm-state']);
  if(!controls.complete||!controls.transferAllowed||controls.currentFeeBps!=='0'||!controls.feeImmutable)throw Error('DAMM_TOKEN_MODE_UNSUPPORTED');
@@ -67,14 +68,14 @@ export function quoteDamm(state:ReturnType<typeof decodeDammState>,profile:Profi
  return {quote,buy,sell,reference:getPriceFromSqrtPrice(state.pool.sqrtPrice,state.a.decimals,9).mul(price).toFixed(),exitUsd:new Decimal(sell.swapOutAmount.toString()).div(1e9).mul(price).toFixed(),feesUsd:new Decimal(buy.totalFee.add(sell.totalFee).toString()).div(1e9).mul(price).toFixed()};
 }
 function swapInstruction(state:ReturnType<typeof decodeDammState>,payer:PublicKey,input:PublicKey,output:PublicKey,amount:BN,min:BN){
- const a=state.pool.tokenAMint,baseAta=getAssociatedTokenAddressSync(a,payer,true),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,payer,true),event=PublicKey.findProgramAddressSync([Buffer.from('__event_authority')],CP_AMM_PROGRAM_ID)[0];
+ const a=state.pool.tokenAMint,baseAta=getAssociatedTokenAddressSync(a,payer,true,state.base.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,payer,true),event=PublicKey.findProgramAddressSync([Buffer.from('__event_authority')],CP_AMM_PROGRAM_ID)[0];
  const data=sdk._program.coder.instruction.encode('swap',{params:{amountIn:amount,minimumAmountOut:min}});
- const keys=[{pubkey:derivePoolAuthority(),isWritable:false,isSigner:false},{pubkey:state.poolKey,isWritable:true,isSigner:false},{pubkey:input.equals(a)?baseAta:quoteAta,isWritable:true,isSigner:false},{pubkey:output.equals(a)?baseAta:quoteAta,isWritable:true,isSigner:false},...[state.pool.tokenAVault,state.pool.tokenBVault].map(pubkey=>({pubkey,isWritable:true,isSigner:false})),...[a,NATIVE_MINT].map(pubkey=>({pubkey,isWritable:false,isSigner:false})),{pubkey:payer,isWritable:false,isSigner:true},...[TOKEN_PROGRAM_ID,TOKEN_PROGRAM_ID,CP_AMM_PROGRAM_ID,event,CP_AMM_PROGRAM_ID].map(pubkey=>({pubkey,isWritable:false,isSigner:false}))];
+ const keys=[{pubkey:derivePoolAuthority(),isWritable:false,isSigner:false},{pubkey:state.poolKey,isWritable:true,isSigner:false},{pubkey:input.equals(a)?baseAta:quoteAta,isWritable:true,isSigner:false},{pubkey:output.equals(a)?baseAta:quoteAta,isWritable:true,isSigner:false},...[state.pool.tokenAVault,state.pool.tokenBVault].map(pubkey=>({pubkey,isWritable:true,isSigner:false})),...[a,NATIVE_MINT].map(pubkey=>({pubkey,isWritable:false,isSigner:false})),{pubkey:payer,isWritable:false,isSigner:true},...[state.base.owner,TOKEN_PROGRAM_ID,CP_AMM_PROGRAM_ID,event,CP_AMM_PROGRAM_ID].map(pubkey=>({pubkey,isWritable:false,isSigner:false}))];
  return new TransactionInstruction({programId:CP_AMM_PROGRAM_ID,keys,data});
 }
 function dammLegs(state:ReturnType<typeof decodeDammState>,q:ReturnType<typeof quoteDamm>,user:PublicKey){
- const baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
-   const entry=[createAssociatedTokenAccountIdempotentInstruction(user,baseAta,user,state.pool.tokenAMint),createAssociatedTokenAccountIdempotentInstruction(user,quoteAta,user,NATIVE_MINT),SystemProgram.transfer({fromPubkey:user,toPubkey:quoteAta,lamports:BigInt(q.quote.toString())}),createSyncNativeInstruction(quoteAta),swapInstruction(state,user,NATIVE_MINT,state.pool.tokenAMint,q.quote,q.buy.swapOutAmount)];
+ const baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true,state.base.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
+   const entry=[createAssociatedTokenAccountIdempotentInstruction(user,baseAta,user,state.pool.tokenAMint,state.base.owner),createAssociatedTokenAccountIdempotentInstruction(user,quoteAta,user,NATIVE_MINT),SystemProgram.transfer({fromPubkey:user,toPubkey:quoteAta,lamports:BigInt(q.quote.toString())}),createSyncNativeInstruction(quoteAta),swapInstruction(state,user,NATIVE_MINT,state.pool.tokenAMint,q.quote,q.buy.swapOutAmount)];
    const exit=[swapInstruction(state,user,state.pool.tokenAMint,NATIVE_MINT,q.buy.swapOutAmount,new BN(0)),createCloseAccountInstruction(quoteAta,user,user)];
 
  return {entry,exit};
@@ -118,10 +119,10 @@ export async function inspectDammV2(token:TokenRef,poolAddress:string,profile:Pr
    const payers=await multiple('damm-payers',candidates);let user:PublicKey|undefined,baseInfo:AccountInfo<Buffer>|null=null;
    const potential=candidates.flatMap((payer,i)=>payers[i]&&!payers[i]!.executable&&payers[i]!.owner.equals(PublicKey.default)&&BigInt(payers[i]!.lamports)>=BigInt(q.quote.toString())+30000000n?[payer]:[]);
    if(!potential.length)throw Error('DAMM_SIMULATION_PAYER_UNAVAILABLE');
-   const atas=await multiple('damm-user-accounts',potential.flatMap(p=>[getAssociatedTokenAddressSync(state.pool.tokenAMint,p,true),getAssociatedTokenAddressSync(NATIVE_MINT,p,true)]));
+   const atas=await multiple('damm-user-accounts',potential.flatMap(p=>[getAssociatedTokenAddressSync(state.pool.tokenAMint,p,true,state.base.owner),getAssociatedTokenAddressSync(NATIVE_MINT,p,true)]));
    const index=potential.findIndex((_,i)=>atas[i*2+1]===null);if(index<0)throw Error('DAMM_SIMULATION_PAYER_UNAVAILABLE');user=potential[index];baseInfo=atas[index*2];
-   const baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
-   if(baseInfo){owned(baseInfo,TOKEN_PROGRAM_ID);const a=AccountLayout.decode(baseInfo.data);if(!a.mint.equals(state.pool.tokenAMint)||!a.owner.equals(user)||a.state!==1)throw Error('DAMM_SIMULATION_SETUP_UNSUPPORTED');}
+   const baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true,state.base.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
+   if(baseInfo){owned(baseInfo,state.base.owner);const a=state.base.owner.equals(TOKEN_PROGRAM_ID)?AccountLayout.decode(baseInfo.data):tokenAccount(baseInfo,state.base.owner);if(!a.mint.equals(state.pool.tokenAMint)||!a.owner.equals(user)||a.state!==1)throw Error('DAMM_SIMULATION_SETUP_UNSUPPORTED');}
    const {entry,exit}=dammLegs(state,q,user);
    let blockhash='',blockSlot=slot,blockId='damm-blockhash';
    const refresh=async()=>{const block=await read(blockId,'getLatestBlockhash',[{commitment:'finalized',minContextSlot:slot}]);if(!obj(block)||!obj(block.context)||!Number.isSafeInteger(block.context.slot)||Number(block.context.slot)<slot||!obj(block.value)||typeof block.value.blockhash!=='string')throw Error('RPC_SHAPE');blockhash=block.value.blockhash;blockSlot=Number(block.context.slot);};
@@ -152,7 +153,7 @@ export function verifyDammSimulation(state:ReturnType<typeof decodeDammState>,q:
  if(!obj(response)||!obj(response.context)||!Number.isSafeInteger(response.context.slot)||Number(response.context.slot)<state.slot||!obj(response.value))return reject();
  const v=response.value;if(v.err!==null)throw Error('DAMM_SIMULATION_REJECTED');
  const integer=(n:unknown):n is number=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0;
- const keys=tx.message.staticAccountKeys.map(k=>k.toBase58()),baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
+ const keys=tx.message.staticAccountKeys.map(k=>k.toBase58()),baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true,state.base.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
  const indices=[user,baseAta,quoteAta,state.pool.tokenAVault,state.pool.tokenBVault].map(k=>keys.indexOf(k.toBase58()));
  if(tx.message.addressTableLookups.length||tx.message.header.numRequiredSignatures!==1||keys[0]!==user.toBase58()||new Set(keys).size!==keys.length||indices.some(i=>i<0)||!integer(v.fee)||!Array.isArray(v.preBalances)||!Array.isArray(v.postBalances)||v.preBalances.length!==keys.length||v.postBalances.length!==keys.length||!v.preBalances.every(integer)||!v.postBalances.every(integer)||!Array.isArray(v.preTokenBalances)||!Array.isArray(v.postTokenBalances)||!obj(v.loadedAddresses)||!Array.isArray(v.loadedAddresses.writable)||v.loadedAddresses.writable.length||!Array.isArray(v.loadedAddresses.readonly)||v.loadedAddresses.readonly.length||!Array.isArray(v.accounts)||v.accounts.length!==5)return reject();
  const pre=v.preBalances as number[],post=v.postBalances as number[],[payer,base,quote,va,vb]=indices;
@@ -161,14 +162,15 @@ export function verifyDammSimulation(state:ReturnType<typeof decodeDammState>,q:
  if(v.accounts[2]!==null){const closed=account(v.accounts[2]);if(closed.lamports!==0||closed.data.length||!closed.owner.equals(PublicKey.default)||closed.executable)return reject();}
  const afterUser=account(v.accounts[0]),afterBase=account(v.accounts[1]),afterA=account(v.accounts[3]),afterB=account(v.accounts[4]);
  if(!afterUser.owner.equals(PublicKey.default)||afterUser.executable||afterUser.lamports!==post[payer]||afterBase.lamports!==post[base]||afterA.lamports!==post[va]||afterB.lamports!==post[vb])return reject();
- owned(afterBase,TOKEN_PROGRAM_ID);if(afterBase.data.length!==165)return reject();const ab=AccountLayout.decode(afterBase.data),beforeBase=baseBefore?AccountLayout.decode(baseBefore.data):null;
+ if(state.base.owner.equals(TOKEN_PROGRAM_ID)){owned(afterBase,TOKEN_PROGRAM_ID);if(afterBase.data.length!==165)return reject();}
+ const ab=state.base.owner.equals(TOKEN_PROGRAM_ID)?AccountLayout.decode(afterBase.data):tokenAccount(afterBase,state.base.owner),beforeBase=baseBefore?AccountLayout.decode(baseBefore.data):null;
  if(!ab.mint.equals(state.pool.tokenAMint)||!ab.owner.equals(user)||ab.state!==1||ab.amount!==(beforeBase?.amount??0n)||ab.delegateOption||ab.closeAuthorityOption)return reject();
- const tokenRows=(rows:unknown[])=>{const map=new Map<number,{amount:bigint;mint:string;owner:string;decimals:number}>();for(const item of rows){if(!obj(item)||!integer(item.accountIndex)||item.accountIndex>=keys.length||map.has(item.accountIndex)||typeof item.mint!=='string'||typeof item.owner!=='string'||item.programId!==TOKEN_PROGRAM_ID.toBase58()||!obj(item.uiTokenAmount)||typeof item.uiTokenAmount.amount!=='string'||!/^(0|[1-9]\d{0,19})$/.test(item.uiTokenAmount.amount)||!integer(item.uiTokenAmount.decimals))return reject();map.set(item.accountIndex,{amount:BigInt(item.uiTokenAmount.amount),mint:item.mint,owner:item.owner,decimals:item.uiTokenAmount.decimals});}return map;};
- if(baseBefore){owned(baseBefore,TOKEN_PROGRAM_ID);if(baseBefore.data.length!==165)return reject();const prior=AccountLayout.decode(baseBefore.data);if(!prior.mint.equals(state.pool.tokenAMint)||!prior.owner.equals(user)||prior.state!==1)return reject();}
+ const tokenRows=(rows:unknown[])=>{const map=new Map<number,{amount:bigint;mint:string;owner:string;decimals:number}>();for(const item of rows){if(!obj(item)||!integer(item.accountIndex)||item.accountIndex>=keys.length||map.has(item.accountIndex)||typeof item.mint!=='string'||typeof item.owner!=='string'||item.programId!==(item.mint===state.pool.tokenAMint.toBase58()?state.base.owner:TOKEN_PROGRAM_ID).toBase58()||!obj(item.uiTokenAmount)||typeof item.uiTokenAmount.amount!=='string'||!/^(0|[1-9]\d{0,19})$/.test(item.uiTokenAmount.amount)||!integer(item.uiTokenAmount.decimals))return reject();map.set(item.accountIndex,{amount:BigInt(item.uiTokenAmount.amount),mint:item.mint,owner:item.owner,decimals:item.uiTokenAmount.decimals});}return map;};
+ if(baseBefore){if(state.base.owner.equals(TOKEN_PROGRAM_ID)){owned(baseBefore,TOKEN_PROGRAM_ID);if(baseBefore.data.length!==165)return reject();}const prior=state.base.owner.equals(TOKEN_PROGRAM_ID)?AccountLayout.decode(baseBefore.data):tokenAccount(baseBefore,state.base.owner);if(!prior.mint.equals(state.pool.tokenAMint)||!prior.owner.equals(user)||prior.state!==1)return reject();}
  const before=tokenRows(v.preTokenBalances),after=tokenRows(v.postTokenBalances),auth=derivePoolAuthority().toBase58();
  const bound=(row:ReturnType<typeof tokenRows> extends Map<number,infer T>?T|undefined:never,mint:PublicKey,owner:string,decimals:number)=>!!row&&row.mint===mint.toBase58()&&row.owner===owner&&row.decimals===decimals;
  if(before.has(quote)||after.has(quote)||!bound(after.get(base),state.pool.tokenAMint,user.toBase58(),state.a.decimals)||after.get(base)!.amount!==ab.amount||beforeBase&&(!bound(before.get(base),state.pool.tokenAMint,user.toBase58(),state.a.decimals)||before.get(base)!.amount!==beforeBase.amount)||!beforeBase&&before.has(base))return reject();
- const av=vault(afterA,state.pool.tokenAMint),bv=vault(afterB,NATIVE_MINT);
+ const av=vault(afterA,state.pool.tokenAMint,state.base.owner),bv=vault(afterB,NATIVE_MINT);
  for(const [i,mint,decimals]of [[va,state.pool.tokenAMint,state.a.decimals],[vb,NATIVE_MINT,9]] as const)if(!bound(before.get(i),mint,auth,decimals)||!bound(after.get(i),mint,auth,decimals))return reject();
  if(before.get(va)!.amount!==av.amount||after.get(va)!.amount!==av.amount||after.get(vb)!.amount!==bv.amount)return reject();
  const nativeDelta=BigInt(post[vb])-BigInt(pre[vb]);if(bv.amount-before.get(vb)!.amount!==nativeDelta)return reject();
@@ -185,7 +187,7 @@ export function validateDammBundle(bundle:LiveBundle){
  if(!route||route.method!=='verified-native-route-v1'||route.selected!=='METEORA_DAMM_V2'||typeof route.pool!=='string'||!packet?.venueInspection||![DAMM_VERSION,EMPTY_DAMM_VERSION].includes(packet.venueInspection.version)||packet.venueInspection.poolAddress!==route.pool)return reject();
  const venueIds=['O08','O09','O10','O11','O12','O13','O14','O15','O16'];
  const expected=deriveBaseline({sharedMode:true,token:bundle.token,cutoff:bundle.cutoff,profile:bundle.profile,features:bundle.features.filter(f=>!venueIds.includes(f.id)),evidence:bundle.evidence,observations:bundle.observations,venue:packet.venue,venueInspection:packet.venueInspection});
- const actual=JSON.parse(raw['shared-derivation']).baseline as ReturnType<typeof deriveBaseline>;
+ const actual=packet.baseline;
  for(const id of venueIds)if(JSON.stringify(expected.find(a=>a.id===id))!==JSON.stringify(actual.find(a=>a.id===id)))return reject();
  const requests=JSON.parse(raw['damm-requests']??'null');if(requests?.method!=='damm-read-requests-v1'||!obj(requests.requests))return reject();
  const canonicalSlot=JSON.parse(raw['rpc-account']).result.context.slot,scout=JSON.parse(raw['native-route-scout']??'null'),minSlot=scout?.result?.context?.slot,pool=new PublicKey(route.pool),inspection=packet.venueInspection;
@@ -221,7 +223,7 @@ export function validateDammBundle(bundle:LiveBundle){
  }
  if(v.costsReconciled){
   const proof=calc.simulationProof;if(proof?.method!=='damm-pre-post-v1')return reject();
-  const tx=VersionedTransaction.deserialize(Buffer.from(proof.wireBase64,'base64')),user=new PublicKey(proof.user),baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
+  const tx=VersionedTransaction.deserialize(Buffer.from(proof.wireBase64,'base64')),user=new PublicKey(proof.user),baseAta=getAssociatedTokenAddressSync(state.pool.tokenAMint,user,true,state.base.owner),quoteAta=getAssociatedTokenAddressSync(NATIVE_MINT,user,true);
   const userReq=requests.requests['damm-user-accounts'].params[0] as string[],baseIndex=userReq.indexOf(baseAta.toBase58()),accounts=JSON.parse(raw['damm-user-accounts']).result.value;if(baseIndex<0||userReq[baseIndex+1]!==quoteAta.toBase58()||accounts[baseIndex+1]!==null)return reject();
   const baseBefore=accounts[baseIndex]===null?null:account(accounts[baseIndex]),simulation=JSON.parse(raw['damm-simulation']).result,verified=verifyDammSimulation(state,q,simulation,tx,user,baseBefore);
   if(proof.setupLamports!==verified.setupLamports||JSON.stringify(requests.requests['damm-simulation'].params)!==JSON.stringify([proof.wireBase64,{encoding:'base64',sigVerify:false,replaceRecentBlockhash:true,commitment:'finalized',minContextSlot:state.slot,accounts:{encoding:'base64',addresses:[user.toBase58(),baseAta.toBase58(),quoteAta.toBase58(),state.pool.tokenAVault.toBase58(),state.pool.tokenBVault.toBase58()]}}]))return reject();

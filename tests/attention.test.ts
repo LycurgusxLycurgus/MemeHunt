@@ -498,7 +498,7 @@ test('fetch final-resource fragments normalize without loosening public-source a
   assert.equal(entryEvidenceScope(changedBody, token, cutoff).complete, false,
     'a body that no longer matches the exact retained fetch receipt cannot be admitted');
 
-  const unrequestedMock = mockFetch((url, init) => {
+  const unrequestedMock = mockFetch((url, _init) => {
     if (url.includes('api.search.tinyfish.ai')) {
       const query = new URL(url).searchParams.get('query') ?? '';
       if (query.includes('River Lantern')) return search([comparison]);
@@ -2473,6 +2473,28 @@ test('a metadata JSON seed follows safe public links within the shared page cap 
   assert.equal(read.sources.some(source => source.url === nested), false, 'a child JSON page cannot trigger a second hop');
   assert.equal(read.sources.some(source => source.url === linked[2]), false, 'image links are not narrative sources');
   assert.equal(read.sources.some(source => source.url === linked[3]), false, 'private and non-HTTPS targets are rejected');
+});
+
+test('FAST never fetches the URL named by a metadata image field', async () => {
+  const seed = 'https://metadata.example/fast-token.json';
+  const image = 'https://cdn.example/image?id=hero';
+  const story = 'https://narrative.example/fast-story';
+  const fetched: string[] = [];
+  const mock = mockFetch((url, init) => {
+    if (url.includes('api.search.tinyfish.ai')) return search([]);
+    const requested = (JSON.parse(String(init.body)) as { urls: string[] }).urls;
+    fetched.push(...requested);
+    return json({ results: requested.map(requestedUrl => fetchResult(requestedUrl,
+      requestedUrl === seed ? JSON.stringify({ image, website: story }) : `A public story about ${token.address}.`)), errors: [] });
+  });
+
+  const read = await collectAttentionSources(token, KEY, mock.fetcher, () => '2026-10-01T12:00:00.000Z', undefined,
+    [seed], undefined, undefined, undefined, undefined, true, true);
+
+  assert.ok(fetched.includes(seed));
+  assert.ok(fetched.includes(story));
+  assert.equal(fetched.includes(image), false);
+  assert.equal(read.sources.some(source => source.url === image), false);
 });
 
 test('a direct status seed is retained as a POST but cannot expand into other posts', async () => {

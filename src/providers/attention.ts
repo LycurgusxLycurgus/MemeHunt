@@ -1,12 +1,19 @@
 import { originRecoveryQuery, originRecoveryCandidates, geckoPoolBinding, verifyOriginAlias, verifiedOriginExclusion, exactOriginalSubjectForCidMirror, type OriginExclusion, type OriginRecovery } from './origin-recovery.js';
+import type { createFirecrawlFallback } from './firecrawl.js';
+import { criterionFirecrawlProjection } from './criterion-firecrawl.js';
 import { fetchReadResponse, readLimitedText } from './http.js';
 import { publicHttpsUrl } from './tinyfish.js';
 import { decodeTokenMetadataUri } from './token-discovery.js';
 import type { TokenRef } from '../domain/contracts.js';
 import { acquisitionEvidenceMethod as boundedAcquisitionMethod, acquisitionLedgerSchema, buildAcquisitionScope,
-  type AcquisitionLedger, type AcquisitionScope, type AcquisitionSearch } from './acquisition-evidence.js';
+  readAcquisitionPurposePlan, purposeSearchFacts, validAcquisitionPurposePlan, type AcquisitionLedger, type AcquisitionScope, type AcquisitionSearch, type AcquisitionPurposePlan } from './acquisition-evidence.js';
+
+function socialQuery(token:TokenRef,symbol?:string){
+ return symbol&&/^[A-Za-z0-9]{2,10}$/.test(symbol)?`("${token.address}" OR "$${symbol}") (site:x.com OR site:twitter.com)`:`"${token.address}" (site:x.com OR site:twitter.com)`;
+}
 
 export type AttentionSource = {id:string;url:string;text:string;publishedAt:string|null;authorId:string|null;availableAt:string;kind:'POST'|'PAGE';discoveredFrom?:string};
+export type CriterionSourceBinding={sourceId:string;producerArtifactId:string;resultIndex:number;requestedUrl:string;transform:'IDENTITY'|'ORIGIN_UNDERSCORE_V1'};
 export type ComparisonLead={id:string;searchArtifactId:string;resultIndex:number;url:string|null;title:string;snippet:string;metadataEvidenceId:string;sourceIds:string[];acquisitionStatus:'ACQUIRED'|'FAILED'|'BLOCKED'|'OMITTED'|'CONFLICTED'|'UNSAFE';acquisitionCodes:string[];recoveryQueryIds:string[];recoverySourceIds:string[]};
 export type ComparisonAcquisition={originalComplete:boolean;searchSucceeded:boolean;descriptorComplete:boolean;leadCount:number;leads:ComparisonLead[]};
 export type RecoveryQueryParent={leadId:string;originalUrl:string|null};
@@ -34,7 +41,7 @@ export const narrativeContentMethod='typed-metadata-content-v1' as const;
 export const semanticPremiseMethod='criterion-premises-v1' as const;
 export const originSupplementMethod='same-subject-cid-mirror-v1' as const;
 export type NarrativeContentScope={method:typeof narrativeContentMethod;token:TokenRef;sourceIds:string[];eligibleSourceIds:string[];identityOnlySourceIds:string[]};
-export type AttentionRead = {narrativeContentMethod?:typeof narrativeContentMethod;narrativeContentScope?:NarrativeContentScope;semanticPremiseMethod?:typeof semanticPremiseMethod;originSupplementMethod?:typeof originSupplementMethod;sharedClaimProjectionMethod?:typeof sharedClaimProjectionMethod;semanticJudgmentMethod?:'evidence-constitution-v1';recoveryOutcomeMethod?:typeof recoveryOutcomeMethod;acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod;acquisitionScope?:AcquisitionScope;baseQualification?:'NO_SOURCE_CONTENT'|'NO_NARRATIVE_SOURCE_CONTENT';acquisitionProjectName?:string|null;acquisitionDiscovery?:{metadataState:'OBSERVED'|'UNAVAILABLE'|'NOT_APPLICABLE';metadataArtifactId?:string;dexArtifactId?:string};claimDecisionMethod?:'independent-grounded-claims-v1';claimEvidenceMethod?:'cited-claim-view-v1';redirectBodyMethod?:'requested-final-body-v1';entryBoundsMethod?:'accepted-post-intervals-v1';pageBodyRetentionMethod?:'requested-page-bodies-v1';entrySupportMethod?:'reviewed-sample-growth-v1';outcomeBasisMethod?:'entry-outcome-basis-v1';originRecoveryCandidateMethod?:'mint-metadata-subject-v1';metadataLinkMethod?:'onchain-metadata-v1';collectionMethod?:'project-context-v2';leadershipPositiveMethod?:'source-bound-positive-v1';postSampleScope?:TerminalPostScope;entryExecutionMethod?:'entry-first-v1'|'entry-first-v2';comparisonRecovery?:ComparisonRecovery;entryEvidenceMethod?:'public-support-v2';sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;comparisonCoverage?:import('../domain/attention.js').ComparisonCoverage;comparisonPublicSupport?:import('../domain/attention.js').ComparisonPublicSupport;narrativePublicSupport?:import('../domain/attention.js').NarrativePublicSupport;queryRetrievedAt?:Record<string,string>;metadataLinks?:true;metadataUri?:string;originRecovery?:OriginRecovery;originExclusions?:OriginExclusion[];originScope?:{method:'bounded-origin-sources-v1';complete:boolean;sourceIds:string[];acquisition?:OriginAcquisition};growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
+export type AttentionRead = {fastJudgmentMethod?:'read-sources-v1';metadataTextMethod?:'markdown-unescape-v1';acquisitionPurposeMethod?:'acquisition-purpose-v1';purposeProjection?:import('../domain/acquisition-purpose.js').AcquisitionProjection;purposeReceipt?:import('../domain/acquisition-purpose.js').PurposeReceipt;criterionReviewMethod?:'criterion-review-v1';criterionPolicyId?:'research-fast-v3';sourceBindings?:CriterionSourceBinding[];criterionRecoveryMetadata?:Array<{id:string;searchArtifactId:string;resultIndex:number;url:string|null;title:string;snippet:string}>;narrativeContentMethod?:typeof narrativeContentMethod;narrativeContentScope?:NarrativeContentScope;semanticPremiseMethod?:typeof semanticPremiseMethod;originSupplementMethod?:typeof originSupplementMethod;sharedClaimProjectionMethod?:typeof sharedClaimProjectionMethod;semanticJudgmentMethod?:'evidence-constitution-v1';recoveryOutcomeMethod?:typeof recoveryOutcomeMethod;acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod;acquisitionScope?:AcquisitionScope;baseQualification?:'NO_SOURCE_CONTENT'|'NO_NARRATIVE_SOURCE_CONTENT';acquisitionProjectName?:string|null;acquisitionDiscovery?:{metadataState:'OBSERVED'|'UNAVAILABLE'|'NOT_APPLICABLE';metadataArtifactId?:string;dexArtifactId?:string};claimDecisionMethod?:'independent-grounded-claims-v1';claimEvidenceMethod?:'cited-claim-view-v1';redirectBodyMethod?:'requested-final-body-v1';entryBoundsMethod?:'accepted-post-intervals-v1';pageBodyRetentionMethod?:'requested-page-bodies-v1';entrySupportMethod?:'reviewed-sample-growth-v1';outcomeBasisMethod?:'entry-outcome-basis-v1';originRecoveryCandidateMethod?:'mint-metadata-subject-v1';metadataLinkMethod?:'onchain-metadata-v1';collectionMethod?:'project-context-v2';leadershipPositiveMethod?:'source-bound-positive-v1';postSampleScope?:TerminalPostScope;entryExecutionMethod?:'entry-first-v1'|'entry-first-v2';comparisonRecovery?:ComparisonRecovery;entryEvidenceMethod?:'public-support-v2';sources:AttentionSource[];rawArtifacts:Record<string,string>;queries:string[];complete:boolean;codes:string[];start:string;end:string;comparisonSourceIds?:string[];comparisonComplete?:boolean;postSampleComplete?:boolean;discoveryUrls?:string[];comparisonAcquisition?:ComparisonAcquisition;comparisonRankingSourceIds?:string[];postSampleSourceIds?:string[];comparisonQualification?:unknown;comparisonCoverage?:import('../domain/attention.js').ComparisonCoverage;comparisonPublicSupport?:import('../domain/attention.js').ComparisonPublicSupport;narrativePublicSupport?:import('../domain/attention.js').NarrativePublicSupport;queryRetrievedAt?:Record<string,string>;metadataLinks?:true;metadataUri?:string;originRecovery?:OriginRecovery;originExclusions?:OriginExclusion[];originScope?:{method:'bounded-origin-sources-v1';complete:boolean;sourceIds:string[];acquisition?:OriginAcquisition};growthSample?:{method:'fixed-query-sample-v1';sourceIds:string[];queries:string[];complete:boolean}};
 export const attentionSourceLimit=(read:Pick<AttentionRead,'collectionMethod'>)=>read.collectionMethod==='project-context-v2'?64:32;
 export const attentionInitialPageLimit=(read:Pick<AttentionRead,'collectionMethod'>)=>read.collectionMethod==='project-context-v2'?40:32;
 const object=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
@@ -53,22 +60,33 @@ export function originSeedLinks(seed:string,links:unknown[],method?:'project-con
     return eligible&&!platformNavigation?[next]:[];
   }))];
 }
+/** FAST does not fetch image files or the metadata image field. */
+export function attentionImageUrl(url:string):boolean{try{return /\.(?:png|jpe?g|webp|gif|svg|avif|bmp|ico|tiff?)$/i.test(new URL(url).pathname);}catch{return false;}}
+export function attentionSeedLinks(seed:string,links:unknown[],method:'project-context-v2'|undefined,text:string,fast:boolean):string[]{
+ const result=originSeedLinks(seed,links,method);if(!fast)return result;
+ let image:string|null=null;try{const value=JSON.parse(text.replace(/\\_/g,'_'));if(typeof value?.image==='string')image=normalizeAttentionSearchUrl(value.image);}catch{/* Metadata may not be JSON. */}
+ return result.filter(url=>url!==image&&!attentionImageUrl(url));
+}
 /** Failed or omitted original pages cannot disappear behind the surviving text. */
 export function reconstructOriginAcquisition(read:AttentionRead,token?:TokenRef):OriginAcquisition{
   const required=new Set(read.discoveryUrls??[]),searches:OriginAcquisition['searches']=[];
+  const native=criterionFirecrawlProjection(read);
   for(let i=1;i<=2;i++){
     const id=`attention-search-${i}`;let complete=false;
-    try{const r=JSON.parse(read.rawArtifacts[id]);complete=Array.isArray(r.results)&&!r.error&&(!Array.isArray(r.errors)||!r.errors.length);if(complete)for(const item of r.results){const url=typeof item?.url==='string'?normalizeAttentionSearchUrl(item.url):null;if(url)required.add(url);else complete=false;}}catch{/* Missing original search remains incomplete. */}
+    try{const r=JSON.parse(read.rawArtifacts[id]);complete=Array.isArray(r.results)&&!r.error&&(!Array.isArray(r.errors)||!r.errors.length);if(complete)for(const item of r.results){const url=typeof item?.url==='string'?normalizeAttentionSearchUrl(item.url):null;if(url){if(read.criterionPolicyId!=='research-fast-v3'||!attentionImageUrl(url))required.add(url);}else complete=false;}}catch{/* Missing original search remains incomplete. */}
+    if(!complete&&native.search?.replacesSearchId===id){complete=true;for(const value of native.search.urls){const url=normalizeAttentionSearchUrl(value);if(url){if(read.criterionPolicyId!=='research-fast-v3'||!attentionImageUrl(url))required.add(url);}else complete=false;}}
     searches.push({id,complete});
   }
   const results:Array<{url:string;finalUrl:string;text:string}>=[],attempted=new Set<string>();
   for(const [id,raw] of Object.entries(read.rawArtifacts))if(/^attention-fetch-\d+(?:-retry-\d+)?$/.test(id))try{
     const response=JSON.parse(raw);if(!Array.isArray(response.results)||!Array.isArray(response.errors))continue;
     for(const e of response.errors)if(typeof e?.url==='string'){const url=normalizeAttentionSearchUrl(e.url);if(url)attempted.add(url);}
-    for(const r of response.results){const url=typeof r?.url==='string'?normalizeAttentionSearchUrl(r.url):null,finalUrl=typeof r?.final_url==='string'?normalizeAttentionFetchUrl(r.final_url):url;if(!url||!finalUrl||typeof r.text!=='string')continue;attempted.add(url);results.push({url,finalUrl,text:r.text});if(read.discoveryUrls?.includes(url)){const metadata=/\.json(?:[?]|$)/i.test(url)?[...r.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];for(const link of originSeedLinks(url,[...(Array.isArray(r.links)?r.links:[]),...metadata],read.collectionMethod))required.add(link);}}
+    for(const r of response.results){const url=typeof r?.url==='string'?normalizeAttentionSearchUrl(r.url):null,finalUrl=typeof r?.final_url==='string'?normalizeAttentionFetchUrl(r.final_url):url;if(!url||!finalUrl||typeof r.text!=='string')continue;attempted.add(url);results.push({url,finalUrl,text:r.text});if(read.discoveryUrls?.includes(url)){const metadata=/\.json(?:[?]|$)/i.test(url)?[...r.text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];for(const link of attentionSeedLinks(url,[...(Array.isArray(r.links)?r.links:[]),...metadata],read.collectionMethod,r.text,read.criterionPolicyId==='research-fast-v3'))required.add(link);}}
   }catch{/* Invalid response cannot supply a page. */}
+  if(read.criterionPolicyId==='research-fast-v3'&&read.metadataUri){const source=read.sources.find(s=>s.id==='metadata-json-source'&&s.url===read.metadataUri&&s.text===read.rawArtifacts['metadata-json']);if(source){attempted.add(read.metadataUri);results.push({url:read.metadataUri,finalUrl:read.metadataUri,text:source.text});}else if(read.codes.includes('METADATA_FETCH_UNAVAILABLE'))attempted.add(read.metadataUri);}
+  for(const page of native.pages){const url=normalizeAttentionSearchUrl(page.requestedUrl),finalUrl=normalizeAttentionFetchUrl(page.finalUrl);if(!url||!finalUrl)continue;attempted.add(url);results.push({url,finalUrl,text:page.text});}
   const urls:OriginAcquisition['urls']=[...required].map(url=>{
-    const observed=results.filter(r=>r.url===url),alias=read.originRecovery?.aliases.find(a=>a.originUrl===url),verified=alias?verifyOriginAlias(alias,read.sources,read.rawArtifacts):null,source=verified??read.sources.find(s=>observed.some(r=>r.finalUrl===s.url&&r.text===s.text)&&s.text.trim()&&s.text.trim().toLowerCase()!=='safety check');
+    const observed=results.filter(r=>r.url===url&&(read.criterionReviewMethod!=='criterion-review-v1'||!/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(r.text))),alias=read.originRecovery?.aliases.find(a=>a.originUrl===url),verified=alias?verifyOriginAlias(alias,read.sources,read.rawArtifacts):null,source=verified??read.sources.find(s=>observed.some(r=>r.finalUrl===s.url&&r.text===s.text)&&s.text.trim()&&s.text.trim().toLowerCase()!=='safety check');
     const excluded=read.originExclusions?.find(e=>e.url===url);
     const state:OriginAcquisition['urls'][number]['state']=!source&&excluded&&verifiedOriginExclusion(read,excluded,token)?'EXCLUDED_REVIEWED':!source?(attempted.has(url)?'UNAVAILABLE':'OMITTED'):!verified&&observed.some(r=>r.text!==source.text)?'CONFLICTED':source.text.length>(read.entryEvidenceMethod?120000:6000)?'CLIPPED':'ACQUIRED';
     return {url,sourceId:source?.id??null,state};
@@ -432,7 +450,9 @@ export function buildAttentionAcquisitionScope(read:AttentionRead,token:TokenRef
  if(token.chain==='solana'&&discovery?.metadataState==='NOT_APPLICABLE')blockers.push('ACQUISITION_METADATA_DISCOVERY_INCOMPLETE');
  const seeds=[...new Set((read.discoveryUrls??[]).map(url=>publicHttpsUrl(url,true)).filter((url):url is string=>!!url).map(url=>normalizeAttentionSearchUrl(url)??url))].slice(0,4);
  const seedScopes=seeds.map(url=>{const u=new URL(url);return `site:${u.hostname}${/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)?u.pathname:''}`;});
- const exactQueries=[`"${token.address}" ${token.chain} ${seedScopes.length?`(${seedScopes.join(' OR ')})`:'narrative origin catalyst'}`,`"${token.address}" (site:x.com OR site:twitter.com)`];
+ let symbol:string|undefined;
+ if(read.criterionPolicyId==='research-fast-v3'&&read.queries[1]!==socialQuery(token)&&raw['discovery-token-metadata'])try{symbol=decodeTokenMetadataUri(raw['discovery-token-metadata'],token.address,true).symbol;}catch{/* Unavailable metadata cannot authorize a cashtag. */}
+ const exactQueries=[`"${token.address}" ${token.chain} ${seedScopes.length?`(${seedScopes.join(' OR ')})`:'narrative origin catalyst'}`,socialQuery(token,symbol)];
  if(read.queries[0]!==exactQueries[0]||read.queries[1]!==exactQueries[1])blockers.push('ACQUISITION_QUERY_BINDING_INVALID');
  const expectedQueries:Array<{query:string;purpose:AcquisitionSearch['purpose']}>= [
   {query:exactQueries[0]!,purpose:'EXACT_TOKEN'},
@@ -534,7 +554,8 @@ function attentionFailure(error:unknown,stage:'SEARCH'|'FETCH'){
  if(error instanceof Error&&error.message==='PROVIDER_RESPONSE_LIMIT')return prefix+'RESPONSE_LIMIT';
  return prefix+'UNAVAILABLE';
 }
-export async function collectAttentionSources(token:TokenRef,key:string,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),name?:string,discoveryUrls:string[]=[],recoveryPlan?:RecoveryPlan,entryEvidenceMethod?:'public-support-v2',pageBodyRetentionMethod?:'requested-page-bodies-v1',acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod):Promise<AttentionRead>{
+export async function collectAttentionSources(token:TokenRef,key:string,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),name?:string,discoveryUrls:string[]=[],recoveryPlan?:RecoveryPlan,entryEvidenceMethod?:'public-support-v2',pageBodyRetentionMethod?:'requested-page-bodies-v1',acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod,criterionBindings=false,fastAttention=false,firecrawl?:ReturnType<typeof createFirecrawlFallback>,signal?:AbortSignal,purposePlan=false,metadataSymbol?:string,excludedMetadataUrls:string[]=[]):Promise<AttentionRead>{
+  if(fastAttention&&(!criterionBindings||recoveryPlan))throw Error('CRITERION_POLICY_INVALID');
   const queryRetrievedAt:Record<string,string>={};
   const leads:ComparisonLead[]=[],sourceByRequested=new Map<string,string>(),blockedUrls=new Set<string>(),conflictedUrls=new Set<string>();
   let descriptorComplete=true,descriptorCharacters=0,leadCount=0;
@@ -542,6 +563,9 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
   const end=now(),start=new Date(Date.parse(end)-24*3600_000).toISOString();
   const rawArtifacts:Record<string,string>={},codes:string[]=[],urls:string[]=[],sources:AttentionSource[]=[],comparisonUrls=new Set<string>(),comparisonSourceIds:string[]=[],comparisonFetched=new Set<string>(),truncatedSourceUrls=new Set<string>();
   const acquisitionStart=acquisitionEvidenceMethod?end:undefined,acquisitionSearches:AcquisitionSearch[]=[];
+  const ownedPlan:AcquisitionPurposePlan|undefined=purposePlan?{method:'acquisition-purpose-v1',group:'PUBLIC_ENTRY',token,availableAt:end,fallbackEnabled:!!firecrawl,plannedRungs:['tinyfish','tinyfish-retry',...(firecrawl?['firecrawl']:[])],caps:{scrapes:2,searches:1},skips:[]}:undefined;
+  const savePurposePlan=()=>{if(ownedPlan)rawArtifacts['attention-acquisition-purpose-plan']=JSON.stringify(ownedPlan);};
+  savePurposePlan();
   const acquisitionSearchId=(index:number,role:'primary'|'fallback'='primary')=>recoveryPlan?`attention-recovery-search-${index+1}`:index===2?`attention-search-3-${role}`:`attention-search-${index+1}`;
   const acquisitionArtifactId=(searchId:string,kind:'request'|'response'|'attempt'|'http')=>`attention-acquisition-${searchId}-${kind}`;
   const captureSearchRequest=(searchId:string,query:string,purpose:AcquisitionSearch['purpose'],url:string)=>{
@@ -575,15 +599,17 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
   };
   const httpOutcome=(artifactId:string,status:number)=>{if(!entryEvidenceMethod)return;const id='attention-http-outcomes',prior=rawArtifacts[id]?JSON.parse(rawArtifacts[id]).outcomes:[];rawArtifacts[id]=JSON.stringify({method:'fetch-http-outcomes-v1',outcomes:[...prior.filter((r:{artifactId:string})=>r.artifactId!==artifactId),{artifactId,status}]});};
   const isPostUrl=(url:string)=>{const u=new URL(url);return /^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_]+\/status\/\d+(?:\/.*)?$/.test(u.pathname);};
-  const canonicalUrl=(url:string)=>{if(!isPostUrl(url))return url;const u=new URL(url);return `https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`;};
-  const seeds=[...new Set(discoveryUrls.map(url=>publicHttpsUrl(url,true)).filter((u):u is string=>!!u).map(canonicalUrl))].slice(0,4);
+  const canonicalUrl=(url:string)=>{if(!isPostUrl(url))return normalizeAttentionSearchUrl(url)??url;const u=new URL(url);return `https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`;};
+  const seeds=[...new Set(discoveryUrls.map(url=>publicHttpsUrl(url,true)).filter((u):u is string=>!!u).map(canonicalUrl).filter(url=>!fastAttention||!attentionImageUrl(url)))].slice(0,4);
   urls.push(...seeds);
   const discoveryParents=new Map<string,string>(),followed=new Set<string>();
   const seedScopes=seeds.map(url=>{const u=new URL(url);return `site:${u.hostname}${/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)?u.pathname:''}`;});
-  const queries=recoveryPlan?[...recoveryPlan.queries]:[`"${token.address}" ${token.chain} ${seedScopes.length?`(${seedScopes.join(' OR ')})`:'narrative origin catalyst'}`,`"${token.address}" (site:x.com OR site:twitter.com)`];
+  const queries=recoveryPlan?[...recoveryPlan.queries]:[`"${token.address}" ${token.chain} ${seedScopes.length?`(${seedScopes.join(' OR ')})`:fastAttention?'narrative project':'narrative origin catalyst'}`,socialQuery(token,fastAttention?metadataSymbol:undefined)];
   const comparisonIntent='Find public sources identifying distinct token contract addresses representing this named crypto project or narrative. Prioritize contract-bearing project pages and substantive original posts. Exclude non-crypto dictionary matches. Same name alone does not establish association; do not rank by price.';
-  if(!recoveryPlan&&name&&name.length<=100)queries.push(`"${name.replace(/["\\]/g,'')}" ${token.chain} crypto token contract`);
+  if(!recoveryPlan&&!fastAttention&&name&&name.length<=100)queries.push(`"${name.replace(/["\\]/g,'')}" ${token.chain} crypto token contract`);
   let postSampleComplete=true,comparisonSearchSucceeded=false,comparisonIncomplete=false;
+  const criterionOmissions:Array<{url:string;purpose:'EXACT_TOKEN'|'SOCIAL'|'COMPARISON'|'RECOVERY'}>=[];
+  const criterionIssues:Array<{url:string;purpose:'EXACT_TOKEN'|'SOCIAL'|'COMPARISON'|'RECOVERY';code:string}>=[];
   for(const [i,query] of queries.entries())try{
     const url=new URL('https://api.search.tinyfish.ai/');url.searchParams.set('query',query);
     if(recoveryPlan||i===2){const intent=recoveryPlan?'Identify and corroborate the indexed entity and distinctive subject or mechanism named in this query using descriptive independent public sources. Include descriptive context and alternate contract-bearing pages when applicable; a shared name alone is insufficient.':comparisonIntent;url.searchParams.set('intent',intent);rawArtifacts[`attention-search-${i+1}-intent`]=intent;}
@@ -621,12 +647,27 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
         }
         if(safe)comparisonUrls.add(safe);else comparisonIncomplete=true;
       }
-      if(safe&&!recoveryPlan?.queryParents&&!urls.includes(safe)&&!recoveryPlan?.skipUrls.includes(safe)){
-        if(urls.length>=pageLimit){codes.push('ATT_PAGE_CAP');if(isPostUrl(safe))postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}urls.push(safe);
+      if(safe&&!excludedMetadataUrls.includes(safe)&&(!fastAttention||!attentionImageUrl(safe))&&!recoveryPlan?.queryParents&&!urls.includes(safe)&&!recoveryPlan?.skipUrls.includes(safe)){
+        if(urls.length>=pageLimit){codes.push('ATT_PAGE_CAP');if(criterionBindings)criterionOmissions.push({url:safe,purpose});if(isPostUrl(safe))postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;continue;}urls.push(safe);
       }
     }
     if(i===2&&comparisonUrls.size===0)comparisonIncomplete=true;
   }catch(error){codes.push(entryEvidenceMethod?attentionFailure(error,'SEARCH'):'ATT_SEARCH_UNAVAILABLE');postSampleComplete=false;if(recoveryPlan||i===2)comparisonIncomplete=true;}
+  if(firecrawl&&criterionBindings&&!recoveryPlan){
+    const requests=Object.entries(rawArtifacts).filter(([id])=>/^attention-acquisition-attention-search-\d+(?:-primary|-fallback)?-request$/.test(id)).map(([,body])=>JSON.parse(body) as {id:string;query:string;purpose:AcquisitionSearch['purpose']}).sort((a,b)=>Number(a.id.match(/search-(\d+)/)?.[1])-Number(b.id.match(/search-(\d+)/)?.[1])||Number(a.id.endsWith('-fallback'))-Number(b.id.endsWith('-fallback')));
+    const failed=requests.find(request=>{
+      const id=request.id,attempt=rawArtifacts[acquisitionArtifactId(id,'attempt')];
+      const row=acquisitionSearches.find(item=>item.id===id);
+      if(attempt||!row||row.status!==200)return true;
+      try{const body=JSON.parse(rawArtifacts[row.artifactId]);return !Array.isArray(body.results)||!!body.error||Array.isArray(body.errors)&&body.errors.length>0;}catch{return true;}
+    });
+    if(failed&&!signal?.aborted){
+      const result=await firecrawl.search(failed.query,signal),id='firecrawl-search-1';
+      rawArtifacts[id+'-request']=JSON.stringify({method:'firecrawl-native-operation-v1',request:result.request,status:result.status,code:result.code??null,httpStatus:result.httpStatus??null,replacesSearchId:failed.id});
+      if(result.raw!==undefined)rawArtifacts[id]=result.raw;
+      if(result.status==='OBSERVED')for(const row of result.results??[]){const url=normalizeAttentionSearchUrl(row.url);if(url&&(!fastAttention||!attentionImageUrl(url))&&!urls.includes(url)){if(urls.length<pageLimit)urls.push(url);else criterionOmissions.push({url,purpose:failed.purpose==='SOCIAL'?'SOCIAL':failed.purpose==='COMPARISON'?'COMPARISON':'EXACT_TOKEN'});}}
+    }
+  }
   let fallbackFrontier:RecoverySlot[]=[];
   const fallbackRounds:Array<{batch:number;selections:ReturnType<typeof comparisonRecoveryFallback>}>=[];
   if(recoveryPlan?.queryParents){
@@ -638,7 +679,9 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     rawArtifacts['attention-selection-scope']=JSON.stringify(selected);
     fallbackFrontier=selected.selectedUrls.map(url=>({url,parentId:selection.find(row=>row.url===url)!.parentId}));
   }
-  let offset=0,batch=0,comparisonCharacters=0;
+  const sourceBindings:CriterionSourceBinding[]=[];
+  const criterionFetchRequests:Array<{artifactId:string;urls:string[];failureCode?:string}> = [];
+  let offset=0,batch=0,comparisonCharacters=0,firecrawlScrapes=0;
   const enqueueFallback=()=>{
     if(!entryEvidenceMethod||!recoveryPlan?.queryParents||fallbackRounds.length>=2)return false;
     const selections=comparisonRecoveryFallback(fallbackFrontier,leads,recoveryPlan.queryParents,[...recoveryPlan.skipUrls,...urls],new Set(sourceByRequested.keys()),recoveryPlan.fallbackSelectionMethod?{method:recoveryPlan.fallbackSelectionMethod,priorSelections:fallbackRounds.flatMap(round=>round.selections)}:undefined);
@@ -650,18 +693,22 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
   while(offset<urls.length||enqueueFallback()){
     const requested=urls.slice(offset,offset+10);
     offset+=requested.length;batch++;
+    if(criterionBindings)criterionFetchRequests.push({artifactId:`attention-fetch-${batch}`,urls:[...requested]});
     try{
     const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls:requested,format:'markdown',links:true,ttl:0,per_url_timeout_ms:8000})},fetcher,30000);
     httpOutcome('attention-fetch-'+batch,response.status);
-    if(!response.ok){codes.push(`ATT_FETCH_HTTP_${response.status}`);if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;continue;}
+    if(!response.ok)throw Error(`ATT_FETCH_HTTP_${response.status}`);
     const raw=await readLimitedText(response,2000000);rawArtifacts[`attention-fetch-${batch}`]=raw;const value:unknown=JSON.parse(raw);
     if(!object(value)||!Array.isArray(value.results)||!Array.isArray(value.errors)){codes.push('ATT_FETCH_SHAPE');if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;continue;}
+    const producers=new WeakMap<object,{producerArtifactId:string;resultIndex:number}>();
+    value.results.forEach((item,index)=>{if(object(item))producers.set(item,{producerArtifactId:`attention-fetch-${batch}`,resultIndex:index});});
     // HTTP-200 can contain transient per-URL failures. Recover only those URLs;
     // permanent denial and missing pages are evidence limits, not retry targets.
     const permanent=new Set(value.errors.filter(object).filter(e=>![408,429,502,503,504].includes(Number(e.status))&&e.error!=='timeout').map(e=>e.url));
     const returnedUrls=new Set(value.results.filter(object).filter(r=>typeof r.text==='string').map(r=>r.url));
     const retryUrls=requested.filter(url=>!returnedUrls.has(url)&&!permanent.has(url));
     if(retryUrls.length)try{
+      if(criterionBindings)criterionFetchRequests.push({artifactId:`attention-fetch-${batch}-retry-1`,urls:[...retryUrls]});
       const recovery=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls:retryUrls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000);
       httpOutcome('attention-fetch-'+batch+'-retry-1',recovery.status);
       const retryRaw=await readLimitedText(recovery,2000000);rawArtifacts[`attention-fetch-${batch}-retry-1`]=retryRaw;
@@ -669,20 +716,36 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
       if(recovery.ok&&object(recovered)&&Array.isArray(recovered.results)&&Array.isArray(recovered.errors)){
         // Binding validation below applies equally to recovered responses.
         const validRecovered=recovered.results.filter(object).filter(r=>retryUrls.includes(String(r.url))&&typeof r.text==='string');
+        recovered.results.forEach((item,index)=>{if(object(item))producers.set(item,{producerArtifactId:`attention-fetch-${batch}-retry-1`,resultIndex:index});});
         value.results.push(...validRecovered);
         const recoveredUrls=new Set(validRecovered.map(r=>r.url));
         const unresolved=value.errors.filter(e=>!object(e)||!recoveredUrls.has(e.url));
         value.errors.splice(0,value.errors.length,...unresolved);
         value.errors.push(...recovered.errors);
       }
-    }catch{/* Original failure is retained and coverage below remains incomplete. */}
+    }catch(error){if(criterionBindings){const attempt=criterionFetchRequests.find(item=>item.artifactId===`attention-fetch-${batch}-retry-1`);if(attempt)attempt.failureCode=attentionFailure(error,'FETCH');}/* Original failure is retained and coverage below remains incomplete. */}
+    if(firecrawl&&criterionBindings){
+      const usable=(row:Record<string,unknown>)=>typeof row.url==='string'&&typeof row.text==='string'&&!!row.text.trim()&&!/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(row.text);
+      const results=value.results as unknown[],returned=new Set(results.filter(object).filter(usable).map(row=>row.url));
+      const errors=value.errors as unknown[];
+      for(const requestedUrl of requested.filter(url=>!returned.has(url)&&(errors.some(error=>object(error)&&error.url===url)||results.some(row=>object(row)&&row.url===url&&!usable(row))))){
+        if(firecrawlScrapes>=2||signal?.aborted){if(ownedPlan&&!signal?.aborted){ownedPlan.skips.push({requestedUrl,rung:'firecrawl',reason:'BUDGET_EXHAUSTED'});savePurposePlan();}continue;}
+        const id=`firecrawl-scrape-${++firecrawlScrapes}`,result=await firecrawl.scrape(requestedUrl,signal);
+        rawArtifacts[id+'-request']=JSON.stringify({method:'firecrawl-native-operation-v1',request:result.request,status:result.status,code:result.code??null,httpStatus:result.httpStatus??null});
+        if(result.raw!==undefined)rawArtifacts[id]=result.raw;
+        if(result.status==='OBSERVED'&&result.pages.length===1){
+          const page=result.pages[0],row={url:page.url,final_url:page.finalUrl,text:page.text,published_date:null,links:[]};
+          producers.set(row,{producerArtifactId:id,resultIndex:0});value.results.push(row);
+        }
+      }
+    }
     if(value.errors.length)codes.push('ATT_FETCH_URL_ERROR');
     const returned=new Set<string>();
     for(const r of value.results){
       if(!object(r)||typeof r.url!=='string'||typeof r.text!=='string')continue;
       const requestedUrl=publicHttpsUrl(r.url,true);let url=typeof r.final_url==='string'?normalizeAttentionFetchUrl(r.final_url):requestedUrl;
       const comparisonResult=!!requestedUrl&&comparisonUrls.has(requestedUrl);
-      if(!requestedUrl||!url||!requested.includes(requestedUrl)||returned.has(requestedUrl)){codes.push('ATT_FETCH_BINDING');if(comparisonResult)comparisonIncomplete=true;continue;}
+      if(!requestedUrl||!url||!requested.includes(requestedUrl)||returned.has(requestedUrl)){codes.push('ATT_FETCH_BINDING');if(criterionBindings)criterionIssues.push({url:r.url,purpose:recoveryPlan?'RECOVERY':comparisonResult?'COMPARISON':'EXACT_TOKEN',code:'ATT_FETCH_BINDING'});if(comparisonResult)comparisonIncomplete=true;continue;}
       if(!r.text.trim()||/^\s*(?:safety check|access denied|forbidden)\s*$/i.test(r.text)){
         codes.push('ATT_FETCH_BLOCKED_CONTENT');blockedUrls.add(requestedUrl);
         if(comparisonResult)comparisonIncomplete=true;
@@ -690,7 +753,7 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
         continue;
       }
       const u=new URL(url),post=/^(?:www\.)?(?:x|twitter)\.com$/.test(u.hostname)&&/^\/[A-Za-z0-9_]+\/status\/\d+(?:\/.*)?$/.test(u.pathname);
-      if(isPostUrl(requestedUrl)&&(!post||new URL(requestedUrl).pathname.split('/')[3]!==u.pathname.split('/')[3])){codes.push('ATT_FETCH_BINDING');postSampleComplete=false;if(comparisonResult)comparisonIncomplete=true;continue;}
+      if(isPostUrl(requestedUrl)&&(!post||new URL(requestedUrl).pathname.split('/')[3]!==u.pathname.split('/')[3])){codes.push('ATT_FETCH_BINDING');if(criterionBindings)criterionIssues.push({url:requestedUrl,purpose:recoveryPlan?'RECOVERY':comparisonResult?'COMPARISON':'SOCIAL',code:'ATT_FETCH_BINDING'});postSampleComplete=false;if(comparisonResult)comparisonIncomplete=true;continue;}
       returned.add(requestedUrl);
       if(comparisonResult)comparisonFetched.add(requestedUrl);
       if(post)url=`https://x.com/${u.pathname.split('/')[1].toLowerCase()}/status/${u.pathname.split('/')[3]}`;
@@ -705,33 +768,52 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
       if(prior){
         sourceByRequested.set(requestedUrl,prior.id);
         if(comparisonResult){
-          if(prior.text!==text&&!text.startsWith(prior.text)){codes.push('ATT_FETCH_SOURCE_CONFLICT');conflictedUrls.add(requestedUrl);comparisonIncomplete=true;}
+          if(prior.text!==text&&!text.startsWith(prior.text)){codes.push('ATT_FETCH_SOURCE_CONFLICT');if(criterionBindings)criterionIssues.push({url:requestedUrl,purpose:recoveryPlan?'RECOVERY':'COMPARISON',code:'ATT_FETCH_SOURCE_CONFLICT'});conflictedUrls.add(requestedUrl);comparisonIncomplete=true;}
           const retained=text.length>=prior.text.length?text:prior.text;
           comparisonCharacters+=retained.length-(priorComparison?prior.text.length:0);
           prior.text=retained;
+          if(criterionBindings&&retained===text){const producer=producers.get(r);const binding=sourceBindings.find(b=>b.sourceId===prior.id);if(producer&&binding)Object.assign(binding,producer,{requestedUrl,transform:'IDENTITY'});}
           if(!priorComparison)comparisonSourceIds.push(prior.id);
         }
         continue;
       }
-      if(sources.length>=(entryEvidenceMethod?64:32)){codes.push('ATT_SOURCE_CAP');if(post)postSampleComplete=false;if(comparisonResult)comparisonIncomplete=true;continue;}
+      if(sources.length>=(entryEvidenceMethod?64:32)){codes.push('ATT_SOURCE_CAP');if(criterionBindings)criterionOmissions.push({url:requestedUrl,purpose:recoveryPlan?'RECOVERY':comparisonResult?'COMPARISON':post?'SOCIAL':'EXACT_TOKEN'});if(post)postSampleComplete=false;if(comparisonResult)comparisonIncomplete=true;continue;}
       if(comparisonResult)comparisonCharacters+=text.length;
       const at=typeof r.published_date==='string'&&/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(r.published_date)&&Number.isFinite(Date.parse(r.published_date))&&Date.parse(r.published_date)<=Date.parse(end)?new Date(r.published_date).toISOString():null;
       sources.push({id:`attention-page-${sources.length+1}`,url,text,publishedAt:at,authorId:post?`${u.hostname.replace(/^www\./,'').replace('twitter.com','x.com')}:${u.pathname.split('/')[1].toLowerCase()}`:null,availableAt:now(),kind:post?'POST':'PAGE',...(discoveryParents.has(requestedUrl)?{discoveredFrom:discoveryParents.get(requestedUrl)}:{})});
+      if(criterionBindings){const producer=producers.get(r);if(producer)sourceBindings.push({sourceId:sources.at(-1)!.id,...producer,requestedUrl,transform:'IDENTITY'});}
       sourceByRequested.set(requestedUrl,sources.at(-1)!.id);
       if(comparisonUrls.has(requestedUrl))comparisonSourceIds.push(sources.at(-1)!.id);
       const metadataSeed=seeds.includes(requestedUrl)&&/\.json(?:[?]|$)/i.test(requestedUrl);
       const metadataLinks=metadataSeed?[...text.matchAll(/https:\/\/[^"\s\\<>]+/g)].map(m=>m[0]):[];
-      if(!recoveryPlan&&seeds.includes(requestedUrl))for(const next of originSeedLinks(requestedUrl,[...(Array.isArray(r.links)?r.links:[]),...metadataLinks],entryEvidenceMethod?'project-context-v2':undefined)){
+      if(!recoveryPlan&&seeds.includes(requestedUrl))for(const next of attentionSeedLinks(requestedUrl,[...(Array.isArray(r.links)?r.links:[]),...metadataLinks],entryEvidenceMethod?'project-context-v2':undefined,text,fastAttention)){
         if(urls.includes(next))continue;
         // Follow only seed-page links, ahead of remaining search pages, without exceeding the shared page budget.
         followed.add(next);discoveryParents.set(next,requestedUrl);urls.splice(offset+followed.size-1,0,next);
-        if(urls.length>pageLimit){const omitted=urls.pop()!;codes.push('ATT_PAGE_CAP');if(isPostUrl(omitted))postSampleComplete=false;if(comparisonUrls.has(omitted))comparisonIncomplete=true;}
+        if(urls.length>pageLimit){const omitted=urls.pop()!;codes.push('ATT_PAGE_CAP');if(criterionBindings)criterionOmissions.push({url:omitted,purpose:comparisonUrls.has(omitted)?'COMPARISON':'EXACT_TOKEN'});if(isPostUrl(omitted))postSampleComplete=false;if(comparisonUrls.has(omitted))comparisonIncomplete=true;}
       }
     }
     if(requested.some(u=>!returned.has(u)))codes.push('ATT_FETCH_INCOMPLETE');
     if(requested.some(u=>isPostUrl(u)&&!returned.has(u)))postSampleComplete=false;
     if(requested.some(u=>comparisonUrls.has(u)&&!returned.has(u)))comparisonIncomplete=true;
-    }catch(error){codes.push(entryEvidenceMethod?attentionFailure(error,'FETCH'):'ATT_FETCH_UNAVAILABLE');if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;}
+    }catch(error){const failure=error instanceof Error&&/^ATT_FETCH_HTTP_\d+$/.test(error.message)?error.message:entryEvidenceMethod?attentionFailure(error,'FETCH'):'ATT_FETCH_UNAVAILABLE';codes.push(failure);if(criterionBindings){const attempt=criterionFetchRequests.find(item=>item.artifactId===`attention-fetch-${batch}`);if(attempt)attempt.failureCode=failure;}if(requested.some(isPostUrl))postSampleComplete=false;if(requested.some(url=>comparisonUrls.has(url)))comparisonIncomplete=true;
+      if(firecrawl&&criterionBindings)for(const requestedUrl of requested){
+        if(firecrawlScrapes>=2||signal?.aborted){if(ownedPlan&&!signal?.aborted){ownedPlan.skips.push({requestedUrl,rung:'firecrawl',reason:'BUDGET_EXHAUSTED'});savePurposePlan();}continue;}
+        const id=`firecrawl-scrape-${++firecrawlScrapes}`,result=await firecrawl.scrape(requestedUrl,signal);
+        rawArtifacts[id+'-request']=JSON.stringify({method:'firecrawl-native-operation-v1',request:result.request,status:result.status,code:result.code??null,httpStatus:result.httpStatus??null});
+        if(result.raw!==undefined)rawArtifacts[id]=result.raw;
+        const page=result.status==='OBSERVED'?result.pages[0]:undefined,final=page&&normalizeAttentionFetchUrl(page.finalUrl??page.url);
+        if(!page||!final)continue;
+        const u=new URL(final),post=isPostUrl(final);
+        if(isPostUrl(requestedUrl)&&(!post||new URL(requestedUrl).pathname.split('/')[3]!==u.pathname.split('/')[3])){criterionIssues.push({url:requestedUrl,purpose:post?'SOCIAL':'EXACT_TOKEN',code:'ATT_FETCH_BINDING'});continue;}
+        const url=post?canonicalUrl(final):final;
+        if(sources.some(source=>source.url===url&&source.text===page.text))continue;
+        if(sources.length>=64){criterionOmissions.push({url:requestedUrl,purpose:post?'SOCIAL':comparisonUrls.has(requestedUrl)?'COMPARISON':'EXACT_TOKEN'});continue;}
+        const text=page.text.slice(0,120000),source:AttentionSource={id:`attention-page-${sources.length+1}`,url,text,publishedAt:null,authorId:post?`${u.hostname.replace(/^www\./,'').replace('twitter.com','x.com')}:${u.pathname.split('/')[1].toLowerCase()}`:null,availableAt:now(),kind:post?'POST':'PAGE',...(discoveryParents.has(requestedUrl)?{discoveredFrom:discoveryParents.get(requestedUrl)}:{})};
+        sources.push(source);sourceBindings.push({sourceId:source.id,producerArtifactId:id,resultIndex:0,requestedUrl,transform:'IDENTITY'});sourceByRequested.set(requestedUrl,source.id);
+        if(comparisonUrls.has(requestedUrl)){comparisonSourceIds.push(source.id);comparisonFetched.add(requestedUrl);}
+      }
+    }
   }
   if(entryEvidenceMethod&&recoveryPlan?.queryParents)rawArtifacts['attention-fallback-scope']=JSON.stringify({method:recoveryPlan.fallbackSelectionMethod?'same-parent-alternates-v2':'same-parent-alternates-v1',rounds:fallbackRounds});
   const comparisonComplete=(!!recoveryPlan||!!name&&name.length<=100)&&comparisonSearchSucceeded&&comparisonUrls.size>0&&!comparisonIncomplete&&comparisonFetched.size===comparisonUrls.size&&comparisonSourceIds.length>0;
@@ -743,20 +825,67 @@ export async function collectAttentionSources(token:TokenRef,key:string,fetcher:
     lead.acquisitionCodes=[...(truncatedSourceUrls.has(lead.url)?['ATT_TEXT_CAP']:[]),...(lead.acquisitionStatus==='ACQUIRED'?[]:[`ATT_LEAD_${lead.acquisitionStatus}`])];
   }
   if(acquisitionEvidenceMethod)rawArtifacts['attention-acquisition-ledger']=JSON.stringify({method:acquisitionEvidenceMethod,token,start:acquisitionStart!,end:now(),searches:acquisitionSearches});
-  const collected:AttentionRead={...(pageBodyRetentionMethod?{pageBodyRetentionMethod}:{}),...(acquisitionEvidenceMethod?{acquisitionEvidenceMethod,acquisitionProjectName:name??null}:{}),...(entryEvidenceMethod&&!recoveryPlan?{collectionMethod:'project-context-v2' as const,leadershipPositiveMethod:'source-bound-positive-v1' as const}:{}),sources,rawArtifacts,queries,...(entryEvidenceMethod?{entryEvidenceMethod}:{}),...(recoveryPlan?.recordQueryTimes?{queryRetrievedAt}:{}),complete:codes.length===0,codes:[...new Set(codes)],start,end,comparisonSourceIds,comparisonComplete,postSampleComplete,discoveryUrls:seeds,...((name||recoveryPlan||entryEvidenceMethod)?{comparisonAcquisition:{originalComplete:comparisonComplete,searchSucceeded:comparisonSearchSucceeded,descriptorComplete,leadCount,leads},comparisonRankingSourceIds:[...comparisonSourceIds],postSampleSourceIds:sources.filter(s=>s.kind==='POST').map(s=>s.id)}:{})};
+  const collected:AttentionRead={...(!fastAttention?{metadataTextMethod:'markdown-unescape-v1' as const}:{}),...(pageBodyRetentionMethod?{pageBodyRetentionMethod}:{}),...(acquisitionEvidenceMethod?{acquisitionEvidenceMethod,acquisitionProjectName:name??null}:{}),...(entryEvidenceMethod&&!recoveryPlan?{collectionMethod:'project-context-v2' as const,leadershipPositiveMethod:'source-bound-positive-v1' as const}:{}),sources,rawArtifacts,queries,...(entryEvidenceMethod?{entryEvidenceMethod}:{}),...(recoveryPlan?.recordQueryTimes?{queryRetrievedAt}:{}),complete:codes.length===0,codes:[...new Set(codes)],start,end,comparisonSourceIds,comparisonComplete,postSampleComplete,discoveryUrls:seeds,...((name||recoveryPlan||entryEvidenceMethod)?{comparisonAcquisition:{originalComplete:comparisonComplete,searchSucceeded:comparisonSearchSucceeded,descriptorComplete,leadCount,leads},comparisonRankingSourceIds:[...comparisonSourceIds],postSampleSourceIds:sources.filter(s=>s.kind==='POST').map(s=>s.id)}:{})};
+  if(ownedPlan)collected.acquisitionPurposeMethod='acquisition-purpose-v1';
+  if(criterionBindings){collected.sourceBindings=sourceBindings;rawArtifacts['criterion-fetch-requests']=JSON.stringify({method:'criterion-fetch-requests-v1',requests:criterionFetchRequests,omissions:criterionOmissions,issues:criterionIssues});}
+  if(fastAttention)collected.criterionPolicyId='research-fast-v3';
   if(entryEvidenceMethod&&!recoveryPlan)collected.postSampleScope=terminalPostScope(collected);
   return collected;
 }
 
 
 /** Free-only alternate discovery; reuses the same guarded collection boundary. */
-export async function recoverComparisonSources(token:TokenRef,key:string,queries:string[],skipUrls:string[],maxUrls:number,fetcher:typeof fetch,now:()=>string,queryParents?:RecoveryQueryParent[],recordQueryTimes=false,entryEvidenceMethod?:'public-support-v2',fallbackSelectionMethod?:FallbackSelectionMethod,pageBodyRetentionMethod?:'requested-page-bodies-v1',acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod,priorAcquisitionLedger?:AcquisitionLedger){
-  const read=await collectAttentionSources(token,key,fetcher,now,undefined,[],{queries,skipUrls,maxUrls,queryParents,recordQueryTimes,...(fallbackSelectionMethod?{fallbackSelectionMethod}:{})},entryEvidenceMethod,pageBodyRetentionMethod,acquisitionEvidenceMethod);
+export async function recoverComparisonSources(token:TokenRef,key:string,queries:string[],skipUrls:string[],maxUrls:number,fetcher:typeof fetch,now:()=>string,queryParents?:RecoveryQueryParent[],recordQueryTimes=false,entryEvidenceMethod?:'public-support-v2',fallbackSelectionMethod?:FallbackSelectionMethod,pageBodyRetentionMethod?:'requested-page-bodies-v1',acquisitionEvidenceMethod?:typeof boundedAcquisitionMethod,priorAcquisitionLedger?:AcquisitionLedger,criterionBindings=false){
+  const read=await collectAttentionSources(token,key,fetcher,now,undefined,[],{queries,skipUrls,maxUrls,queryParents,recordQueryTimes,...(fallbackSelectionMethod?{fallbackSelectionMethod}:{})},entryEvidenceMethod,pageBodyRetentionMethod,acquisitionEvidenceMethod,criterionBindings);
   if(acquisitionEvidenceMethod){
-    const current=acquisitionLedgerSchema.parse(JSON.parse(read.rawArtifacts['attention-acquisition-ledger']!));
-    const prior=priorAcquisitionLedger?acquisitionLedgerSchema.parse(priorAcquisitionLedger):undefined;
-    const searches=[...(prior?.searches??[]),...current.searches];
-    read.rawArtifacts['attention-acquisition-ledger']=JSON.stringify({method:acquisitionEvidenceMethod,token,start:prior?.start??current.start,end:current.end,searches});
+    try{
+      const current=acquisitionLedgerSchema.parse(JSON.parse(read.rawArtifacts['attention-acquisition-ledger']!));
+      const prior=priorAcquisitionLedger?acquisitionLedgerSchema.parse(priorAcquisitionLedger):undefined;
+      const searches=[...(prior?.searches??[]),...current.searches];
+      read.rawArtifacts['attention-acquisition-ledger']=JSON.stringify({method:acquisitionEvidenceMethod,token,start:prior?.start??current.start,end:current.end,searches});
+    }catch(error){if(!criterionBindings)throw error;read.codes=[...new Set([...read.codes,'CRITERION_RECOVERY_LEDGER_INVALID'])];}
   }
   return read;
+}
+
+export const attentionPostKey=(value:string)=>{const url=normalizeAttentionSearchUrl(value);return url&&/^https:\/\/x\.com\/[a-z0-9_]+\/status\/\d+$/.test(url)?url:null;};
+
+/** Reconstruct purpose facts from the retained request manifest and producer bodies. */
+export function attentionOperationFacts(read:AttentionRead,token:TokenRef,cutoff:string,planInput?:import('./acquisition-evidence.js').AcquisitionPurposePlan):import('../domain/acquisition-purpose.js').AcquisitionFacts{
+ const raw=read.rawArtifacts, plan=planInput??readAcquisitionPurposePlan(raw,'PUBLIC_ENTRY',token), searches=purposeSearchFacts(raw,'attention-acquisition-ledger',token,['attention-search-1','attention-search-2']);
+ const planValid=validAcquisitionPurposePlan(plan,raw,'PUBLIC_ENTRY',token);
+ let manifest:{requests:Array<{artifactId:string;urls:string[];failureCode?:string}>;omissions:Array<{url:string;purpose:string}>}={requests:[],omissions:[]};
+ try{const x=JSON.parse(raw['criterion-fetch-requests']);if(Array.isArray(x.requests)&&Array.isArray(x.omissions))manifest=x;}catch{/* An absent manifest supplies no operation. */}
+
+ const candidateUrls:string[]=[];try{const row=searches.find(s=>s.id==='attention-search-2'),body=JSON.parse(raw[row?.artifactId??'']);for(const item of body.results??[]){const key=attentionPostKey(item.url);if(key&&!candidateUrls.includes(key))candidateUrls.push(key);}}catch{/* A missing search is represented in searches. */}
+ const origin=reconstructOriginAcquisition(read,token),native=criterionFirecrawlProjection(read);
+ if(native.search?.replacesSearchId==='attention-search-2')for(const value of native.search.urls){const key=attentionPostKey(value);if(key&&!candidateUrls.includes(key))candidateUrls.push(key);}
+ const urls=[...new Set([...manifest.requests.flatMap(r=>Array.isArray(r.urls)?r.urls:[]),...manifest.omissions.map(x=>x.url),...candidateUrls])];
+ if(native.search){const replacement=searches.find(x=>x.id===native.search!.replacesSearchId);if(replacement){replacement.outcome=native.search.urls.length?'RESULTS':'NO_RESULTS';replacement.artifactId='firecrawl-search-1';}}
+ const necessaryUrls=new Set([...origin.urls.map(x=>x.url),...manifest.omissions.filter(x=>x.purpose==='EXACT_TOKEN'||x.purpose==='SOCIAL').map(x=>x.url),...candidateUrls]);
+ const targets=urls.map(requestedUrl=>{
+  const matching=manifest.requests.filter(r=>r.urls?.includes(requestedUrl));
+  const attempts:import('../domain/acquisition-purpose.js').AcquisitionFacts['targets'][number]['attempts']=[];
+  let sourceId:string|null=null,finalUrl:string|null=null,recoveredBySourceId:string|null=null;
+  for(const request of matching){
+   const rung=request.artifactId.includes('-retry-')?'tinyfish-retry':'tinyfish';let packet:any;try{packet=JSON.parse(raw[request.artifactId]);}catch{/* Transport failures lack a response body. */}
+   let status:number|undefined;try{if(request.artifactId==='attention-origin-fetch-1'){const record=JSON.parse(raw['criterion-origin-http']);if(record.method==='criterion-origin-http-v1'&&record.artifactId===request.artifactId)status=record.status;}else {const recovery=request.artifactId.startsWith('attention-recovery-'),record=JSON.parse(raw[recovery?'attention-recovery-http-outcomes':'attention-http-outcomes']),id=recovery?request.artifactId.replace('attention-recovery-','attention-'):request.artifactId,rows=record.outcomes.filter((x:any)=>x.artifactId===id);if(record.method==='fetch-http-outcomes-v1'&&rows.length===1)status=rows[0].status;}}catch{/* No bound HTTP result. */}
+   if(request.failureCode||status!==200){attempts.push({artifactId:request.artifactId,resultIndex:null,provider:'tinyfish',rung,kind:'PROVIDER_FAILURE',code:request.failureCode??(status?`HTTP_${status}`:'HTTP_MISSING')});continue;}
+   const index=Array.isArray(packet?.results)?packet.results.findIndex((x:any)=>x?.url===requestedUrl):-1,row=index>=0?packet.results[index]:null;
+   const binding=read.sourceBindings?.find(b=>b.producerArtifactId===request.artifactId&&b.resultIndex===index&&b.requestedUrl===requestedUrl),source=read.sources.find(s=>s.id===binding?.sourceId);
+   const alias=read.originRecovery?.aliases.find(a=>a.sourceId===source?.id);
+   const textMatches=!!source&&typeof row?.text==='string'&&(binding?.transform==='ORIGIN_UNDERSCORE_V1'&&/^attention-origin-fetch-\d+$/.test(request.artifactId)?(alias?!!verifyOriginAlias(alias,read.sources,raw):row.text.replace(/\\_/g,'_')===source.text):binding?.transform==='IDENTITY'&&row.text===source.text);
+   const valid=!!source&&textMatches&&!!source.text.trim()&&(!attentionPostKey(requestedUrl)||!!source.authorId&&!!source.publishedAt);
+   if(valid){sourceId=source!.id;finalUrl=source!.url;attempts.push({artifactId:request.artifactId,resultIndex:index,provider:'tinyfish',rung,kind:'READ',code:null});}
+   else {const error=packet?.errors?.find((x:any)=>x?.url===requestedUrl);attempts.push({artifactId:request.artifactId,resultIndex:index>=0?index:null,provider:'tinyfish',rung,kind:error&&!row?'TARGET_FAILURE':'UNREAD',code:error&&!row?String(error.code??error.error??error.status??'TARGET_FAILURE'):null});}
+  }
+  for(const id of ['firecrawl-scrape-1','firecrawl-scrape-2'])try{const op=JSON.parse(raw[id+'-request']);if(op.request?.url!==requestedUrl)continue;const page=native.pages.find(p=>p.producerArtifactId===id&&p.requestedUrl===requestedUrl);if(page)continue;attempts.push({artifactId:id+'-request',resultIndex:null,provider:'firecrawl',rung:'firecrawl',kind:op.status==='UNAVAILABLE'?(op.httpStatus===200&&/^FIRECRAWL_TARGET_HTTP_\d{3}$/.test(op.code??'')?'TARGET_FAILURE':'PROVIDER_FAILURE'):'UNREAD',code:op.code??null});}catch{/* No bound fallback attempt. */}
+  for(const page of native.pages.filter(p=>p.requestedUrl===requestedUrl)){const source=read.sources.find(s=>s.id===page.sourceId);if(source&&(!attentionPostKey(requestedUrl)||!!source.authorId&&!!source.publishedAt)){sourceId=source.id;finalUrl=page.finalUrl;attempts.push({artifactId:page.producerArtifactId,resultIndex:0,provider:'firecrawl',rung:'firecrawl',kind:'READ',code:null});}}
+  const recovered=origin.urls.find(x=>x.url===requestedUrl&&x.state==='ACQUIRED'&&x.sourceId);if(!sourceId&&recovered?.sourceId&&(read.criterionPolicyId==='research-fast-v3'||read.originRecovery?.aliases.some(x=>x.originUrl===requestedUrl&&x.sourceId===recovered.sourceId)))recoveredBySourceId=recovered.sourceId;
+  const hasRetry=matching.some(x=>x.artifactId.includes('-retry-'))||attempts.some(a=>a.rung==='tinyfish'&&a.kind==='TARGET_FAILURE'&&/timeout|408|429|502|503|504/i.test(a.code??'')),fireAttempt=attempts.some(a=>a.rung==='firecrawl');
+  const plannedRungs=['tinyfish',...(hasRetry?['tinyfish-retry']:[]),...(planValid&&plan!.fallbackEnabled&&(fireAttempt||attempts.some(a=>a.kind==='TARGET_FAILURE'||a.kind==='PROVIDER_FAILURE')||plan!.skips.some(x=>x.requestedUrl===requestedUrl&&x.rung==='firecrawl'))?['firecrawl']:[])];
+  return {requestedUrl,necessary:necessaryUrls.has(requestedUrl),sourceId,finalUrl,recoveredBySourceId,plannedRungs,attempts,budgetExhausted:!!plan?.skips.some(x=>x.requestedUrl===requestedUrl&&x.rung==='firecrawl'&&x.reason==='BUDGET_EXHAUSTED'),planKnown:planValid};
+ });
+ const at=read.acquisitionScope?.evidence[0]?.availableAt??read.end,age=Date.parse(cutoff)-Date.parse(at);
+ return {group:'PUBLIC_ENTRY',token,availableAt:at,searches,targets,samples:[{id:'posts',searchIds:['attention-search-2'],candidateUrls,dropped:!planValid||manifest.omissions.some(x=>x.purpose==='SOCIAL')}],fresh:planValid&&Number.isFinite(age)&&age>=0&&age<=900000,aborted:read.codes.some(x=>/ABORT|COLLECTION_BUDGET/.test(x))};
 }

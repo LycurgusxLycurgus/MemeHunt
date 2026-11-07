@@ -158,6 +158,10 @@ export function qualifiedNarrativeSupport(read:AttentionRead,token:TokenRef,cuto
   return {scope:receipt.scope,...judgment};
 }
 
+function metadataText(read:AttentionRead,text:string):string{
+  return read.metadataTextMethod==='markdown-unescape-v1'?text.replace(/\\_/g,'_'):text;
+}
+
 /** One literal metadata link binds a source-described reference, never identity or origin. */
 export function narrativeSourceBound(read:AttentionRead,sourceId:string,token:TokenRef):boolean{
   const source=read.sources.find(s=>s.id===sourceId);
@@ -168,13 +172,13 @@ export function narrativeSourceBound(read:AttentionRead,sourceId:string,token:To
     const parent=read.sources.find(s=>s.kind==='PAGE'&&(s.url===read.metadataUri||read.originRecovery?.aliases.some(a=>a.originUrl===read.metadataUri&&a.sourceId===s.id&&verifyOriginAlias(a,read.sources,read.rawArtifacts))));
     if(!parent)return false;
     try{
-      const metadata=JSON.parse(parent.text);
+      const metadata=JSON.parse(metadataText(read,parent.text));
       if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))return false;
       if(source.id===parent.id)return true;
       const canonical=(value:string)=>normalizeAttentionSearchUrl(value);
       // Only literal links in this token's acquired metadata, not recursive links
       // or a shared name. This establishes a claimed narrative association only.
-      return Object.values(metadata).some(value=>typeof value==='string'&&canonical(value)!==null&&canonical(value)===canonical(source.url));
+      return (read.criterionPolicyId==='research-fast-v3'?[...Object.entries(metadata).filter(([key])=>key!=='image').map(([,value])=>value),...(metadata.extensions&&typeof metadata.extensions==='object'?Object.entries(metadata.extensions).filter(([key])=>key!=='image').map(([,value])=>value):[]),...(Array.isArray(metadata.links)?metadata.links.flatMap((item:unknown)=>typeof item==='string'?[item]:item&&typeof item==='object'&&typeof (item as {url?:unknown}).url==='string'?[(item as {url:string}).url]:[]):[])]:Object.values(metadata)).some(value=>typeof value==='string'&&canonical(value)!==null&&canonical(value)===canonical(source.url));
     }catch{return false;}
   }
   if(!read.metadataLinks||!read.metadataUri||!source.discoveredFrom)return false;
@@ -190,7 +194,7 @@ export function identityOnlyTokenMetadata(read:AttentionRead,sourceId:string,tok
  const source=read.sources.find(s=>s.id===sourceId&&s.kind==='PAGE');if(!source||!narrativeSourceBound(read,sourceId,token))return false;
  if(source.url!==read.metadataUri&&!read.originRecovery?.aliases.some(a=>a.originUrl===read.metadataUri&&a.sourceId===sourceId&&verifyOriginAlias(a,read.sources,read.rawArtifacts)))return false;
  try{
-  const text=source.text;let i=0;const ws=()=>{while(/\s/.test(text[i]??'')&&i<text.length)i++;};
+  const text=metadataText(read,source.text);let i=0;const ws=()=>{while(/\s/.test(text[i]??'')&&i<text.length)i++;};
   const string=()=>{const start=i++;while(i<text.length){if(text[i]==='\\'){i+=2;continue;}if(text[i++]==='"')return JSON.parse(text.slice(start,i)) as string;}throw Error('JSON_STRING');};
   const value=():void=>{ws();if(text[i]==='{'){i++;const seen=new Set<string>();ws();if(text[i]==='}'){i++;return;}for(;;){ws();if(text[i]!=='"')throw Error('JSON_KEY');const key=string();if(seen.has(key))throw Error('JSON_DUPLICATE');seen.add(key);ws();if(text[i++]!==':')throw Error('JSON_COLON');value();ws();const c=text[i++];if(c==='}')return;if(c!==',')throw Error('JSON_OBJECT');}}else if(text[i]==='['){i++;ws();if(text[i]===']'){i++;return;}for(;;){value();ws();const c=text[i++];if(c===']')return;if(c!==',')throw Error('JSON_ARRAY');}}else if(text[i]==='"')string();else{const m=/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(text.slice(i));if(!m)throw Error('JSON_VALUE');i+=m[0].length;}};
   value();ws();if(i!==text.length)return false;

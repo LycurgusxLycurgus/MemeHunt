@@ -6,6 +6,7 @@ import {
   baselineIds, deriveBaseline, deriveExecution, deriveHolderBounds,
   type BaselineInputs, type ControlFacts, type HolderFacts, type VenueFacts, type VenueInspection,
 } from '../src/domain/baseline.js';
+import { rugLiquidity } from '../src/domain/rugcheck.js';
 import type { EvidenceRecord, FeatureResult, Thesis, TokenRef } from '../src/domain/contracts.js';
 
 const TOKEN: TokenRef = { chain: 'solana', address: 'FixtureMint' };
@@ -93,6 +94,18 @@ test('venue outcomes distinguish a supported route skipped by scheduling from an
     assert.equal(row.causes[0]?.code, 'EVM_READER_UNIMPLEMENTED');
   }
   assert.equal(get(unsupported, 'C02').causes[0]?.category, 'COLLECTION_UNIMPLEMENTED');
+});
+
+test('RugCheck liquidity prefers the matching route market and falls back to the largest quoted market', () => {
+  const raw = JSON.stringify({ mint: TOKEN.address, markets: [
+    { pubkey: 'route-pool', marketType: 'Raydium CPMM', mintA: TOKEN.address, mintB: 'quote', lp: { lpLockedPct: 25, quoteUSD: 50 } },
+    { pubkey: 'largest-market', marketType: 'OpenBook', mintA: TOKEN.address, mintB: 'quote', lp: { lpLockedPct: 80, quoteUSD: 1000 } },
+  ] });
+  const route = rugLiquidity(raw, TOKEN.address, ['route-pool']);
+  assert.deepEqual(route, { pool: 'route-pool', marketType: 'Raydium CPMM', removableFraction: '0.75', evidenceId: 'rugcheck-report' });
+  const fallback = rugLiquidity(raw, TOKEN.address, []);
+  assert.deepEqual(fallback, { pool: 'largest-market', marketType: 'OpenBook', removableFraction: '0.2', evidenceId: 'rugcheck-report' });
+  assert.equal(get(deriveBaseline(base({ rugLiquidity: route })), 'O09').projection?.value, '0.75');
 });
 
 test('C10 freezes ordered thesis predicates with their cutoff-specific truth and plan scope', () => {

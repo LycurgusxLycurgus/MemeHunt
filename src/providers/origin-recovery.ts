@@ -81,7 +81,7 @@ export function originRecoveryQuery(read:AttentionRead,token:TokenRef,url:string
 /** Classify at most two unavailable original leads, using free Search/Fetch and two independent passes. */
 export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,tinyfishKey:string,geminiKey:string,fetcher:typeof fetch,now:()=>string,signal?:AbortSignal,routing?:SourceModelRouting):Promise<AttentionRead>{
   const missing=originRecoveryCandidates(read);
-  const out:AttentionRead={...read,sources:[...read.sources],rawArtifacts:{...read.rawArtifacts},originExclusions:[]};
+  const out:AttentionRead={...read,sources:[...read.sources],rawArtifacts:{...read.rawArtifacts},...(read.sourceBindings?{sourceBindings:[...read.sourceBindings]}:{}),originExclusions:[]};
   const outcome=(artifactId:string,status:number)=>{if(!read.entryEvidenceMethod)return;const id='attention-origin-http-outcomes',prior=out.rawArtifacts[id]?JSON.parse(out.rawArtifacts[id]).outcomes:[];out.rawArtifacts[id]=JSON.stringify({method:'fetch-http-outcomes-v1',outcomes:[...prior,{artifactId,status}]});};
   for(const [n,lead] of missing.entries()){
     if(out.sources.length>=attentionInitialPageLimit(out))break;
@@ -93,16 +93,17 @@ export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,
       const found=JSON.parse(searchRaw);if(!search.ok||found.error||found.errors?.length||!Array.isArray(found.results))continue;
       const urls=[...new Set<string>(found.results.flatMap((r:{url?:string})=>{const u=r.url&&publicHttpsUrl(r.url,true);return u&&new URL(u).hostname!==new URL(lead.url).hostname?[u]:[];}))].slice(0,Math.min(2,attentionInitialPageLimit(out)-out.sources.length));
       if(!urls.length)continue;
+      if(out.sourceBindings){try{const requests=JSON.parse(out.rawArtifacts['criterion-fetch-requests']);requests.requests.push({artifactId:id+'-fetch',urls});out.rawArtifacts['criterion-fetch-requests']=JSON.stringify(requests);}catch{/* Missing request proof fails admission. */}}
       const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':tinyfishKey,'content-type':'application/json'},body:JSON.stringify({urls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000),raw=await readLimitedText(response,400000);out.rawArtifacts[id+'-fetch']=raw;outcome(id+'-fetch',response.status);
       const fetched=JSON.parse(raw);if(!response.ok||!Array.isArray(fetched.results)||!Array.isArray(fetched.errors))continue;
       const ids:string[]=[];
-      for(const r of fetched.results){if(ids.length>=urls.length||out.sources.length>=attentionInitialPageLimit(out)||ids.some(id=>out.sources.find(s=>s.id===id)?.url===r.url)||!urls.includes(r.url)||(r.final_url??r.url)!==r.url||typeof r.text!=='string'||r.text.length<8||r.text.length>120000||ids.reduce((n,id)=>n+out.sources.find(s=>s.id===id)!.text.length,0)+r.text.length>120000||r.text.trim().toLowerCase()==='safety check')continue;const s:AttentionSource={id:`origin-role-page-${index}-${ids.length+1}`,url:r.url,text:r.text,kind:'PAGE',publishedAt:null,authorId:null,availableAt:now()};out.sources.push(s);ids.push(s.id);}
+      for(const [resultIndex,r] of fetched.results.entries()){if(ids.length>=urls.length||out.sources.length>=attentionInitialPageLimit(out)||ids.some(id=>out.sources.find(s=>s.id===id)?.url===r.url)||!urls.includes(r.url)||(r.final_url??r.url)!==r.url||typeof r.text!=='string'||r.text.length<8||r.text.length>120000||ids.reduce((n,id)=>n+out.sources.find(s=>s.id===id)!.text.length,0)+r.text.length>120000||r.text.trim().toLowerCase()==='safety check')continue;const s:AttentionSource={id:`origin-role-page-${index}-${ids.length+1}`,url:r.url,text:r.text,kind:'PAGE',publishedAt:null,authorId:null,availableAt:now()};out.sources.push(s);out.sourceBindings?.push({sourceId:s.id,producerArtifactId:id+'-fetch',resultIndex,requestedUrl:r.url,transform:'IDENTITY'});ids.push(s.id);}
       if(!ids.length)continue;
       const context=originContext(out,lead.url);
       // A mint-owned URI is a recovery subject, not evidence of the site's role.
       // Its actual alternate bodies go to public-support review without a fake exclusion.
       if(!context.length)continue;
-      const call=async<S extends z.ZodType>(suffix:string,prompt:string,schema:S)=>{out.rawArtifacts[id+'-'+suffix+'-prompt']=prompt;return (await requestSourceJson(prompt,schema,geminiKey,fetcher,(raw,retrying,attempt)=>{out.rawArtifacts[id+'-'+suffix+(attempt?`-transport-attempt-${attempt}`:'-response')]=raw;},delay,signal,'ATT_MODEL',routing)).value;};
+      const call=async<S extends z.ZodType>(suffix:string,prompt:string,schema:S)=>{out.rawArtifacts[id+'-'+suffix+'-prompt']=prompt;return (await requestSourceJson(prompt,schema,geminiKey,fetcher,(raw,_retrying,attempt)=>{out.rawArtifacts[id+'-'+suffix+(attempt?`-transport-attempt-${attempt}`:'-response')]=raw;},delay,signal,'ATT_MODEL',routing)).value;};
       const corroboration=ids.map(id=>out.sources.find(s=>s.id===id)!);
       const role=await call('proposal',originRolePrompt('proposal',token,lead.url,context,corroboration),roleSchema),review=await call('review',originRolePrompt('review',token,lead.url,context,corroboration,role),roleReviewSchema);
       const item:OriginExclusion={url:lead.url,index,role,review,context,corroboratingSourceIds:ids};
@@ -113,7 +114,7 @@ export async function qualifyOriginExclusions(read:AttentionRead,token:TokenRef,
   return out;
 }
 
-function rawDigest(url:string):Buffer|null{
+export function rawDigest(url:string):Buffer|null{
   try{
     const u=new URL(url),cid=u.pathname.match(/^\/ipfs\/(b[a-z2-7]+)\/?$/)?.[1];
     if(u.protocol!=='https:'||!cid)return null;
@@ -160,9 +161,11 @@ export async function recoverOriginPages(read:AttentionRead,token:TokenRef,key:s
   const poolUrl=poolLead?geckoPoolApiUrl(poolLead.url):null;
   const urls=[...gateways.map(g=>g.url),...(dexLead?[dexUrl]:[]),...(poolUrl?[poolUrl]:[])].slice(0,attentionInitialPageLimit(read)-read.sources.length);
   if(!urls.length)return read;
-  const rawArtifacts={...read.rawArtifacts},sources=[...read.sources],recovery:OriginRecovery={aliases:[],comparisonSupplementIds:[]},id='attention-origin-fetch-1';
+  const rawArtifacts={...read.rawArtifacts},sources=[...read.sources],sourceBindings=read.sourceBindings?[...read.sourceBindings]:undefined,recovery:OriginRecovery={aliases:[],comparisonSupplementIds:[]},id='attention-origin-fetch-1';
+  if(sourceBindings){try{const requests=JSON.parse(rawArtifacts['criterion-fetch-requests']);requests.requests.push({artifactId:id,urls});rawArtifacts['criterion-fetch-requests']=JSON.stringify(requests);}catch{/* Missing request evidence fails admission. */}}
   try{
     const response=await fetchReadResponse('https://api.fetch.tinyfish.ai/',{method:'POST',headers:{'X-API-Key':key,'content-type':'application/json'},body:JSON.stringify({urls,format:'markdown',links:true,ttl:0,per_url_timeout_ms:15000})},fetcher,30000);
+    if(sourceBindings)rawArtifacts['criterion-origin-http']=JSON.stringify({method:'criterion-origin-http-v1',artifactId:id,status:response.status});
     const raw=await readLimitedText(response,400000);rawArtifacts[id]=raw;const value=JSON.parse(raw);
     if(!response.ok||!Array.isArray(value.results)||!Array.isArray(value.errors))return {...read,rawArtifacts};
     for(const [resultIndex,result] of value.results.entries()){
@@ -177,8 +180,9 @@ export async function recoverOriginPages(read:AttentionRead,token:TokenRef,key:s
         recovery.comparisonSupplementIds.push(source.id);
       }
       sources.push(source);
+      sourceBindings?.push({sourceId:source.id,producerArtifactId:id,resultIndex,requestedUrl:result.url,transform:'ORIGIN_UNDERSCORE_V1'});
     }
-  }catch{/* Retain any received response; unavailable supplements cannot qualify anything. */}
+  }catch(error){if(sourceBindings)try{const requests=JSON.parse(rawArtifacts['criterion-fetch-requests']),attempt=requests.requests.find((item:{artifactId:string})=>item.artifactId===id);if(attempt)attempt.failureCode=error instanceof Error&&error.name==='TimeoutError'?'ATT_FETCH_TIMEOUT':'ATT_FETCH_UNAVAILABLE';rawArtifacts['criterion-fetch-requests']=JSON.stringify(requests);}catch{/* Invalid request proof remains unavailable. */}/* Retain any received response; unavailable supplements cannot qualify anything. */}
   rawArtifacts['attention-origin-recovery-scope']=JSON.stringify(recovery);
-  return {...read,sources,rawArtifacts,originRecovery:recovery};
+  return {...read,sources,rawArtifacts,originRecovery:recovery,...(sourceBindings?{sourceBindings}:{})};
 }

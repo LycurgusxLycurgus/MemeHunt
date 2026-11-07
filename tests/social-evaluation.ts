@@ -110,10 +110,11 @@ function validationDiagnostic(raw: string | undefined): { code: string | null; i
   } catch { return null; }
 }
 
-export async function runSocialEvaluation(key: string, fetcher: typeof fetch = fetch, selectedCaseIds?: string[], captureCaseId?: string, capturePath = '.data/social-evaluation-identity.json') {
+export async function runSocialEvaluation(key: string, fetcher: typeof fetch = fetch, selectedCaseIds?: string[], captureCaseId?: string, capturePath?: string) {
   const selected = selectedCaseIds?.length ? cases.filter(scenario => selectedCaseIds.includes(scenario.id)) : cases;
   if (selectedCaseIds?.length && selected.length !== new Set(selectedCaseIds).size) throw new Error('SOC_EVALUATION_CASE_UNKNOWN');
   if (captureCaseId && (selected.length !== 1 || selected[0]?.id !== captureCaseId)) throw new Error('SOC_EVALUATION_CAPTURE_SCOPE');
+  if (captureCaseId && !capturePath) throw new Error('SOC_EVALUATION_CAPTURE_PATH_REQUIRED');
   const results = [];
   for (const scenario of selected) {
     const model = await qualifySocial(scenario.read, SOCIAL_TOKEN, key, fetcher);
@@ -129,7 +130,7 @@ export async function runSocialEvaluation(key: string, fetcher: typeof fetch = f
     }));
     const diagnostic = validationDiagnostic(model.rawArtifacts['social-validation-error']);
     if (scenario.id === captureCaseId) {
-      const path = resolve(capturePath);
+      const path = resolve(capturePath!);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, JSON.stringify({ id: scenario.id, modelCode: model.code ?? null, validationDiagnostic: diagnostic, proposal: model.proposal, review: model.review }, null, 2), 'utf8');
     }
@@ -160,7 +161,8 @@ if (directlyInvoked) {
     try {
       const caseIds = process.env.SOCIAL_EVALUATION_CASES?.split(',').map(value => value.trim()).filter(Boolean);
       const captureCaseId = process.env.SOCIAL_EVALUATION_CAPTURE_CASE;
-      const result = await runSocialEvaluation(process.env.GEMINI_API_KEY, fetch, caseIds, captureCaseId);
+      const capturePath = process.env.SOCIAL_EVALUATION_CAPTURE_PATH;
+      const result = await runSocialEvaluation(process.env.GEMINI_API_KEY, fetch, caseIds, captureCaseId, capturePath);
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } catch {
       process.stderr.write('Social evaluation stopped before completion; provider detail was withheld.\n');

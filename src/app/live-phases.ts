@@ -16,7 +16,7 @@ export function createLiveRun(full:boolean,transport:typeof fetch,iso:()=>string
  const records:Record<LiveStageName,LiveStageRecord>={PREFLIGHT:initial('PREFLIGHT'),ATTENTION:initial('ATTENTION'),SOCIAL:initial('SOCIAL'),SHARED:initial('SHARED'),FINALIZE:initial('FINALIZE')};
  let total=0,semantic:AbortSignal|undefined,work:AbortSignal|undefined;
  const elapsed=()=>Math.max(0,runtime.nowMs()-started);
- const stop=(name:LiveStageName,signal:AbortSignal):{origin:LiveStopOrigin;code:string}|undefined=>caller?.aborted?{origin:'CALLER',code:'LIVE_CALLER_CANCELLED'}:hard.aborted?{origin:'HARD_DEADLINE',code:'LIVE_HARD_DEADLINE'}:signal.aborted?{origin:'PHASE_DEADLINE',code:'LIVE_PHASE_DEADLINE'}:undefined;
+ const stop=(_name:LiveStageName,signal:AbortSignal):{origin:LiveStopOrigin;code:string}|undefined=>caller?.aborted?{origin:'CALLER',code:'LIVE_CALLER_CANCELLED'}:hard.aborted?{origin:'HARD_DEADLINE',code:'LIVE_HARD_DEADLINE'}:signal.aborted?{origin:'PHASE_DEADLINE',code:'LIVE_PHASE_DEADLINE'}:undefined;
  const error=(code:string)=>Object.assign(new Error(code),{name:code.includes('DEADLINE')?'TimeoutError':'AbortError',code});
  const begin=(name:LiveStageName):LiveStage=>{
   const row=records[name];if(row.startedAt!==null||row.endedAt!==null)throw Error('LIVE_STAGE_RESTART');

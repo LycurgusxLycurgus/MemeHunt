@@ -12,6 +12,8 @@ import { socialRubric } from '../src/providers/social-model.js';
 import { sharedClaimProjectionMethod, type AttentionSource } from '../src/providers/attention.js';
 import type { BaselineAssessment } from '../src/domain/baseline.js';
 import { acquisitionEvidenceMethod, buildAcquisitionScope } from '../src/providers/acquisition-evidence.js';
+import { projectAcquisition, renderPurposeReceipt } from '../src/domain/acquisition-purpose.js';
+import { criterionReviewMethod, criterionSharedClaims, criterionStandards, type CriterionInput, type CriterionReceipt } from '../src/domain/criterion-review.js';
 import { SHARED_CUTOFF, sharedFixture } from './shared-fixtures.js';
 
 const KEY = 'shared-model-test-key';
@@ -31,6 +33,8 @@ type Packet = {
   rejectedIds?: string[];
   socialScreeningCriteria?: Record<string, string>;
   socialConflictRule?: string;
+  acquisitionPurposeMethod?: string;
+  citableAliases?: Record<string, { CLEAR: string[]; CONFLICT: string[]; UNCLEAR: string[] }>;
 };
 type Captured = { packet: Packet; raw: string };
 
@@ -212,6 +216,428 @@ test('Shared receipt selectors allow bounded support decisions but reject factua
     citations: [{ sourceId: receipt.id, spanId: receiptSpan.id }, { sourceId: receipt.id, spanId: receiptSpan.id }],
   } } }), modelResponse({}), 'acquired-text-inspection-v1', 'source-support-and-conflict-v2'),
   'a receipt cannot be either side of a factual CONFLICT');
+});
+
+test('marked Shared purpose reassessment repairs only the claim with an ineligible receipt and canonically replays the issue artifact', { todo: 'FULL baseline before cycle B; resolve in --full move' }, async () => {
+  const fixture = sharedFixture();
+  const projection = projectAcquisition({
+    group: 'PUBLIC_ENTRY', token: fixture.token, availableAt: SHARED_CUTOFF,
+    searches: [{ id: 'attention-search-1', required: true, outcome: 'NO_RESULTS', artifactId: 'attention-search-1-response' }],
+    targets: [],
+    samples: [{ id: 'attention-public-sample', searchIds: ['attention-search-1'], candidateUrls: [], dropped: false }],
+    fresh: true, aborted: false,
+  });
+  assert.equal(projection.accounted, true);
+  assert.equal(projection.samples[0]?.sampleComplete, true);
+  const renderedReceipt = renderPurposeReceipt(projection);
+
+  const source = {
+    id: 'acquisition-attention-scope', kind: 'ACQUISITION_RECEIPT' as const,
+    token: fixture.token, operation: 'ACQUISITION_SCOPE' as const,
+    artifactIds: ['attention-search-1-response'], availableAt: SHARED_CUTOFF, text: renderedReceipt.text,
+  };
+  const sources = [fixture.sources[0]!, source];
+  const sampleQuote = renderedReceipt.text.slice(
+    renderedReceipt.facts.find(fact => fact.id === 'sample:attention-public-sample')!.start,
+    renderedReceipt.facts.find(fact => fact.id === 'sample:attention-public-sample')!.end,
+  );
+  const supportQuote = renderedReceipt.text.slice(
+    renderedReceipt.facts.find(fact => fact.id === 'search:attention-search-1')!.start,
+    renderedReceipt.facts.find(fact => fact.id === 'search:attention-search-1')!.end,
+  );
+  const ineligible: SharedClaim = {
+    id: 'bounded-sample-claim', statement: 'The bounded sample provides the asserted complete measurement.',
+    supportBasis: 'BOUNDED_SUPPORT_DECISION', citations: [{ sourceId: source.id, quote: sampleQuote }],
+  };
+  const eligible: SharedClaim = {
+    id: 'bounded-search-claim', statement: 'The bounded search completed with no selected results.',
+    supportBasis: 'BOUNDED_SUPPORT_DECISION', citations: [{ sourceId: source.id, quote: supportQuote }],
+  };
+  const claims = [ineligible, eligible];
+  const purpose = { token: fixture.token, cutoff: SHARED_CUTOFF, projections: [projection] };
+  const bodySpanCount = sourceSpans(fixture.sources[0]!.id, fixture.sources[0]!.text, 'SHARED_MODEL').length;
+  const receiptAlias = (factIndex: number) => `s${String(bodySpanCount + factIndex + 1).padStart(4, '0')}`;
+  const sampleFactIndex = renderedReceipt.facts.findIndex(fact => fact.id === 'sample:attention-public-sample');
+  const supportFactIndex = renderedReceipt.facts.findIndex(fact => fact.id === 'search:attention-search-1');
+  const requests: Captured[] = [];
+  const originalGoodRationale = 'The independent review confirms the exact completed no-results search fact.';
+  const fetcher: typeof fetch = async (_url, init) => {
+    const captured = packetFrom(init);
+    const index = requests.push(captured) - 1;
+    const sourceIds = captured.packet.sources.map(item => item.id);
+    const citeFact = (factId: string) => {
+      const cited = captured.packet.sources.find(item => item.id === source.id)?.spans.find(span => span.text.includes(factId));
+      assert.ok(cited, `the retained purpose catalog supplies ${factId}`);
+      return { sourceId: source.id, spanId: cited.id };
+    };
+    if (index === 0 || index === 2) {
+      if (index === 2) {
+        assert.deepEqual(captured.packet.rejectedIds, [ineligible.id], 'only the invalid receipt claim enters the existing reassessment pair');
+        assert.equal(captured.packet.initialFinal?.[eligible.id]?.rationale, originalGoodRationale,
+          'repair context freezes the unaffected sibling from its independent first final');
+      }
+      return envelope({ claims: Object.fromEntries(claims.map(claim => [claim.id, {
+        disposition: 'CLEAR',
+        rationale: claim.id === eligible.id
+          ? originalGoodRationale
+          : index === 0
+            ? 'The complete sample line proves a bounded support decision.'
+            : 'The completed no-results fact supports this bounded search review.',
+        citations: [claim.id === ineligible.id && index === 0
+          ? citeFact('attention-public-sample')
+          : citeFact('attention-search-1')],
+      }])) });
+    }
+    const repairReview = index === 3;
+    return envelope({
+      claims: Object.fromEntries(claims.map(claim => [claim.id, {
+        proposalAccepted: true,
+        final: {
+          disposition: 'CLEAR', support: 'SUPPORTED',
+          rationale: claim.id === eligible.id || !repairReview
+            ? originalGoodRationale
+            : 'The completed no-results fact supports this bounded search review.',
+          citations: [claim.id === ineligible.id && !repairReview ? citeFact('attention-public-sample') : citeFact('attention-search-1')],
+        },
+      }])),
+      sources: Object.fromEntries(sourceIds.map(id => [id, {
+        inspection: 'INSPECTED', relevance: 'POTENTIALLY_RELEVANT',
+      }])),
+    });
+  };
+
+  const result = await qualifyShared(claims, sources, fixture.token, KEY, fetcher, async () => {}, undefined, true,
+    undefined, 'reviewed-audit-completion-v1', 'acquired-text-inspection-v1', 'source-support-and-conflict-v2', purpose);
+  assert.equal(result.code, undefined);
+  assert.ok(result.audit);
+  assert.equal(requests.length, 4, 'one claim-local issue uses exactly the existing Shared reassessment pair');
+  const prompt = JSON.parse(requests[0]!.raw) as {
+    acquisitionPurposeMethod: string;
+    citableAliases: Record<string, { CLEAR: string[]; CONFLICT: string[] }>;
+  };
+  const receiptAliases = new Set(renderedReceipt.facts.map((_, index) => receiptAlias(index)));
+  assert.equal(prompt.acquisitionPurposeMethod, 'acquisition-purpose-v1');
+  assert.ok(prompt.citableAliases[ineligible.id]?.CLEAR.includes(receiptAlias(supportFactIndex)),
+    'bounded support exposes the eligible no-results receipt fact');
+  assert.ok(!prompt.citableAliases[ineligible.id]?.CLEAR.includes(receiptAlias(sampleFactIndex)),
+    'bounded support does not expose a sample fact whose only purpose is measurement');
+  assert.ok(prompt.citableAliases[ineligible.id]?.CONFLICT.every(alias => !receiptAliases.has(alias)),
+    'a receipt is never offered as a factual conflict side');
+
+  assert.deepEqual(result.audit.claims.map(claim => [claim.id, claim.disposition, claim.support]), [
+    [ineligible.id, 'CLEAR', 'SUPPORTED'],
+    [eligible.id, 'CLEAR', 'SUPPORTED'],
+  ], 'the repair resolves the ineligible sample citation without changing the eligible sibling or inventing a conflict');
+  assert.equal(result.audit.claims.find(claim => claim.id === eligible.id)?.rationale, originalGoodRationale);
+  assert.equal(result.audit.claims.some(claim => claim.disposition === 'CONFLICT'
+    && claim.citations.some(citation => citation.sourceId === source.id)), false);
+  const issueArtifact = JSON.parse(result.rawArtifacts['shared-claim-issues']!) as {
+    initial: Array<{ claimId: string; code: string }>;
+    remaining: Array<{ claimId: string; code: string }>;
+  };
+  assert.deepEqual(issueArtifact.initial.map(issue => [issue.claimId, issue.code]), [
+    [ineligible.id, 'SHARED_RECEIPT_PURPOSE_INELIGIBLE'],
+  ]);
+  assert.deepEqual(issueArtifact.remaining, [], 'the accepted second pass removes only the resolved purpose issue');
+  const receiptRecord = JSON.parse(result.rawArtifacts['shared-qualified-receipt']!) as Record<string, unknown>;
+  assert.equal(receiptRecord.proposalResponseId, 'shared-repair-proposal-response');
+  assert.equal(receiptRecord.reviewResponseId, 'shared-repair-review-response');
+  assert.deepEqual(decodeSharedAuditProof(claims, sources, fixture.token, result.rawArtifacts, true,
+    'reviewed-audit-completion-v1', 'acquired-text-inspection-v1', 'source-support-and-conflict-v2', purpose), result.audit,
+  'replay re-runs the same per-claim purpose projection and binds the retained issue artifact');
+});
+
+test('marked Shared residual receipt purpose issue stays claim-local, omitted, and unknown at the data gates', async () => {
+  const fixture = sharedFixture();
+  const projection = projectAcquisition({
+    group: 'PUBLIC_ENTRY', token: fixture.token, availableAt: SHARED_CUTOFF,
+    searches: [{ id: 'attention-search-1', required: true, outcome: 'NO_RESULTS', artifactId: 'attention-search-1-response' }],
+    targets: [],
+    samples: [{ id: 'attention-public-sample', searchIds: ['attention-search-1'], candidateUrls: [], dropped: false }],
+    fresh: true, aborted: false,
+  });
+  const renderedReceipt = renderPurposeReceipt(projection);
+  const receiptSource = {
+    id: 'acquisition-attention-scope', kind: 'ACQUISITION_RECEIPT' as const,
+    token: fixture.token, operation: 'ACQUISITION_SCOPE' as const,
+    artifactIds: ['attention-search-1-response'], availableAt: SHARED_CUTOFF, text: renderedReceipt.text,
+  };
+  const bodySource = fixture.sources.find(source => source.id === 'attention-source')!;
+  const bodySpan = sourceSpans(bodySource.id, bodySource.text, 'SHARED_MODEL')[0]!;
+  const sampleFact = renderedReceipt.facts.find(fact => fact.id === 'sample:attention-public-sample')!;
+  const sampleQuote = renderedReceipt.text.slice(sampleFact.start, sampleFact.end);
+  const badCriterion = {
+    method: criterionReviewMethod,
+    token: fixture.token,
+    policyId: 'research-screen-criteria-v1' as const,
+    cutoff: SHARED_CUTOFF,
+    start: SHARED_CUTOFF,
+    end: SHARED_CUTOFF,
+    requiredIds: ['NAR-01'] as const,
+    standards: criterionStandards,
+    sources: [bodySource],
+    sourceBindings: [],
+    narrativeSourceIds: [bodySource.id],
+    identityOnlySourceIds: [],
+    primaryLeadershipCitationIds: [],
+    auxiliarySources: [],
+    acquisition: {},
+    operationArtifacts: [],
+    criterionScopes: Object.fromEntries(Object.keys(criterionStandards).map(id => [id, {
+      sourceIds: id === 'NAR-01' ? [bodySource.id] : [], requiredOperationIds: [], complete: true, failures: [],
+    }])) as unknown as CriterionInput['criterionScopes'],
+    queries: [],
+    complete: true,
+    codes: [],
+    catalog: [{ id: 'criterion-body-span', sourceId: bodySource.id, spanId: bodySpan.id,
+      start: bodySpan.start, end: bodySpan.end, text: bodySpan.text }],
+    scopeId: 'criterion-purpose-scope',
+    inputId: 'a'.repeat(64),
+    acquisitionPurposeMethod: 'acquisition-purpose-v1' as const,
+    purposeProjection: projection,
+    purposeReceipt: renderedReceipt,
+  } as CriterionInput;
+  const criteria: CriterionReceipt = {
+    acquisitionPurposeMethod: 'acquisition-purpose-v1', method: criterionReviewMethod,
+    token: fixture.token, policyId: badCriterion.policyId, inputId: badCriterion.inputId, qualifiedAt: SHARED_CUTOFF,
+    results: [{
+      criterionId: 'NAR-01', scopeId: badCriterion.scopeId, evaluationState: 'COMPLETED', outcome: 'INSUFFICIENT',
+      basis: 'PUBLIC_SUPPORT_INADEQUATE', rationale: 'The bounded review cannot establish the required narrative support.',
+      citationIds: ['criterion-body-span'], proof: { reviewAttested: true, suppliedSourceIds: [bodySource.id],
+        premises: [], representationWitnesses: [], posts: [], missingSupport: ['The reviewed source does not establish the required support.'] }, failure: null,
+    }],
+  };
+  const { integrityReview: _integrity, participationReview: _participation,
+    communityBreadthReview: _breadth, ...identityOnlySocial } = fixture.social!;
+  fixture.social = { ...identityOnlySocial, acquisitionEvidenceMethod };
+  const criterionClaims = criterionSharedClaims(criteria, badCriterion, fixture.social, SHARED_CUTOFF);
+  const siblingClaims = sharedClaims(fixture.baseline, fixture.social, 'source-support-and-conflict-v2')
+    .filter(claim => claim.id === 'SOC-01');
+  const siblingSourceId = siblingClaims[0]!.citations[0]!.sourceId;
+  const siblingSourceSpan = sourceSpans(siblingSourceId, fixture.sources.find(source => source.id === siblingSourceId)!.text,
+    'SHARED_MODEL').find(span => span.text.includes(siblingClaims[0]!.citations[0]!.quote))!;
+  const siblingFinalCitation = { sourceId: siblingSourceId, quote: siblingSourceSpan.text };
+  const claims = [...criterionClaims, ...siblingClaims];
+  assert.deepEqual(claims.map(claim => claim.id), ['criterion:NAR-01', 'SOC-01']);
+  fixture.claims = claims;
+  fixture.sources.push(receiptSource);
+
+  const purpose = { token: fixture.token, cutoff: SHARED_CUTOFF, projections: [projection] };
+  const requests: Captured[] = [];
+  const initialSiblingRationale = 'The retained identity source supports this unchanged sibling claim.';
+  let fetcherError: string | undefined;
+  const fetcher: typeof fetch = async (_url, init) => {
+    try {
+      const captured = packetFrom(init);
+      const index = requests.push(captured) - 1;
+      const spansFor = (sourceId: string) => captured.packet.sources.find(source => source.id === sourceId)?.spans ?? [];
+      const sampleAlias = spansFor(receiptSource.id).find(span => span.text.includes('attention-public-sample'))?.id;
+      const siblingQuote = siblingClaims[0]!.citations[0]!.quote;
+      const siblingAlias = spansFor(siblingClaims[0]!.citations[0]!.sourceId)
+        .find(span => span.text.includes(siblingQuote))?.id;
+      assert.ok(sampleAlias && siblingAlias, JSON.stringify({ sampleAlias, siblingAlias,
+        receiptSpans: spansFor(receiptSource.id).map(span => [span.id, span.text.slice(0, 160)]),
+        siblingSourceId: siblingClaims[0]!.citations[0]!.sourceId,
+        siblingSpans: spansFor(siblingClaims[0]!.citations[0]!.sourceId).map(span => [span.id, span.text.slice(0, 160)]) }));
+      if (index === 2) {
+        assert.deepEqual(captured.packet.rejectedIds, ['criterion:NAR-01'],
+          'the existing reassessment selects only the receipt-invalid claim');
+        assert.equal(captured.packet.initialFinal?.['SOC-01']?.rationale, initialSiblingRationale,
+          'the valid sibling final is frozen into the one reassessment');
+      }
+      const wireClaims = Object.fromEntries(claims.map(claim => {
+        const bad = claim.id === 'criterion:NAR-01';
+        return [claim.id, {
+          disposition: 'CLEAR',
+          rationale: bad ? 'The sample receipt resolves the bounded narrative support claim.' : initialSiblingRationale,
+          citations: [bad ? sampleAlias : siblingAlias],
+        }];
+      }));
+      if (index === 0 || index === 2) return envelope({ claims: wireClaims });
+      return envelope({
+        claims: Object.fromEntries(claims.map(claim => {
+          const bad = claim.id === 'criterion:NAR-01';
+          return [claim.id, { proposalAccepted: true, final: {
+            disposition: 'CLEAR', support: 'SUPPORTED',
+            rationale: bad ? 'The sample receipt resolves the bounded narrative support claim.' : initialSiblingRationale,
+            citations: [bad ? sampleAlias : siblingAlias],
+          } }];
+        })),
+        sources: Object.fromEntries(captured.packet.sources.map(source => [source.id, {
+          inspection: 'INSPECTED', relevance: 'POTENTIALLY_RELEVANT',
+        }])),
+      });
+    } catch (error) {
+      fetcherError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      throw error;
+    }
+  };
+  const result = await qualifyShared(claims, fixture.sources, fixture.token, KEY, fetcher, async () => {}, undefined,
+    true, undefined, 'reviewed-audit-completion-v1', 'acquired-text-inspection-v1',
+    'source-support-and-conflict-v2', purpose);
+
+  assert.equal(result.code, undefined, JSON.stringify({ code: result.code, artifacts: Object.keys(result.rawArtifacts),
+    validation: result.rawArtifacts['shared-validation-error'], repairValidation: result.rawArtifacts['shared-repair-validation-error'],
+    attempt: result.rawArtifacts['shared-proposal-transport-attempt-1'], fetcherError }));
+  assert.ok(result.audit);
+  assert.equal(requests.length, 4, 'the existing Shared proposal/review and one reassessment pair handle the issue');
+  const prompt = JSON.parse(requests[0]!.raw) as {
+    acquisitionPurposeMethod: string;
+    citableAliases: Record<string, { CLEAR: string[]; CONFLICT: string[] }>;
+  };
+  const receiptAliases = new Set(requests[0]!.packet.sources.find(source => source.id === receiptSource.id)!.spans.map(span => span.id));
+  assert.equal(prompt.acquisitionPurposeMethod, 'acquisition-purpose-v1');
+  assert.ok(!prompt.citableAliases['criterion:NAR-01']?.CLEAR.some(alias =>
+    requests[0]!.packet.sources.find(source => source.id === receiptSource.id)!.spans.some(span => span.id === alias && span.text.includes('attention-public-sample'))),
+  'a sample measurement is not offered for bounded support');
+  assert.ok(prompt.citableAliases['SOC-01']?.CLEAR.every(alias => !receiptAliases.has(alias)),
+    'receipt spans are never offered as BODY_FACT support');
+  assert.ok(prompt.citableAliases['criterion:NAR-01']?.CONFLICT.every(alias => !receiptAliases.has(alias))
+    && prompt.citableAliases['SOC-01']?.CONFLICT.every(alias => !receiptAliases.has(alias)),
+  'receipt spans are never offered as either side of a conflict');
+
+  const unresolved = result.audit.claims.find(claim => claim.id === 'criterion:NAR-01')!;
+  const frozenSibling = result.audit.claims.find(claim => claim.id === 'SOC-01')!;
+  assert.deepEqual([unresolved.disposition, unresolved.support], ['UNCLEAR', 'UNRESOLVED']);
+  assert.deepEqual(unresolved.citations, [{ sourceId: receiptSource.id, quote: sampleQuote }],
+    'the retained receipt remains context only under UNRESOLVED_CONTEXT');
+  assert.deepEqual([frozenSibling.disposition, frozenSibling.support, frozenSibling.rationale],
+    ['CLEAR', 'SUPPORTED', initialSiblingRationale]);
+  assert.deepEqual(frozenSibling.citations, [siblingFinalCitation]);
+  assert.equal(result.audit.claims.some(claim => claim.disposition === 'CONFLICT'
+    && claim.citations.some(citation => citation.sourceId === receiptSource.id)), false);
+
+  const issueArtifact = JSON.parse(result.rawArtifacts['shared-claim-issues']!) as {
+    initial: Array<{ claimId: string; code: string }>;
+    remaining: Array<{ claimId: string; code: string }>;
+  };
+  assert.deepEqual(issueArtifact.initial.map(issue => [issue.claimId, issue.code]), [
+    ['criterion:NAR-01', 'SHARED_RECEIPT_PURPOSE_INELIGIBLE'],
+  ]);
+  assert.deepEqual(issueArtifact.remaining, issueArtifact.initial,
+    'a purpose-invalid repair remains explicitly unresolved and is not relabeled as a negative');
+  const receiptRecord = JSON.parse(result.rawArtifacts['shared-qualified-receipt']!) as {
+    proposalResponseId: string; reviewResponseId: string;
+  };
+  assert.deepEqual([receiptRecord.proposalResponseId, receiptRecord.reviewResponseId], [
+    'shared-repair-proposal-response', 'shared-repair-review-response',
+  ]);
+  assert.deepEqual(decodeSharedAuditProof(claims, fixture.sources, fixture.token, result.rawArtifacts, true,
+    'reviewed-audit-completion-v1', 'acquired-text-inspection-v1', 'source-support-and-conflict-v2', purpose), result.audit);
+
+  fixture.acquisitionPurposeMethod = 'acquisition-purpose-v1';
+  fixture.acquisitionEvidenceMethod = acquisitionEvidenceMethod;
+  fixture.purposeProjections = [projection];
+  fixture.purposeCutoff = SHARED_CUTOFF;
+  fixture.decisionMethod = 'source-support-and-conflict-v2';
+  fixture.completionMethod = 'reviewed-audit-completion-v1';
+  fixture.sourceInspectionMethod = 'acquired-text-inspection-v1';
+  fixture.qualityMode = 'ENTRY_GATES_V1';
+  fixture.criteria = criteria;
+  fixture.criterionInput = badCriterion;
+  fixture.audit = result.audit;
+  fixture.semanticReceiptIds = ['criterion-receipt'];
+  fixture.evidence.push(...['criterion-input', 'criterion-receipt'].map(id => ({ ...fixture.evidence[0]!, id })));
+  const derived = deriveShared(fixture);
+  assert.equal(derived.facts.semanticQualified, true);
+  assert.equal(derived.facts.auditCompleted, false);
+  assert.equal(derived.facts.supportCompleted, false);
+  assert.deepEqual(derived.facts.auditedScope, ['SOC-01']);
+  assert.deepEqual(derived.facts.omittedScope, ['criterion:NAR-01']);
+  assert.deepEqual(derived.facts.conflicts, [], 'the unresolved receipt claim does not create a factual conflict');
+
+  const snapshot: EntrySnapshot = {
+    id: 'shared-residual-purpose-review', caseId: 'shared-residual-purpose-fixture', checklistKind: 'ENTRY',
+    token: fixture.token, cutoff: fixture.cutoff, analysisKind: 'FIXTURE', features: fixture.features,
+    evidence: fixture.evidence,
+    result: { checks: ['DAT-02', 'DAT-03'].map(checkId => ({
+      checkId, checklistKind: 'ENTRY', role: 'REQUIRED_EVIDENCE', pillar: 'SHARED', required: true,
+      status: 'UNKNOWN', reasonCode: 'SHARED_REVIEW_UNRESOLVED', featureRefs: [], evidenceRefs: [],
+    })), binary: 'FAIL', classification: 'INSUFFICIENT_DATA', coverage: { known: 0, total: 2 } },
+    hash: 'b'.repeat(64),
+    details: { version: 1, profile: fixture.profile, thesis: null,
+      baseline: [...fixture.baseline, ...derived.assessments], origins: {},
+      stageInputs: { circulatingMarketCapUsd: null, tokenCreatedAt: null },
+      social: fixture.social, shared: derived.facts, criteria, },
+  };
+  const report = buildEntryReport(snapshot);
+  assert.deepEqual(report.checks.filter(check => check.checkId === 'DAT-02' || check.checkId === 'DAT-03')
+    .map(check => [check.checkId, check.outcome]), [
+      ['DAT-02', 'UNKNOWN'], ['DAT-03', 'UNKNOWN'],
+    ], 'one residual purpose issue keeps both Shared data-quality gates unknown');
+});
+
+test('marked Shared review accepts six owned citations while the legacy review cap stays five', async () => {
+  const fixture = sharedFixture();
+  const sources = Array.from({ length: 6 }, (_, index) => ({
+    id: `six-span-source-${index + 1}`, url: `https://public.example/six-span-${index + 1}`,
+    text: `Synthetic retained statement ${index + 1} independently supports the declared target-token criterion.`,
+    publishedAt: null, authorId: null, availableAt: SHARED_CUTOFF, kind: 'PAGE' as const,
+  }));
+  const claim: SharedClaim = {
+    id: 'criterion:NAR-01',
+    statement: 'The six retained source statements jointly establish the bounded criterion judgment.',
+    supportBasis: 'BODY_FACT',
+    citations: sources.map(source => ({ sourceId: source.id, quote: source.text })),
+    criterionReviewContext: {
+      method: 'criterion-review-v1', criterionId: 'NAR-01', outcome: 'SUPPORTED', basis: 'PUBLIC_SUPPORT',
+      question: 'Does the retained source set support this criterion judgment?', requiredSupport: ['direct support'],
+      missingSupport: [], premises: [], suppliedSourceIds: sources.map(source => source.id),
+    },
+  };
+  const projection = projectAcquisition({
+    group: 'PUBLIC_ENTRY', token: fixture.token, availableAt: SHARED_CUTOFF,
+    searches: [], targets: [], samples: [], fresh: true, aborted: false,
+  });
+  const purpose = { token: fixture.token, cutoff: SHARED_CUTOFF, projections: [projection] };
+  const requests: Captured[] = [];
+  const fetcher: typeof fetch = async (_url, init) => {
+    const captured = packetFrom(init);
+    requests.push(captured);
+    const aliases = captured.packet.sources.flatMap(source => source.spans.map(span => span.id));
+    assert.equal(aliases.length, 6);
+    const rationale = 'The supplied source statements support the stated criterion judgment.';
+    if (requests.length === 1) return envelope({ claims: { [claim.id]: {
+      disposition: 'CLEAR', rationale, citations: aliases,
+    } } });
+    return envelope({
+      claims: { [claim.id]: { proposalAccepted: true, final: {
+        disposition: 'CLEAR', support: 'SUPPORTED', rationale, citations: aliases,
+      } } },
+      sources: Object.fromEntries(sources.map(source => [source.id, {
+        inspection: 'INSPECTED', relevance: 'POTENTIALLY_RELEVANT',
+      }])),
+    });
+  };
+  const result = await qualifyShared([claim], sources, fixture.token, KEY, fetcher, async () => {}, undefined,
+    true, undefined, 'reviewed-audit-completion-v1', 'acquired-text-inspection-v1',
+    'source-support-and-conflict-v2', purpose);
+  assert.equal(result.code, undefined);
+  assert.equal(requests.length, 2, 'the six-alias proposal and independent final reach the actual marked review path');
+  assert.equal(result.audit?.claims[0]?.citations.length, 6);
+  assert.deepEqual(decodeSharedAuditProof([claim], sources, fixture.token, result.rawArtifacts, false,
+    'reviewed-audit-completion-v1', 'acquired-text-inspection-v1', 'source-support-and-conflict-v2', purpose), result.audit);
+
+  const { criterionReviewContext: _freshContext, ...legacyClaim } = claim;
+  const legacyRefs = sources.map(source => ({ sourceId: source.id, spanId: sourceSpans(source.id, source.text, 'SHARED_MODEL')[0]!.id }));
+  const legacySources = Object.fromEntries(sources.map(source => [source.id, {
+    inspection: 'INSPECTED', relevance: 'POTENTIALLY_RELEVANT',
+  }]));
+  const proposalRaw = await envelope({ claims: { [claim.id]: {
+    disposition: 'CLEAR', rationale: 'The legacy draft uses the preserved five-citation grammar.', citations: legacyRefs.slice(0, 5),
+  } } }).text();
+  const reviewRaw = async (citations: typeof legacyRefs) => envelope({
+    claims: { [claim.id]: { proposalAccepted: true, final: {
+      disposition: 'CLEAR', support: 'SUPPORTED', rationale: 'The legacy final uses only its admitted citation limit.', citations,
+    } } },
+    sources: legacySources,
+  }).text();
+  const fiveCitationReview = await reviewRaw(legacyRefs.slice(0, 5));
+  assert.equal(decodeSharedAudit([legacyClaim], sources, proposalRaw, fiveCitationReview,
+    'acquired-text-inspection-v1', 'source-support-and-conflict-v2').claims[0]?.citations.length, 5);
+  await assert.rejects(async () => decodeSharedAudit([legacyClaim], sources, proposalRaw, await reviewRaw(legacyRefs),
+    'acquired-text-inspection-v1', 'source-support-and-conflict-v2'),
+  'an unmarked legacy final with six citations remains outside the old five-citation grammar');
 });
 
 test('hosted receipt audit bounds citation grammar and rejects wrong source ownership before review', async () => {

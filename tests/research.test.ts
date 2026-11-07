@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { starterProfile } from '../src/app/config.js';
-import { baselineIds, deriveBaseline, deriveCharts, deriveMarketContext, validateResearch, type BaselineInputs } from '../src/domain/baseline.js';
+import { deriveBaseline, deriveCharts, deriveMarketContext, validateResearch, type BaselineInputs } from '../src/domain/baseline.js';
 import { evaluateEntry } from '../src/domain/policy.js';
 import { researchPacketSchema, type ResearchPacket, type ResearchRecord } from '../src/domain/research.js';
 import type { TokenRef } from '../src/domain/contracts.js';

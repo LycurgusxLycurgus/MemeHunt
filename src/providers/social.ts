@@ -4,11 +4,16 @@ import { attentionSourceLimit, originSeedLinks, type AttentionRead } from './att
 import type { TokenRef } from '../domain/contracts.js';
 import { canonicalSocialUrl, socialAccount, socialInputSchema, type SocialInput } from '../domain/social.js';
 import { acquisitionEvidenceMethod as boundedAcquisitionMethod, acquisitionLedgerSchema, buildAcquisitionScope,
-  type AcquisitionLedger, type AcquisitionScope, type AcquisitionSearch } from './acquisition-evidence.js';
+  readAcquisitionPurposePlan, purposeSearchFacts, validAcquisitionPurposePlan, buildPurposeAcquisition, type AcquisitionLedger, type AcquisitionScope, type AcquisitionSearch } from './acquisition-evidence.js';
 
 export type SocialRead=SocialInput & {rawArtifacts:Record<string,string>};
 const object=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null&&!Array.isArray(v);
 const host=(url:string)=>{try{return new URL(url).hostname;}catch{return null;}};
+function boundAttentionSource(url:string,sources:SocialInput['sources'],bindings:AttentionRead['sourceBindings'],raw:Record<string,string>){
+ for(const binding of bindings??[]){if(canonicalSocialUrl(binding.requestedUrl)!==url||binding.transform!=='IDENTITY')continue;
+  try{const packet=JSON.parse(raw[binding.producerArtifactId]),row=packet.results[binding.resultIndex],source=sources.find(s=>s.id===binding.sourceId);const requested=publicHttpsUrl(row?.url,true),final=publicHttpsUrl(row?.final_url??row?.url,true);if(!source||!requested||!final||canonicalSocialUrl(requested)!==url||canonicalSocialUrl(final)!==canonicalSocialUrl(source.url)||row.text!==source.text||raw[source.id]!==source.text||!source.text.trim()||socialAccount(requested)&&socialAccount(requested)!==socialAccount(final))continue;return {source,binding};}catch{/* Missing or malformed producer is not proof. */}
+ }return undefined;
+}
 function collectionError(error:unknown,operation:'SEARCH'|'FETCH',signal?:AbortSignal):string {
   const stage='SOC_'+operation+'_',cause=object(error)&&object(error.cause)?error.cause:undefined;
   const codes=[object(error)?error.code:undefined,cause?.code];
@@ -23,10 +28,11 @@ function collectionError(error:unknown,operation:'SEARCH'|'FETCH',signal?:AbortS
   return stage+'UNAVAILABLE';
 }
 /** Supplements preserve the frozen attention sample and its retained evidence. */
-export async function collectSocialSources(token:TokenRef,attention:AttentionRead,key:string,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal):Promise<SocialRead>{
+export async function collectSocialSources(token:TokenRef,attention:AttentionRead,key:string,fetcher:typeof fetch=fetch,now:()=>string=()=>new Date().toISOString(),signal?:AbortSignal,purposePlan=false):Promise<SocialRead>{
   const sourceLimit=attentionSourceLimit(attention);
   const acquisitionEnabled=attention.acquisitionEvidenceMethod===boundedAcquisitionMethod;
   const retained=attention.sources,rawArtifacts:Record<string,string>=acquisitionEnabled?{...attention.rawArtifacts}:{},codes:string[]=[],queries:string[]=[],acquisitionSearches:AcquisitionSearch[]=[];
+  if(purposePlan)rawArtifacts['social-acquisition-purpose-plan']=JSON.stringify({method:'acquisition-purpose-v1',group:'SOCIAL_ENTRY',token,availableAt:now(),fallbackEnabled:false,plannedRungs:['tinyfish'],caps:{scrapes:0,searches:0},skips:[]});
   const acquisitionSearchArtifact=(id:string,kind:'request'|'response'|'attempt')=>`social-acquisition-${id}-${kind}`;
   const targetPostIds=(attention.postSampleSourceIds??retained.filter(s=>s.kind==='POST'&&!attention.comparisonSourceIds?.includes(s.id)).map(s=>s.id)).filter(id=>retained.some(s=>s.id===id));
   const identitySourceIds=retained.filter(s=>s.kind==='PAGE'&&s.url!==attention.metadataUri&&(!attention.comparisonSourceIds?.includes(s.id)||attention.discoveryUrls?.some(url=>canonicalSocialUrl(url)===canonicalSocialUrl(s.url)))).map(s=>s.id);
@@ -38,7 +44,7 @@ export async function collectSocialSources(token:TokenRef,attention:AttentionRea
   const accounts=[...new Set(targetPostIds.filter(id=>{const s=sources.find(s=>s.id===id)!;return !!s.publishedAt&&Date.parse(s.publishedAt)>=Date.parse(attention.start)&&Date.parse(s.publishedAt)<Date.parse(attention.end);}).map(id=>socialAccount(sources.find(s=>s.id===id)!.url)).filter((a):a is string=>!!a))].sort();
   const aborted=()=>signal?.aborted===true;
   const fail=(lead:typeof selection[number],code:string)=>{lead.status=code;codes.push(lead.required?code:'SOC_ACCOUNT_CONTEXT_UNAVAILABLE');if(lead.required)requiredFailed=true;};
-  const add=(value:unknown,reason:string,required:boolean,parent?:string)=>{if(typeof value!=='string')return;const safe=publicHttpsUrl(value,true);if(!safe)return;const url=canonicalSocialUrl(safe);if(seenLeads.has(url))return;seenLeads.add(url);const prior=sources.find(s=>canonicalSocialUrl(s.url)===url);
+  const add=(value:unknown,reason:string,required:boolean,parent?:string)=>{if(typeof value!=='string')return;const safe=publicHttpsUrl(value,true);if(!safe)return;const url=canonicalSocialUrl(safe);if(seenLeads.has(url))return;seenLeads.add(url);const prior=sources.find(s=>canonicalSocialUrl(s.url)===url)??(purposePlan?boundAttentionSource(url,sources,attention.sourceBindings,rawArtifacts)?.source:undefined);
     const lead={url,selected:true,reason,required,status:'PENDING',...(parent?{parent}:{})};selection.push(lead);
     if(prior&&!clippedIds.has(prior.id)){lead.status='REUSED';if(required&&prior.kind==='PAGE'&&!identitySourceIds.includes(prior.id))identitySourceIds.push(prior.id);return;}
     const pending=selection.filter(l=>l.status==='PENDING');if(additions+pending.length>8||sources.length+pending.filter(l=>!sources.some(s=>canonicalSocialUrl(s.url)===l.url&&clippedIds.has(s.id))).length>sourceLimit){lead.selected=false;fail(lead,required?'SOC_SOURCE_CAP':'SOC_ACCOUNT_CONTEXT_CAP');}
@@ -106,8 +112,15 @@ export async function collectSocialSources(token:TokenRef,attention:AttentionRea
       rawArtifacts['social-acquisition-ledger']=JSON.stringify({method:boundedAcquisitionMethod,token,start:attentionLedger.start,end:now(),searches:[...requiredSeedSearches,...acquisitionSearches]});
     }catch{rawArtifacts['social-acquisition-ledger']=JSON.stringify({method:boundedAcquisitionMethod,token,start:attention.start,end:now(),searches:acquisitionSearches});}
   }
-  const read=socialInputSchema.parse({schemaVersion:1,...(acquisitionEnabled?{acquisitionEvidenceMethod:boundedAcquisitionMethod}:{}),...(attention.outcomeBasisMethod?{outcomeBasisMethod:attention.outcomeBasisMethod}:{}),...(identityUnavailableSources.length?{identityUnavailableSources}:{}),...(attention.leadershipPositiveMethod?{inspectionRecoveryMethod:'retained-source-inspection-v2',associationCitationMethod:'literal-associations-v1',screeningConstraintMethod:'frozen-positive-guards-v2'}:{}),...(attention.postSampleScope?{postSampleScope:attention.postSampleScope}:{}),reviewCriterionMethod:'verdict-aware-v4',entryDecisionMethod:'public-support-v3',sources,start:attention.start,end:attention.end,targetPostIds:[...targetPostIds],identitySourceIds:[...new Set(identitySourceIds)],sampleComplete:inheritedComplete,identityComplete,previousComparable:inheritedComplete,codes:[...new Set(codes)],queries:[...attention.queries,...queries]});
+  let read=socialInputSchema.parse({schemaVersion:1,...(acquisitionEnabled?{acquisitionEvidenceMethod:boundedAcquisitionMethod}:{}),...(attention.outcomeBasisMethod?{outcomeBasisMethod:attention.outcomeBasisMethod}:{}),...(identityUnavailableSources.length?{identityUnavailableSources}:{}),...(attention.leadershipPositiveMethod?{inspectionRecoveryMethod:'retained-source-inspection-v2',associationCitationMethod:'literal-associations-v1',screeningConstraintMethod:'frozen-positive-guards-v2'}:{}),...(attention.postSampleScope?{postSampleScope:attention.postSampleScope}:{}),reviewCriterionMethod:'verdict-aware-v4',entryDecisionMethod:'public-support-v3',sources,start:attention.start,end:attention.end,targetPostIds:[...targetPostIds],identitySourceIds:[...new Set(identitySourceIds)],sampleComplete:inheritedComplete,identityComplete,previousComparable:inheritedComplete,codes:[...new Set(codes)],queries:[...attention.queries,...queries]});
   rawArtifacts['social-acquisition-scope']=JSON.stringify({read,selection,requestedUrls:requestedUrlsByBatch.flat(),requestedUrlsByBatch,supplementLimit:8,actualSupplements:additions,socialSourceLimit:sourceLimit,baseSocialSourceCount,submittedSocialSourceCount:sources.length,budgetBasis:'social-input',clippedSourceIds:originalClipped,remainingClippedSourceIds:[...clippedIds],retainedAttentionSourceCount:retained.length,excludedComparisonSourceIds:retained.filter(s=>!targetPostIds.includes(s.id)&&!identitySourceIds.includes(s.id)).map(s=>s.id),method:'free-social-supplements-v2'});
+  if(purposePlan){
+    const plan=readAcquisitionPurposePlan(rawArtifacts,'SOCIAL_ENTRY',token);
+    if(!validAcquisitionPurposePlan(plan,rawArtifacts,'SOCIAL_ENTRY',token))throw Error('SOC_ACQUISITION_PROOF_INVALID');
+    const purpose=buildPurposeAcquisition(socialOperationFacts({...read,rawArtifacts},token,now(),plan,attention.sourceBindings));
+    read=socialInputSchema.parse({...read,acquisitionPurposeMethod:'acquisition-purpose-v1',purposeProjection:purpose.projection,purposeReceipt:purpose.receipt});
+    const scope=JSON.parse(rawArtifacts['social-acquisition-scope']);scope.read=read;rawArtifacts['social-acquisition-scope']=JSON.stringify(scope);
+  }
   return {...read,rawArtifacts};
 }
 
@@ -166,8 +179,17 @@ export function buildSocialAcquisitionScope(attention:AttentionRead,read:SocialI
     const packetCodes=Array.isArray(packetUnscoped.codes)?packetUnscoped.codes as string[]:[],readCodes=Array.isArray(readUnscoped.codes)?readUnscoped.codes as string[]:[];
     const modelCodeCount=Math.max(0,readCodes.length-packetCodes.length),modelCodes=readCodes.slice(0,modelCodeCount);
     const retainedCollectorCodes=JSON.stringify(readCodes.slice(modelCodeCount))===JSON.stringify(packetCodes);
-    const validModelCodes=modelCodes.every(code=>code.startsWith('SOC_MODEL_')||code==='SOC_TEXT_CAP'||code==='SOC_MODEL_PACKET_LIMIT'||code==='SOC_POST_CORPUS_UNAVAILABLE');
-    if(retainedCollectorCodes&&validModelCodes)readUnscoped.codes=packetCodes;
+    const socialReviewFailures=new Set(['SOC_CITATION_INVALID','SOC_ACQUISITION_INSPECTION_INVALID','SOC_ACQUISITION_PROOF_INVALID','SOC_REPAIR_INVALID','SOC_REPAIR_REJECTED','SOC_TEXT_CAP','SOC_POST_CORPUS_UNAVAILABLE']);
+    const validModelCodes=modelCodes.every(code=>code.startsWith('SOC_MODEL_')||socialReviewFailures.has(code));
+    if(retainedCollectorCodes&&validModelCodes){
+      readUnscoped.codes=packetCodes;
+      // These two producer failures explicitly lower both completeness flags;
+      // compare the frozen acquisition input after accounting for that change.
+      if(modelCodes.some(code=>code==='SOC_TEXT_CAP'||code==='SOC_MODEL_PACKET_LIMIT')&&readUnscoped.sampleComplete===false&&readUnscoped.identityComplete===false&&typeof packetUnscoped.sampleComplete==='boolean'&&typeof packetUnscoped.identityComplete==='boolean'){
+        readUnscoped.sampleComplete=packetUnscoped.sampleComplete;
+        readUnscoped.identityComplete=packetUnscoped.identityComplete;
+      }
+    }
     if(!Array.isArray(selectionPacket.selection)||JSON.stringify(packetUnscoped)!==JSON.stringify(readUnscoped))blockers.push('ACQUISITION_SELECTION_SCOPE_INVALID');
     else{
       const selection=selectionPacket.selection as Array<{url:string;selected:boolean;required:boolean;status:string}>;
@@ -197,4 +219,33 @@ export function buildSocialAcquisitionScope(attention:AttentionRead,read:SocialI
   }).filter((id,index,all)=>all.indexOf(id)===index&&typeof rawArtifacts[id]==='string');
   const artifactIds=[selectionArtifact,...ownSearchArtifacts,...attentionSearchArtifacts,...Object.keys(rawArtifacts).filter(id=>/^social-(?:search-http-outcome|fetch-|http-outcome|collection-)/.test(id)),...read.sources.map(source=>source.id),...(attention.acquisitionDiscovery?.dexArtifactId?[attention.acquisitionDiscovery.dexArtifactId]:[]),...(attention.acquisitionDiscovery?.metadataArtifactId?[attention.acquisitionDiscovery.metadataArtifactId]:[])];
   return buildAcquisitionScope({token,group:'SOCIAL_ENTRY',cutoff,start,end,availableAt,ledgerId,rawArtifacts,sourceIds:read.sources.map(source=>source.id),expectedQueries,blockers,artifactIds});
+}
+
+/** Reconstruct only Social's selected operations; later Social failures never alter Attention. */
+export function socialOperationFacts(read:SocialRead,token:TokenRef,cutoff:string,planInput?:import('./acquisition-evidence.js').AcquisitionPurposePlan,seedBindings?:AttentionRead['sourceBindings']):import('../domain/acquisition-purpose.js').AcquisitionFacts{
+ const raw=read.rawArtifacts,plan=planInput??readAcquisitionPurposePlan(raw,'SOCIAL_ENTRY',token),validPlan=validAcquisitionPurposePlan(plan,raw,'SOCIAL_ENTRY',token);
+ const searches=purposeSearchFacts(raw,'social-acquisition-ledger',token,['attention-search-1','attention-search-2']);
+ let selection:Array<{url:string;selected:boolean;required:boolean;status:string}>=[],batches:string[][]=[];
+ try{const value=JSON.parse(raw['social-acquisition-scope']);if(Array.isArray(value.selection))selection=value.selection;if(Array.isArray(value.requestedUrlsByBatch))batches=value.requestedUrlsByBatch;}catch{/* Missing selection cannot prove target completion. */}
+ const candidates:string[]=[];try{const row=searches.find(x=>x.id==='attention-search-2'),body=JSON.parse(raw[row?.artifactId??'']);for(const item of body.results??[]){const url=canonicalSocialUrl(item.url);if(/\/status\/\d+/.test(url)&&!candidates.includes(url))candidates.push(url);}}catch{/* The missing search remains unresolved. */}
+ const urls=[...new Set([...selection.filter(x=>x.required).map(x=>x.url),...candidates])];
+ const targets=urls.map(requestedUrl=>{
+  const attempts:import('../domain/acquisition-purpose.js').AcquisitionFacts['targets'][number]['attempts']=[];let sourceId:string|null=null,finalUrl:string|null=null;
+  for(const [index,batch] of batches.entries())if(batch.includes(requestedUrl)){
+   const id=`social-fetch-${index+1}`;let packet:any,http:any;try{packet=JSON.parse(raw[id]);}catch{}try{http=JSON.parse(raw[`social-http-outcome-${index+1}`]);}catch{}
+   const errorArtifact=raw[`social-collection-fetch-${index+1}-error`];let code:string|null=null;try{code=JSON.parse(errorArtifact).code??null;}catch{}
+   if(http?.status!==200){attempts.push({artifactId:id,resultIndex:null,provider:'tinyfish',rung:'tinyfish',kind:'PROVIDER_FAILURE',code:code??(http?.status?`HTTP_${http.status}`:'HTTP_MISSING')});continue;}
+   const resultIndex=Array.isArray(packet?.results)?packet.results.findIndex((row:any)=>typeof row?.url==='string'&&canonicalSocialUrl(row.url)===requestedUrl):-1,row=resultIndex>=0?packet.results[resultIndex]:null;
+   const source=read.sources.find(s=>s.discoveredFrom===requestedUrl&&s.text===row?.text&&raw[s.id]===s.text);
+   if(source&&source.text.trim()&&(source.kind!=='POST'||!!source.authorId&&!!source.publishedAt)){sourceId=source.id;finalUrl=source.url;attempts.push({artifactId:id,resultIndex,provider:'tinyfish',rung:'tinyfish',kind:'READ',code:null});}
+   else {const error=packet?.errors?.find((x:any)=>typeof x?.url==='string'&&canonicalSocialUrl(x.url)===requestedUrl);attempts.push({artifactId:id,resultIndex:resultIndex>=0?resultIndex:null,provider:'tinyfish',rung:'tinyfish',kind:error&&!row?'TARGET_FAILURE':'UNREAD',code:error&&!row?String(error.code??error.error??error.status??'TARGET_FAILURE'):null});}
+  }
+  // Seed sources must still match a retained Attention producer body.
+  if(!sourceId&&validPlan){try{const bindings=seedBindings??JSON.parse(raw['social-attention-seed']).read.sourceBindings;const found=boundAttentionSource(requestedUrl,read.sources,bindings,raw);if(found&&(found.source.kind!=='POST'||!!found.source.authorId&&!!found.source.publishedAt)){sourceId=found.source.id;finalUrl=found.source.url;attempts.push({artifactId:found.binding.producerArtifactId,resultIndex:found.binding.resultIndex,provider:'tinyfish',rung:'seed',kind:'READ',code:null});}}catch{/* No verified seed. */}}
+  if(!sourceId){const source=read.sources.find(s=>canonicalSocialUrl(s.url)===requestedUrl&&raw[s.id]===s.text&&s.text.trim()&&(s.kind!=='POST'||!!s.authorId&&!!s.publishedAt));if(source)for(const [id,body] of Object.entries(raw)){if(!/^attention-fetch-\d+(?:-retry-1)?$/.test(id))continue;try{const packet=JSON.parse(body),resultIndex=packet.results.findIndex((x:any)=>typeof x?.url==='string'&&canonicalSocialUrl(x.url)===requestedUrl&&x.text===source.text);if(resultIndex>=0){sourceId=source.id;finalUrl=source.url;attempts.push({artifactId:id,resultIndex,provider:'tinyfish',rung:'seed',kind:'READ',code:null});break;}}catch{}}}
+  return {requestedUrl,necessary:selection.some(x=>x.url===requestedUrl&&x.required)||candidates.includes(requestedUrl),sourceId,finalUrl,recoveredBySourceId:null,plannedRungs:['tinyfish'],attempts,budgetExhausted:false,planKnown:validPlan};
+ });
+ let ledgerEnd=read.end;try{ledgerEnd=acquisitionLedgerSchema.parse(JSON.parse(raw['social-acquisition-ledger'])).end;}catch{}
+ const times=[Date.parse(ledgerEnd),...read.sources.map(source=>Date.parse(source.availableAt))].filter(Number.isFinite),at=new Date(Math.max(...times)).toISOString(),age=Date.parse(cutoff)-Date.parse(at);
+ return {group:'SOCIAL_ENTRY',token,availableAt:at,searches,targets,samples:[{id:'posts',searchIds:['attention-search-2'],candidateUrls:candidates,dropped:!validPlan||selection.some(x=>!x.selected&&/CAP/.test(x.status))}],fresh:validPlan&&Number.isFinite(age)&&age>=0&&age<=900000,aborted:read.codes.some(x=>/ABORT|COLLECTION_BUDGET/.test(x))};
 }

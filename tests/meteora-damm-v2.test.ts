@@ -10,7 +10,7 @@ import { buildEntryReport, renderSnapshot } from '../src/app/report.js';
 import { deriveBaseline } from '../src/domain/baseline.js';
 import { deriveEntryGroups } from '../src/domain/entry-groups.js';
 import { evaluateEntry } from '../src/domain/policy.js';
-import { deriveShared, entryEvidenceGates, sharedWitnesses } from '../src/domain/shared.js';
+import { deriveShared, entryEvidenceGates } from '../src/domain/shared.js';
 import { resolveEmptyVenueEntries } from '../src/domain/venue-entry.js';
 import type { EntrySnapshot, EvidenceRecord, LiveBundle, LiveCollection } from '../src/domain/contracts.js';
 import { decodeDammState, decodeEmptyDammState, inspectDammV2, quoteDamm, validateDammBundle, verifyDammSimulation } from '../src/providers/meteora-damm-v2.js';

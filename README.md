@@ -15,7 +15,13 @@ node dist/src/cli.js doctor
 npm run cli -- 3kmygWKZBkCYrgZHKfiuB9UFKTcDLTFFsKo3BWpmpump
 ```
 
-The bare CA is an alias for `analyze`. The first interactive run offers saved settings and asks explicitly before TinyFish/Gemini calls; subsequent runs reuse the settings. In automation add `--full` to approve hosted calls or `--partial` for public RPC/DEX only. The executable loads `.env` from the project root. Solana is inferred only from a valid decoded key; EVM addresses require a saved chain choice or `--chain bsc|base|robinhood`.
+The bare CA is an alias for `analyze`. The first interactive run offers saved settings and asks explicitly before TinyFish/Gemini calls; subsequent runs reuse the settings. In automation add `--full` or `--fast` to approve the corresponding hosted run, or `--partial` for public RPC/DEX only. The executable loads `.env` from the project root. Solana is inferred only from a valid decoded key; EVM addresses require a saved chain choice or `--chain bsc|base|robinhood`.
+
+`--fast` runs the 20-row research screen: it reads the mint and market, searches the web, makes one model call for narrative and current attention, then runs the on-chain and execution checks. Every row is evaluated on every run and reported with its reason; a typical token takes under a minute. One model call is one unreviewed judgment, and code still enforces citation and evidence rules.
+
+An unread source does not stop the judgment: a row can still be supported from what was read, but anything short of supported becomes UNKNOWN rather than negative. Tokens that trade only on a venue without a supported execution route report those route rows as UNKNOWN. A shortlist requires all 20 decisions to be supported and is for research only: it does not approve entry, create a thesis episode, or authorize a trade. It uses the same TinyFish and Gemini key requirements as `--full`.
+
+If `FIRECRAWL_API_KEY` is present, approved hosted runs may use bounded Firecrawl Search and Scrape fallback for failed public-source collection. The original provider response and the Firecrawl response are retained separately; fallback does not guarantee complete coverage. `doctor` reports key presence only.
 
 Entry reports use four evidence outcomes: **SUPPORTED** means qualified evidence meets the criterion; **CONTRADICTED** means affirmative observed evidence negates it; **INSUFFICIENT** means collection and required independent review finished but public support is inadequate; **UNKNOWN** means the stated judgment or fact is unresolved. Both contradicted and insufficient entry criteria may reject entry. Exact unqualified measurements are listed separately as auxiliary factual UNKNOWNs; they are not extra checklist rows or invented zeros.
 
@@ -36,7 +42,7 @@ node dist/src/cli.js diff $olderSnapshotId $newerSnapshotId --db .data/live.sqli
 
 `show`, `replay`, `diff`, and `backup` use stored data and make no provider requests. Replay recomputes the checklist from the saved input; it does not refresh live evidence. A new `analyze` call collects new evidence. For a token with a tracked thesis, it reassesses that case unless `--entry` is supplied.
 
-For Solana, choose one mode on every analysis. `--partial` explicitly requests RPC and DEX only, even when optional keys are set. `--full` explicitly approves a bounded TinyFish Search/Fetch and Gemini pass and is required for non-interactive runs. An interactive run with both keys and no mode presents the full pass first and asks for `y` or `yes`; Enter or any other answer cancels without collecting or saving. If either key is missing, it stops and prints secure setup commands instead of falling back. To decline hosted sources and continue, rerun with `--partial`. A non-interactive run without either flag fails with guidance; it never silently saves a partial result.
+For Solana, choose one mode on every analysis. `--partial` explicitly requests RPC and DEX only, even when optional keys are set. `--full` explicitly approves a bounded TinyFish Search/Fetch and Gemini pass and is required for non-interactive runs. An interactive run with both keys and no mode presents the full pass first and asks for `y` or `yes`; Enter or any other answer cancels without collecting or saving. If either key is missing, it stops and prints secure setup commands instead of falling back. To decline hosted sources and continue, rerun with `--partial`. A non-interactive run without a mode flag fails with guidance; it never silently saves a partial result.
 
 ## Optional inputs
 
@@ -162,7 +168,7 @@ The additional DAMM v2 adapter supports verified1112-byte layout1 pools with leg
 
 ## Full available-source pass
 
-`--full` authorizes one bounded TinyFish Search/Fetch and Gemini pass for the current analysis. It requires both keys; if either is missing, the command stops before collection, names the missing variable, and prints the secure setup command. `--partial` explicitly requests RPC and DEX only, including when the keys are present. No mode flag never silently saves partial work: an interactive terminal asks for `y` or `yes` before hosted providers are called; Enter or any other response cancels. A non-interactive run must specify `--full` or `--partial`.
+`--full` authorizes one bounded TinyFish Search/Fetch and Gemini pass for the current analysis. It requires both keys; if either is missing, the command stops before collection, names the missing variable, and prints the secure setup command. `--partial` explicitly requests RPC and DEX only, including when the keys are present. No mode flag never silently saves partial work: an interactive terminal asks for `y` or `yes` before hosted providers are called; Enter or any other response cancels. A non-interactive run must specify `--full`, `--fast`, or `--partial`.
 
 Before running `--full`, create a TinyFish account at [agent.tinyfish.ai](https://agent.tinyfish.ai/) and confirm Search/Fetch access. The [Search API docs](https://docs.tinyfish.ai/search-api/reference) and [Fetch API docs](https://docs.tinyfish.ai/fetch-api/reference) describe the endpoints; current published pricing lists them as free at a zero wallet balance, but account access may still return 401, 402, or 429. The app sends bounded public Search/Fetch requests and does not use the metered browser agent.
 

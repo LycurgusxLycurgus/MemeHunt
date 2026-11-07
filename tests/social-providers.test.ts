@@ -900,3 +900,79 @@ test('project-context-v2 social collection preserves 56 sampled posts and uses e
   assert.equal(read.sampleComplete, true);
   assert.equal(read.identityComplete, true);
 });
+
+test('marked Social reuses only the exact Attention redirect binding and keeps real fetch failures unknown', async () => {
+  const requestedUrl = 'https://river-lantern.example/';
+  const finalUrl = 'https://www.river-lantern.example/';
+  const sourceId = 'attention-redirect-page';
+  const producerArtifactId = 'attention-fetch-1-retry-1';
+  const body = `Public identity record for ${SOCIAL_TOKEN.address} with the exact retained source text.`;
+  const queryRows = [
+    { id: 'attention-search-1', query: `"${SOCIAL_TOKEN.address}" base exact token`, purpose: 'EXACT_TOKEN' as const,
+      artifactId: 'attention-acquisition-attention-search-1-response', status: 200, availableAt: SOCIAL_AVAILABLE, required: true },
+    { id: 'attention-search-2', query: `"${SOCIAL_TOKEN.address}" base social posts`, purpose: 'SOCIAL' as const,
+      artifactId: 'attention-acquisition-attention-search-2-response', status: 200, availableAt: SOCIAL_AVAILABLE, required: true },
+  ];
+  const makeAttention = (binding: NonNullable<AttentionRead['sourceBindings']>[number], sourceText = body): AttentionRead => {
+    const source: AttentionSource = {
+      id: sourceId, url: finalUrl, text: sourceText, publishedAt: null, authorId: null,
+      availableAt: SOCIAL_AVAILABLE, kind: 'PAGE',
+    };
+    return attention([source], {
+      acquisitionEvidenceMethod,
+      leadershipPositiveMethod: 'source-bound-positive-v1',
+      discoveryUrls: [requestedUrl],
+      postSampleSourceIds: [sourceId],
+      sourceBindings: [binding],
+      rawArtifacts: {
+        [sourceId]: sourceText,
+        [producerArtifactId]: JSON.stringify({ results: [{ url: requestedUrl, final_url: finalUrl, text: body }], errors: [] }),
+        'attention-acquisition-ledger': JSON.stringify({
+          method: acquisitionEvidenceMethod, token: SOCIAL_TOKEN, start: SOCIAL_START, end: SOCIAL_AVAILABLE, searches: queryRows,
+        }),
+        [queryRows[0].artifactId]: JSON.stringify({ results: [] }),
+        [queryRows[1].artifactId]: JSON.stringify({ results: [] }),
+      },
+    });
+  };
+  const correctBinding: NonNullable<AttentionRead['sourceBindings']>[number] = {
+    sourceId, producerArtifactId, resultIndex: 0, requestedUrl, transform: 'IDENTITY',
+  };
+  const run = async (read: AttentionRead) => {
+    const requested: string[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url !== 'https://api.fetch.tinyfish.ai/') throw new Error(`Unexpected request: ${url}`);
+      requested.push(...(JSON.parse(String(init?.body)) as { urls: string[] }).urls);
+      return response({ error: 'synthetic provider outage' }, 500);
+    };
+    const collected = await collectSocialSources(SOCIAL_TOKEN, read, 'synthetic-provider-key', fetcher, () => SOCIAL_AVAILABLE,
+      undefined, true);
+    const purposeTarget = collected.purposeProjection?.targets.find(target => target.requestedUrl === requestedUrl);
+    const scope = JSON.parse(collected.rawArtifacts['social-acquisition-scope']!) as {
+      selection: Array<{ url: string; status: string }>;
+    };
+    return { collected, purposeTarget, scope, requested };
+  };
+
+  const exact = await run(makeAttention(correctBinding));
+  assert.deepEqual(exact.requested, [], 'an exact request-to-final redirect binding prevents a redundant Social fetch');
+  assert.deepEqual(exact.scope.selection.find(row => row.url === requestedUrl)?.status, 'REUSED');
+  assert.equal(exact.collected.identityComplete, true);
+  assert.equal(exact.collected.purposeProjection?.accounted, true);
+  assert.equal(exact.purposeTarget?.state, 'READ', 'the canonical Social purpose receipt records the bound seed as READ');
+
+  const unrelated = await run(makeAttention({ ...correctBinding, requestedUrl: 'https://unrelated.example/' }));
+  assert.deepEqual(unrelated.requested, [requestedUrl], 'an unrelated binding cannot satisfy the requested target');
+  assert.equal(unrelated.collected.identityComplete, false);
+  assert.ok(unrelated.collected.codes.includes('SOC_FETCH_HTTP_500'));
+  assert.equal(unrelated.purposeTarget?.state, 'PROVIDER_FAILED', 'a real Social HTTP failure stays operationally unknown');
+  assert.equal(unrelated.collected.purposeProjection?.accounted, false);
+
+  const clipped = await run(makeAttention(correctBinding, body.slice(0, 30)));
+  assert.deepEqual(clipped.requested, [requestedUrl], 'a clipped retained body cannot be reused as the exact producer body');
+  assert.equal(clipped.collected.identityComplete, false);
+  assert.ok(clipped.collected.codes.includes('SOC_FETCH_HTTP_500'));
+  assert.equal(clipped.purposeTarget?.state, 'PROVIDER_FAILED');
+  assert.equal(clipped.collected.purposeProjection?.accounted, false);
+});
